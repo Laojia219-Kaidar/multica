@@ -29,9 +29,9 @@ describe("workspaceUrlHost", () => {
   });
 
   it("falls back to the brand host when no app URL is configured", () => {
-    expect(workspaceUrlHost("")).toBe("multica.ai");
-    expect(workspaceUrlHost("   ")).toBe("multica.ai");
-    expect(workspaceUrlHost(null)).toBe("multica.ai");
-    expect(workspaceUrlHost(undefined)).toBe("multica.ai");
+    expect(workspaceUrlHost("")).toBe("hivecrew.local");
+    expect(workspaceUrlHost("   ")).toBe("hivecrew.local");
+    expect(workspaceUrlHost(null)).toBe("hivecrew.local");
+    expect(workspaceUrlHost(undefined)).toBe("hivecrew.local");
   });
 });

@@ -6,6 +6,7 @@ import type { Agent, MemberWithUser, Squad } from "../types";
 import { useWorkspaceId } from "../hooks";
 import { memberListOptions, agentListOptions, squadListOptions } from "./queries";
 import { resolvePublicFileUrl } from "./avatar-url";
+import { HIVE_CREW_PRODUCT_NAME } from "../product";
 
 // Stable empties for the still-loading directory queries. A fresh `= []`
 // default allocates a new array on every render while `data` is undefined,
@@ -40,7 +41,7 @@ export function buildActorNameResolver(directories: {
     if (type === "member") return memberNames.get(id) ?? "Unknown";
     if (type === "agent") return agentNames.get(id) ?? "Unknown Agent";
     if (type === "squad") return squadNames.get(id) ?? "Unknown Squad";
-    if (type === "system") return "Multica";
+    if (type === "system") return HIVE_CREW_PRODUCT_NAME;
     return "System";
   };
 }
