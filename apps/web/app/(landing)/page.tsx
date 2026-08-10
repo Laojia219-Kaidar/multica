@@ -1,15 +1,15 @@
 import type { Metadata } from "next";
-import { MulticaLanding } from "@/features/landing/components/multica-landing";
+import { HiveCrewLanding } from "@/features/landing/components/multica-landing";
 import { RedirectIfAuthenticated } from "@/features/landing/components/redirect-if-authenticated";
 
 export const metadata: Metadata = {
   title: {
-    absolute: "Multica — Project Management for Human + Agent Teams",
+    absolute: "HiveCrew — Digital Employee Collaboration and Execution",
   },
   description:
-    "Open-source platform that turns coding agents into real teammates. Assign tasks, track progress, compound skills.",
+    "HiveCosm's digital employee collaboration and execution workspace.",
   openGraph: {
-    title: "Multica — Project Management for Human + Agent Teams",
+    title: "HiveCrew — Digital Employee Collaboration and Execution",
     description:
       "Manage your human + agent workforce in one place.",
     url: "/",
@@ -23,7 +23,7 @@ export default function LandingPage() {
   return (
     <>
       <RedirectIfAuthenticated />
-      <MulticaLanding />
+      <HiveCrewLanding />
     </>
   );
 }

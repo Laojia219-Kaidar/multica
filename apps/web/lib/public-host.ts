@@ -1,6 +1,15 @@
-const OFFICIAL_MARKETING_HOSTS = new Set(["multica.ai", "www.multica.ai"]);
+export function isOfficialMarketingHost(
+  hostname: string,
+  publicAppUrl: string | undefined = process.env.HIVECREW_PUBLIC_APP_URL,
+): boolean {
+  if (!publicAppUrl) return false;
 
-export function isOfficialMarketingHost(hostname: string): boolean {
+  let officialHostname: string;
+  try {
+    officialHostname = new URL(publicAppUrl).hostname;
+  } catch {
+    return false;
+  }
   const normalized = hostname.trim().toLowerCase().replace(/\.$/, "");
-  return OFFICIAL_MARKETING_HOSTS.has(normalized);
+  return normalized === officialHostname.toLowerCase();
 }

@@ -46,12 +46,12 @@ export function HowItWorksSection() {
           <Link href={ctaHref} className={heroButtonClassName("solid")}>
             {user ? t.header.dashboard : t.howItWorks.cta}
           </Link>
-          <Link
+          {githubUrl ? <Link
             href={docsHrefForLocale(locale)}
             className={heroButtonClassName("ghost")}
           >
             {t.howItWorks.ctaDocs}
-          </Link>
+          </Link> : null}
           <Link
             href={githubUrl}
             target="_blank"

@@ -231,6 +231,9 @@ export default async function UseCasePage(props: { params: Promise<Params> }) {
           )}
         >
           <article>
+            <div className="mb-8 rounded-xl border border-amber-300/70 bg-amber-50 px-4 py-3 text-[13px] leading-relaxed text-amber-950">
+              {text.inheritedBaselineNotice}
+            </div>
             <h1 className="landing-serif text-[2.6rem] leading-[1.05] tracking-[-0.03em] sm:text-[3.4rem]">
               {page.data.title}
             </h1>

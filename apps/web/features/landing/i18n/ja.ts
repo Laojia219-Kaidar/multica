@@ -1,4 +1,4 @@
-import { githubUrl, discordUrl } from "../components/shared";
+import { githubUrl, discordUrl, twitterUrl } from "../components/shared";
 import { createEnDict } from "./en";
 import type { LandingDict } from "./types";
 
@@ -22,12 +22,12 @@ export function createJaDict(allowSignup: boolean): LandingDict {
       headlineLine1: "次に採用する10人は、",
       headlineLine2: "人間ではないかもしれません。",
       subheading:
-        "Multica は、コーディングエージェントを本物のチームメンバーに変えるオープンソースプラットフォームです。タスクを割り当て、進捗を追い、ノウハウをスキルとして積み上げる。人間と AI エージェントから成るチームを、ひとつの場所で管理できます。",
+        "HiveCrew は、コーディングエージェントを本物のチームメンバーに変えるオープンソースプラットフォームです。タスクを割り当て、進捗を追い、ノウハウをスキルとして積み上げる。人間と AI エージェントから成るチームを、ひとつの場所で管理できます。",
       cta: "無料トライアルを始める",
       downloadDesktop: "デスクトップ版をダウンロード",
       talkToSales: "営業に相談する",
       worksWith: "対応ツール",
-      imageAlt: "人間と AI エージェントがイシューを管理する Multica のボード画面",
+      imageAlt: "人間と AI エージェントがイシューを管理する HiveCrew のボード画面",
     },
     features: {
       teammates: {
@@ -57,7 +57,7 @@ export function createJaDict(allowSignup: boolean): LandingDict {
         label: "自律実行",
         title: "任せておくだけ — あなたが眠っている間もエージェントが働きます",
         description:
-          "一往復で終わる指示ではありません。タスクをキューに入れ、受け取り、開始し、完了または失敗まで報告する。このライフサイクル全体を Multica が管理します。詰まったところはエージェントが先に知らせ、進捗は WebSocket でリアルタイムに届きます。",
+          "一往復で終わる指示ではありません。タスクをキューに入れ、受け取り、開始し、完了または失敗まで報告する。このライフサイクル全体を HiveCrew が管理します。詰まったところはエージェントが先に知らせ、進捗は WebSocket でリアルタイムに届きます。",
         cards: [
           {
             title: "最初から最後まで追跡",
@@ -118,7 +118,7 @@ export function createJaDict(allowSignup: boolean): LandingDict {
           {
             title: "初回起動時に自動検出",
             description:
-              "Multica は Antigravity、Claude Code、CodeBuddy、Codex、Cursor、Copilot、Hermes、Kimi、Kiro CLI、OpenCode、OpenClaw、Pi、Qoder、Trae CLI という14種類の対応ツールをスキャンし、見つかったものをそれぞれランタイムとして登録します。",
+              "HiveCrew は Antigravity、Claude Code、CodeBuddy、Codex、Cursor、Copilot、Hermes、Kimi、Kiro CLI、OpenCode、OpenClaw、Pi、Qoder、Trae CLI という14種類の対応ツールをスキャンし、見つかったものをそれぞれランタイムとして登録します。",
           },
         ],
       },
@@ -161,13 +161,13 @@ export function createJaDict(allowSignup: boolean): LandingDict {
       headlineLine1: "すべての人に、",
       headlineLine2: "オープンソースを。",
       description:
-        "Multica は完全なオープンソースです。すべてのコードを確認し、自分の条件でセルフホストし、人間と AI エージェントが協働する未来を、ともに形づくっていけます。",
+        "HiveCrew は完全なオープンソースです。すべてのコードを確認し、自分の条件でセルフホストし、人間と AI エージェントが協働する未来を、ともに形づくっていけます。",
       cta: "GitHub でスターを付ける",
       highlights: [
         {
           title: "どこでもセルフホスト",
           description:
-            "自社のインフラで Multica を運用できます。Docker Compose、単一バイナリ、Kubernetes に対応。データがネットワークの外に出ることはありません。",
+            "自社のインフラで HiveCrew を運用できます。Docker Compose、単一バイナリ、Kubernetes に対応。データがネットワークの外に出ることはありません。",
         },
         {
           title: "ベンダーロックインなし",
@@ -191,30 +191,30 @@ export function createJaDict(allowSignup: boolean): LandingDict {
       headline: "よくある質問。",
       items: [
         {
-          question: "Multica はどのコーディングエージェントに対応していますか?",
+          question: "HiveCrew はどのコーディングエージェントに対応していますか?",
           answer:
-            "Multica は、Antigravity、Claude Code、CodeBuddy、Codex、Cursor、Copilot、Hermes、Kimi、Kiro CLI、OpenCode、OpenClaw、Pi、Qoder、Trae CLI の14種類のコーディングツールに標準対応しています。デーモンが、すでにインストール済みの CLI を自動検出し、それぞれをランタイムとして登録します。オープンソースなので、独自のバックエンドを追加することもできます。",
+            "HiveCrew は、Antigravity、Claude Code、CodeBuddy、Codex、Cursor、Copilot、Hermes、Kimi、Kiro CLI、OpenCode、OpenClaw、Pi、Qoder、Trae CLI の14種類のコーディングツールに標準対応しています。デーモンが、すでにインストール済みの CLI を自動検出し、それぞれをランタイムとして登録します。オープンソースなので、独自のバックエンドを追加することもできます。",
         },
         {
           question: "セルフホストが必須ですか、それともクラウド版もありますか?",
           answer:
-            "どちらも可能です。Docker Compose や Kubernetes で自社インフラにセルフホストすることも、当社がホストするクラウド版を使うこともできます。データをどこに置くかは、あなたの選択次第です。",
+            "HiveCrew は現在、セルフホストのみで提供しています。自分で管理するインフラで実行してください。このリリースでは HiveCrew 管理の公開クラウドサービスは設定・宣伝しません。",
         },
         {
           question:
             "コーディングエージェントを直接使うのと、何が違うのですか?",
           answer:
-            "コーディングエージェントは実行が得意です。Multica はその上に、タスクキュー、チームの連携、スキルの再利用、ランタイムの監視、そして各エージェントの動きを一望できる統合ビューという管理レイヤーを加えます。エージェントのためのプロジェクトマネージャーだと考えてください。",
+            "コーディングエージェントは実行が得意です。HiveCrew はその上に、タスクキュー、チームの連携、スキルの再利用、ランタイムの監視、そして各エージェントの動きを一望できる統合ビューという管理レイヤーを加えます。エージェントのためのプロジェクトマネージャーだと考えてください。",
         },
         {
           question: "エージェントは長時間のタスクを自律的にこなせますか?",
           answer:
-            "はい。Multica は、キュー追加・受け取り・実行・完了または失敗まで、タスクのライフサイクル全体を管理します。エージェントは詰まったところを先に知らせ、進捗をリアルタイムにストリーミングします。好きなときに覗いてもよいですし、一晩じゅう走らせておくこともできます。",
+            "はい。HiveCrew は、キュー追加・受け取り・実行・完了または失敗まで、タスクのライフサイクル全体を管理します。エージェントは詰まったところを先に知らせ、進捗をリアルタイムにストリーミングします。好きなときに覗いてもよいですし、一晩じゅう走らせておくこともできます。",
         },
         {
           question: "コードは安全ですか? エージェントの実行はどこで行われますか?",
           answer:
-            "エージェントの実行は、あなたのマシン(ローカルデーモン)、または自社のクラウドインフラ上で行われます。コードが Multica のサーバーを経由することはありません。プラットフォームはタスクの状態を調整し、イベントを配信する役割だけを担います。",
+            "エージェントの実行は、あなたのマシン(ローカルデーモン)、または自社のクラウドインフラ上で行われます。コードが HiveCrew のサーバーを経由することはありません。プラットフォームはタスクの状態を調整し、イベントを配信する役割だけを担います。",
         },
         {
           question: "エージェントは何個まで動かせますか?",
@@ -243,7 +243,7 @@ export function createJaDict(allowSignup: boolean): LandingDict {
           links: [
             { label: "ドキュメント", href: "/docs/ja" },
             { label: "API", href: githubUrl },
-            { label: "X (Twitter)", href: "https://x.com/MulticaAI" },
+            { label: "X (Twitter)", href: twitterUrl },
             { label: "Discord", href: discordUrl },
           ],
         },
@@ -257,11 +257,11 @@ export function createJaDict(allowSignup: boolean): LandingDict {
           ],
         },
       },
-      copyright: "© {year} Multica. All rights reserved.",
+      copyright: "© {year} HiveCrew. All rights reserved.",
     },
     changelog: {
-      title: "変更履歴",
-      subtitle: "Multica の新しいアップデートと改善点をお届けします。",
+      title: "継承ベースラインの変更履歴",
+      subtitle: "継承した Multica ベースラインの履歴です。HiveCrew のリリースは独立フォーク以降に記録します。",
       toc: "すべてのリリース",
       categories: {
         features: "新機能",
@@ -2032,9 +2032,9 @@ export function createJaDict(allowSignup: boolean): LandingDict {
       ],
     },
     about: {
-      title: "Multica について",
+      title: "HiveCrew について",
       nameLine: {
-        prefix: "Multica — ",
+        prefix: "HiveCrew — ",
         mul: "Mul",
         tiplexed: "tiplexed ",
         i: "I",
@@ -2046,8 +2046,8 @@ export function createJaDict(allowSignup: boolean): LandingDict {
       },
       paragraphs: [
         "この名前は、1960年代の先駆的なオペレーティングシステム Multics へのオマージュです。Multics は、複数のユーザーが1台のマシンを、まるで各自が独り占めしているかのように共有できる「タイムシェアリング」という概念を世に広めました。Unix は、その Multics をあえてシンプルにする形で生まれました。一人のユーザー、ひとつのタスク、ひとつの洗練された哲学です。",
-        "いま、同じような転換点がふたたび訪れていると私たちは考えています。この数十年、ソフトウェアチームは事実上シングルスレッドで働いてきました。一人のエンジニアが、ひとつのタスクを担い、一度にひとつの文脈だけを切り替えながら進める。AI エージェントは、その方程式を変えます。Multica はタイムシェアリングをふたたび呼び戻します。ただし今回は、システムを多重利用する「ユーザー」が、人間と自律的なエージェントの両方である時代に合わせて。",
-        "Multica では、エージェントは一級のチームメンバーです。人間の同僚とまったく同じように、イシューを割り当てられ、進捗を報告し、行き詰まりを知らせ、コードをリリースします。担当者の選択、アクティビティタイムライン、タスクのライフサイクル、そしてランタイムのインフラは、すべてこの前提を中心に、最初から設計されています。",
+        "いま、同じような転換点がふたたび訪れていると私たちは考えています。この数十年、ソフトウェアチームは事実上シングルスレッドで働いてきました。一人のエンジニアが、ひとつのタスクを担い、一度にひとつの文脈だけを切り替えながら進める。AI エージェントは、その方程式を変えます。HiveCrew はタイムシェアリングをふたたび呼び戻します。ただし今回は、システムを多重利用する「ユーザー」が、人間と自律的なエージェントの両方である時代に合わせて。",
+        "HiveCrew では、エージェントは一級のチームメンバーです。人間の同僚とまったく同じように、イシューを割り当てられ、進捗を報告し、行き詰まりを知らせ、コードをリリースします。担当者の選択、アクティビティタイムライン、タスクのライフサイクル、そしてランタイムのインフラは、すべてこの前提を中心に、最初から設計されています。",
         "かつての Multics と同じく、賭けの中心にあるのは多重化(multiplexing)です。小さなチームが、小さく動く必要はありません。適切なシステムがあれば、二人のエンジニアと一群のエージェントは、二十人のように動けます。",
         "プラットフォームは完全なオープンソースで、セルフホスト可能です。データはあなたのインフラに残ります。すべてのコードを確認し、API を拡張し、好きな LLM プロバイダーを持ち込み、コミュニティに貢献できます。",
       ],
@@ -2056,29 +2056,29 @@ export function createJaDict(allowSignup: boolean): LandingDict {
     download: {
       hero: {
         macArm64: {
-          title: "macOS 版 Multica",
+          title: "macOS 版 HiveCrew",
           sub: "Apple Silicon · デーモン同梱、設定不要",
           primary: "ダウンロード(.dmg)",
           altZip: "または .zip をダウンロード",
         },
         macIntel: {
-          title: "macOS 版 Multica",
+          title: "macOS 版 HiveCrew",
           sub: "Intel · デーモン同梱、設定不要",
           primary: "ダウンロード(.dmg)",
           altZip: "または .zip をダウンロード",
         },
         winX64: {
-          title: "Windows 版 Multica",
+          title: "Windows 版 HiveCrew",
           sub: "デーモン同梱、設定不要",
           primary: "ダウンロード(.exe)",
         },
         winArm64: {
-          title: "Windows 版 Multica",
+          title: "Windows 版 HiveCrew",
           sub: "ARM · デーモン同梱、設定不要",
           primary: "ダウンロード(.exe)",
         },
         linux: {
-          title: "Linux 版 Multica",
+          title: "Linux 版 HiveCrew",
           sub: "デーモン同梱、設定不要",
           primary: "AppImage をダウンロード",
           altFormats: "または .deb / .rpm",
@@ -2129,7 +2129,7 @@ export function createJaDict(allowSignup: boolean): LandingDict {
     contactSales: {
       pageTitle: "営業に相談",
       pageDescription:
-        "人間と AI エージェントが協働するワークフローを社内に導入する方法について、Multica チームにご相談ください。",
+        "人間と AI エージェントが協働するワークフローを社内に導入する方法について、HiveCrew チームにご相談ください。",
       eyebrow: "営業に相談",
       title: "まずは、ご要望をお聞かせください",
       subtitle: "最適なご提案を準備できるよう、いくつかお教えください。",
@@ -2146,10 +2146,10 @@ export function createJaDict(allowSignup: boolean): LandingDict {
         companyName: "会社名",
         companySize: "会社規模",
         countryRegion: "国 / 地域",
-        useCase: "Multica をどのように利用、または活用するご予定ですか?",
+        useCase: "HiveCrew をどのように利用、または活用するご予定ですか?",
         goals: "目標または現在抱えている課題",
         goalsHint:
-          "Multica で実現したいことや、いま直面している課題をお聞かせください。詳しくご記入いただくほど、より的確にお手伝いできます。",
+          "HiveCrew で実現したいことや、いま直面している課題をお聞かせください。詳しくご記入いただくほど、より的確にお手伝いできます。",
         selectPlaceholder: "選択してください",
         submit: "送信",
         submitting: "送信中...",
@@ -2164,9 +2164,9 @@ export function createJaDict(allowSignup: boolean): LandingDict {
       ],
       useCases: [
         { value: "evaluate", label: "チームでの導入を検討中" },
-        { value: "adopt_team", label: "チームまたは会社に Multica を導入" },
+        { value: "adopt_team", label: "チームまたは会社に HiveCrew を導入" },
         { value: "self_host", label: "自社インフラにセルフホスト" },
-        { value: "integrate", label: "既存ツールと Multica を連携" },
+        { value: "integrate", label: "既存ツールと HiveCrew を連携" },
         { value: "partner", label: "パートナーシップまたはリセラーのお問い合わせ" },
         { value: "other", label: "その他" },
       ],
@@ -2214,22 +2214,22 @@ export function createJaDict(allowSignup: boolean): LandingDict {
       ],
       consent: {
         intro:
-          "Multica, Inc. はあなたのプライバシーを尊重します。お預かりした個人情報は、アカウントの管理と、ご依頼いただいた製品・サービスの提供のためにのみ使用します。ときどき、製品アップデートやベストプラクティス、ご参考になりそうなインサイトもお届けできればと思います。ご希望の場合は、下でお知らせください。",
+          "HiveCrew, Inc. はあなたのプライバシーを尊重します。お預かりした個人情報は、アカウントの管理と、ご依頼いただいた製品・サービスの提供のためにのみ使用します。ときどき、製品アップデートやベストプラクティス、ご参考になりそうなインサイトもお届けできればと思います。ご希望の場合は、下でお知らせください。",
         outreach:
-          "サービスのアップデート、サポートへのお問い合わせ、ビジネス関連のフォローアップなど、Multica, Inc. からの個別のご連絡を受け取ります。",
+          "サービスのアップデート、サポートへのお問い合わせ、ビジネス関連のフォローアップなど、HiveCrew, Inc. からの個別のご連絡を受け取ります。",
         updates:
-          "Multica からの製品アップデート、インサイト、イベントへのご招待を受け取ります。",
+          "HiveCrew からの製品アップデート、インサイト、イベントへのご招待を受け取ります。",
         unsubscribe:
           "配信はいつでも停止できます。データの取り扱いとプライバシーの権利について詳しくは、こちらをご確認ください:",
         submitConsent:
-          "「送信」をクリックすると、ご依頼いただいたコンテンツをお届けするために、Multica, Inc. が情報を保存・処理することに同意したことになります。",
+          "「送信」をクリックすると、ご依頼いただいたコンテンツをお届けするために、HiveCrew, Inc. が情報を保存・処理することに同意したことになります。",
         privacyLinkLabel: "プライバシーポリシー。",
         privacyLinkHref: "/about",
       },
       success: {
         title: "ありがとうございます。確かに受け取りました。",
         message:
-          "Multica チームのメンバーが、3営業日以内にご返信いたします。それまでの間、ドキュメントを覗いてみたり、GitHub でスターを付けたりしてお待ちください。",
+          "HiveCrew チームのメンバーが、3営業日以内にご返信いたします。それまでの間、ドキュメントを覗いてみたり、GitHub でスターを付けたりしてお待ちください。",
         cta: "ホームに戻る",
       },
       errors: {

@@ -62,7 +62,7 @@
   },
   "empty": {
     "title": "No agents yet",
-    "description": "Create an agent and assign it issues, like any teammate. Local agents run on your machine; cloud agents run on Multica's runtime."
+    "description": "Create an agent and assign it issues, like any teammate. Local agents run on your machine; cloud agents run on HiveCrew's runtime."
   },
   "no_matches": {
     "title": "No matches",
@@ -513,14 +513,14 @@
       "save_failed_toast": "Failed to save custom arguments"
     },
     "mcp_config": {
-      "intro": "Manage the MCP servers available to this agent. Servers managed by Multica are merged with servers inherited from the local runtime.",
-      "managed_title": "Managed by Multica",
-      "managed_hint": "Saved in Multica for this agent. These servers are merged with runtime servers; a Multica server wins when names match.",
-      "managed_empty": "No MCP servers are managed by Multica yet.",
+      "intro": "Manage the MCP servers available to this agent. Servers managed by HiveCrew are merged with servers inherited from the local runtime.",
+      "managed_title": "Managed by HiveCrew",
+      "managed_hint": "Saved in HiveCrew for this agent. These servers are merged with runtime servers; a HiveCrew server wins when names match.",
+      "managed_empty": "No MCP servers are managed by HiveCrew yet.",
       "add_action": "Add MCP",
       "agent_disabled_badge": "Off for agent",
       "runtime_disabled_badge": "Off in runtime",
-      "runtime_overridden_badge": "Overridden by Multica",
+      "runtime_overridden_badge": "Overridden by HiveCrew",
       "runtime_title": "Inherited from runtime",
       "runtime_hint": "Discovered automatically from {{runtime}} and merged at task launch. URLs, headers, commands, and environment variables never leave the machine.",
       "refresh_action": "Refresh",

@@ -4,11 +4,11 @@ import { AboutPageClient } from "@/features/landing/components/about-page-client
 export const metadata: Metadata = {
   title: "About",
   description:
-    "Learn about Multica — multiplexed information and computing agent. An open-source project management platform for human + agent teams.",
+    "Learn about HiveCrew, HiveCosm's independent operating workspace for human and digital-employee teams.",
   openGraph: {
-    title: "About Multica",
+    title: "About HiveCrew",
     description:
-      "The story behind Multica and why we're building project management for human + agent teams.",
+      "Why HiveCosm is building HiveCrew for human and digital-employee teams.",
     url: "/about",
   },
   alternates: {

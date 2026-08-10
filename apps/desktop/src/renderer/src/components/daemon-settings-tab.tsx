@@ -171,7 +171,7 @@ export function DaemonSettingsTab() {
               size="sm"
               onClick={() =>
                 window.desktopAPI.openExternal(
-                  "https://github.com/multica-ai/multica#cli-installation",
+                  new URL("/docs/cli-installation", window.location.origin).toString(),
                 )
               }
             >

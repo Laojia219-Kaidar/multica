@@ -2,15 +2,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fetchLatestRelease } from "./github-release";
 
 const SAMPLE_LATEST_ASSET = {
-  name: "multica-desktop-0.2.14-mac-arm64.dmg",
+  name: "hivecrew-desktop-0.2.14-mac-arm64.dmg",
   browser_download_url:
-    "https://github.com/multica-ai/multica/releases/download/v0.2.14/multica-desktop-0.2.14-mac-arm64.dmg",
+    "https://releases.hivecrew.test/v0.2.14/hivecrew-desktop-0.2.14-mac-arm64.dmg",
 };
 
 const SAMPLE_PREV_ASSET = {
-  name: "multica-desktop-0.2.13-mac-arm64.dmg",
+  name: "hivecrew-desktop-0.2.13-mac-arm64.dmg",
   browser_download_url:
-    "https://github.com/multica-ai/multica/releases/download/v0.2.13/multica-desktop-0.2.13-mac-arm64.dmg",
+    "https://releases.hivecrew.test/v0.2.13/hivecrew-desktop-0.2.13-mac-arm64.dmg",
 };
 
 function releasePayload(overrides: {
@@ -26,7 +26,7 @@ function releasePayload(overrides: {
   return {
     tag_name: overrides.tag,
     published_at: published,
-    html_url: `https://github.com/multica-ai/multica/releases/tag/${overrides.tag}`,
+    html_url: `https://releases.hivecrew.test/${overrides.tag}`,
     prerelease: overrides.prerelease ?? false,
     draft: overrides.draft ?? false,
     assets: overrides.asset ? [overrides.asset] : [],
@@ -46,9 +46,31 @@ function mockFetchWithReleases(releases: unknown[]) {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
 });
 
 describe("fetchLatestRelease", () => {
+  beforeEach(() => {
+    vi.stubEnv(
+      "HIVECREW_RELEASES_API_URL",
+      "https://releases.hivecrew.test/api/releases",
+    );
+  });
+
+  it("does not contact any release service when HiveCrew has no configured feed", async () => {
+    vi.stubEnv("HIVECREW_RELEASES_API_URL", "");
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(fetchLatestRelease()).resolves.toEqual({
+      version: null,
+      publishedAt: null,
+      htmlUrl: null,
+      assets: {},
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("uses previous release when latest was published within the fresh window", async () => {
     mockFetchWithReleases([
       releasePayload({

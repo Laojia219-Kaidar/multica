@@ -50,6 +50,16 @@ function withoutRuntimeUpstreams(run: () => void) {
   }
 }
 
+function withHiveCrewPublicHost(run: () => void) {
+  const previous = process.env.HIVECREW_PUBLIC_APP_URL;
+  process.env.HIVECREW_PUBLIC_APP_URL = "https://crew.hivecosm.test";
+  try {
+    run();
+  } finally {
+    restoreEnv("HIVECREW_PUBLIC_APP_URL", previous);
+  }
+}
+
 describe("proxy legacy workspace route redirects", () => {
   const sessionCookies = {
     multica_logged_in: "1",
@@ -105,17 +115,24 @@ describe("proxy legacy workspace route redirects", () => {
     );
   });
 
-  it.each(["multica.ai", "www.multica.ai"])(
-    "does not redirect public marketing root on %s",
-    (host) => {
-      expect(redirectLocation("/", sessionCookies, host)).toBeNull();
-    },
-  );
+  it("does not redirect the configured HiveCrew public marketing root", () => {
+    withHiveCrewPublicHost(() => {
+      expect(
+        redirectLocation("/", sessionCookies, "crew.hivecosm.test"),
+      ).toBeNull();
+    });
+  });
 
   it("still redirects explicit legacy app routes on the public marketing host", () => {
-    expect(redirectLocation("/issues/ABC-123", sessionCookies, "multica.ai")).toBe(
-      "https://multica.ai/acme/issues/ABC-123",
-    );
+    withHiveCrewPublicHost(() => {
+      expect(
+        redirectLocation(
+          "/issues/ABC-123",
+          sessionCookies,
+          "crew.hivecosm.test",
+        ),
+      ).toBe("https://crew.hivecosm.test/acme/issues/ABC-123");
+    });
   });
 });
 

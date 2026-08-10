@@ -60,7 +60,7 @@
   },
   "empty": {
     "title": "还没有智能体",
-    "description": "创建一个智能体，像分配给同事那样把 议题 交给它。本地智能体在你的机器上运行，云智能体在 Multica 运行时上运行。"
+    "description": "创建一个数字员工，像分配给同事那样把议题交给它。本地数字员工在你的机器上运行，云端数字员工在 HiveCrew 运行时上运行。"
   },
   "no_matches": {
     "title": "无匹配项",
@@ -500,14 +500,14 @@
       "save_failed_toast": "保存自定义参数失败"
     },
     "mcp_config": {
-      "intro": "管理该智能体可用的 MCP Server。由 Multica 管理的 Server 会与本地 Runtime 继承的 Server 合并使用。",
-      "managed_title": "由 Multica 管理",
-      "managed_hint": "保存在 Multica 中并仅配置给该智能体。执行任务时会与 Runtime MCP 合并；名称相同时以 Multica 配置为准。",
-      "managed_empty": "还没有由 Multica 管理的 MCP Server。",
+      "intro": "管理该智能体可用的 MCP Server。由 HiveCrew 管理的 Server 会与本地 Runtime 继承的 Server 合并使用。",
+      "managed_title": "由 HiveCrew 管理",
+      "managed_hint": "保存在 HiveCrew 中并仅配置给该智能体。执行任务时会与 Runtime MCP 合并；名称相同时以 HiveCrew 配置为准。",
+      "managed_empty": "还没有由 HiveCrew 管理的 MCP Server。",
       "add_action": "添加 MCP",
       "agent_disabled_badge": "已为智能体关闭",
       "runtime_disabled_badge": "运行时中已关闭",
-      "runtime_overridden_badge": "已由 Multica 覆盖",
+      "runtime_overridden_badge": "已由 HiveCrew 覆盖",
       "runtime_title": "从运行时继承",
       "runtime_hint": "自动从 {{runtime}} 发现，并在任务启动时于本机完成合并。URL、Header、命令和环境变量等敏感值不会离开本机。",
       "refresh_action": "刷新",

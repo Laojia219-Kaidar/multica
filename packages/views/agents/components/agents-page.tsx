@@ -264,7 +264,7 @@ function PageHeaderBar({
       count={totalCount}
       description={t(($) => $.page.tagline)}
       learnMore={{
-        href: "https://multica.ai/docs/agents",
+        href: "/docs/agents",
         label: t(($) => $.page.learn_more),
       }}
       actions={

@@ -18,7 +18,7 @@ import { useEffect, useState } from "react";
  * a loop; the button just degrades to its plain "GitHub" label.
  */
 
-const REPO = "multica-ai/multica";
+const REPO = process.env.NEXT_PUBLIC_HIVECREW_GITHUB_REPOSITORY?.trim();
 
 // `undefined` = never fetched; `number` = resolved count; `null` = fetch failed.
 let cachedStars: number | null | undefined;
@@ -27,6 +27,10 @@ let inFlight: Promise<number | null> | null = null;
 async function loadStars(): Promise<number | null> {
   if (cachedStars !== undefined) return cachedStars;
   if (inFlight) return inFlight;
+  if (!REPO) {
+    cachedStars = null;
+    return null;
+  }
 
   inFlight = fetch(`https://api.github.com/repos/${REPO}`, {
     headers: { Accept: "application/vnd.github+json" },

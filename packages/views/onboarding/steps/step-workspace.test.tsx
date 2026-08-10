@@ -149,7 +149,7 @@ describe("StepWorkspace — DISABLE_WORKSPACE_CREATION gate", () => {
 describe("StepWorkspace — workspace URL prefix", () => {
   it("shows the brand host when no app URL is configured", () => {
     renderStep({ existing: null, disabled: false });
-    expect(screen.getByText("multica.ai/")).toBeInTheDocument();
+    expect(screen.getByText("hivecrew.local/")).toBeInTheDocument();
   });
 
   it("shows the deployment host for self-hosted instances", () => {
@@ -159,6 +159,6 @@ describe("StepWorkspace — workspace URL prefix", () => {
       daemonAppUrl: "https://multica.example.com",
     });
     expect(screen.getByText("multica.example.com/")).toBeInTheDocument();
-    expect(screen.queryByText("multica.ai/")).not.toBeInTheDocument();
+    expect(screen.queryByText("hivecrew.local/")).not.toBeInTheDocument();
   });
 });

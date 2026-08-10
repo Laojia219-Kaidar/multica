@@ -43,14 +43,14 @@ describe("CreateWorkspaceForm", () => {
 
   it("shows the brand host as the URL prefix when no app URL is configured", () => {
     renderForm();
-    expect(screen.getByText("multica.ai/")).toBeInTheDocument();
+    expect(screen.getByText("hivecrew.local/")).toBeInTheDocument();
   });
 
   it("shows the deployment host as the URL prefix for self-hosted instances", () => {
     configStore.setState({ daemonAppUrl: "https://multica.example.com" });
     renderForm();
     expect(screen.getByText("multica.example.com/")).toBeInTheDocument();
-    expect(screen.queryByText("multica.ai/")).not.toBeInTheDocument();
+    expect(screen.queryByText("hivecrew.local/")).not.toBeInTheDocument();
   });
 
   it("auto-generates slug from name until user edits slug", () => {

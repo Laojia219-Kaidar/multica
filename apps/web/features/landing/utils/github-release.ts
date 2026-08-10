@@ -30,9 +30,6 @@ export interface LatestRelease {
   assets: DownloadAssets;
 }
 
-const GITHUB_RELEASES_URL =
-  "https://api.github.com/repos/multica-ai/multica/releases?per_page=2";
-
 const REVALIDATE_SECONDS = 300;
 
 const FRESH_RELEASE_WINDOW_MS = 60 * 60 * 1000;
@@ -47,6 +44,9 @@ interface GitHubReleasePayload {
 }
 
 export async function fetchLatestRelease(): Promise<LatestRelease> {
+  const releasesUrl = process.env.HIVECREW_RELEASES_API_URL?.trim();
+  if (!releasesUrl) return emptyRelease();
+
   const headers: Record<string, string> = {
     Accept: "application/vnd.github+json",
     "X-GitHub-Api-Version": "2022-11-28",
@@ -63,7 +63,7 @@ export async function fetchLatestRelease(): Promise<LatestRelease> {
   }
 
   try {
-    const res = await fetch(GITHUB_RELEASES_URL, {
+    const res = await fetch(releasesUrl, {
       next: { revalidate: REVALIDATE_SECONDS },
       headers,
     });

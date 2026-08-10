@@ -43,7 +43,7 @@ export function AboutPageClient() {
             ))}
           </div>
 
-          <div className="mt-12">
+          {githubUrl ? <div className="mt-12">
             <Link
               href={githubUrl}
               target="_blank"
@@ -53,7 +53,7 @@ export function AboutPageClient() {
               <GitHubMark className="size-4" />
               {t.about.cta}
             </Link>
-          </div>
+          </div> : null}
         </div>
       </main>
       <LandingFooter />

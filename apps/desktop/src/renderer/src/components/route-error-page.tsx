@@ -91,7 +91,7 @@ function DesktopNotFoundPage() {
       <div className="space-y-2">
         <h2 className="text-lg font-semibold">This page doesn&apos;t exist</h2>
         <p className="max-w-lg text-sm text-muted-foreground">
-          Nothing in Multica matches this address. If you got here from a link,
+          Nothing in HiveCrew matches this address. If you got here from a link,
           it probably points at a file on someone else&apos;s computer rather
           than a page.
         </p>

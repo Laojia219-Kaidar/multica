@@ -31,30 +31,31 @@ export function LandingFooter() {
             <Link href="#product" className="flex items-center gap-3">
               <MulticaIcon className="size-5 text-white" noSpin />
               <span className="text-[18px] font-semibold tracking-[0.04em] lowercase">
-                multica
+                HiveCrew
               </span>
             </Link>
             <p className="mt-4 max-w-[300px] text-[14px] leading-[1.7] text-white/50 sm:text-[15px]">
               {t.footer.tagline}
             </p>
-            <div className="mt-4 flex items-center gap-3">
-              <Link
+            {twitterUrl || githubUrl || discordUrl ? (
+              <div className="mt-4 flex items-center gap-3">
+              {twitterUrl ? <Link
                 href={twitterUrl}
                 target="_blank"
                 rel="noreferrer"
                 className="text-white/40 transition-colors hover:text-white"
               >
                 <XMark className="size-4" />
-              </Link>
-              <Link
+              </Link> : null}
+              {githubUrl ? <Link
                 href={githubUrl}
                 target="_blank"
                 rel="noreferrer"
                 className="text-white/40 transition-colors hover:text-white"
               >
                 <GitHubMark className="size-4" />
-              </Link>
-              <Link
+              </Link> : null}
+              {discordUrl ? <Link
                 href={discordUrl}
                 target="_blank"
                 rel="noreferrer"
@@ -62,8 +63,9 @@ export function LandingFooter() {
                 className="text-white/40 transition-colors hover:text-white"
               >
                 <DiscordMark className="size-4" />
-              </Link>
-            </div>
+              </Link> : null}
+              </div>
+            ) : null}
             <div className="mt-6">
               <Link
                 href={ctaHref}
@@ -82,7 +84,7 @@ export function LandingFooter() {
                   {group.label}
                 </h4>
                 <ul className="mt-4 flex flex-col gap-2.5">
-                  {group.links.map((link) => (
+                  {group.links.filter((link) => Boolean(link.href)).map((link) => (
                     <li key={link.label}>
                       <Link
                         href={link.href}
@@ -137,7 +139,7 @@ export function LandingFooter() {
               noSpin
             />
             <span className="landing-serif text-[clamp(6rem,22vw,16rem)] font-normal leading-[0.82] tracking-[-0.04em] text-white lowercase">
-              multica
+              HiveCrew
             </span>
           </div>
         </div>

@@ -24,7 +24,7 @@ export function OpenSourceSection() {
             <p className="mt-6 max-w-[420px] text-[15px] leading-7 text-[#0a0d12]/60 sm:text-[16px]">
               {t.openSource.description}
             </p>
-            <div className="mt-8 flex flex-wrap items-center gap-3">
+            {githubUrl ? <div className="mt-8 flex flex-wrap items-center gap-3">
               <Link
                 href={githubUrl}
                 target="_blank"
@@ -34,7 +34,7 @@ export function OpenSourceSection() {
                 <GitHubMark className="size-4" />
                 {t.openSource.cta}
               </Link>
-            </div>
+            </div> : null}
           </div>
 
           {/* Right column — highlight grid */}

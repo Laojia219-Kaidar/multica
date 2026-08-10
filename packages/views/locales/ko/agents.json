@@ -60,7 +60,7 @@
   },
   "empty": {
     "title": "아직 에이전트가 없습니다",
-    "description": "팀원에게 하듯 에이전트를 만들고 이슈를 할당하세요. 로컬 에이전트는 내 기기에서, 클라우드 에이전트는 Multica 런타임에서 실행됩니다."
+    "description": "팀원에게 하듯 에이전트를 만들고 이슈를 할당하세요. 로컬 에이전트는 내 기기에서, 클라우드 에이전트는 HiveCrew 런타임에서 실행됩니다."
   },
   "no_matches": {
     "title": "일치하는 결과 없음",
@@ -401,14 +401,14 @@
       "save_failed_toast": "사용자 지정 인자를 저장하지 못했습니다"
     },
     "mcp_config": {
-      "intro": "이 에이전트가 사용할 수 있는 MCP Server를 관리합니다. Multica에서 관리하는 Server와 로컬 Runtime에서 상속한 Server가 함께 사용됩니다.",
-      "managed_title": "Multica에서 관리",
-      "managed_hint": "이 에이전트용으로 Multica에 저장됩니다. Runtime MCP와 병합되며 이름이 같으면 Multica 설정이 우선합니다.",
-      "managed_empty": "Multica에서 관리하는 MCP Server가 없습니다.",
+      "intro": "이 에이전트가 사용할 수 있는 MCP Server를 관리합니다. HiveCrew에서 관리하는 Server와 로컬 Runtime에서 상속한 Server가 함께 사용됩니다.",
+      "managed_title": "HiveCrew에서 관리",
+      "managed_hint": "이 에이전트용으로 HiveCrew에 저장됩니다. Runtime MCP와 병합되며 이름이 같으면 HiveCrew 설정이 우선합니다.",
+      "managed_empty": "HiveCrew에서 관리하는 MCP Server가 없습니다.",
       "add_action": "MCP 추가",
       "agent_disabled_badge": "에이전트에서 꺼짐",
       "runtime_disabled_badge": "런타임에서 꺼짐",
-      "runtime_overridden_badge": "Multica에서 재정의",
+      "runtime_overridden_badge": "HiveCrew에서 재정의",
       "runtime_title": "런타임에서 상속",
       "runtime_hint": "{{runtime}}에서 자동으로 탐색하고 작업 시작 시 로컬에서 병합합니다. URL, 헤더, 명령 및 환경 변수는 머신 외부로 전송되지 않습니다.",
       "refresh_action": "새로고침",

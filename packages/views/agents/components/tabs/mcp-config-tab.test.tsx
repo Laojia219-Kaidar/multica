@@ -135,7 +135,7 @@ describe("McpConfigTab", () => {
 
     expect(screen.getByText("fetch")).toBeInTheDocument();
     expect(screen.getByText("docs")).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: /managed by multica/i })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /managed by hivecrew/i })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: /inherited from runtime/i })).toBeInTheDocument();
     expect(screen.queryByLabelText(/MCP config JSON editor/i)).not.toBeInTheDocument();
   });

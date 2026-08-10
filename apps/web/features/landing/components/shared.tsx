@@ -1,8 +1,8 @@
 import { cn } from "@multica/ui/lib/utils";
 
-export const githubUrl = "https://github.com/multica-ai/multica";
-export const twitterUrl = "https://x.com/MulticaAI";
-export const discordUrl = "https://discord.gg/W8gYBn226t";
+export const githubUrl = process.env.NEXT_PUBLIC_HIVECREW_SOURCE_URL ?? "";
+export const twitterUrl = process.env.NEXT_PUBLIC_HIVECREW_X_URL ?? "";
+export const discordUrl = process.env.NEXT_PUBLIC_HIVECREW_COMMUNITY_URL ?? "";
 
 export function GitHubMark({ className }: { className?: string }) {
   return (

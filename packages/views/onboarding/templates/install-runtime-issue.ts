@@ -27,11 +27,11 @@ export const INSTALL_RUNTIME_ISSUE_TITLE = {
   ja: "ステップ1 — agent を使うために runtime を接続する",
 } as const;
 
-const en = `Welcome to Multica.
+const en = `Welcome to HiveCrew.
 
-Agents need a runtime before they can execute work. You can still use Multica as a lightweight project-management workspace while you install one.
+Agents need a runtime before they can execute work. You can still use HiveCrew as a lightweight project-management workspace while you install one.
 
-## Try Multica first
+## Try HiveCrew first
 
 Before the runtime is ready, you can:
 
@@ -44,7 +44,7 @@ That gives you the project-management layer first. Once a runtime is connected, 
 
 ## Install your first agent runtime
 
-Full guide: https://multica.ai/docs/install-agent-runtime
+Full guide: open **Docs → Install an agent runtime** inside HiveCrew.
 
 For English users, the fastest first path is Codex:
 
@@ -56,7 +56,7 @@ For English users, the fastest first path is Codex:
 4. Confirm your terminal can find it:
    which codex
    codex --version
-5. Wait for Multica to pick it up. A running daemon re-checks for newly
+5. Wait for HiveCrew to pick it up. A running daemon re-checks for newly
    installed CLIs every couple of minutes, so no restart is normally needed.
    To apply it immediately:
    multica daemon restart
@@ -67,11 +67,11 @@ For English users, the fastest first path is Codex:
 
 Codex reference: https://developers.openai.com/codex/cli
 
-When the runtime is connected, you can create Multica Helper for a guided first run.`;
+When the runtime is connected, you can create HiveCrew Helper for a guided first run.`;
 
-const zh = `欢迎来到 Multica。
+const zh = `欢迎来到 HiveCrew。
 
-智能体需要先连上运行时才能执行工作。运行时还没准备好时,你也可以先把 Multica 当作轻量项目管理工具体验起来。
+智能体需要先连上运行时才能执行工作。运行时还没准备好时,你也可以先把 HiveCrew 当作轻量项目管理工具体验起来。
 
 ## 先体验项目管理功能
 
@@ -86,7 +86,7 @@ const zh = `欢迎来到 Multica。
 
 ## 安装第一个 Agent 运行时
 
-完整文档:https://multica.ai/docs/install-agent-runtime
+完整文档:打开 HiveCrew 内的**文档 → 安装 Agent 运行时**。
 
 中文用户建议先装 Kimi CLI:
 
@@ -99,7 +99,7 @@ const zh = `欢迎来到 Multica。
 3. 在你想让 Kimi 工作的项目目录里启动一次:
    kimi
 4. 首次启动后输入 /login,按提示完成 Kimi Code 或 API key 配置。
-5. 等 Multica 识别到它。运行中的守护进程每隔几分钟会重新检查一次新装的 CLI,通常不需要重启。
+5. 等 HiveCrew 识别到它。运行中的守护进程每隔几分钟会重新检查一次新装的 CLI,通常不需要重启。
    想立刻生效:
    multica daemon restart
    桌面端请打开任意一个本机 runtime 并点 Restart。退出再打开 app 是不够的 —— 守护进程会继续在后台运行。
@@ -108,13 +108,13 @@ const zh = `欢迎来到 Multica。
 
 Kimi CLI 官方文档:https://moonshotai.github.io/kimi-cli/zh/guides/getting-started.html
 
-运行时连上后,你就可以创建 Multica Helper,开始一次有智能体参与的上手引导。`;
+运行时连上后,你就可以创建 HiveCrew Helper,开始一次有智能体参与的上手引导。`;
 
-const ko = `Multica에 오신 것을 환영합니다.
+const ko = `HiveCrew에 오신 것을 환영합니다.
 
-agent가 작업을 실행하려면 먼저 runtime이 필요합니다. runtime을 설치하는 동안에도 Multica를 가벼운 프로젝트 관리 워크스페이스로 먼저 사용할 수 있습니다.
+agent가 작업을 실행하려면 먼저 runtime이 필요합니다. runtime을 설치하는 동안에도 HiveCrew를 가벼운 프로젝트 관리 워크스페이스로 먼저 사용할 수 있습니다.
 
-## 먼저 Multica를 사용해 보기
+## 먼저 HiveCrew를 사용해 보기
 
 runtime이 준비되기 전에는 다음을 해볼 수 있습니다:
 
@@ -127,7 +127,7 @@ runtime이 준비되기 전에는 다음을 해볼 수 있습니다:
 
 ## 첫 agent runtime 설치하기
 
-전체 가이드: https://multica.ai/docs/install-agent-runtime
+전체 가이드: HiveCrew의 **Docs → Install an agent runtime**을 여세요.
 
 한국어 사용자는 Codex로 시작하는 것이 가장 빠릅니다:
 
@@ -139,7 +139,7 @@ runtime이 준비되기 전에는 다음을 해볼 수 있습니다:
 4. 터미널에서 찾을 수 있는지 확인합니다:
    which codex
    codex --version
-5. Multica가 인식할 때까지 기다립니다. 실행 중인 daemon은 몇 분마다 새로 설치된 CLI를
+5. HiveCrew가 인식할 때까지 기다립니다. 실행 중인 daemon은 몇 분마다 새로 설치된 CLI를
    다시 확인하므로 보통 재시작이 필요하지 않습니다.
    바로 적용하려면:
    multica daemon restart
@@ -150,13 +150,13 @@ runtime이 준비되기 전에는 다음을 해볼 수 있습니다:
 
 Codex 참고 문서: https://developers.openai.com/codex/cli
 
-runtime이 연결되면 Multica Helper를 만들어 안내를 받으며 첫 실행을 시작할 수 있습니다.`;
+runtime이 연결되면 HiveCrew Helper를 만들어 안내를 받으며 첫 실행을 시작할 수 있습니다.`;
 
-const ja = `Multica へようこそ。
+const ja = `HiveCrew へようこそ。
 
-agent が作業を実行するには、まず runtime が必要です。runtime をインストールしている間も、Multica を軽量なプロジェクト管理ワークスペースとして先に使うことができます。
+agent が作業を実行するには、まず runtime が必要です。runtime をインストールしている間も、HiveCrew を軽量なプロジェクト管理ワークスペースとして先に使うことができます。
 
-## まず Multica を使ってみる
+## まず HiveCrew を使ってみる
 
 runtime が準備できる前に、次のことを試せます:
 
@@ -169,7 +169,7 @@ runtime が準備できる前に、次のことを試せます:
 
 ## 最初の agent runtime をインストールする
 
-詳しいガイド: https://multica.ai/docs/install-agent-runtime
+詳しいガイド: HiveCrew 内の **Docs → Install an agent runtime** を開いてください。
 
 日本語ユーザーには、Codex で始めるのが最も速い経路です:
 
@@ -181,7 +181,7 @@ runtime が準備できる前に、次のことを試せます:
 4. ターミナルから見つけられるか確認します:
    which codex
    codex --version
-5. Multica が認識するまで待ちます。動作中の daemon は数分ごとに新しくインストールされた
+5. HiveCrew が認識するまで待ちます。動作中の daemon は数分ごとに新しくインストールされた
    CLI を再チェックするため、通常は再起動は不要です。
    すぐに反映したい場合:
    multica daemon restart
@@ -192,7 +192,7 @@ runtime が準備できる前に、次のことを試せます:
 
 Codex のリファレンス: https://developers.openai.com/codex/cli
 
-runtime が接続されたら、Multica Helper を作成して、案内付きの最初の実行を始められます。`;
+runtime が接続されたら、HiveCrew Helper を作成して、案内付きの最初の実行を始められます。`;
 
 export const INSTALL_RUNTIME_ISSUE_BODY = { en, zh, ko, ja } as const;
 

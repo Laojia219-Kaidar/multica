@@ -55,7 +55,7 @@ export function LandingHeader({
                 variant === "dark" ? "text-white/92" : "text-[#0a0d12]",
               )}
             >
-              multica
+              HiveCrew
             </span>
           </Link>
 
@@ -92,19 +92,21 @@ export function LandingHeader({
               <Menu className="size-4" aria-hidden />
             )}
           </button>
-          <Link
-            href={githubUrl}
-            target="_blank"
-            rel="noreferrer"
-            className={cn(
-              headerButtonClassName("ghost", variant),
-              "hidden lg:inline-flex",
-            )}
-          >
-            <GitHubMark className="size-3.5" />
-            {t.header.github}
-            {starsLabel ? <GitHubStarsBadge label={starsLabel} /> : null}
-          </Link>
+          {githubUrl ? (
+            <Link
+              href={githubUrl}
+              target="_blank"
+              rel="noreferrer"
+              className={cn(
+                headerButtonClassName("ghost", variant),
+                "hidden lg:inline-flex",
+              )}
+            >
+              <GitHubMark className="size-3.5" />
+              {t.header.github}
+              {starsLabel ? <GitHubStarsBadge label={starsLabel} /> : null}
+            </Link>
+          ) : null}
           <Link
             href={ctaHref}
             className={headerButtonClassName("solid", variant)}
@@ -135,24 +137,26 @@ export function LandingHeader({
               </Link>
             ))}
           </nav>
-          <div
-            className={cn(
-              "mt-2 border-t pt-2",
-              variant === "dark" ? "border-white/10" : "border-[#0a0d12]/8",
-            )}
-          >
-            <Link
-              href={githubUrl}
-              target="_blank"
-              rel="noreferrer"
-              onClick={() => setIsMenuOpen(false)}
-              className={mobileNavLinkClassName(variant)}
+          {githubUrl ? (
+            <div
+              className={cn(
+                "mt-2 border-t pt-2",
+                variant === "dark" ? "border-white/10" : "border-[#0a0d12]/8",
+              )}
             >
-              <GitHubMark className="size-3.5" />
-              {t.header.github}
-              {starsLabel ? <GitHubStarsBadge label={starsLabel} /> : null}
-            </Link>
-          </div>
+              <Link
+                href={githubUrl}
+                target="_blank"
+                rel="noreferrer"
+                onClick={() => setIsMenuOpen(false)}
+                className={mobileNavLinkClassName(variant)}
+              >
+                <GitHubMark className="size-3.5" />
+                {t.header.github}
+                {starsLabel ? <GitHubStarsBadge label={starsLabel} /> : null}
+              </Link>
+            </div>
+          ) : null}
         </div>
       ) : null}
     </header>

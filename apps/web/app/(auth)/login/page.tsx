@@ -15,6 +15,7 @@ import {
   useHasOnboarded,
 } from "@multica/core/paths";
 import { api } from "@multica/core/api";
+import { HIVE_CREW_DESKTOP_PROTOCOL } from "@multica/core/product";
 import type { Workspace } from "@multica/core/types";
 import {
   Card,
@@ -103,7 +104,7 @@ function LoginPageContent() {
         .issueCliToken()
         .then(({ token }) => {
           setDesktopToken(token);
-          window.location.href = `multica://auth/callback?token=${encodeURIComponent(token)}`;
+          window.location.href = `${HIVE_CREW_DESKTOP_PROTOCOL}://auth/callback?token=${encodeURIComponent(token)}`;
         })
         .catch((err) => {
           setDesktopError(
@@ -201,7 +202,7 @@ function LoginPageContent() {
               <Button
                 variant="outline"
                 onClick={() => {
-                  window.location.href = `multica://auth/callback?token=${encodeURIComponent(desktopToken)}`;
+                  window.location.href = `${HIVE_CREW_DESKTOP_PROTOCOL}://auth/callback?token=${encodeURIComponent(desktopToken)}`;
                 }}
               >
                 {t(($) => $.web.desktop_handoff.open_button)}

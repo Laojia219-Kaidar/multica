@@ -76,17 +76,15 @@ describe("ConnectRemoteDialog", () => {
     wsEventState.handler = null;
   });
 
-  it("uses cloud setup commands by default", () => {
+  it("fails closed when HiveCrew self-host URLs are not configured", () => {
     const { baseElement } = renderDialog();
 
-    expect(baseElement).toHaveTextContent("multica setup");
+    expect(baseElement).toHaveTextContent(
+      "HiveCrew remote runtime setup is unavailable until this deployment configures server_url and app_url.",
+    );
     expect(baseElement).not.toHaveTextContent("multica setup self-host");
-    expect(baseElement).toHaveTextContent(
-      "multica config set server_url https://api.multica.ai",
-    );
-    expect(baseElement).toHaveTextContent(
-      "multica config set app_url https://multica.ai",
-    );
+    expect(baseElement).not.toHaveTextContent("api.multica.ai");
+    expect(baseElement).not.toHaveTextContent("https://multica.ai");
   });
 
   it("uses self-host daemon URLs from runtime config", () => {
@@ -110,7 +108,7 @@ describe("ConnectRemoteDialog", () => {
     const { baseElement } = renderDialog();
 
     const setupCode = Array.from(baseElement.querySelectorAll("code")).find((node) =>
-      node.textContent?.includes("multica setup"),
+      node.textContent?.includes("HiveCrew remote runtime setup"),
     );
 
     expect(setupCode).toHaveClass(...ligatureClasses);
@@ -120,7 +118,7 @@ describe("ConnectRemoteDialog", () => {
     const { baseElement } = renderDialog();
 
     const tokenCode = Array.from(baseElement.querySelectorAll("code")).find((node) =>
-      node.textContent?.includes("multica login --token <YOUR_TOKEN>"),
+      node.textContent?.includes("HiveCrew remote runtime setup"),
     );
 
     expect(tokenCode).toHaveClass(...ligatureClasses);
@@ -129,7 +127,7 @@ describe("ConnectRemoteDialog", () => {
   it("transitions from setup instructions to the connected state", async () => {
     const { baseElement } = renderDialog();
 
-    expect(baseElement).toHaveTextContent("multica setup");
+    expect(baseElement).toHaveTextContent("HiveCrew remote runtime setup");
     act(() => {
       wsEventState.handler?.({ runtime_id: "rt-test" });
     });
@@ -140,6 +138,6 @@ describe("ConnectRemoteDialog", () => {
         screen.getByRole("button", { name: "Create an agent" }),
       ).toBeInTheDocument();
     });
-    expect(baseElement).not.toHaveTextContent("multica setup");
+    expect(baseElement).not.toHaveTextContent("HiveCrew remote runtime setup");
   });
 });

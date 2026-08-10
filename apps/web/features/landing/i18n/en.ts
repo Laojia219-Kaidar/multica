@@ -1,4 +1,4 @@
-import { githubUrl, discordUrl } from "../components/shared";
+import { githubUrl, discordUrl, twitterUrl } from "../components/shared";
 import type { LandingDict } from "./types";
 
 export function createEnDict(allowSignup: boolean): LandingDict {
@@ -19,12 +19,12 @@ export function createEnDict(allowSignup: boolean): LandingDict {
     headlineLine1: "Your next 10 hires",
     headlineLine2: "won\u2019t be human.",
     subheading:
-      "Multica is an open-source platform that turns coding agents into real teammates. Assign tasks, track progress, compound skills \u2014 manage your human + agent workforce in one place.",
+      "HiveCrew is an open-source platform that turns coding agents into real teammates. Assign tasks, track progress, compound skills \u2014 manage your human + agent workforce in one place.",
     cta: "Start free trial",
     downloadDesktop: "Download Desktop",
     talkToSales: "Talk to sales",
     worksWith: "Works with",
-    imageAlt: "Multica board view \u2014 issues managed by humans and agents",
+    imageAlt: "HiveCrew board view \u2014 issues managed by humans and agents",
   },
 
   features: {
@@ -116,7 +116,7 @@ export function createEnDict(allowSignup: boolean): LandingDict {
         {
           title: "Auto-detection on first run",
           description:
-            "Multica scans for 14 supported coding tools \u2014 Antigravity, Claude Code, CodeBuddy, Codex, Cursor, Copilot, Hermes, Kimi, Kiro CLI, OpenCode, OpenClaw, Pi, Qoder, and Trae CLI \u2014 and registers a runtime for each one it finds.",
+            "HiveCrew scans for 14 supported coding tools \u2014 Antigravity, Claude Code, CodeBuddy, Codex, Cursor, Copilot, Hermes, Kimi, Kiro CLI, OpenCode, OpenClaw, Pi, Qoder, and Trae CLI \u2014 and registers a runtime for each one it finds.",
         },
       ],
     },
@@ -159,13 +159,13 @@ export function createEnDict(allowSignup: boolean): LandingDict {
     headlineLine1: "Open source",
     headlineLine2: "for all.",
     description:
-      "Multica is fully open source. Inspect every line, self-host on your own terms, and shape the future of human + agent collaboration.",
+      "HiveCrew is fully open source. Inspect every line, self-host on your own terms, and shape the future of human + agent collaboration.",
     cta: "Star on GitHub",
     highlights: [
       {
         title: "Self-host anywhere",
         description:
-          "Run Multica on your own infrastructure. Docker Compose, single binary, or Kubernetes \u2014 your data never leaves your network.",
+          "Run HiveCrew on your own infrastructure. Docker Compose, single binary, or Kubernetes \u2014 your data never leaves your network.",
       },
       {
         title: "No vendor lock-in",
@@ -190,30 +190,30 @@ export function createEnDict(allowSignup: boolean): LandingDict {
     headline: "Questions & answers.",
     items: [
       {
-        question: "What coding agents does Multica support?",
+        question: "What coding agents does HiveCrew support?",
         answer:
-          "Multica supports 14 coding tools out of the box: Antigravity, Claude Code, CodeBuddy, Codex, Cursor, Copilot, Hermes, Kimi, Kiro CLI, OpenCode, OpenClaw, Pi, Qoder, and Trae CLI. The daemon auto-detects whichever CLIs you already have installed and registers a runtime for each one. Since it's open source, you can also add your own backends.",
+          "HiveCrew supports 14 coding tools out of the box: Antigravity, Claude Code, CodeBuddy, Codex, Cursor, Copilot, Hermes, Kimi, Kiro CLI, OpenCode, OpenClaw, Pi, Qoder, and Trae CLI. The daemon auto-detects whichever CLIs you already have installed and registers a runtime for each one. Since it's open source, you can also add your own backends.",
       },
       {
         question: "Do I need to self-host, or is there a cloud version?",
         answer:
-          "Both. You can self-host Multica on your own infrastructure with Docker Compose or Kubernetes, or use our hosted cloud version. Your data, your choice.",
+          "HiveCrew is currently self-hosted only. Run it on infrastructure you control; no HiveCrew-managed public cloud service is configured or advertised in this release.",
       },
       {
         question:
           "How is this different from just using coding agents directly?",
         answer:
-          "Coding agents are great at executing. Multica adds the management layer: task queues, team coordination, skill reuse, runtime monitoring, and a unified view of what every agent is doing. Think of it as the project manager for your agents.",
+          "Coding agents are great at executing. HiveCrew adds the management layer: task queues, team coordination, skill reuse, runtime monitoring, and a unified view of what every agent is doing. Think of it as the project manager for your agents.",
       },
       {
         question: "Can agents work on long-running tasks autonomously?",
         answer:
-          "Yes. Multica manages the full task lifecycle \u2014 enqueue, claim, execute, complete or fail. Agents report blockers proactively and stream progress in real time. You can check in whenever you want or let them run overnight.",
+          "Yes. HiveCrew manages the full task lifecycle \u2014 enqueue, claim, execute, complete or fail. Agents report blockers proactively and stream progress in real time. You can check in whenever you want or let them run overnight.",
       },
       {
         question: "Is my code safe? Where does agent execution happen?",
         answer:
-          "Agent execution happens on your machine (local daemon) or your own cloud infrastructure. Code never passes through Multica servers. The platform only coordinates task state and broadcasts events.",
+          "Agent execution happens on your machine (local daemon) or your own cloud infrastructure. Code never passes through HiveCrew servers. The platform only coordinates task state and broadcasts events.",
       },
       {
         question: "How many agents can I run?",
@@ -243,7 +243,7 @@ export function createEnDict(allowSignup: boolean): LandingDict {
         links: [
           { label: "Documentation", href: "/docs" },
           { label: "API", href: githubUrl },
-          { label: "X (Twitter)", href: "https://x.com/MulticaAI" },
+          { label: "X (Twitter)", href: twitterUrl },
           { label: "Discord", href: discordUrl },
         ],
       },
@@ -257,13 +257,13 @@ export function createEnDict(allowSignup: boolean): LandingDict {
         ],
       },
     },
-    copyright: "\u00a9 {year} Multica. All rights reserved.",
+    copyright: "\u00a9 {year} HiveCrew. All rights reserved.",
   },
 
   about: {
-    title: "About Multica",
+    title: "About HiveCrew",
     nameLine: {
-      prefix: "Multica \u2014 ",
+      prefix: "HiveCrew \u2014 ",
       mul: "Mul",
       tiplexed: "tiplexed ",
       i: "I",
@@ -275,8 +275,8 @@ export function createEnDict(allowSignup: boolean): LandingDict {
     },
     paragraphs: [
       "The name is a nod to Multics, the pioneering operating system of the 1960s that introduced time-sharing \u2014 letting multiple users share a single machine as if each had it to themselves. Unix was born as a deliberate simplification of Multics: one user, one task, one elegant philosophy.",
-      "We think the same inflection is happening again. For decades, software teams have been single-threaded \u2014 one engineer, one task, one context switch at a time. AI agents change that equation. Multica brings time-sharing back, but for an era where the \u201cusers\u201d multiplexing the system are both humans and autonomous agents.",
-      "In Multica, agents are first-class teammates. They get assigned issues, report progress, raise blockers, and ship code \u2014 just like their human colleagues. The assignee picker, the activity timeline, the task lifecycle, and the runtime infrastructure are all built around this idea from day one.",
+      "We think the same inflection is happening again. For decades, software teams have been single-threaded \u2014 one engineer, one task, one context switch at a time. AI agents change that equation. HiveCrew brings time-sharing back, but for an era where the \u201cusers\u201d multiplexing the system are both humans and autonomous agents.",
+      "In HiveCrew, agents are first-class teammates. They get assigned issues, report progress, raise blockers, and ship code \u2014 just like their human colleagues. The assignee picker, the activity timeline, the task lifecycle, and the runtime infrastructure are all built around this idea from day one.",
       "Like Multics before it, the bet is on multiplexing: a small team shouldn\u2019t feel small. With the right system, two engineers and a fleet of agents can move like twenty.",
       "The platform is fully open source and self-hostable. Your data stays on your infrastructure. Inspect every line, extend the API, bring your own LLM providers, and contribute back to the community.",
     ],
@@ -284,8 +284,8 @@ export function createEnDict(allowSignup: boolean): LandingDict {
   },
 
   changelog: {
-    title: "Changelog",
-    subtitle: "New updates and improvements to Multica.",
+    title: "Inherited baseline changelog",
+    subtitle: "Historical releases from the inherited Multica baseline. HiveCrew releases start after the independent fork.",
     toc: "All releases",
     categories: {
       features: "New Features",
@@ -2555,29 +2555,29 @@ export function createEnDict(allowSignup: boolean): LandingDict {
   download: {
     hero: {
       macArm64: {
-        title: "Multica for macOS",
+        title: "HiveCrew for macOS",
         sub: "Apple Silicon · bundled daemon, zero setup",
         primary: "Download (.dmg)",
         altZip: "or download .zip",
       },
       macIntel: {
-        title: "Multica for macOS",
+        title: "HiveCrew for macOS",
         sub: "Intel · bundled daemon, zero setup",
         primary: "Download (.dmg)",
         altZip: "or download .zip",
       },
       winX64: {
-        title: "Multica for Windows",
+        title: "HiveCrew for Windows",
         sub: "Bundled daemon, zero setup",
         primary: "Download (.exe)",
       },
       winArm64: {
-        title: "Multica for Windows",
+        title: "HiveCrew for Windows",
         sub: "ARM · bundled daemon, zero setup",
         primary: "Download (.exe)",
       },
       linux: {
-        title: "Multica for Linux",
+        title: "HiveCrew for Linux",
         sub: "Bundled daemon, zero setup",
         primary: "Download AppImage",
         altFormats: "or .deb / .rpm",
@@ -2628,7 +2628,7 @@ export function createEnDict(allowSignup: boolean): LandingDict {
   contactSales: {
     pageTitle: "Contact Sales",
     pageDescription:
-      "Talk to the Multica team about rolling out human + agent workflows at your company.",
+      "Talk to the HiveCrew team about rolling out human + agent workflows at your company.",
     eyebrow: "Contact Sales",
     title: "Let’s understand your needs",
     subtitle:
@@ -2646,10 +2646,10 @@ export function createEnDict(allowSignup: boolean): LandingDict {
       companyName: "Company name",
       companySize: "Company size",
       countryRegion: "Country / Region",
-      useCase: "How do you plan to use or collaborate with Multica?",
+      useCase: "How do you plan to use or collaborate with HiveCrew?",
       goals: "Your goals or challenges",
       goalsHint:
-        "Tell us what you’d like to achieve with Multica or the challenges you’re facing. The more details you provide, the better we can support you.",
+        "Tell us what you’d like to achieve with HiveCrew or the challenges you’re facing. The more details you provide, the better we can support you.",
       selectPlaceholder: "Please select",
       submit: "Submit",
       submitting: "Submitting…",
@@ -2663,10 +2663,10 @@ export function createEnDict(allowSignup: boolean): LandingDict {
       { value: "1000+", label: "1,000+ employees" },
     ],
     useCases: [
-      { value: "evaluate", label: "Evaluating Multica for my team" },
-      { value: "adopt_team", label: "Rolling out Multica to a team or company" },
+      { value: "evaluate", label: "Evaluating HiveCrew for my team" },
+      { value: "adopt_team", label: "Rolling out HiveCrew to a team or company" },
       { value: "self_host", label: "Self-hosting on our own infrastructure" },
-      { value: "integrate", label: "Integrating Multica with existing tools" },
+      { value: "integrate", label: "Integrating HiveCrew with existing tools" },
       { value: "partner", label: "Partnership or reseller inquiry" },
       { value: "other", label: "Something else" },
     ],
@@ -2714,22 +2714,22 @@ export function createEnDict(allowSignup: boolean): LandingDict {
     ],
     consent: {
       intro:
-        "Multica, Inc. respects your privacy. We’ll use your personal information only to manage your account and deliver the products or services you’ve requested. Occasionally, we’d love to share product updates, best practices, and insights that may be relevant to you. Please let us know below if you’d like to hear from us.",
+        "HiveCrew, Inc. respects your privacy. We’ll use your personal information only to manage your account and deliver the products or services you’ve requested. Occasionally, we’d love to share product updates, best practices, and insights that may be relevant to you. Please let us know below if you’d like to hear from us.",
       outreach:
-        "I’d like to receive one-to-one communication from Multica, Inc., including service updates, support inquiries, and business-related follow-ups.",
+        "I’d like to receive one-to-one communication from HiveCrew, Inc., including service updates, support inquiries, and business-related follow-ups.",
       updates:
-        "I’d like to receive product updates, insights, and event invitations from Multica.",
+        "I’d like to receive product updates, insights, and event invitations from HiveCrew.",
       unsubscribe:
         "You can unsubscribe from our communications at any time. For more details on how we handle your data and privacy rights, please review our",
       submitConsent:
-        "By clicking “Submit,” you consent to allow Multica, Inc. to store and process your information for the purpose of delivering the requested content.",
+        "By clicking “Submit,” you consent to allow HiveCrew, Inc. to store and process your information for the purpose of delivering the requested content.",
       privacyLinkLabel: "Privacy Policy.",
       privacyLinkHref: "/about",
     },
     success: {
       title: "Thanks — we got it.",
       message:
-        "A member of the Multica team will respond within three business days. In the meantime, feel free to explore the docs or star us on GitHub.",
+        "A member of the HiveCrew team will respond within three business days. In the meantime, feel free to explore the docs or star us on GitHub.",
       cta: "Back to home",
     },
     errors: {

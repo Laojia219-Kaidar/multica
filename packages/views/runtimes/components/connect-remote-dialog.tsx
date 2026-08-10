@@ -30,10 +30,9 @@ import { useT } from "../../i18n";
 
 type Step = "instructions" | "success";
 
-const INSTALL_CMD =
-  "curl -fsSL https://raw.githubusercontent.com/multica-ai/multica/main/scripts/install.sh | bash";
-const CLOUD_SERVER_URL = "https://api.multica.ai";
-const CLOUD_APP_URL = "https://multica.ai";
+const INSTALL_CMD = "multica --version";
+const REMOTE_SETUP_NOT_CONFIGURED =
+  "HiveCrew remote runtime setup is unavailable until this deployment configures server_url and app_url.";
 
 function normalizeCommandURL(url: string | undefined) {
   return url?.trim().replace(/\/+$/, "") ?? "";
@@ -53,11 +52,8 @@ multica daemon start`,
   }
 
   return {
-    setupCmd: "multica setup",
-    tokenCmd: `multica config set server_url ${CLOUD_SERVER_URL}
-multica config set app_url ${CLOUD_APP_URL}
-multica login --token <YOUR_TOKEN>
-multica daemon start`,
+    setupCmd: REMOTE_SETUP_NOT_CONFIGURED,
+    tokenCmd: REMOTE_SETUP_NOT_CONFIGURED,
   };
 }
 

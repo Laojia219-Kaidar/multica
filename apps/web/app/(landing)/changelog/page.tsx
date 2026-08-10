@@ -2,12 +2,12 @@ import type { Metadata } from "next";
 import { ChangelogPageClient } from "@/features/landing/components/changelog-page-client";
 
 export const metadata: Metadata = {
-  title: "Changelog",
+  title: "Inherited Baseline Changelog",
   description:
-    "See what's new in Multica — latest features, improvements, and fixes.",
+    "Historical releases from the inherited baseline. HiveCrew releases begin after the independent fork.",
   openGraph: {
-    title: "Changelog | Multica",
-    description: "Latest updates and releases from Multica.",
+    title: "Inherited Baseline Changelog | HiveCrew",
+    description: "Historical inherited releases retained for provenance.",
     url: "/changelog",
   },
   alternates: {

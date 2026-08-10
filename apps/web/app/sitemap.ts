@@ -1,7 +1,7 @@
 import type { MetadataRoute } from "next";
 
 export default function sitemap(): MetadataRoute.Sitemap {
-  const baseUrl = "https://www.multica.ai";
+  const baseUrl = process.env.HIVECREW_PUBLIC_APP_URL ?? "http://127.0.0.1:3000";
 
   return [
     {

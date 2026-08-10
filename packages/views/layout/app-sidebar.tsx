@@ -5,7 +5,6 @@ import { cn } from "@multica/ui/lib/utils";
 import { useScrollFade } from "@multica/ui/hooks/use-scroll-fade";
 import { AppLink, useNavigation } from "../navigation";
 import { HelpLauncher } from "./help-launcher";
-import { JoinDiscordCard } from "./join-discord-card";
 import {
   DndContext,
   PointerSensor,
@@ -517,7 +516,7 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
                         )}
                       </span>
                       <span className="flex-1 truncate font-medium">
-                        {workspace?.name ?? "Multica"}
+                        {workspace?.name ?? "HiveCrew"}
                       </span>
                       <ChevronDown className="size-3 text-muted-foreground" />
                     </SidebarMenuButton>
@@ -783,7 +782,6 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
         </SidebarContent>
 
         <SidebarFooter className="p-2">
-          <JoinDiscordCard />
           <div className="flex justify-end">
             <HelpLauncher />
           </div>
