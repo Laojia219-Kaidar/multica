@@ -46,21 +46,23 @@ export function HowItWorksSection() {
           <Link href={ctaHref} className={heroButtonClassName("solid")}>
             {user ? t.header.dashboard : t.howItWorks.cta}
           </Link>
-          {githubUrl ? <Link
+          <Link
             href={docsHrefForLocale(locale)}
             className={heroButtonClassName("ghost")}
           >
             {t.howItWorks.ctaDocs}
-          </Link> : null}
-          <Link
-            href={githubUrl}
-            target="_blank"
-            rel="noreferrer"
-            className={heroButtonClassName("ghost")}
-          >
-            <GitHubMark className="size-4" />
-            {t.howItWorks.ctaGithub}
           </Link>
+          {githubUrl ? (
+            <Link
+              href={githubUrl}
+              target="_blank"
+              rel="noreferrer"
+              className={heroButtonClassName("ghost")}
+            >
+              <GitHubMark className="size-4" />
+              {t.howItWorks.ctaGithub}
+            </Link>
+          ) : null}
         </div>
       </div>
     </section>

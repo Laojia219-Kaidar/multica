@@ -54,6 +54,12 @@ const landingMetadata = (
     text("apps/web/app/(landing)/changelog/page.tsx"),
   ])
 ).join("\n");
+const landingHero = await text(
+  "apps/web/features/landing/components/landing-hero.tsx",
+);
+const landingDemo = await text(
+  "apps/web/features/landing/components/features-section.tsx",
+);
 const activeNetworkSurfaces = [
   remoteRuntimeDialog,
   helpLauncher,
@@ -140,6 +146,18 @@ forbidMatch(
   "legacy visible product name",
   failures,
 );
+forbidMatch(
+  landingHero,
+  /Gemini CLI|GeminiCliLogo/,
+  "Gemini CLI in active HiveCrew tool strip",
+  failures,
+);
+forbidMatch(
+  landingDemo,
+  /MUL-\d+|github\.com\/multica/,
+  "legacy identity in active product demo",
+  failures,
+);
 
 if (failures.length > 0) {
   console.error(JSON.stringify({ ok: false, failures }, null, 2));
@@ -150,7 +168,7 @@ if (failures.length > 0) {
       {
         ok: true,
         product: "HiveCrew",
-        activeIdentityFilesChecked: 23,
+        activeIdentityFilesChecked: 25,
         compatibilityPreserved: [
           "@multica package ABI",
           "legacy desktop config read fallback",

@@ -165,7 +165,7 @@ function TeammatesVisual() {
         <div className="flex items-center gap-1.5 min-w-0 text-xs">
           <span className="text-muted-foreground">HiveCrew Demo</span>
           <ChevronRight className="h-3 w-3 text-muted-foreground/50 shrink-0" />
-          <span className="text-muted-foreground">MUL-18</span>
+          <span className="text-muted-foreground">HIV-18</span>
           <ChevronRight className="h-3 w-3 text-muted-foreground/50 shrink-0" />
           <span className="truncate">Refactor API error handling middleware</span>
         </div>
@@ -405,7 +405,7 @@ const mockToolCalls = [
   { type: "tool_use" as const, tool: "Read", summary: "server/internal/handler/comment.go" },
   { type: "tool_result" as const, preview: "func (h *CommentHandler) Create(w http.ResponseWriter, r *http.Request) { …" },
   { type: "tool_use" as const, tool: "Bash", summary: "go test ./internal/handler/ -run TestErrorResponses" },
-  { type: "tool_result" as const, preview: "ok  \tgithub.com/multica/server/internal/handler\t0.847s" },
+  { type: "tool_result" as const, preview: "ok  \thivecosm.local/hivecrew/server/internal/handler\t0.847s" },
 ];
 
 const mockTaskHistory = [
@@ -424,7 +424,7 @@ function AutonomousVisual() {
         <div className="flex items-center gap-1.5 min-w-0 text-xs">
           <span className="text-muted-foreground">HiveCrew Demo</span>
           <ChevronRight className="h-3 w-3 text-muted-foreground/50 shrink-0" />
-          <span className="text-muted-foreground">MUL-18</span>
+          <span className="text-muted-foreground">HIV-18</span>
           <ChevronRight className="h-3 w-3 text-muted-foreground/50 shrink-0" />
           <span className="truncate">Refactor API error handling middleware</span>
         </div>
