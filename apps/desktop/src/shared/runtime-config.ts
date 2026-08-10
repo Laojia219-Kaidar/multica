@@ -15,16 +15,12 @@ export type RuntimeConfigResult =
 
 export const DEFAULT_RUNTIME_CONFIG: RuntimeConfig = Object.freeze({
   schemaVersion: 1,
-  apiUrl: "https://api.multica.ai",
-  wsUrl: "wss://api.multica.ai/ws",
-  appUrl: "https://multica.ai",
+  ...HIVE_CREW_LOCAL_ENDPOINTS,
 });
 
 const LOCAL_DEV_RUNTIME_CONFIG: RuntimeConfig = Object.freeze({
   schemaVersion: 1,
-  apiUrl: "http://localhost:8080",
-  wsUrl: "ws://localhost:8080/ws",
-  appUrl: "http://localhost:3000",
+  ...HIVE_CREW_LOCAL_ENDPOINTS,
 });
 
 export interface RuntimeConfigEnv {
@@ -177,3 +173,4 @@ function joinPath(base: string, suffix: string): string {
 function trimTrailingSlash(value: string): string {
   return value.replace(/\/+$/, "");
 }
+import { HIVE_CREW_LOCAL_ENDPOINTS } from "@multica/core/product";

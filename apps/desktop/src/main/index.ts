@@ -4,7 +4,12 @@ import { join } from "path";
 import { pathToFileURL } from "url";
 import { electronApp, optimizer, is } from "@electron-toolkit/utils";
 import fixPath from "fix-path";
-import { setupAutoUpdater } from "./updater";
+import {
+  HIVE_CREW_DESKTOP_APP_ID,
+  HIVE_CREW_DESKTOP_PROTOCOL,
+  HIVE_CREW_LEGACY_DESKTOP_PROTOCOLS,
+  HIVE_CREW_PRODUCT_NAME,
+} from "@multica/core/product";
 import { setupDaemonManager } from "./daemon-manager";
 import { setupLocalDirectory } from "./local-directory";
 import { openExternalSafely, downloadURLSafely } from "./external-url";
@@ -123,7 +128,10 @@ if (process.platform !== "win32") {
   process.env.PATH = `${fallbackPaths.join(":")}:${process.env.PATH ?? ""}`;
 }
 
-const PROTOCOL = "multica";
+const ACCEPTED_PROTOCOLS = new Set<string>([
+  HIVE_CREW_DESKTOP_PROTOCOL,
+  ...HIVE_CREW_LEGACY_DESKTOP_PROTOCOLS,
+]);
 const devLog = is.dev ? createBestEffortDevLog() : undefined;
 
 // Where the main process parks a freeze/crash breadcrumb until the next
@@ -219,7 +227,7 @@ function dispatchToMainRenderer(
 function handleDeepLink(url: string): void {
   try {
     const parsed = new URL(url);
-    if (parsed.protocol !== `${PROTOCOL}:`) return;
+    if (!ACCEPTED_PROTOCOLS.has(parsed.protocol.replace(/:$/, ""))) return;
 
     // multica://auth/callback?token=<jwt>
     if (parsed.hostname === "auth" && parsed.pathname === "/callback") {
@@ -608,8 +616,8 @@ function createIssueWindow(context: IssueWindowContext): void {
 // lock file. Default (no env var) keeps behavior unchanged — the common
 // single-worktree case still lands at "Multica Canary".
 const DEV_APP_NAME = process.env.DESKTOP_APP_SUFFIX
-  ? `Multica Canary ${process.env.DESKTOP_APP_SUFFIX}`
-  : "Multica Canary";
+  ? `${HIVE_CREW_PRODUCT_NAME} Canary ${process.env.DESKTOP_APP_SUFFIX}`
+  : `${HIVE_CREW_PRODUCT_NAME} Canary`;
 
 if (is.dev) {
   app.setName(DEV_APP_NAME);
@@ -621,18 +629,18 @@ if (is.dev) {
   // to "Multica", but anchoring it here makes WM_CLASS ↔ StartupWMClass
   // (declared in electron-builder.yml) survive a regression in
   // productName / the build pipeline. Must run before requestSingleInstanceLock().
-  app.setName("Multica");
+  app.setName(HIVE_CREW_PRODUCT_NAME);
 }
 
 // --- Protocol registration -----------------------------------------------
 
 if (process.defaultApp) {
   // In dev, register with the path to the electron binary + app path
-  app.setAsDefaultProtocolClient(PROTOCOL, process.execPath, [
+  app.setAsDefaultProtocolClient(HIVE_CREW_DESKTOP_PROTOCOL, process.execPath, [
     app.getAppPath(),
   ]);
 } else {
-  app.setAsDefaultProtocolClient(PROTOCOL);
+  app.setAsDefaultProtocolClient(HIVE_CREW_DESKTOP_PROTOCOL);
 }
 
 // --- Single instance lock ------------------------------------------------
@@ -656,7 +664,9 @@ if (!gotTheLock) {
     if (window) focusMainWindow(window);
 
     // On Windows the deep link URL is the last argv entry
-    const deepLinkUrl = argv.find((arg) => arg.startsWith(`${PROTOCOL}://`));
+    const deepLinkUrl = argv.find((arg) =>
+      [...ACCEPTED_PROTOCOLS].some((protocol) => arg.startsWith(`${protocol}://`)),
+    );
     if (deepLinkUrl) handleDeepLink(deepLinkUrl);
   });
 
@@ -664,7 +674,7 @@ if (!gotTheLock) {
   // queued because desktopInitialized remains false until runtime config and
   // IPC handlers are ready.
   const coldStartDeepLink = process.argv.find((arg) =>
-    arg.startsWith(`${PROTOCOL}://`),
+    [...ACCEPTED_PROTOCOLS].some((protocol) => arg.startsWith(`${protocol}://`)),
   );
   if (coldStartDeepLink) handleDeepLink(coldStartDeepLink);
 
@@ -688,7 +698,7 @@ if (!gotTheLock) {
     });
 
     electronApp.setAppUserModelId(
-      is.dev ? "ai.multica.desktop.dev" : "ai.multica.desktop",
+      is.dev ? `${HIVE_CREW_DESKTOP_APP_ID}.dev` : HIVE_CREW_DESKTOP_APP_ID,
     );
 
     // macOS: replace the default Electron dock icon with the bundled logo
@@ -897,7 +907,9 @@ if (!gotTheLock) {
     desktopInitialized = true;
     createWindow();
 
-    setupAutoUpdater(() => mainWindow);
+    // HiveCrew owns no release feed yet. Do not inherit or contact a former
+    // product's update service; updater wiring resumes only with a governed
+    // HiveCrew release source.
     setupDaemonManager(() => mainWindow);
     setupLocalDirectory(() => mainWindow);
 

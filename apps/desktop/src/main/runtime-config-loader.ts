@@ -14,6 +14,7 @@ export async function loadRuntimeConfig(options: {
   isDev: boolean;
   env: RuntimeConfigEnv;
   configPath?: string;
+  legacyConfigPath?: string;
 }): Promise<RuntimeConfigResult> {
   if (options.isDev) {
     try {
@@ -24,12 +25,15 @@ export async function loadRuntimeConfig(options: {
   }
 
   const configPath = options.configPath ?? desktopConfigPath();
+  const legacyConfigPath =
+    options.legacyConfigPath ??
+    (options.configPath === undefined ? legacyDesktopConfigPath() : undefined);
   try {
     const raw = await readFile(configPath, "utf-8");
     return { ok: true, config: parseRuntimeConfig(raw) };
   } catch (err) {
     if (isMissingFileError(err)) {
-      return { ok: true, config: { ...DEFAULT_RUNTIME_CONFIG } };
+      return loadLegacyRuntimeConfig(legacyConfigPath);
     }
     return {
       ok: false,
@@ -41,7 +45,34 @@ export async function loadRuntimeConfig(options: {
 }
 
 export function desktopConfigPath(): string {
+  return join(app.getPath("home"), ".hivecrew", "desktop.json");
+}
+
+export function legacyDesktopConfigPath(): string {
   return join(app.getPath("home"), ".multica", "desktop.json");
+}
+
+async function loadLegacyRuntimeConfig(
+  legacyConfigPath: string | undefined,
+): Promise<RuntimeConfigResult> {
+  if (!legacyConfigPath) {
+    return { ok: true, config: { ...DEFAULT_RUNTIME_CONFIG } };
+  }
+
+  try {
+    const raw = await readFile(legacyConfigPath, "utf-8");
+    return { ok: true, config: parseRuntimeConfig(raw) };
+  } catch (err) {
+    if (isMissingFileError(err)) {
+      return { ok: true, config: { ...DEFAULT_RUNTIME_CONFIG } };
+    }
+    return {
+      ok: false,
+      error: {
+        message: `Invalid legacy compatibility config ${legacyConfigPath}: ${errorMessage(err)}`,
+      },
+    };
+  }
 }
 
 function isMissingFileError(err: unknown): boolean {

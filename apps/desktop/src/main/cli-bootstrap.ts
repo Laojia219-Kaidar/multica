@@ -14,8 +14,24 @@ import { selectPlatformReleaseAssetName } from "./cli-release-asset";
 // same-repo builds, but it can also repair or bootstrap a managed copy in
 // userData on first launch when the bundled binary is missing or unusable.
 
-const GITHUB_LATEST_BASE =
-  "https://github.com/multica-ai/multica/releases/latest/download";
+export function resolveCliReleaseBaseUrl(
+  value: string | undefined = process.env.HIVECREW_CLI_RELEASE_BASE_URL,
+): string {
+  const candidate = value?.trim();
+  if (!candidate) {
+    throw new Error(
+      "HiveCrew CLI auto-install is disabled until HIVECREW_CLI_RELEASE_BASE_URL is configured",
+    );
+  }
+
+  const url = new URL(candidate);
+  if (url.protocol !== "https:" && url.protocol !== "http:") {
+    throw new Error("HIVECREW_CLI_RELEASE_BASE_URL must use http or https");
+  }
+  url.search = "";
+  url.hash = "";
+  return url.toString().replace(/\/+$/, "");
+}
 
 function binaryName(): string {
   return process.platform === "win32" ? "multica.exe" : "multica";
@@ -44,8 +60,8 @@ async function downloadToFile(url: string, dest: string): Promise<void> {
 
 // Fetch goreleaser's published checksums.txt and parse it into a
 // filename → sha256 lookup. Format is `<hex>  <filename>` per line.
-async function fetchChecksums(): Promise<Map<string, string>> {
-  const url = `${GITHUB_LATEST_BASE}/checksums.txt`;
+async function fetchChecksums(releaseBaseUrl: string): Promise<Map<string, string>> {
+  const url = `${releaseBaseUrl}/checksums.txt`;
   const res = await fetch(url, { redirect: "follow" });
   if (!res.ok) {
     throw new Error(
@@ -92,7 +108,8 @@ async function extractArchive(archive: string, dest: string): Promise<void> {
 
 async function installFresh(): Promise<string> {
   const target = managedCliPath();
-  const checksums = await fetchChecksums();
+  const releaseBaseUrl = resolveCliReleaseBaseUrl();
+  const checksums = await fetchChecksums(releaseBaseUrl);
   const assetName = selectPlatformReleaseAssetName(checksums.keys());
   const expectedChecksum = checksums.get(assetName);
   if (!expectedChecksum) {
@@ -100,7 +117,7 @@ async function installFresh(): Promise<string> {
       `no checksum for ${assetName} in checksums.txt — refusing to install unverified binary`,
     );
   }
-  const url = `${GITHUB_LATEST_BASE}/${assetName}`;
+  const url = `${releaseBaseUrl}/${assetName}`;
 
   const workDir = join(tmpdir(), `multica-cli-${Date.now()}`);
   await mkdir(workDir, { recursive: true });

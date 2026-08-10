@@ -6,6 +6,11 @@ import { Toaster } from "@multica/ui/components/ui/sonner";
 import { cn } from "@multica/ui/lib/utils";
 import { WebProviders } from "@/components/web-providers";
 import type { SupportedLocale } from "@multica/core/i18n";
+import {
+  HIVE_CREW_LOCAL_ENDPOINTS,
+  HIVE_CREW_PRODUCT,
+  HIVE_CREW_PRODUCT_NAME,
+} from "@multica/core/product";
 import { RESOURCES } from "@multica/views/locales";
 import { getRequestLocale } from "@/lib/request-locale";
 import {
@@ -72,27 +77,24 @@ export const viewport: Viewport = {
 };
 
 export const metadata: Metadata = {
-  metadataBase: new URL("https://www.multica.ai"),
+  metadataBase: new URL(
+    process.env.HIVECREW_PUBLIC_APP_URL ?? HIVE_CREW_LOCAL_ENDPOINTS.appUrl,
+  ),
   title: {
-    default: "Multica — Project Management for Human + Agent Teams",
-    template: "%s | Multica",
+    default: `${HIVE_CREW_PRODUCT_NAME} — Digital Employee Operations`,
+    template: `%s | ${HIVE_CREW_PRODUCT_NAME}`,
   },
-  description:
-    "Open-source platform that turns coding agents into real teammates. Assign tasks, track progress, compound skills.",
+  description: HIVE_CREW_PRODUCT.tagline,
   icons: {
     icon: [{ url: "/favicon.svg", type: "image/svg+xml" }],
     shortcut: ["/favicon.svg"],
   },
   openGraph: {
     type: "website",
-    siteName: "Multica",
+    siteName: HIVE_CREW_PRODUCT_NAME,
     locale: "en_US",
   },
-  twitter: {
-    card: "summary_large_image",
-    site: "@multica_hq",
-    creator: "@multica_hq",
-  },
+  twitter: { card: "summary_large_image" },
   alternates: {
     canonical: "/",
   },
