@@ -6,10 +6,17 @@
   "repository_name": "hivecrew",
   "development_mode": "independent",
   "upstream_tracking": false,
-  "current_phase": "B0-independent-custody",
-  "current_work_order": "WO-HIVECREW-BOOTSTRAP-V0",
+  "current_phase": "B1-product-reidentity",
+  "current_work_order": "WO-HIVECREW-REIDENTITY-B1",
   "human_principal": "William",
   "bootstrap_actor": "codex-unbound",
+  "current_actor": {
+    "employee_id": "KT-002",
+    "name": "Coco",
+    "task_role": "CEO",
+    "authorization": "William explicit instruction on 2026-08-11",
+    "carrier": "Codex Desktop / gpt-5.6-terra high"
+  },
   "source_baseline": {
     "kind": "one_time_licensed_import",
     "revision": "beb3e9be65023f63bd5dfdbb0231ed41aa9f1cb8",

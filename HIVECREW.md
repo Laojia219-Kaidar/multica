@@ -73,5 +73,6 @@ complete this slice.
 
 ## Current state
 
-Only B0 is authorized by `WO-HIVECREW-BOOTSTRAP-V0`. Creating this repository is not
-a production deployment, product acceptance, registry activation, or 1421 release.
+B0 independent custody is complete. B1 product re-identity is active under
+`WO-HIVECREW-REIDENTITY-B1`. B1 changes only the isolated HiveCrew repository and
+candidate builds; it is not a production deployment, registry activation, or 1421 release.

@@ -38,5 +38,6 @@ Before changing this repository, read these files in order:
 4. Verify interaction, persistence, execution receipt, and rollback separately.
 5. Record the exact revision and limitations before any candidate release.
 
-The current bootstrap work order is `WO-HIVECREW-BOOTSTRAP-V0` under project
-`PRJ-G71-HIVECREW`.
+The current work order is `WO-HIVECREW-REIDENTITY-B1` under project
+`PRJ-G71-HIVECREW`. Product-facing code must follow the compatibility classes
+in `docs/architecture/PRODUCT-IDENTITY-COMPATIBILITY-MAP.md`.
