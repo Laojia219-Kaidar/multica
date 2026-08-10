@@ -1,0 +1,20 @@
+{
+  "schema_version": "hivecrew.project.v1",
+  "project_id": "PRJ-G71-HIVECREW",
+  "product_name": "HiveCrew",
+  "display_name_zh": "蜂巢数字团队",
+  "repository_name": "hivecrew",
+  "development_mode": "independent",
+  "upstream_tracking": false,
+  "current_phase": "B0-independent-custody",
+  "current_work_order": "WO-HIVECREW-BOOTSTRAP-V0",
+  "human_principal": "William",
+  "bootstrap_actor": "codex-unbound",
+  "source_baseline": {
+    "kind": "one_time_licensed_import",
+    "revision": "beb3e9be65023f63bd5dfdbb0231ed41aa9f1cb8",
+    "hivecrew_baseline_commit": "1595366ef28c050d70190514ea86ec0916724efe"
+  },
+  "authority_posture": "interaction_and_execution_not_company_truth",
+  "production_applied": false
+}

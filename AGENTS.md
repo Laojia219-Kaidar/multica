@@ -1,54 +1,42 @@
-# Repository Guidelines
+# HiveCrew Repository Instructions
 
-This file provides guidance to AI agents when working with code in this repository.
+HiveCrew is an independently developed HiveCosm product. It was created from a
+one-time licensed source import, but it does not track, merge, fetch, or rebase
+from the former product or any other upstream project.
 
-> **Single source of truth:** This file is a concise pointer document.
-> All authoritative architecture, coding rules, and conventions
-> live in **CLAUDE.md** at the project root. Read that file first.
-> Use `Makefile`, `package.json`, and `pnpm-workspace.yaml` as the
-> source of truth for the full command list.
+Before changing this repository, read these files in order:
 
-## Quick Reference
+1. `HIVECREW.md` — product identity, authority boundaries, and development policy.
+2. `docs/architecture/WRITE-AUTHORITY-MATRIX.md` — which system may write each kind of truth.
+3. `CLAUDE.md` — inherited technical architecture and code-quality rules.
+4. The nearest directory-specific `AGENTS.md` or `CLAUDE.md`, if present.
 
-### Architecture
+## Non-negotiable rules
 
-Go backend + monorepo frontend (pnpm workspaces + Turborepo) with shared packages.
+- Do not add a remote that points to Multica or configure any upstream-sync automation.
+- Do not copy commits, patches, releases, or migrations from an upstream source unless
+  William explicitly authorizes a new, independently reviewed source import.
+- Use the product name `HiveCrew` for all newly created product surfaces.
+- Preserve `docs/provenance/INITIAL-SOURCE-BASELINE.md` and the original license file.
+- Never turn HiveCrew into a second authority for employees, departments, positions,
+  company projects, governance, knowledge, or accepted artifacts.
+- HiveCrew owns interaction and execution state: conversations, assignments, task runs,
+  runtime bindings, temporary artifacts, and execution receipts.
+- HiveCosm registries and governed APIs own company truth. Consume them through an
+  anti-corruption layer and write back only through explicit commands.
+- Keep production port 1421 and current DGX services unchanged unless a separate release
+  work order explicitly authorizes deployment.
+- Use isolated branches/worktrees, explicit file staging, narrow tests, and atomic commits.
+- Never use `git add .` or `git add -A`.
+- Never commit `.env`, secret values, access tokens, callback URLs, or local credentials.
 
-- `server/` - Go backend (Chi router, sqlc, gorilla/websocket)
-- `apps/web/` - Next.js frontend (App Router)
-- `apps/desktop/` - Electron desktop app
-- `packages/core/` - Headless business logic (Zustand stores, React Query hooks, API client)
-- `packages/ui/` - Atomic UI components (shadcn/Base UI, zero business logic)
-- `packages/views/` - Shared business pages/components
-- `packages/tsconfig/` - Shared TypeScript config
+## Product change sequence
 
-### State Management (critical)
+1. Define the owner-facing workflow and its source of truth.
+2. Write or update a behavioral test.
+3. Implement the smallest complete vertical slice.
+4. Verify interaction, persistence, execution receipt, and rollback separately.
+5. Record the exact revision and limitations before any candidate release.
 
-- **React Query** owns all server state (issues, members, agents, inbox, workspace list)
-- **Zustand** owns client/view state (view filters, drafts, modals, desktop tab state); current workspace identity is route-driven and only mirrored for platform plumbing
-- All Zustand stores live in `packages/core/` - never in `packages/views/` or app directories
-- WS events update React Query for server data; store writes are only for clearing client-owned pointers with a single responder/self-event guard
-
-### Package Boundaries (hard rules)
-
-- `packages/core/` - zero react-dom, zero localStorage, zero process.env
-- `packages/ui/` - zero `@multica/core` imports
-- `packages/views/` - zero `next/*`, zero `react-router-dom`, use `NavigationAdapter` for routing
-- `apps/web/platform/` - only place for Next.js APIs
-
-### Database Migrations (hard rules)
-
-- Never add database foreign keys or cascading actions. Enforce relationships and perform dependent cleanup explicitly in the application layer, using transactions when the operation must be atomic.
-- Every index created by a migration, including unique indexes and indexes on new tables, must use `CREATE [UNIQUE] INDEX CONCURRENTLY`. Keep each concurrent index build in its own single-statement migration file.
-
-### Commands
-
-```bash
-make dev              # Auto-setup + start everything
-pnpm typecheck        # TypeScript check
-pnpm test             # TS unit tests (Vitest)
-make test             # Go tests
-make check            # Full verification pipeline
-```
-
-See CLAUDE.md for the authoritative rules and common commands.
+The current bootstrap work order is `WO-HIVECREW-BOOTSTRAP-V0` under project
+`PRJ-G71-HIVECREW`.
