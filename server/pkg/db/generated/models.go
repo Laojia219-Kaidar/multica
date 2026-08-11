@@ -212,6 +212,15 @@ type ArtifactMaterializationIntent struct {
 	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
 }
 
+type ArtifactPromotionClaim struct {
+	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
+	PromotionID   string             `json:"promotion_id"`
+	CandidateID   pgtype.UUID        `json:"candidate_id"`
+	LineageID     pgtype.UUID        `json:"lineage_id"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+	PayloadDigest pgtype.Text        `json:"payload_digest"`
+}
+
 type AssignmentDispatchReceipt struct {
 	CommandID         pgtype.UUID        `json:"command_id"`
 	WorkspaceID       pgtype.UUID        `json:"workspace_id"`

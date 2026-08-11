@@ -18,11 +18,11 @@ import (
 )
 
 const (
-	companyOpsWorkContextSchemaVersion    = "hivecrew.owner-work-context.v1"
-	companyOpsAssignmentSchemaVersion     = "hivecrew.assignment-dispatch.v1"
-	companyOpsArtifactReviewSchemaVersion = "hivecrew.artifact-review.v1"
+	companyOpsWorkContextSchemaVersion             = "hivecrew.owner-work-context.v1"
+	companyOpsAssignmentSchemaVersion              = "hivecrew.assignment-dispatch.v1"
+	companyOpsArtifactReviewSchemaVersion          = "hivecrew.artifact-review.v1"
 	companyOpsFormalArtifactPromotionSchemaVersion = "hivecrew.formal-artifact-promotion.v1"
-	maxCompanyOpsAssignmentBodySize       = 64 << 10
+	maxCompanyOpsAssignmentBodySize                = 64 << 10
 )
 
 type companyOpsSelectors struct {
@@ -708,6 +708,7 @@ func writeCompanyOpsServiceError(w http.ResponseWriter, err error) {
 		errors.Is(err, companyops.ErrArtifactDigestMismatch),
 		errors.Is(err, companyops.ErrArtifactObjectRefMismatch),
 		errors.Is(err, companyops.ErrFormalArtifactRefMismatch),
+		errors.Is(err, companyops.ErrArtifactPromotionConflict),
 		errors.Is(err, companyops.ErrArtifactIdempotencyConflict):
 		writeCompanyOpsError(w, http.StatusConflict, "artifact_conflict", err.Error())
 	case errors.Is(err, companyops.ErrArtifactCandidateNotFound):

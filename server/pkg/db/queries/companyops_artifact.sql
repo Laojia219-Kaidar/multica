@@ -122,3 +122,16 @@ SELECT EXISTS (
       AND durable_object_ref = @durable_object_ref
       AND digest = @digest
 ) AS exactly_referenced;
+
+-- name: ClaimArtifactPromotion :one
+INSERT INTO artifact_promotion_claim (
+    workspace_id, promotion_id, candidate_id, lineage_id, payload_digest
+) VALUES (
+    @workspace_id, @promotion_id, @candidate_id, @lineage_id, @payload_digest
+)
+ON CONFLICT DO NOTHING
+RETURNING *;
+
+-- name: GetArtifactPromotionClaim :one
+SELECT * FROM artifact_promotion_claim
+WHERE workspace_id = @workspace_id AND promotion_id = @promotion_id;

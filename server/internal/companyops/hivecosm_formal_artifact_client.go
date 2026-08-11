@@ -15,12 +15,12 @@ import (
 )
 
 const (
-	HiveCosmFormalArtifactPromotionEndpoint  = "/api/company-ops/formal-artifacts/promotions"
-	HiveCosmFormalArtifactReadEndpointPrefix = "/api/company-ops/formal-artifacts/"
-	HiveCosmFormalArtifactPromotionCommandV1 = "hivecrew.formal-artifact-promotion.command.v1"
-	HiveCosmFormalArtifactPromotionReceiptV1 = "hivecrew.formal-artifact-promotion.receipt.v1"
-	HiveCosmFormalArtifactAuthorityV1        = "hivecosm.formal-artifact.authority.v1"
-	formalArtifactContentTypeMarkdown        = "text/markdown"
+	HiveCosmFormalArtifactPromotionEndpoint   = "/api/company-ops/formal-artifacts/promotions"
+	HiveCosmFormalArtifactReadEndpointPrefix  = "/api/company-ops/formal-artifacts/"
+	HiveCosmFormalArtifactPromotionCommandV1  = "hivecrew.formal-artifact-promotion.command.v1"
+	HiveCosmFormalArtifactPromotionReceiptV1  = "hivecrew.formal-artifact-promotion.receipt.v1"
+	HiveCosmFormalArtifactAuthorityV1         = "hivecosm.formal-artifact.authority.v1"
+	HiveCosmFormalArtifactContentTypeMarkdown = "text/markdown"
 )
 
 var (
@@ -176,7 +176,7 @@ func (c *HiveCosmAuthorityClient) PromoteFormalArtifact(
 			Revision:         input.Candidate.Revision,
 			DurableObjectRef: input.Candidate.DurableObjectRef,
 			ContentDigest:    input.Candidate.ContentDigest,
-			ContentType:      formalArtifactContentTypeMarkdown,
+			ContentType:      HiveCosmFormalArtifactContentTypeMarkdown,
 			ApprovalEventID:  input.Candidate.ApprovalEventID,
 		},
 	}

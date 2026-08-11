@@ -158,6 +158,7 @@ func TestWriteCompanyOpsServiceError_ArtifactAndPromotionMappings(t *testing.T) 
 		{"idempotency required", companyops.ErrArtifactIdempotencyRequired, http.StatusBadRequest, "invalid_request"},
 		{"invalid transition", companyops.ErrInvalidArtifactTransition, http.StatusConflict, "artifact_conflict"},
 		{"idempotency conflict", companyops.ErrArtifactIdempotencyConflict, http.StatusConflict, "artifact_conflict"},
+		{"promotion claim conflict", companyops.ErrArtifactPromotionConflict, http.StatusConflict, "artifact_conflict"},
 		{"formal ref mismatch", companyops.ErrFormalArtifactRefMismatch, http.StatusConflict, "artifact_conflict"},
 		{"invalid candidate", companyops.ErrInvalidArtifactCandidate, http.StatusConflict, "artifact_conflict"},
 		{"revision mismatch", companyops.ErrArtifactRevisionMismatch, http.StatusConflict, "artifact_conflict"},

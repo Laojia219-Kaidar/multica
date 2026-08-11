@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -145,6 +146,145 @@ func TestArtifactPersistenceMaterializationIntentCleanupAndExactReferenceDecisio
 	}
 	if decision != ArtifactMaterializationKeepObject {
 		t.Fatalf("exact candidate key/ref/digest decision = %q, want keep_object", decision)
+	}
+}
+
+func TestArtifactPersistenceClaimPromotionIsDurableAndUnique(t *testing.T) {
+	fixture := newArtifactPersistenceFixture(t)
+	candidate := fixture.createCandidate(t, "claim-candidate")
+	promotionID := uuid.NewString()
+	payload := testClaimPayload(candidate, "actor-1")
+
+	// First claim for (promotion_id, candidate, lineage) succeeds.
+	if err := fixture.repo.ClaimPromotion(fixture.ctx, fixture.workspaceID, promotionID, candidate.ID, candidate.LineageID, payload); err != nil {
+		t.Fatalf("first ClaimPromotion error = %v", err)
+	}
+
+	// Exact replay is a no-op.
+	if err := fixture.repo.ClaimPromotion(fixture.ctx, fixture.workspaceID, promotionID, candidate.ID, candidate.LineageID, payload); err != nil {
+		t.Fatalf("replay ClaimPromotion error = %v", err)
+	}
+
+	// Same promotion_id for a different candidate fails closed.
+	otherCandidateID := uuid.NewString()
+	otherLineageID := uuid.NewString()
+	if err := fixture.repo.ClaimPromotion(fixture.ctx, fixture.workspaceID, promotionID, otherCandidateID, otherLineageID, payload); !errors.Is(err, ErrArtifactPromotionConflict) {
+		t.Fatalf("same-id different-object error = %v, want %v", err, ErrArtifactPromotionConflict)
+	}
+
+	// Different promotion_id for the same candidate fails closed.
+	if err := fixture.repo.ClaimPromotion(fixture.ctx, fixture.workspaceID, uuid.NewString(), candidate.ID, candidate.LineageID, payload); !errors.Is(err, ErrArtifactPromotionConflict) {
+		t.Fatalf("different-id same-candidate error = %v, want %v", err, ErrArtifactPromotionConflict)
+	}
+}
+
+func TestArtifactPersistenceClaimPromotionPayloadDigestConflict(t *testing.T) {
+	fixture := newArtifactPersistenceFixture(t)
+	candidate := fixture.createCandidate(t, "payload-candidate")
+	promotionID := uuid.NewString()
+	basePayload := testClaimPayload(candidate, "actor-1")
+
+	if err := fixture.repo.ClaimPromotion(fixture.ctx, fixture.workspaceID, promotionID, candidate.ID, candidate.LineageID, basePayload); err != nil {
+		t.Fatalf("first ClaimPromotion error = %v", err)
+	}
+
+	tests := []struct {
+		name   string
+		mutate func(*PromotionClaimPayload)
+	}{
+		{"command schema", func(p *PromotionClaimPayload) { p.CommandSchemaVersion += ".drift" }},
+		{"actor", func(p *PromotionClaimPayload) { p.ActorUserID = "actor-2" }},
+		{"lookup work order", func(p *PromotionClaimPayload) { p.LookupWorkOrderRef += "/drift" }},
+		{"lookup employee", func(p *PromotionClaimPayload) { p.LookupEmployeeID = "EMP-OTHER" }},
+		{"lookup binding", func(p *PromotionClaimPayload) { p.LookupBindingID = "BIND-OTHER" }},
+		{"lookup agent", func(p *PromotionClaimPayload) { p.LookupAgentID = uuid.NewString() }},
+		{"work order ref", func(p *PromotionClaimPayload) { p.WorkOrderRef += "/drift" }},
+		{"work order revision", func(p *PromotionClaimPayload) { p.WorkOrderRevision += ".drift" }},
+		{"work order content digest", func(p *PromotionClaimPayload) { p.WorkOrderContentDigest = "sha256:drift" }},
+		{"employee ref", func(p *PromotionClaimPayload) { p.EmployeeRef += "/drift" }},
+		{"employee revision", func(p *PromotionClaimPayload) { p.EmployeeRevision += ".drift" }},
+		{"employee content digest", func(p *PromotionClaimPayload) { p.EmployeeContentDigest = "sha256:drift" }},
+		{"binding ref", func(p *PromotionClaimPayload) { p.BindingRef += "/drift" }},
+		{"binding revision", func(p *PromotionClaimPayload) { p.BindingRevision += ".drift" }},
+		{"binding content digest", func(p *PromotionClaimPayload) { p.BindingContentDigest = "sha256:drift" }},
+		{"candidate revision", func(p *PromotionClaimPayload) { p.CandidateRevision++ }},
+		{"candidate digest", func(p *PromotionClaimPayload) { p.CandidateDigest = "sha256:drifted" }},
+		{"candidate object ref", func(p *PromotionClaimPayload) { p.CandidateObjectRef += "/drift" }},
+		{"candidate content type", func(p *PromotionClaimPayload) { p.CandidateContentType = "application/octet-stream" }},
+		{"approval event", func(p *PromotionClaimPayload) { p.ApprovalEventID = uuid.NewString() }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			drifted := basePayload
+			test.mutate(&drifted)
+			if err := fixture.repo.ClaimPromotion(fixture.ctx, fixture.workspaceID, promotionID, candidate.ID, candidate.LineageID, drifted); !errors.Is(err, ErrArtifactPromotionConflict) {
+				t.Fatalf("same-id payload drift error = %v, want %v", err, ErrArtifactPromotionConflict)
+			}
+		})
+	}
+}
+
+func TestArtifactPersistenceVerifyPromotionRequiresExactExistingDigest(t *testing.T) {
+	fixture := newArtifactPersistenceFixture(t)
+	candidate := fixture.createCandidate(t, "verify-candidate")
+	promotionID := uuid.NewString()
+	payload := testClaimPayload(candidate, "actor-1")
+
+	if err := fixture.repo.VerifyPromotion(fixture.ctx, fixture.workspaceID, promotionID, candidate.ID, candidate.LineageID, payload); !errors.Is(err, ErrArtifactPromotionConflict) {
+		t.Fatalf("missing VerifyPromotion error = %v, want %v", err, ErrArtifactPromotionConflict)
+	}
+	if err := fixture.repo.ClaimPromotion(fixture.ctx, fixture.workspaceID, promotionID, candidate.ID, candidate.LineageID, payload); err != nil {
+		t.Fatalf("ClaimPromotion error = %v", err)
+	}
+	if err := fixture.repo.VerifyPromotion(fixture.ctx, fixture.workspaceID, promotionID, candidate.ID, candidate.LineageID, payload); err != nil {
+		t.Fatalf("exact VerifyPromotion error = %v", err)
+	}
+	drifted := payload
+	drifted.WorkOrderContentDigest = "sha256:drifted"
+	if err := fixture.repo.VerifyPromotion(fixture.ctx, fixture.workspaceID, promotionID, candidate.ID, candidate.LineageID, drifted); !errors.Is(err, ErrArtifactPromotionConflict) {
+		t.Fatalf("drifted VerifyPromotion error = %v, want %v", err, ErrArtifactPromotionConflict)
+	}
+}
+
+func TestArtifactPersistenceClaimPromotionRejectsNonCanonicalUUID(t *testing.T) {
+	fixture := newArtifactPersistenceFixture(t)
+	candidate := fixture.createCandidate(t, "uuid-candidate")
+	payload := testClaimPayload(candidate, "actor-1")
+
+	for _, bad := range []string{
+		"",
+		"not-a-uuid",
+		strings.ToUpper(uuid.NewString()),
+		"{" + uuid.NewString() + "}",
+	} {
+		if err := fixture.repo.ClaimPromotion(fixture.ctx, fixture.workspaceID, bad, candidate.ID, candidate.LineageID, payload); !errors.Is(err, ErrArtifactPromotionConflict) {
+			t.Fatalf("ClaimPromotion(%q) error = %v, want %v", bad, err, ErrArtifactPromotionConflict)
+		}
+	}
+}
+
+func testClaimPayload(candidate ArtifactCandidate, actorUserID string) PromotionClaimPayload {
+	return PromotionClaimPayload{
+		CommandSchemaVersion:   HiveCosmFormalArtifactPromotionCommandV1,
+		ActorUserID:            actorUserID,
+		LookupWorkOrderRef:     "wo-ref-1",
+		LookupEmployeeID:       "EMP-1",
+		LookupBindingID:        "BIND-1",
+		LookupAgentID:          "agent-1",
+		WorkOrderRef:           "wo-ref-1",
+		WorkOrderRevision:      "rev-1",
+		WorkOrderContentDigest: "sha256:work-order",
+		EmployeeRef:            "emp-ref-1",
+		EmployeeRevision:       "rev-1",
+		EmployeeContentDigest:  "sha256:employee",
+		BindingRef:             "bind-ref-1",
+		BindingRevision:        "rev-1",
+		BindingContentDigest:   "sha256:binding",
+		CandidateRevision:      candidate.Revision,
+		CandidateDigest:        candidate.Digest,
+		CandidateObjectRef:     candidate.DurableObjectRef,
+		CandidateContentType:   HiveCosmFormalArtifactContentTypeMarkdown,
+		ApprovalEventID:        uuid.NewString(),
 	}
 }
 

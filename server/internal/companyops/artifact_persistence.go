@@ -2,6 +2,8 @@ package companyops
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -320,6 +322,180 @@ func (r *ArtifactPersistenceRepository) AppendArtifactEvent(
 		return ArtifactEvent{}, fmt.Errorf("insert artifact event: %w", err)
 	}
 	return artifactEventFromDB(row), nil
+}
+
+// PromotionClaimPayload is the full canonical payload bound by a promotion
+// claim. Any field drift between two calls that carry the same promotion_id
+// is a conflict — the claim digest covers Actor, Lookup, all three authority
+// snapshots, the candidate revision/digest/object_ref, and the approval event.
+type PromotionClaimPayload struct {
+	CommandSchemaVersion   string
+	ActorUserID            string
+	LookupWorkOrderRef     string
+	LookupEmployeeID       string
+	LookupBindingID        string
+	LookupAgentID          string
+	WorkOrderRef           string
+	WorkOrderRevision      string
+	WorkOrderContentDigest string
+	EmployeeRef            string
+	EmployeeRevision       string
+	EmployeeContentDigest  string
+	BindingRef             string
+	BindingRevision        string
+	BindingContentDigest   string
+	CandidateRevision      int
+	CandidateDigest        string
+	CandidateObjectRef     string
+	CandidateContentType   string
+	ApprovalEventID        string
+}
+
+// Digest returns the canonical SHA-256 hex digest of the payload. The encoding
+// is a JSON object with sorted keys so two payloads that differ in any field
+// produce different digests.
+func (p PromotionClaimPayload) Digest() string {
+	canonical := map[string]any{
+		"command_schema_version":    p.CommandSchemaVersion,
+		"actor_user_id":             p.ActorUserID,
+		"lookup_work_order":         p.LookupWorkOrderRef,
+		"lookup_employee":           p.LookupEmployeeID,
+		"lookup_binding":            p.LookupBindingID,
+		"lookup_agent":              p.LookupAgentID,
+		"work_order_ref":            p.WorkOrderRef,
+		"work_order_revision":       p.WorkOrderRevision,
+		"work_order_content_digest": p.WorkOrderContentDigest,
+		"employee_ref":              p.EmployeeRef,
+		"employee_revision":         p.EmployeeRevision,
+		"employee_content_digest":   p.EmployeeContentDigest,
+		"binding_ref":               p.BindingRef,
+		"binding_revision":          p.BindingRevision,
+		"binding_content_digest":    p.BindingContentDigest,
+		"candidate_revision":        p.CandidateRevision,
+		"candidate_digest":          p.CandidateDigest,
+		"candidate_object_ref":      p.CandidateObjectRef,
+		"candidate_content_type":    p.CandidateContentType,
+		"approval_event_id":         p.ApprovalEventID,
+	}
+	encoded, err := json.Marshal(canonical)
+	if err != nil {
+		panic(fmt.Sprintf("promotion claim payload digest: %v", err))
+	}
+	sum := sha256.Sum256(encoded)
+	return fmt.Sprintf("sha256:%x", sum)
+}
+
+// ClaimPromotion atomically binds a stable promotion_id to exactly one
+// (workspace, candidate, lineage) triple and full canonical payload digest
+// using a durable database constraint. An exact replay (same promotion_id,
+// candidate, lineage, and payload digest) is a no-op. Any mismatch — same
+// promotion_id for a different object, a different promotion_id for an
+// already-claimed candidate, or any payload field drift — fails closed with
+// ErrArtifactPromotionConflict and performs zero authority POST/GET and zero
+// event append.
+func (r *ArtifactPersistenceRepository) ClaimPromotion(
+	ctx context.Context,
+	workspaceID string,
+	promotionID string,
+	candidateID string,
+	lineageID string,
+	payload PromotionClaimPayload,
+) error {
+	workspaceUUID, err := artifactPersistenceUUID(workspaceID, "workspace id")
+	if err != nil {
+		return err
+	}
+	candidateUUID, err := artifactPersistenceUUID(candidateID, "candidate id")
+	if err != nil {
+		return err
+	}
+	lineageUUID, err := artifactPersistenceUUID(lineageID, "lineage id")
+	if err != nil {
+		return err
+	}
+	if parsed, parseErr := util.ParseUUID(promotionID); parseErr != nil || util.UUIDToString(parsed) != promotionID {
+		return fmt.Errorf("%w: promotion_id must be a canonical UUID", ErrArtifactPromotionConflict)
+	}
+	payloadDigest := payload.Digest()
+	if err := r.queries.LockArtifactLineage(ctx, artifactLineageLockKey(workspaceID, lineageID)); err != nil {
+		return fmt.Errorf("lock artifact lineage for promotion claim: %w", err)
+	}
+	if _, err := r.queries.ClaimArtifactPromotion(ctx, db.ClaimArtifactPromotionParams{
+		WorkspaceID:   workspaceUUID,
+		PromotionID:   promotionID,
+		CandidateID:   candidateUUID,
+		LineageID:     lineageUUID,
+		PayloadDigest: pgtype.Text{String: payloadDigest, Valid: true},
+	}); err == nil {
+		return nil
+	} else if !errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("claim artifact promotion: %w", err)
+	}
+
+	existing, getErr := r.queries.GetArtifactPromotionClaim(ctx, db.GetArtifactPromotionClaimParams{
+		WorkspaceID: workspaceUUID,
+		PromotionID: promotionID,
+	})
+	if getErr == nil {
+		if util.UUIDToString(existing.CandidateID) == candidateID &&
+			util.UUIDToString(existing.LineageID) == lineageID &&
+			existing.PayloadDigest.Valid &&
+			existing.PayloadDigest.String == payloadDigest {
+			return nil
+		}
+		return ErrArtifactPromotionConflict
+	}
+	if !errors.Is(getErr, pgx.ErrNoRows) {
+		return fmt.Errorf("read existing promotion claim: %w", getErr)
+	}
+	return ErrArtifactPromotionConflict
+}
+
+// VerifyPromotion requires a previously established, fully verifiable claim.
+// It never creates or backfills a row. This is the only safe operation after a
+// promotion_succeeded or authority_readback_confirmed event: an older ledger
+// without a complete payload digest cannot prove what was sent to HiveCosm.
+func (r *ArtifactPersistenceRepository) VerifyPromotion(
+	ctx context.Context,
+	workspaceID string,
+	promotionID string,
+	candidateID string,
+	lineageID string,
+	payload PromotionClaimPayload,
+) error {
+	workspaceUUID, err := artifactPersistenceUUID(workspaceID, "workspace id")
+	if err != nil {
+		return err
+	}
+	if _, err := artifactPersistenceUUID(candidateID, "candidate id"); err != nil {
+		return err
+	}
+	if _, err := artifactPersistenceUUID(lineageID, "lineage id"); err != nil {
+		return err
+	}
+	if parsed, parseErr := util.ParseUUID(promotionID); parseErr != nil || util.UUIDToString(parsed) != promotionID {
+		return fmt.Errorf("%w: promotion_id must be a canonical UUID", ErrArtifactPromotionConflict)
+	}
+	if err := r.queries.LockArtifactLineage(ctx, artifactLineageLockKey(workspaceID, lineageID)); err != nil {
+		return fmt.Errorf("lock artifact lineage for promotion verification: %w", err)
+	}
+	existing, err := r.queries.GetArtifactPromotionClaim(ctx, db.GetArtifactPromotionClaimParams{
+		WorkspaceID: workspaceUUID,
+		PromotionID: promotionID,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrArtifactPromotionConflict
+	}
+	if err != nil {
+		return fmt.Errorf("read promotion claim for verification: %w", err)
+	}
+	if util.UUIDToString(existing.CandidateID) != candidateID ||
+		util.UUIDToString(existing.LineageID) != lineageID ||
+		!existing.PayloadDigest.Valid ||
+		existing.PayloadDigest.String != payload.Digest() {
+		return ErrArtifactPromotionConflict
+	}
+	return nil
 }
 
 func (r *ArtifactPersistenceRepository) ListArtifactEvents(

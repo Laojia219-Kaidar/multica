@@ -11,6 +11,44 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const claimArtifactPromotion = `-- name: ClaimArtifactPromotion :one
+INSERT INTO artifact_promotion_claim (
+    workspace_id, promotion_id, candidate_id, lineage_id, payload_digest
+) VALUES (
+    $1, $2, $3, $4, $5
+)
+ON CONFLICT DO NOTHING
+RETURNING workspace_id, promotion_id, candidate_id, lineage_id, created_at, payload_digest
+`
+
+type ClaimArtifactPromotionParams struct {
+	WorkspaceID   pgtype.UUID `json:"workspace_id"`
+	PromotionID   string      `json:"promotion_id"`
+	CandidateID   pgtype.UUID `json:"candidate_id"`
+	LineageID     pgtype.UUID `json:"lineage_id"`
+	PayloadDigest pgtype.Text `json:"payload_digest"`
+}
+
+func (q *Queries) ClaimArtifactPromotion(ctx context.Context, arg ClaimArtifactPromotionParams) (ArtifactPromotionClaim, error) {
+	row := q.db.QueryRow(ctx, claimArtifactPromotion,
+		arg.WorkspaceID,
+		arg.PromotionID,
+		arg.CandidateID,
+		arg.LineageID,
+		arg.PayloadDigest,
+	)
+	var i ArtifactPromotionClaim
+	err := row.Scan(
+		&i.WorkspaceID,
+		&i.PromotionID,
+		&i.CandidateID,
+		&i.LineageID,
+		&i.CreatedAt,
+		&i.PayloadDigest,
+	)
+	return i, err
+}
+
 const deleteCommittedArtifactMaterializationIntent = `-- name: DeleteCommittedArtifactMaterializationIntent :execrows
 DELETE FROM artifact_materialization_intent
 WHERE workspace_id = $1
@@ -202,6 +240,30 @@ func (q *Queries) GetArtifactMaterializationIntent(ctx context.Context, arg GetA
 		&i.LastError,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getArtifactPromotionClaim = `-- name: GetArtifactPromotionClaim :one
+SELECT workspace_id, promotion_id, candidate_id, lineage_id, created_at, payload_digest FROM artifact_promotion_claim
+WHERE workspace_id = $1 AND promotion_id = $2
+`
+
+type GetArtifactPromotionClaimParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	PromotionID string      `json:"promotion_id"`
+}
+
+func (q *Queries) GetArtifactPromotionClaim(ctx context.Context, arg GetArtifactPromotionClaimParams) (ArtifactPromotionClaim, error) {
+	row := q.db.QueryRow(ctx, getArtifactPromotionClaim, arg.WorkspaceID, arg.PromotionID)
+	var i ArtifactPromotionClaim
+	err := row.Scan(
+		&i.WorkspaceID,
+		&i.PromotionID,
+		&i.CandidateID,
+		&i.LineageID,
+		&i.CreatedAt,
+		&i.PayloadDigest,
 	)
 	return i, err
 }

@@ -145,4 +145,32 @@ func (r *DurableArtifactMaterializationRepository) ListArtifactEvents(
 	})
 }
 
+func (r *DurableArtifactMaterializationRepository) ClaimPromotion(
+	ctx context.Context,
+	workspaceID string,
+	promotionID string,
+	candidateID string,
+	lineageID string,
+	payload PromotionClaimPayload,
+) error {
+	_, err := artifactRepositoryTransaction(ctx, r.txStarter, func(repo *ArtifactPersistenceRepository) (struct{}, error) {
+		return struct{}{}, repo.ClaimPromotion(ctx, workspaceID, promotionID, candidateID, lineageID, payload)
+	})
+	return err
+}
+
+func (r *DurableArtifactMaterializationRepository) VerifyPromotion(
+	ctx context.Context,
+	workspaceID string,
+	promotionID string,
+	candidateID string,
+	lineageID string,
+	payload PromotionClaimPayload,
+) error {
+	_, err := artifactRepositoryTransaction(ctx, r.txStarter, func(repo *ArtifactPersistenceRepository) (struct{}, error) {
+		return struct{}{}, repo.VerifyPromotion(ctx, workspaceID, promotionID, candidateID, lineageID, payload)
+	})
+	return err
+}
+
 var _ ArtifactMaterializationRepository = (*DurableArtifactMaterializationRepository)(nil)

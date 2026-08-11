@@ -483,10 +483,36 @@ func (s *CompanyOpsArtifactService) PromoteArtifact(
 		return CompanyOpsArtifactPromotionReceipt{}, fmt.Errorf("%w: approved decision is unavailable for promotion", ErrCompanyOpsArtifactConflict)
 	}
 
+	// The promotion id is anchored by the first approved→requested transition
+	// and never re-established. Resolve the durable id from the ledger before
+	// touching the authority: a replay that carries a different id, or a ledger
+	// that already mixes ids, fails closed without appending events, POSTing,
+	// reading, or mutating the projection.
+	anchoredPromotionID, established, err := companyOpsResolveAnchoredPromotionID(events, candidate.ID)
+	if err != nil {
+		return CompanyOpsArtifactPromotionReceipt{}, err
+	}
+	effectivePromotionID := promotionID
+	if established {
+		if anchoredPromotionID != promotionID {
+			return CompanyOpsArtifactPromotionReceipt{}, fmt.Errorf("%w: promotion_id does not match the anchored promotion for this candidate", ErrCompanyOpsArtifactConflict)
+		}
+		effectivePromotionID = anchoredPromotionID
+	}
+
+	// Build the full canonical claim payload once so every entry point —
+	// approved, requested, failed, succeeded, readback — establishes or
+	// verifies the durable claim before any external authority call or
+	// terminal return.
+	payload := companyOpsArtifactClaimPayload(promotion, candidate, approvalEvent.ID)
+
 	switch projection.Status {
 	case companyops.ArtifactEventAuthorityReadbackConfirmed:
+		if err := s.repo.VerifyPromotion(ctx, workspace, effectivePromotionID, candidate.ID, lineageID, payload); err != nil {
+			return CompanyOpsArtifactPromotionReceipt{}, err
+		}
 		return CompanyOpsArtifactPromotionReceipt{
-			PromotionID:       promotionID,
+			PromotionID:       effectivePromotionID,
 			CandidateID:       candidate.ID,
 			LifecycleStatus:   projection.Status,
 			FormalArtifactRef: projection.FormalArtifactRef,
@@ -494,12 +520,15 @@ func (s *CompanyOpsArtifactService) PromoteArtifact(
 			TerminalEvent:     lastEvent,
 		}, nil
 	case companyops.ArtifactEventPromotionSucceeded:
+		if err := s.repo.VerifyPromotion(ctx, workspace, effectivePromotionID, candidate.ID, lineageID, payload); err != nil {
+			return CompanyOpsArtifactPromotionReceipt{}, err
+		}
 		succeededRef := companyOpsArtifactSucceededRef(events, candidate.ID)
-		return s.runArtifactReadback(ctx, workspace, lineageID, promotionID, candidate, approvalEvent.ID, promotion.Lookup, succeededRef, false)
+		return s.runArtifactReadback(ctx, workspace, lineageID, effectivePromotionID, candidate, approvalEvent.ID, promotion.Lookup, succeededRef, false)
 	case companyops.ArtifactEventApproved,
 		companyops.ArtifactEventPromotionRequested,
 		companyops.ArtifactEventPromotionFailed:
-		return s.attemptArtifactPromotion(ctx, workspace, lineageID, promotionID, candidate, promotion, approvalEvent, lastEvent, hasLast)
+		return s.attemptArtifactPromotion(ctx, workspace, lineageID, effectivePromotionID, candidate, promotion, approvalEvent, lastEvent, hasLast)
 	default:
 		return CompanyOpsArtifactPromotionReceipt{}, fmt.Errorf("%w: artifact is not approved for promotion", ErrCompanyOpsArtifactConflict)
 	}
@@ -516,6 +545,10 @@ func (s *CompanyOpsArtifactService) attemptArtifactPromotion(
 	lastEvent companyops.ArtifactEvent,
 	hasLast bool,
 ) (CompanyOpsArtifactPromotionReceipt, error) {
+	payload := companyOpsArtifactClaimPayload(promotion, candidate, approvalEvent.ID)
+	if err := s.repo.ClaimPromotion(ctx, workspace, promotionID, candidate.ID, lineageID, payload); err != nil {
+		return CompanyOpsArtifactPromotionReceipt{}, err
+	}
 	requested, err := s.ensureArtifactPromotionRequested(ctx, workspace, lineageID, promotionID, candidate, lastEvent, hasLast)
 	if err != nil {
 		return CompanyOpsArtifactPromotionReceipt{}, err
@@ -574,8 +607,14 @@ func (s *CompanyOpsArtifactService) ensureArtifactPromotionRequested(
 	lastEvent companyops.ArtifactEvent,
 	hasLast bool,
 ) (companyops.ArtifactEvent, error) {
+	// Reuse the durable requested event only when it belongs to the exact same
+	// promotion command (same candidate AND same anchored promotion id encoded
+	// in its idempotency key). A requested event carrying a different id must
+	// not be borrowed for a new command.
 	if hasLast && lastEvent.Type == companyops.ArtifactEventPromotionRequested && lastEvent.CandidateID == candidate.ID {
-		return lastEvent, nil
+		if anchoredID, ok := companyOpsPromotionIDFromEventKey(lastEvent.IdempotencyKey); ok && anchoredID == promotionID {
+			return lastEvent, nil
+		}
 	}
 	anchorSeq := 0
 	if hasLast {
@@ -648,7 +687,10 @@ func companyOpsArtifactPromotionAnchor(events []companyops.ArtifactEvent, candid
 	hasLast := false
 	for i := range events {
 		event := events[i]
-		if event.CandidateID == candidateID && event.Type == companyops.ArtifactEventApproved && approval.ID == "" {
+		if event.CandidateID != candidateID {
+			continue
+		}
+		if event.Type == companyops.ArtifactEventApproved && approval.ID == "" {
 			approval = event
 		}
 		last = event
@@ -673,4 +715,186 @@ func companyOpsFormalArtifactManifestID(ref string, workOrderSourceRef string) (
 		return "", false
 	}
 	return strings.TrimPrefix(ref, prefix), true
+}
+
+const (
+	companyOpsArtifactPromotionKeyPrefix = "formal-promotion:"
+	// companyOpsArtifactCanonicalUUIDLen is the length of a canonical lowercase
+	// UUID with hyphens, the only form util.UUIDToString and the promotion_id
+	// validation accept.
+	companyOpsArtifactCanonicalUUIDLen = 36
+)
+
+// companyOpsArtifactIsPromotionPhaseEvent reports whether the event anchors a
+// Formal Artifact promotion command. Only these event types embed the stable
+// promotion id in their idempotency key; approved/submitted/changes_requested
+// never do.
+func companyOpsArtifactIsPromotionPhaseEvent(event companyops.ArtifactEvent) bool {
+	switch event.Type {
+	case companyops.ArtifactEventPromotionRequested,
+		companyops.ArtifactEventPromotionFailed,
+		companyops.ArtifactEventPromotionSucceeded,
+		companyops.ArtifactEventAuthorityReadbackConfirmed:
+		return true
+	default:
+		return false
+	}
+}
+
+// companyOpsPromotionIDFromEventKey extracts the canonical promotion id from a
+// promotion-phase idempotency key of the form
+// "formal-promotion:<canonical-uuid>:<non-empty suffix>". Any deviation from
+// the grammar fails closed (ok=false) so a malformed or tampered key can never
+// be confused with an anchored command.
+func companyOpsPromotionIDFromEventKey(key string) (string, bool) {
+	promotionID, _, ok := companyOpsPromotionIDAndSuffixFromEventKey(key)
+	return promotionID, ok
+}
+
+// companyOpsPromotionIDAndSuffixFromEventKey splits a promotion-phase
+// idempotency key into its canonical promotion id and the remaining suffix.
+// Returns ok=false when the key does not start with the prefix, the UUID is not
+// canonical, or the suffix is empty.
+func companyOpsPromotionIDAndSuffixFromEventKey(key string) (promotionID string, suffix string, ok bool) {
+	if !strings.HasPrefix(key, companyOpsArtifactPromotionKeyPrefix) {
+		return "", "", false
+	}
+	rest := key[len(companyOpsArtifactPromotionKeyPrefix):]
+	if len(rest) < companyOpsArtifactCanonicalUUIDLen+1 {
+		return "", "", false
+	}
+	promotionID = rest[:companyOpsArtifactCanonicalUUIDLen]
+	parsed, err := util.ParseUUID(promotionID)
+	if err != nil || util.UUIDToString(parsed) != promotionID {
+		return "", "", false
+	}
+	if rest[companyOpsArtifactCanonicalUUIDLen] != ':' {
+		return "", "", false
+	}
+	suffix = rest[companyOpsArtifactCanonicalUUIDLen+1:]
+	if suffix == "" {
+		return "", "", false
+	}
+	return promotionID, suffix, true
+}
+
+// companyOpsArtifactValidatePromotionSuffix checks the suffix of a
+// promotion-phase idempotency key against the strict per-type grammar:
+//
+//   - promotion_requested  → requested:after:<non-negative decimal>
+//   - promotion_failed     → failed:after:<non-negative decimal>
+//   - promotion_succeeded  → succeeded
+//   - authority_readback_confirmed → readback
+//
+// The decimal must be canonical (no leading zeros except "0" itself) so that
+// two keys that differ only in encoding cannot coexist.
+func companyOpsArtifactValidatePromotionSuffix(eventType companyops.ArtifactEventType, suffix string) bool {
+	switch eventType {
+	case companyops.ArtifactEventPromotionRequested:
+		return companyOpsArtifactValidateAfterSuffix(suffix, "requested")
+	case companyops.ArtifactEventPromotionFailed:
+		return companyOpsArtifactValidateAfterSuffix(suffix, "failed")
+	case companyops.ArtifactEventPromotionSucceeded:
+		return suffix == "succeeded"
+	case companyops.ArtifactEventAuthorityReadbackConfirmed:
+		return suffix == "readback"
+	default:
+		return false
+	}
+}
+
+func companyOpsArtifactValidateAfterSuffix(suffix, phase string) bool {
+	prefix := phase + ":after:"
+	if !strings.HasPrefix(suffix, prefix) {
+		return false
+	}
+	decimal := suffix[len(prefix):]
+	if decimal == "" {
+		return false
+	}
+	for _, c := range decimal {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	if len(decimal) > 1 && decimal[0] == '0' {
+		return false
+	}
+	return true
+}
+
+// companyOpsResolveAnchoredPromotionID parses the durable promotion ledger for
+// one candidate and returns the single stable promotion id that anchors every
+// promotion-phase event. It fails closed (returns an ErrCompanyOpsArtifactConflict
+// wrapping error) when any promotion-phase event's idempotency key is malformed,
+// its suffix does not match the strict per-type grammar, or two promotion-phase
+// events anchor different ids (a mixed-id ledger).
+//
+// Promotion-phase events belonging to a different candidate revision are
+// skipped: each candidate owns an independent promotion lifecycle, and the
+// durable promotion claim table enforces cross-candidate uniqueness at the
+// database level. When the candidate has no promotion-phase events yet, the
+// command is still establishing its id: anchored is "" and established is false.
+func companyOpsResolveAnchoredPromotionID(
+	events []companyops.ArtifactEvent,
+	candidateID string,
+) (anchored string, established bool, err error) {
+	for i := range events {
+		event := events[i]
+		if !companyOpsArtifactIsPromotionPhaseEvent(event) {
+			continue
+		}
+		if event.CandidateID != candidateID {
+			continue
+		}
+		promotionID, suffix, ok := companyOpsPromotionIDAndSuffixFromEventKey(event.IdempotencyKey)
+		if !ok {
+			return "", false, fmt.Errorf("%w: promotion event has a malformed idempotency key", ErrCompanyOpsArtifactConflict)
+		}
+		if !companyOpsArtifactValidatePromotionSuffix(event.Type, suffix) {
+			return "", false, fmt.Errorf("%w: promotion event has an invalid idempotency suffix", ErrCompanyOpsArtifactConflict)
+		}
+		if !established {
+			anchored = promotionID
+			established = true
+			continue
+		}
+		if anchored != promotionID {
+			return "", false, fmt.Errorf("%w: promotion ledger anchors multiple promotion ids", ErrCompanyOpsArtifactConflict)
+		}
+	}
+	return anchored, established, nil
+}
+
+// companyOpsArtifactClaimPayload builds the full canonical claim payload from
+// the promotion command, the current candidate, and the approval event id.
+// Every field that participates in the HiveCosm Formal Artifact promotion is
+// covered so any drift on replay produces a different digest and fails closed.
+func companyOpsArtifactClaimPayload(
+	promotion CompanyOpsArtifactPromotion,
+	candidate companyops.ArtifactCandidate,
+	approvalEventID string,
+) companyops.PromotionClaimPayload {
+	return companyops.PromotionClaimPayload{
+		CommandSchemaVersion:   companyops.HiveCosmFormalArtifactPromotionCommandV1,
+		ActorUserID:            util.UUIDToString(promotion.ActorUserID),
+		LookupWorkOrderRef:     promotion.Lookup.WorkOrderSourceRef,
+		LookupEmployeeID:       promotion.Lookup.EmployeeID,
+		LookupBindingID:        promotion.Lookup.IdentityBindingID,
+		LookupAgentID:          promotion.Lookup.AgentID,
+		WorkOrderRef:           promotion.WorkOrder.SourceRef,
+		WorkOrderRevision:      promotion.WorkOrder.Revision,
+		WorkOrderContentDigest: promotion.WorkOrder.ContentDigest,
+		EmployeeRef:            promotion.Employee.SourceRef,
+		EmployeeRevision:       promotion.Employee.Revision,
+		EmployeeContentDigest:  promotion.Employee.ContentDigest,
+		BindingRef:             promotion.IdentityBinding.SourceRef,
+		BindingRevision:        promotion.IdentityBinding.Revision,
+		BindingContentDigest:   promotion.IdentityBinding.ContentDigest,
+		CandidateRevision:      candidate.Revision,
+		CandidateDigest:        candidate.Digest,
+		CandidateObjectRef:     candidate.DurableObjectRef,
+		CandidateContentType:   companyops.HiveCosmFormalArtifactContentTypeMarkdown,
+		ApprovalEventID:        approvalEventID,
+	}
 }

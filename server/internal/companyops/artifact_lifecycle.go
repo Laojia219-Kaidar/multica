@@ -16,6 +16,7 @@ var (
 	ErrInvalidArtifactTransition   = errors.New("invalid artifact transition")
 	ErrArtifactIdempotencyRequired = errors.New("artifact event idempotency key is required")
 	ErrArtifactIdempotencyConflict = errors.New("artifact event idempotency conflict")
+	ErrArtifactPromotionConflict   = errors.New("artifact promotion id conflict")
 )
 
 type ArtifactCandidateInput struct {
