@@ -1,0 +1,61 @@
+flowchart LR
+  O["William 可运营公司工作台"]
+  P0["P0 底座与权威冻结<br/>completed"]
+  P1["P1 真实链路合同<br/>completed"]
+  A1["前端真源审计"]
+  A2["后端 writer 审计"]
+  A3["成果链审计"]
+  J1["P1 Join<br/>一页实施合同"]
+  T2["P2 合同测试<br/>completed"]
+  B2["运行 writer 与回执<br/>物化器已通过 · Assignment 事务中"]
+  U2["Chat Owner 操作面<br/>卡片已通过 · 真实 API 待接入"]
+  J2["P2 Join<br/>真实浏览器闭环"]
+  P2["P2 真实纵向闭环<br/>running"]
+  P3["P3 Outcome Center"]
+  P4["P4 组织与员工"]
+  P5["P5 分布式执行"]
+  P6["P6 QM Workroom"]
+  P7["P7 1421 候选与发布"]
+  R["GPTPro / 证据 / 日记<br/>每阶段复核"]
+
+  P0 --> P1
+  P1 --> A1
+  P1 --> A2
+  P1 --> A3
+  A1 --> J1
+  A2 --> J1
+  A3 --> J1
+  J1 --> P2
+  P2 --> T2
+  T2 --> B2
+  T2 --> U2
+  B2 --> J2
+  U2 --> J2
+  J2 --> P3
+  J2 --> P4
+  P4 --> P5
+  P4 --> P6
+  P3 --> P7
+  P5 --> P7
+  P6 --> P7
+  P7 --> O
+
+  P0 -.-> R
+  P1 -.-> R
+  P2 -.-> R
+  P3 -.-> R
+  P4 -.-> R
+  P5 -.-> R
+  P6 -.-> R
+  P7 -.-> R
+
+  classDef truth fill:#dbeafe,stroke:#2563eb,color:#0f172a;
+  classDef kernel fill:#ede9fe,stroke:#7c3aed,color:#1e1b4b;
+  classDef management fill:#dcfce7,stroke:#16a34a,color:#052e16;
+  classDef release fill:#ffedd5,stroke:#ea580c,color:#431407;
+  classDef outcome fill:#111827,stroke:#111827,color:#ffffff;
+  class P0,P1,A1,A2,A3,J1 truth;
+  class P2,T2,B2,U2,J2 kernel;
+  class P3,P4,P5,P6 management;
+  class P7 release;
+  class O outcome;

@@ -11,6 +11,63 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const assignIssueAgentExact = `-- name: AssignIssueAgentExact :one
+UPDATE issue SET
+    assignee_type = 'agent',
+    assignee_id = $1,
+    updated_at = now()
+WHERE workspace_id = $2
+  AND id = $3
+  AND assignee_type IS NULL
+  AND assignee_id IS NULL
+  AND status NOT IN ('done', 'cancelled')
+RETURNING id, workspace_id, title, description, status, priority, assignee_type, assignee_id, creator_type, creator_id, parent_issue_id, acceptance_criteria, context_refs, position, due_date, created_at, updated_at, number, project_id, origin_type, origin_id, first_executed_at, start_date, metadata, stage, properties
+`
+
+type AssignIssueAgentExactParams struct {
+	AgentID     pgtype.UUID `json:"agent_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	IssueID     pgtype.UUID `json:"issue_id"`
+}
+
+// CompanyOps assignment is a compare-and-swap, not a partial UpdateIssue.
+// It is workspace-scoped and only claims an active, wholly-unassigned Issue;
+// a missing/cross-workspace/terminal/already-assigned row returns no rows so
+// the caller fails closed without overwriting a concurrent human decision.
+func (q *Queries) AssignIssueAgentExact(ctx context.Context, arg AssignIssueAgentExactParams) (Issue, error) {
+	row := q.db.QueryRow(ctx, assignIssueAgentExact, arg.AgentID, arg.WorkspaceID, arg.IssueID)
+	var i Issue
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.Title,
+		&i.Description,
+		&i.Status,
+		&i.Priority,
+		&i.AssigneeType,
+		&i.AssigneeID,
+		&i.CreatorType,
+		&i.CreatorID,
+		&i.ParentIssueID,
+		&i.AcceptanceCriteria,
+		&i.ContextRefs,
+		&i.Position,
+		&i.DueDate,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Number,
+		&i.ProjectID,
+		&i.OriginType,
+		&i.OriginID,
+		&i.FirstExecutedAt,
+		&i.StartDate,
+		&i.Metadata,
+		&i.Stage,
+		&i.Properties,
+	)
+	return i, err
+}
+
 const childIssueProgress = `-- name: ChildIssueProgress :many
 SELECT parent_issue_id,
        COUNT(*)::bigint AS total,

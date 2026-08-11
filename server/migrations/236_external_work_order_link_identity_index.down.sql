@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS external_work_order_link_identity_uidx;

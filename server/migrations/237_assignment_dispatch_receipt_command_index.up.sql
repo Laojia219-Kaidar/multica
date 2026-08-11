@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX CONCURRENTLY assignment_dispatch_receipt_command_uidx ON assignment_dispatch_receipt (command_id);

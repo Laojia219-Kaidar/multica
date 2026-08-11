@@ -1,0 +1,615 @@
+schema_version: hivecosm.goal-graph/v2
+meta:
+  goal_id: HIVECREW-OWNER-OPERATING-WORKBENCH-V1
+  goal_version: 1
+  title: 从 HiveCrew 真实底座到可运营公司工作台
+  owner: William
+  activated_at: 2026-08-11T11:17:08+08:00
+truth_contract:
+  progress_truth: /Users/jiawei/hivecosm-worktrees/hivecrew-b2-design/docs/goals/HIVECREW-OWNER-OPERATING-WORKBENCH-V1/CHECKLIST.yaml
+  projections_are_non_authoritative: true
+  code_truth:
+    repo: /Users/jiawei/hivecosm-worktrees/hivecrew-b2-design
+    branch_or_worktree: work/wo-hivecrew-b2-foundation-design
+    baseline_commit: 43d7c95dfbf50e3b53a328b2c35a6bd36a5ddf1d
+goal_runtime:
+  active_controller:
+    actor_id: codex-unbound
+    claimed_at: 2026-08-11T11:17:08+08:00
+    previous_controller: null
+    reason: William accepted the reviewed plan and instructed execution to start.
+  resume_required: true
+outcome:
+  id: OUTCOME-01
+  statement: HiveCrew becomes William's real company interaction and execution workbench with a proven work-to-outcome loop and governed 1421 integration.
+  human_result: William can communicate, assign, observe, review, revise, accept and operate work through one real workspace rather than snapshots.
+  status: pending
+victory_conditions:
+  - id: VC-01
+    required: true
+    statement: A real Owner-to-Run loop is operable from the visible HiveCrew UI.
+    observable: Stable selection, WorkOrder confirmation, exact Agent binding, real Run and visible receipt.
+    verifier: {kind: browser_and_runtime, procedure: Repeat the exact candidate UI journey and read back the native receipt.}
+    artifact_refs: [ART-P2-CANDIDATE]
+    evidence_refs: []
+    status: pending
+  - id: VC-02
+    required: true
+    statement: A temporary result can be revised, accepted and promoted to a formal HiveCosm artifact reference.
+    observable: Temporary Artifact, review history, promotion receipt and Project/Employee reverse links.
+    verifier: {kind: browser_and_authority_readback, procedure: Review one real artifact and read back the formal reference from its authority.}
+    artifact_refs: [ART-P2-CANDIDATE]
+    evidence_refs: []
+    status: pending
+  - id: VC-03
+    required: true
+    statement: Outcome Center manages real results as governed outcomes rather than an unstructured file list.
+    observable: Search, preview, lineage, version, review and published/operational state for a real outcome.
+    verifier: {kind: browser, procedure: Use the Outcome Center list, detail and review surfaces on the P2 artifact.}
+    artifact_refs: [ART-P3-OUTCOME-CENTER]
+    evidence_refs: []
+    status: pending
+  - id: VC-04
+    required: true
+    statement: Employee identity is independent from Agent, Runtime and Model and supports more than one independent Run.
+    observable: One Employee uses at least two execution instances without context or receipt crossover.
+    verifier: {kind: integration, procedure: Run a bounded multi-instance canary and compare exact bindings, sessions and receipts.}
+    artifact_refs: [ART-P4-ORG, ART-P5-DISTRIBUTED]
+    evidence_refs: []
+    status: pending
+  - id: VC-05
+    required: true
+    statement: Human and digital employees collaborate in a QM Workroom against the same WorkOrder and Outcome authorities.
+    observable: Shared context, distinct bindings, one WorkOrder/Outcome lineage and no duplicate registry.
+    verifier: {kind: integration, procedure: Complete one bounded mixed-actor workroom journey and read back references.}
+    artifact_refs: [ART-P6-WORKROOM]
+    evidence_refs: []
+    status: pending
+  - id: VC-06
+    required: true
+    statement: The accepted HiveCrew candidate is integrated into 1421 through one reversible release transaction.
+    observable: Formal URL, service revision, owner journeys and rollback are all readable and verified.
+    verifier: {kind: release_readback, procedure: Verify the formal 1421 routes, revisions, services and rollback target after the release transaction.}
+    artifact_refs: [ART-P7-RELEASE]
+    evidence_refs: []
+    status: pending
+phases:
+  - id: P0
+    name: 底座、权威和规划冻结
+    major: true
+    status: done
+    stage: completed
+    exit_condition_refs: []
+    review_ref: REVIEW-P0
+    journal_ref: JOURNAL-P0
+    projection_refs: []
+    evidence_refs: [EV-P0-REVIEW, EV-P0-JOURNAL]
+  - id: P1
+    name: 真实链路与最小合同
+    major: true
+    status: done
+    stage: completed
+    exit_condition_refs: []
+    review_ref: REVIEW-P1
+    journal_ref: JOURNAL-P1
+    projection_refs: [PROJ-GOAL-OVERVIEW]
+    evidence_refs: [EV-P1-FRONTEND, EV-P1-BACKEND, EV-P1-OUTCOME, EV-P1-CONTRACT, EV-P1-REVIEW, EV-P1-JOURNAL]
+  - id: P2
+    name: 第一条真实 Owner-to-Outcome 闭环
+    major: true
+    status: running
+    stage: executing
+    exit_condition_refs: [VC-01, VC-02]
+    review_ref: REVIEW-P2
+    journal_ref: JOURNAL-P2
+    projection_refs: []
+    evidence_refs: [EV-P2-RED, EV-P2-CONTRACT-GREEN, EV-P2-MATERIALIZER-RED, EV-P2-MATERIALIZER-GREEN, EV-P2-ASSIGNMENT-RED, EV-P2-ASSIGNMENT-GREEN, EV-P2-ASSIGNMENT-BACKEND-RED, EV-P2-ASSIGNMENT-BACKEND-GREEN, EV-P2-OWNER-CARD-RED, EV-P2-OWNER-CARD-GREEN, EV-P2-CHAT-INTEGRATION-RED, EV-P2-CHAT-INTEGRATION-GREEN, EV-P2-EXEC-PERSISTENCE-RED, EV-P2-EXEC-PERSISTENCE-GREEN, EV-P2-ARTIFACT-PERSISTENCE-RED, EV-P2-ARTIFACT-PERSISTENCE-GREEN]
+  - id: P3
+    name: Outcome Center
+    major: true
+    status: pending
+    stage: planned
+    exit_condition_refs: [VC-03]
+    review_ref: REVIEW-P3
+    journal_ref: JOURNAL-P3
+    projection_refs: []
+  - id: P4
+    name: 正式组织与员工
+    major: true
+    status: pending
+    stage: planned
+    exit_condition_refs: []
+    review_ref: REVIEW-P4
+    journal_ref: JOURNAL-P4
+    projection_refs: []
+  - id: P5
+    name: 跨主机分布式执行资源
+    major: true
+    status: pending
+    stage: planned
+    exit_condition_refs: [VC-04]
+    review_ref: REVIEW-P5
+    journal_ref: JOURNAL-P5
+    projection_refs: []
+  - id: P6
+    name: QM 真人与数字员工 Workroom
+    major: true
+    status: pending
+    stage: planned
+    exit_condition_refs: [VC-05]
+    review_ref: REVIEW-P6
+    journal_ref: JOURNAL-P6
+    projection_refs: []
+  - id: P7
+    name: 导航收敛与 1421 发布事务
+    major: true
+    status: pending
+    stage: planned
+    exit_condition_refs: [VC-06]
+    review_ref: REVIEW-P7
+    journal_ref: JOURNAL-P7
+    projection_refs: []
+work_orders:
+  - id: WO-P0-01-ARCH-REVIEW
+    phase_ref: P0
+    status: done
+    stage: completed
+    required: true
+    worker_role: orchestrator
+    read_scope: [current workbench, B2 architecture, write authority]
+    write_scope: [review package, owner journal]
+    mutex_keys: [goal-plan]
+    deliverables: [docs/reviews/RP-HIVECREW-OPERATING-WORKBENCH-20260811-01.md]
+    acceptance: [GPTPro verdict recorded, Owner accepted the recommendation]
+    verification: [review package validator, journal verifier]
+    artifact_refs: [ART-P0-REVIEW]
+    evidence_refs: [EV-P0-REVIEW, EV-P0-JOURNAL]
+  - id: WO-P1-01-FRONTEND-TRUTH
+    phase_ref: P1
+    status: done
+    stage: completed
+    required: true
+    worker_role: frontend source auditor
+    read_scope: [apps/web, apps/desktop, packages/views, packages/core]
+    write_scope: []
+    mutex_keys: []
+    deliverables: [frontend source and journey report]
+    acceptance: [routes, components, queries, mutations, stable IDs and tests have exact source references]
+    verification: [orchestrator source readback]
+    artifact_refs: []
+    evidence_refs: [EV-P1-FRONTEND]
+  - id: WO-P1-02-BACKEND-WRITERS
+    phase_ref: P1
+    status: done
+    stage: completed
+    required: true
+    worker_role: backend source auditor
+    read_scope: [server/internal, server/pkg/db, daemon and runtime code]
+    write_scope: []
+    mutex_keys: []
+    deliverables: [canonical writer and receipt report]
+    acceptance: [all candidate writes have handler, service, query and receipt references]
+    verification: [orchestrator source readback]
+    artifact_refs: []
+    evidence_refs: [EV-P1-BACKEND]
+  - id: WO-P1-03-OUTCOME-CHAIN
+    phase_ref: P1
+    status: done
+    stage: completed
+    required: true
+    worker_role: outcome source auditor
+    read_scope: [files, attachments, comments, tasks, projects, run logs and receipts]
+    write_scope: []
+    mutex_keys: []
+    deliverables: [temporary-to-formal outcome gap report]
+    acceptance: [minimal object and UI boundary avoids a second formal artifact authority]
+    verification: [orchestrator source readback]
+    artifact_refs: []
+    evidence_refs: [EV-P1-OUTCOME]
+  - id: WO-P1-04-CONTRACT-JOIN
+    phase_ref: P1
+    status: done
+    stage: completed
+    required: true
+    worker_role: orchestrator and integrator
+    read_scope: [three P1 audit reports, current source]
+    write_scope: [docs/goals/HIVECREW-OWNER-OPERATING-WORKBENCH-V1/PHASE-1-OPERATING-LOOP-CONTRACT.md, CHECKLIST.yaml]
+    mutex_keys: [goal-control, operating-loop-contract]
+    deliverables: [ART-P1-CONTRACT]
+    acceptance: [one exact journey, stable IDs, source owners, writer, receipt, refetch and failure states are frozen]
+    verification: [source link audit, goal validator]
+    artifact_refs: [ART-P1-CONTRACT]
+    evidence_refs: [EV-P1-CONTRACT]
+  - id: WO-P2-01-BEHAVIOR-TESTS
+    phase_ref: P2
+    status: done
+    stage: completed
+    required: true
+    worker_role: behavioral test engineer
+    read_scope: [ART-P1-CONTRACT, existing test harness]
+    write_scope: [focused packages/views tests, focused core/server tests]
+    mutex_keys: [p2-tests]
+    deliverables: [failing and then passing journey tests]
+    acceptance: [tests click real objects and assert exact targets, receipts and failure retention]
+    verification: [focused test commands]
+    artifact_refs: []
+    evidence_refs: [EV-P2-RED, EV-P2-CONTRACT-GREEN]
+  - id: WO-P2-02-RUNTIME-LOOP
+    phase_ref: P2
+    status: running
+    stage: executing
+    required: true
+    worker_role: backend and runtime implementer
+    read_scope: [ART-P1-CONTRACT, existing writers]
+    write_scope: [bounded server/core anti-corruption and execution files]
+    mutex_keys: [p2-runtime]
+    deliverables: [exact WorkOrder context, run receipt and temporary artifact path]
+    acceptance: [no second task/project store, exact receipt and idempotency]
+    verification: [Go and core tests]
+    artifact_refs: []
+    evidence_refs: [EV-P2-MATERIALIZER-RED, EV-P2-MATERIALIZER-GREEN, EV-P2-ASSIGNMENT-RED, EV-P2-ASSIGNMENT-GREEN, EV-P2-ASSIGNMENT-BACKEND-RED, EV-P2-ASSIGNMENT-BACKEND-GREEN, EV-P2-EXEC-PERSISTENCE-RED, EV-P2-EXEC-PERSISTENCE-GREEN, EV-P2-ARTIFACT-PERSISTENCE-RED, EV-P2-ARTIFACT-PERSISTENCE-GREEN]
+  - id: WO-P2-03-OWNER-SURFACE
+    phase_ref: P2
+    status: running
+    stage: executing
+    required: true
+    worker_role: frontend interaction implementer
+    read_scope: [ART-P1-CONTRACT, shared HiveCrew views]
+    write_scope: [bounded packages/views and platform route files]
+    mutex_keys: [p2-owner-ui]
+    deliverables: [discoverable Owner journey and receipt surfaces]
+    acceptance: [stable URL, canonical writer, error retention and refresh]
+    verification: [component tests, typecheck, browser journey]
+    artifact_refs: []
+    evidence_refs: [EV-P2-OWNER-CARD-RED, EV-P2-OWNER-CARD-GREEN, EV-P2-CHAT-INTEGRATION-RED, EV-P2-CHAT-INTEGRATION-GREEN]
+  - id: WO-P2-04-INTEGRATION
+    phase_ref: P2
+    status: pending
+    stage: planned
+    required: true
+    worker_role: orchestrator and integrator
+    read_scope: [P2 candidate changes and evidence]
+    write_scope: [integration corrections, evidence, CHECKLIST]
+    mutex_keys: [p2-join, goal-control]
+    deliverables: [ART-P2-CANDIDATE]
+    acceptance: [VC-01 and VC-02 verified through visible UI and authority readback]
+    verification: [focused suites, build, bounded pilot, in-app browser acceptance]
+    artifact_refs: [ART-P2-CANDIDATE]
+    evidence_refs: []
+  - id: WO-P3-01-OUTCOME-CENTER
+    phase_ref: P3
+    status: pending
+    stage: planned
+    required: true
+    worker_role: outcome product team
+    read_scope: [P2 outcome and existing project/employee/read models]
+    write_scope: [bounded outcome core, views and route files]
+    mutex_keys: [p3-outcome]
+    deliverables: [ART-P3-OUTCOME-CENTER]
+    acceptance: [real list, detail, review, lineage, version and published state]
+    verification: [behavior tests, build, browser acceptance]
+    artifact_refs: [ART-P3-OUTCOME-CENTER]
+    evidence_refs: []
+  - id: WO-P4-01-ORG-EMPLOYEE
+    phase_ref: P4
+    status: pending
+    stage: planned
+    required: true
+    worker_role: organization and employee team
+    read_scope: [HiveCosm authorities, current Agent projections]
+    write_scope: [bounded anti-corruption, organization and employee view files]
+    mutex_keys: [p4-organization]
+    deliverables: [ART-P4-ORG]
+    acceptance: [exact identity binding, honest conflicts and operable dossier]
+    verification: [contract tests, behavior tests, browser acceptance]
+    artifact_refs: [ART-P4-ORG]
+    evidence_refs: []
+  - id: WO-P5-01-DISTRIBUTED
+    phase_ref: P5
+    status: pending
+    stage: planned
+    required: true
+    worker_role: runtime and capacity team
+    read_scope: [runtime registries, hosts and assignment pipeline]
+    write_scope: [bounded runtime, scheduler, capacity and observability files]
+    mutex_keys: [p5-runtime]
+    deliverables: [ART-P5-DISTRIBUTED]
+    acceptance: [multi-instance runs have isolated sessions and receipts]
+    verification: [bounded canary, failure recovery, browser readback]
+    artifact_refs: [ART-P5-DISTRIBUTED]
+    evidence_refs: []
+  - id: WO-P6-01-QM-WORKROOM
+    phase_ref: P6
+    status: pending
+    stage: planned
+    required: true
+    worker_role: human and digital collaboration team
+    read_scope: [QM contract, Employee, Project, WorkOrder and Outcome read models]
+    write_scope: [bounded QM adapter and workroom view files]
+    mutex_keys: [p6-qm]
+    deliverables: [ART-P6-WORKROOM]
+    acceptance: [human and digital actors share one authoritative work context]
+    verification: [mixed-actor journey, exact references and receipts]
+    artifact_refs: [ART-P6-WORKROOM]
+    evidence_refs: []
+  - id: WO-P7-01-CANDIDATE
+    phase_ref: P7
+    status: pending
+    stage: planned
+    required: true
+    worker_role: frontend integrator
+    read_scope: [completed product surfaces and 1421 visual contract]
+    write_scope: [bounded navigation and integration files]
+    mutex_keys: [p7-app]
+    deliverables: [1421-compatible candidate]
+    acceptance: [all required journeys pass candidate browser acceptance]
+    verification: [build, browser, revision and rollback rehearsal]
+    artifact_refs: []
+    evidence_refs: []
+  - id: WO-P7-02-RELEASE
+    phase_ref: P7
+    status: pending
+    stage: planned
+    required: true
+    worker_role: single release integrator
+    read_scope: [accepted candidate, formal service and release truth]
+    write_scope: [one explicit 1421 release transaction and evidence]
+    mutex_keys: [production-1421, release-integrator]
+    deliverables: [ART-P7-RELEASE]
+    acceptance: [formal routes and services match exact accepted revision and rollback target]
+    verification: [formal browser journey and service/revision readback]
+    artifact_refs: [ART-P7-RELEASE]
+    evidence_refs: []
+artifacts:
+  - id: ART-P0-REVIEW
+    type: review_package
+    path: docs/reviews/RP-HIVECREW-OPERATING-WORKBENCH-20260811-01.md
+    producer_ref: WO-P0-01-ARCH-REVIEW
+    verifier_ref: EV-P0-REVIEW
+    owner: orchestrator
+    status: verified
+  - id: ART-P1-CONTRACT
+    type: contract
+    path: docs/goals/HIVECREW-OWNER-OPERATING-WORKBENCH-V1/PHASE-1-OPERATING-LOOP-CONTRACT.md
+    producer_ref: WO-P1-04-CONTRACT-JOIN
+    verifier_ref: EV-P1-CONTRACT
+    owner: orchestrator
+    status: verified
+  - id: ART-P2-CANDIDATE
+    type: software_candidate
+    path: registered after integration
+    producer_ref: WO-P2-04-INTEGRATION
+    verifier_ref: EV-P2-BROWSER
+    owner: orchestrator
+    status: planned
+  - id: ART-P3-OUTCOME-CENTER
+    type: software_candidate
+    path: registered after implementation
+    producer_ref: WO-P3-01-OUTCOME-CENTER
+    verifier_ref: EV-P3-BROWSER
+    owner: outcome team
+    status: planned
+  - id: ART-P4-ORG
+    type: software_candidate
+    path: registered after implementation
+    producer_ref: WO-P4-01-ORG-EMPLOYEE
+    verifier_ref: EV-P4-BROWSER
+    owner: organization team
+    status: planned
+  - id: ART-P5-DISTRIBUTED
+    type: runtime_candidate
+    path: registered after implementation
+    producer_ref: WO-P5-01-DISTRIBUTED
+    verifier_ref: EV-P5-CANARY
+    owner: runtime team
+    status: planned
+  - id: ART-P6-WORKROOM
+    type: integration_candidate
+    path: registered after implementation
+    producer_ref: WO-P6-01-QM-WORKROOM
+    verifier_ref: EV-P6-JOURNEY
+    owner: collaboration team
+    status: planned
+  - id: ART-P7-RELEASE
+    type: release
+    path: registered after release
+    producer_ref: WO-P7-02-RELEASE
+    verifier_ref: EV-P7-FORMAL
+    owner: single release integrator
+    status: planned
+evidence:
+  - id: EV-P0-REVIEW
+    kind: independent_review
+    source: visible ChatGPT Pro GPT-5.6 Sol Pro effort
+    method: review package plus visible in-app-browser conversation
+    observed_at: 2026-08-11T10:49:00+08:00
+    revision: 43d7c95dfbf50e3b53a328b2c35a6bd36a5ddf1d
+    result: APPROVE WITH CONDITIONS
+    path: docs/reviews/RP-HIVECREW-OPERATING-WORKBENCH-20260811-01.md
+  - id: EV-P0-JOURNAL
+    kind: journal_verification
+    source: hivecosm-work-journal
+    method: append, readback and verify
+    observed_at: 2026-08-11T11:00:00+08:00
+    revision: null
+    result: APPENDED_AND_VERIFIED
+    path: /Users/jiawei/hivecosm/日记/00-日记/2026-08-11 星期二 深圳 Coco工作日记.md
+  - {id: EV-P1-FRONTEND, kind: source_audit, source: current repository frontend, method: exact routes components queries mutations stable IDs and tests, observed_at: '2026-08-11T11:34:00+08:00', revision: 43d7c95dfbf50e3b53a328b2c35a6bd36a5ddf1d, result: PASSED_WITH_GAPS_FROZEN, path: 'docs/goals/HIVECREW-OWNER-OPERATING-WORKBENCH-V1/PHASE-1-OPERATING-LOOP-CONTRACT.md#frontend-source-audit'}
+  - {id: EV-P1-BACKEND, kind: source_audit, source: current repository backend, method: exact handlers services queries daemon chain and writer ownership, observed_at: '2026-08-11T11:34:00+08:00', revision: 43d7c95dfbf50e3b53a328b2c35a6bd36a5ddf1d, result: PASSED_WITH_GAPS_FROZEN, path: 'docs/goals/HIVECREW-OWNER-OPERATING-WORKBENCH-V1/PHASE-1-OPERATING-LOOP-CONTRACT.md#backend-writer-audit'}
+  - {id: EV-P1-OUTCOME, kind: source_audit, source: current repository outcome carriers, method: exact task result comment attachment transcript usage and deletion semantics, observed_at: '2026-08-11T11:34:00+08:00', revision: 43d7c95dfbf50e3b53a328b2c35a6bd36a5ddf1d, result: PASSED_WITH_GAPS_FROZEN, path: 'docs/goals/HIVECREW-OWNER-OPERATING-WORKBENCH-V1/PHASE-1-OPERATING-LOOP-CONTRACT.md#outcome-source-audit'}
+  - {id: EV-P1-CONTRACT, kind: source_audit, source: current repository, method: exact source and writer readback plus Goal validation, observed_at: '2026-08-11T11:36:42+08:00', revision: 43d7c95dfbf50e3b53a328b2c35a6bd36a5ddf1d, result: PASSED_WITH_REVIEW_CORRECTIONS_APPLIED, path: 'docs/goals/HIVECREW-OWNER-OPERATING-WORKBENCH-V1/PHASE-1-OPERATING-LOOP-CONTRACT.md'}
+  - {id: EV-P1-REVIEW, kind: independent_review, source: visible ChatGPT Pro GPT-5.6 Sol Pro effort, method: bounded phase contract and authority review, observed_at: '2026-08-11T11:40:00+08:00', revision: 43d7c95dfbf50e3b53a328b2c35a6bd36a5ddf1d, result: PASS_WITH_CORRECTIONS_APPLIED, path: 'docs/reviews/RP-HIVECREW-P1-OPERATING-LOOP-CONTRACT-20260811-01.md'}
+  - {id: EV-P1-JOURNAL, kind: journal_verification, source: hivecosm-work-journal, method: append readback and verify, observed_at: '2026-08-11T11:43:00+08:00', revision: null, result: APPENDED_AND_VERIFIED, path: '/Users/jiawei/hivecosm/日记/00-日记/2026-08-11 星期二 深圳 Coco工作日记.md'}
+  - {id: EV-P2-RED, kind: test_first_evidence, source: HiveCrew candidate worktree, method: focused Vitest and Go contract suites before production implementation, observed_at: '2026-08-11T11:52:32+08:00', revision: 43d7c95dfbf50e3b53a328b2c35a6bd36a5ddf1d, result: EXPECTED_FAILURE_MISSING_PRODUCTION_CONTRACTS, path: 'packages/core/paths/hivecrew-work-context.test.ts; server/internal/companyops/execution_target_test.go; server/internal/companyops/artifact_lifecycle_test.go'}
+  - {id: EV-P2-CONTRACT-GREEN, kind: contract_tests, source: HiveCrew candidate worktree, method: 98 core path tests plus strict TypeScript compile plus Go companyops package tests plus diff check, observed_at: '2026-08-11T11:57:02+08:00', revision: uncommitted_candidate, result: PASSED, path: 'packages/core/paths/hivecrew-work-context.ts; server/internal/companyops/execution_target.go; server/internal/companyops/artifact_lifecycle.go'}
+  - {id: EV-P2-MATERIALIZER-RED, kind: test_first_evidence, source: HiveCrew candidate worktree, method: focused Go materialization tests before production implementation, observed_at: '2026-08-11T12:09:00+08:00', revision: uncommitted_candidate, result: EXPECTED_FAILURE_MISSING_ARTIFACT_MATERIALIZER, path: 'server/internal/companyops/artifact_materializer_test.go'}
+  - {id: EV-P2-MATERIALIZER-GREEN, kind: contract_tests, source: HiveCrew candidate worktree, method: focused artifact materializer tests plus full companyops package, observed_at: '2026-08-11T12:13:40+08:00', revision: uncommitted_candidate, result: PASSED, path: 'server/internal/companyops/artifact_materializer.go'}
+  - {id: EV-P2-ASSIGNMENT-RED, kind: test_first_evidence, source: HiveCrew candidate worktree, method: focused assignment transaction tests before production coordinator, observed_at: '2026-08-11T12:15:00+08:00', revision: uncommitted_candidate, result: EXPECTED_FAILURE_MISSING_ASSIGNMENT_COORDINATOR, path: 'server/internal/service/companyops_assignment_test.go'}
+  - {id: EV-P2-ASSIGNMENT-GREEN, kind: contract_tests, source: HiveCrew candidate worktree, method: authority validation plus idempotent atomic assignment transaction and post-commit effect tests, observed_at: '2026-08-11T12:17:00+08:00', revision: uncommitted_candidate, result: PASSED, path: 'server/internal/service/companyops_assignment.go'}
+  - {id: EV-P2-ASSIGNMENT-BACKEND-RED, kind: test_first_evidence, source: HiveCrew candidate worktree, method: focused production-adapter contract before qtx-bound adapter implementation, observed_at: '2026-08-11T12:37:00+08:00', revision: uncommitted_candidate, result: EXPECTED_FAILURE_MISSING_CANONICAL_ASSIGNMENT_BACKEND, path: 'server/internal/service/companyops_assignment_backend_test.go'}
+  - {id: EV-P2-ASSIGNMENT-BACKEND-GREEN, kind: contract_tests, source: HiveCrew candidate worktree, method: one-qtx ordering rollback replay and post-commit effect tests, observed_at: '2026-08-11T12:49:00+08:00', revision: uncommitted_candidate, result: PASSED_ADAPTER_ONLY_CANONICAL_WRITERS_NOT_YET_CONNECTED, path: 'server/internal/service/companyops_assignment_backend.go'}
+  - {id: EV-P2-OWNER-CARD-RED, kind: test_first_evidence, source: HiveCrew candidate worktree, method: focused component test before Owner card implementation, observed_at: '2026-08-11T12:08:12+08:00', revision: uncommitted_candidate, result: EXPECTED_FAILURE_MISSING_OWNER_COMPONENT, path: 'packages/views/chat/components/owner-work-context-card.test.tsx'}
+  - {id: EV-P2-OWNER-CARD-GREEN, kind: component_tests, source: HiveCrew candidate worktree, method: seven Owner card interaction tests plus strict Views TypeScript compile, observed_at: '2026-08-11T12:13:06+08:00', revision: uncommitted_candidate, result: PASSED, path: 'packages/views/chat/components/owner-work-context-card.tsx'}
+  - {id: EV-P2-CHAT-INTEGRATION-RED, kind: test_first_evidence, source: HiveCrew candidate worktree, method: focused ChatPage integration before work-context mounting and URL preservation, observed_at: '2026-08-11T12:20:00+08:00', revision: uncommitted_candidate, result: EXPECTED_FAILURE_MISSING_CHAT_INTEGRATION, path: 'packages/views/chat/chat-owner-work-context.test.tsx'}
+  - {id: EV-P2-CHAT-INTEGRATION-GREEN, kind: component_and_regression_tests, source: HiveCrew candidate worktree, method: fourteen Chat integration and regression tests plus Views typecheck and focused eslint, observed_at: '2026-08-11T12:29:15+08:00', revision: uncommitted_candidate, result: PASSED_WRITER_STILL_FAIL_CLOSED, path: 'packages/views/chat/chat-page.tsx; packages/views/chat/components/use-owner-work-context.ts'}
+  - {id: EV-P2-EXEC-PERSISTENCE-RED, kind: test_first_evidence, source: HiveCrew candidate worktree, method: isolated persistence contract compile before execution repositories and tables, observed_at: '2026-08-11T12:22:00+08:00', revision: uncommitted_candidate, result: EXPECTED_FAILURE_MISSING_EXECUTION_PERSISTENCE, path: 'server/internal/service/companyops_assignment_persistence_test.go'}
+  - {id: EV-P2-EXEC-PERSISTENCE-GREEN, kind: database_integration_tests, source: HiveCrew candidate worktree and isolated PostgreSQL, method: exact replay conflict immutability terminal CAS no-FK tests plus migrations on loopback 55432, observed_at: '2026-08-11T12:34:00+08:00', revision: uncommitted_candidate, result: PASSED_ISOLATED_ONLY_HANDLER_NOT_CONNECTED, path: 'server/internal/service/companyops_persistence.go; server/migrations/235_companyops_execution_persistence_tables.up.sql; server/pkg/db/queries/companyops.sql'}
+  - {id: EV-P2-ARTIFACT-PERSISTENCE-RED, kind: test_first_evidence, source: HiveCrew candidate worktree, method: isolated persistence contract compile before artifact repositories and tables, observed_at: '2026-08-11T12:24:00+08:00', revision: uncommitted_candidate, result: EXPECTED_FAILURE_MISSING_ARTIFACT_PERSISTENCE, path: 'server/internal/companyops/artifact_persistence_test.go'}
+  - {id: EV-P2-ARTIFACT-PERSISTENCE-GREEN, kind: database_integration_tests, source: HiveCrew candidate worktree and isolated PostgreSQL, method: immutable candidate append-only event cleanup intent exact authority-readback tests plus 240-250 up and 250-240-250 rehearsal on loopback 55432, observed_at: '2026-08-11T12:50:00+08:00', revision: uncommitted_candidate, result: PASSED_ISOLATED_ONLY_MATERIALIZER_AND_API_NOT_YET_CONNECTED, path: 'server/internal/companyops/artifact_persistence.go; server/migrations/240_companyops_artifact_persistence.up.sql; server/pkg/db/queries/companyops_artifact.sql'}
+  - {id: EV-P2-BROWSER, kind: browser_and_runtime, source: candidate, method: exact Owner journey, observed_at: null, revision: null, result: pending, path: ''}
+  - {id: EV-P3-BROWSER, kind: browser, source: Outcome Center candidate, method: real outcome journey, observed_at: null, revision: null, result: pending, path: ''}
+  - {id: EV-P4-BROWSER, kind: browser, source: organization candidate, method: roster and dossier journey, observed_at: null, revision: null, result: pending, path: ''}
+  - {id: EV-P5-CANARY, kind: runtime_canary, source: distributed runtime candidate, method: multi-instance execution and receipt comparison, observed_at: null, revision: null, result: pending, path: ''}
+  - {id: EV-P6-JOURNEY, kind: integration, source: QM workroom candidate, method: mixed-actor workroom journey, observed_at: null, revision: null, result: pending, path: ''}
+  - {id: EV-P7-FORMAL, kind: production_readback, source: formal 1421, method: UI, service, revision and rollback readback, observed_at: null, revision: null, result: pending, path: ''}
+reviews:
+  - id: REVIEW-P0
+    scope_ref: P0
+    reviewer: gptpro_verified
+    status: completed
+    verdict: APPROVE WITH CONDITIONS
+    capability_proof_ref: EV-P0-REVIEW
+    critical_corrections: [freeze authority matrix, separate temporary and formal artifacts, prove a real loop before expansion]
+    evidence_refs: [EV-P0-REVIEW]
+  - {id: REVIEW-P1, scope_ref: P1, reviewer: gptpro_verified, status: completed, verdict: PASS WITH CORRECTIONS, capability_proof_ref: EV-P1-REVIEW, critical_corrections: [freeze WorkOrder revision in execution target snapshot, require active IdentityBinding before Assignment, distinguish promotion success from authority readback confirmation], evidence_refs: [EV-P1-REVIEW, EV-P1-CONTRACT]}
+  - {id: REVIEW-P2, scope_ref: P2, reviewer: gptpro_verified, status: scheduled, verdict: null, capability_proof_ref: null, critical_corrections: [], evidence_refs: []}
+  - {id: REVIEW-P3, scope_ref: P3, reviewer: gptpro_verified, status: scheduled, verdict: null, capability_proof_ref: null, critical_corrections: [], evidence_refs: []}
+  - {id: REVIEW-P4, scope_ref: P4, reviewer: gptpro_verified, status: scheduled, verdict: null, capability_proof_ref: null, critical_corrections: [], evidence_refs: []}
+  - {id: REVIEW-P5, scope_ref: P5, reviewer: gptpro_verified, status: scheduled, verdict: null, capability_proof_ref: null, critical_corrections: [], evidence_refs: []}
+  - {id: REVIEW-P6, scope_ref: P6, reviewer: gptpro_verified, status: scheduled, verdict: null, capability_proof_ref: null, critical_corrections: [], evidence_refs: []}
+  - {id: REVIEW-P7, scope_ref: P7, reviewer: gptpro_verified, status: scheduled, verdict: null, capability_proof_ref: null, critical_corrections: [], evidence_refs: []}
+journals:
+  - id: JOURNAL-P0
+    work_order_id: WO-HIVECREW-OPERATING-WORKBENCH-DESIGN
+    milestone_id: gptpro-review-20260811
+    marker: '<!-- hivecosm-diary:WO-HIVECREW-OPERATING-WORKBENCH-DESIGN:gptpro-review-20260811 -->'
+    appended_at: 2026-08-11T11:00:00+08:00
+    reread: true
+    verified: true
+    evidence_ref: EV-P0-JOURNAL
+  - {id: JOURNAL-P1, work_order_id: WO-HIVECREW-OPERATING-WORKBENCH-P1, milestone_id: phase-close, marker: '<!-- hivecosm-diary:WO-HIVECREW-OPERATING-WORKBENCH-P1:phase-close -->', appended_at: '2026-08-11T11:43:00+08:00', reread: true, verified: true, evidence_ref: EV-P1-JOURNAL}
+  - {id: JOURNAL-P2, work_order_id: WO-HIVECREW-OPERATING-WORKBENCH-P2, milestone_id: phase-close, marker: '<!-- hivecosm-diary:WO-HIVECREW-OPERATING-WORKBENCH-P2:phase-close -->', appended_at: null, reread: false, verified: false, evidence_ref: null}
+  - {id: JOURNAL-P3, work_order_id: WO-HIVECREW-OPERATING-WORKBENCH-P3, milestone_id: phase-close, marker: '<!-- hivecosm-diary:WO-HIVECREW-OPERATING-WORKBENCH-P3:phase-close -->', appended_at: null, reread: false, verified: false, evidence_ref: null}
+  - {id: JOURNAL-P4, work_order_id: WO-HIVECREW-OPERATING-WORKBENCH-P4, milestone_id: phase-close, marker: '<!-- hivecosm-diary:WO-HIVECREW-OPERATING-WORKBENCH-P4:phase-close -->', appended_at: null, reread: false, verified: false, evidence_ref: null}
+  - {id: JOURNAL-P5, work_order_id: WO-HIVECREW-OPERATING-WORKBENCH-P5, milestone_id: phase-close, marker: '<!-- hivecosm-diary:WO-HIVECREW-OPERATING-WORKBENCH-P5:phase-close -->', appended_at: null, reread: false, verified: false, evidence_ref: null}
+  - {id: JOURNAL-P6, work_order_id: WO-HIVECREW-OPERATING-WORKBENCH-P6, milestone_id: phase-close, marker: '<!-- hivecosm-diary:WO-HIVECREW-OPERATING-WORKBENCH-P6:phase-close -->', appended_at: null, reread: false, verified: false, evidence_ref: null}
+  - {id: JOURNAL-P7, work_order_id: WO-HIVECREW-OPERATING-WORKBENCH-P7, milestone_id: phase-close, marker: '<!-- hivecosm-diary:WO-HIVECREW-OPERATING-WORKBENCH-P7:phase-close -->', appended_at: null, reread: false, verified: false, evidence_ref: null}
+projections:
+  - id: PROJ-GOAL-OVERVIEW
+    type: mermaid_overview
+    path: docs/goals/HIVECREW-OWNER-OPERATING-WORKBENCH-V1/graph/overview.svg
+    source_ref: docs/goals/HIVECREW-OWNER-OPERATING-WORKBENCH-V1/GOAL.md
+    source_hash: f759465feef705ce5f6ca7b7334bf8ffd638b3a2829f33f250d43dacb5c673a2
+    generated_at: 2026-08-11T12:16:00+08:00
+decisions:
+  - id: DECISION-OWNER-ACTIVATE
+    status: accepted
+    stage: completed
+    statement: William accepted the reviewed recommendations and instructed execution to start.
+    evidence_refs: [EV-P0-REVIEW]
+edges:
+  - {from: OUTCOME-01, type: decomposes_to, to: P0}
+  - {from: OUTCOME-01, type: decomposes_to, to: P1}
+  - {from: OUTCOME-01, type: decomposes_to, to: P2}
+  - {from: OUTCOME-01, type: decomposes_to, to: P3}
+  - {from: OUTCOME-01, type: decomposes_to, to: P4}
+  - {from: OUTCOME-01, type: decomposes_to, to: P5}
+  - {from: OUTCOME-01, type: decomposes_to, to: P6}
+  - {from: OUTCOME-01, type: decomposes_to, to: P7}
+  - {from: P0, type: decomposes_to, to: WO-P0-01-ARCH-REVIEW}
+  - {from: P1, type: decomposes_to, to: WO-P1-01-FRONTEND-TRUTH}
+  - {from: P1, type: decomposes_to, to: WO-P1-02-BACKEND-WRITERS}
+  - {from: P1, type: decomposes_to, to: WO-P1-03-OUTCOME-CHAIN}
+  - {from: P1, type: decomposes_to, to: WO-P1-04-CONTRACT-JOIN}
+  - {from: P2, type: decomposes_to, to: WO-P2-01-BEHAVIOR-TESTS}
+  - {from: P2, type: decomposes_to, to: WO-P2-02-RUNTIME-LOOP}
+  - {from: P2, type: decomposes_to, to: WO-P2-03-OWNER-SURFACE}
+  - {from: P2, type: decomposes_to, to: WO-P2-04-INTEGRATION}
+  - {from: P3, type: decomposes_to, to: WO-P3-01-OUTCOME-CENTER}
+  - {from: P4, type: decomposes_to, to: WO-P4-01-ORG-EMPLOYEE}
+  - {from: P5, type: decomposes_to, to: WO-P5-01-DISTRIBUTED}
+  - {from: P6, type: decomposes_to, to: WO-P6-01-QM-WORKROOM}
+  - {from: P7, type: decomposes_to, to: WO-P7-01-CANDIDATE}
+  - {from: P7, type: decomposes_to, to: WO-P7-02-RELEASE}
+  - {from: WO-P0-01-ARCH-REVIEW, type: produces, to: ART-P0-REVIEW}
+  - {from: ART-P0-REVIEW, type: verified_by, to: EV-P0-REVIEW}
+  - {from: WO-P1-01-FRONTEND-TRUTH, type: parallel_with, to: WO-P1-02-BACKEND-WRITERS}
+  - {from: WO-P1-02-BACKEND-WRITERS, type: parallel_with, to: WO-P1-03-OUTCOME-CHAIN}
+  - {from: WO-P1-04-CONTRACT-JOIN, type: depends_on, to: WO-P1-01-FRONTEND-TRUTH}
+  - {from: WO-P1-04-CONTRACT-JOIN, type: depends_on, to: WO-P1-02-BACKEND-WRITERS}
+  - {from: WO-P1-04-CONTRACT-JOIN, type: depends_on, to: WO-P1-03-OUTCOME-CHAIN}
+  - {from: WO-P1-04-CONTRACT-JOIN, type: produces, to: ART-P1-CONTRACT}
+  - {from: ART-P1-CONTRACT, type: verified_by, to: EV-P1-CONTRACT}
+  - {from: EV-P1-CONTRACT, type: satisfies, to: VC-01}
+  - {from: WO-P2-01-BEHAVIOR-TESTS, type: depends_on, to: WO-P1-04-CONTRACT-JOIN}
+  - {from: WO-P2-02-RUNTIME-LOOP, type: depends_on, to: WO-P1-04-CONTRACT-JOIN}
+  - {from: WO-P2-03-OWNER-SURFACE, type: depends_on, to: WO-P1-04-CONTRACT-JOIN}
+  - {from: WO-P2-04-INTEGRATION, type: depends_on, to: WO-P2-01-BEHAVIOR-TESTS}
+  - {from: WO-P2-04-INTEGRATION, type: depends_on, to: WO-P2-02-RUNTIME-LOOP}
+  - {from: WO-P2-04-INTEGRATION, type: depends_on, to: WO-P2-03-OWNER-SURFACE}
+  - {from: WO-P2-04-INTEGRATION, type: produces, to: ART-P2-CANDIDATE}
+  - {from: ART-P2-CANDIDATE, type: verified_by, to: EV-P2-BROWSER}
+  - {from: EV-P2-BROWSER, type: satisfies, to: VC-01}
+  - {from: EV-P2-BROWSER, type: satisfies, to: VC-02}
+  - {from: WO-P3-01-OUTCOME-CENTER, type: depends_on, to: WO-P2-04-INTEGRATION}
+  - {from: WO-P3-01-OUTCOME-CENTER, type: produces, to: ART-P3-OUTCOME-CENTER}
+  - {from: ART-P3-OUTCOME-CENTER, type: verified_by, to: EV-P3-BROWSER}
+  - {from: EV-P3-BROWSER, type: satisfies, to: VC-03}
+  - {from: WO-P4-01-ORG-EMPLOYEE, type: depends_on, to: WO-P2-04-INTEGRATION}
+  - {from: WO-P4-01-ORG-EMPLOYEE, type: produces, to: ART-P4-ORG}
+  - {from: ART-P4-ORG, type: verified_by, to: EV-P4-BROWSER}
+  - {from: WO-P5-01-DISTRIBUTED, type: depends_on, to: WO-P4-01-ORG-EMPLOYEE}
+  - {from: WO-P5-01-DISTRIBUTED, type: produces, to: ART-P5-DISTRIBUTED}
+  - {from: ART-P5-DISTRIBUTED, type: verified_by, to: EV-P5-CANARY}
+  - {from: EV-P5-CANARY, type: satisfies, to: VC-04}
+  - {from: WO-P6-01-QM-WORKROOM, type: depends_on, to: WO-P4-01-ORG-EMPLOYEE}
+  - {from: WO-P6-01-QM-WORKROOM, type: produces, to: ART-P6-WORKROOM}
+  - {from: ART-P6-WORKROOM, type: verified_by, to: EV-P6-JOURNEY}
+  - {from: EV-P6-JOURNEY, type: satisfies, to: VC-05}
+  - {from: WO-P7-01-CANDIDATE, type: depends_on, to: WO-P3-01-OUTCOME-CENTER}
+  - {from: WO-P7-01-CANDIDATE, type: depends_on, to: WO-P5-01-DISTRIBUTED}
+  - {from: WO-P7-01-CANDIDATE, type: depends_on, to: WO-P6-01-QM-WORKROOM}
+  - {from: WO-P7-02-RELEASE, type: depends_on, to: WO-P7-01-CANDIDATE}
+  - {from: WO-P7-02-RELEASE, type: produces, to: ART-P7-RELEASE}
+  - {from: ART-P7-RELEASE, type: verified_by, to: EV-P7-FORMAL}
+  - {from: EV-P7-FORMAL, type: satisfies, to: VC-06}
+  - {from: P0, type: reviewed_by, to: REVIEW-P0}
+  - {from: P0, type: recorded_in, to: JOURNAL-P0}
+  - {from: P1, type: reviewed_by, to: REVIEW-P1}
+  - {from: P1, type: recorded_in, to: JOURNAL-P1}
+  - {from: P2, type: reviewed_by, to: REVIEW-P2}
+  - {from: P2, type: recorded_in, to: JOURNAL-P2}
+  - {from: P3, type: reviewed_by, to: REVIEW-P3}
+  - {from: P3, type: recorded_in, to: JOURNAL-P3}
+  - {from: P4, type: reviewed_by, to: REVIEW-P4}
+  - {from: P4, type: recorded_in, to: JOURNAL-P4}
+  - {from: P5, type: reviewed_by, to: REVIEW-P5}
+  - {from: P5, type: recorded_in, to: JOURNAL-P5}
+  - {from: P6, type: reviewed_by, to: REVIEW-P6}
+  - {from: P6, type: recorded_in, to: JOURNAL-P6}
+  - {from: P7, type: reviewed_by, to: REVIEW-P7}
+  - {from: P7, type: recorded_in, to: JOURNAL-P7}
+runtime:
+  current_phase_ref: P2
+  current_wave_id: WAVE-P2-WRITERS-AND-OWNER-SURFACE
+  frontier:
+    ready: []
+    running: [WO-P2-02-RUNTIME-LOOP, WO-P2-03-OWNER-SURFACE]
+    waiting: [WO-P2-04-INTEGRATION]
+    blocked: []
+    join_ref: null
+  critical_path: [P0, P1, P2, P3, P7, OUTCOME-01]
+  refreshed_at: 2026-08-11T12:51:00+08:00
+  graph_hash: f759465feef705ce5f6ca7b7334bf8ffd638b3a2829f33f250d43dacb5c673a2
+resume_package:
+  goal_version: 1
+  current_controller: codex-unbound
+  current_phase: P2
+  ready_nodes: []
+  running_nodes: [WO-P2-02-RUNTIME-LOOP, WO-P2-03-OWNER-SURFACE]
+  blocked_nodes: []
+  evidence_index: [EV-P0-REVIEW, EV-P0-JOURNAL, EV-P1-FRONTEND, EV-P1-BACKEND, EV-P1-OUTCOME, EV-P1-CONTRACT, EV-P1-REVIEW, EV-P1-JOURNAL, EV-P2-RED, EV-P2-CONTRACT-GREEN, EV-P2-MATERIALIZER-RED, EV-P2-MATERIALIZER-GREEN, EV-P2-ASSIGNMENT-RED, EV-P2-ASSIGNMENT-GREEN, EV-P2-ASSIGNMENT-BACKEND-RED, EV-P2-ASSIGNMENT-BACKEND-GREEN, EV-P2-OWNER-CARD-RED, EV-P2-OWNER-CARD-GREEN, EV-P2-CHAT-INTEGRATION-RED, EV-P2-CHAT-INTEGRATION-GREEN, EV-P2-EXEC-PERSISTENCE-RED, EV-P2-EXEC-PERSISTENCE-GREEN, EV-P2-ARTIFACT-PERSISTENCE-RED, EV-P2-ARTIFACT-PERSISTENCE-GREEN]
+  latest_review_ref: REVIEW-P1
+  latest_journal_ref: JOURNAL-P1
+  dirty_boundaries: [docs/reviews, docs/goals/HIVECREW-OWNER-OPERATING-WORKBENCH-V1]
+  next_action: Connect the existing Issue/Task canonical writers through the qtx adapter, implement the fail-closed HiveCosm authority reader and assignment API, then bind the Chat work-context hook to those real read/write paths.

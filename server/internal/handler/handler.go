@@ -19,6 +19,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/analytics"
 	"github.com/multica-ai/multica/server/internal/auth"
 	"github.com/multica-ai/multica/server/internal/cloudruntime"
+	"github.com/multica-ai/multica/server/internal/companyops"
 	"github.com/multica-ai/multica/server/internal/daemonws"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/integrations/channel/engine"
@@ -159,18 +160,39 @@ type Handler struct {
 	Bus                    *events.Bus
 	TaskService            *service.TaskService
 	IssueService           *service.IssueService
-	AutopilotService       *service.AutopilotService
-	EmailService           *service.EmailService
-	UpdateStore            UpdateStore
-	ModelListStore         ModelListStore
-	LocalSkillListStore    LocalSkillListStore
-	LocalSkillImportStore  LocalSkillImportStore
-	FeatureFlags           *featureflag.Service
-	LivenessStore          LivenessStore
-	HeartbeatScheduler     HeartbeatScheduler
-	Storage                storage.Storage
-	CFSigner               *auth.CloudFrontSigner
-	Analytics              analytics.Client
+	// CompanyOpsAuthority resolves the exact HiveCosm WorkOrder, Employee and
+	// IdentityBinding together with one HiveCrew-local executable Agent.
+	// Nil means the cross-system authority adapter is not configured; the
+	// dedicated CompanyOps endpoints fail closed with 503 in that state.
+	CompanyOpsAuthority *service.CompanyOpsAuthorityResolver
+	// CompanyOpsAssignment is the sole canonical writer for the first
+	// Owner-to-Run slice. It atomically assigns the local Issue, enqueues the
+	// initial task and appends the immutable dispatch receipt.
+	CompanyOpsAssignment *service.CompanyOpsAssignmentService
+	// CompanyOpsArtifacts materializes completed canonical Runs into temporary
+	// artifact candidates and appends exact Owner review decisions.
+	CompanyOpsArtifacts *service.CompanyOpsArtifactService
+	// CompanyOpsEnsureWorkOrderIssue projects an authoritative WorkOrder into
+	// one local Issue and provenance link. The concrete implementation lives in
+	// the service layer so HTTP handlers cannot bypass IssueService.
+	CompanyOpsEnsureWorkOrderIssue func(
+		context.Context,
+		pgtype.UUID,
+		pgtype.UUID,
+		companyops.AuthoritySnapshot,
+	) (db.Issue, error)
+	AutopilotService      *service.AutopilotService
+	EmailService          *service.EmailService
+	UpdateStore           UpdateStore
+	ModelListStore        ModelListStore
+	LocalSkillListStore   LocalSkillListStore
+	LocalSkillImportStore LocalSkillImportStore
+	FeatureFlags          *featureflag.Service
+	LivenessStore         LivenessStore
+	HeartbeatScheduler    HeartbeatScheduler
+	Storage               storage.Storage
+	CFSigner              *auth.CloudFrontSigner
+	Analytics             analytics.Client
 	// DaemonPendingWork pushes "heartbeat now" hints for queued
 	// heartbeat-carried requests (MUL-5444). Optional: when nil,
 	// requestDaemonPendingWork falls back to the local DaemonHub, which is the

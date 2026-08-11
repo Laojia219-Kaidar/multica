@@ -186,6 +186,30 @@ func (s *IssueService) Create(ctx context.Context, p IssueCreateParams, opts Iss
 	defer tx.Rollback(ctx)
 	qtx := s.Queries.WithTx(tx)
 
+	result, err := s.createInTransaction(ctx, tx, qtx, p)
+	if err != nil {
+		return result, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return IssueCreateResult{}, fmt.Errorf("commit: %w", err)
+	}
+
+	return s.finishCreate(ctx, p, opts, result), nil
+}
+
+// createInTransaction is the transaction-local canonical Issue writer. It is
+// intentionally package-private: CompanyOps projections may compose the Issue
+// row with their HiveCrew-owned provenance link in one transaction without
+// copying Issue numbering, duplicate guards, validation, positioning, or label
+// semantics. It never commits, publishes, captures analytics, or enqueues work.
+func (s *IssueService) createInTransaction(
+	ctx context.Context,
+	tx pgx.Tx,
+	qtx *db.Queries,
+	p IssueCreateParams,
+) (IssueCreateResult, error) {
+
 	// Resolve and validate parent / project before reading from the
 	// duplicate guard so a forged parent or project ID is rejected
 	// before we touch the issue counter. Both checks scope by
@@ -315,22 +339,31 @@ func (s *IssueService) Create(ctx context.Context, p IssueCreateParams, opts Iss
 		}
 	}
 
-	if err := tx.Commit(ctx); err != nil {
-		return IssueCreateResult{}, fmt.Errorf("commit: %w", err)
-	}
+	return IssueCreateResult{Issue: issue, Labels: labels}, nil
+}
 
-	attachments := s.linkAttachments(ctx, issue, p.AttachmentIDs)
+// finishCreate runs only after the caller has committed the transaction that
+// contains the Issue. Keeping this separate prevents events, analytics, or
+// daemon wakeups from escaping a rolled-back composed write.
+func (s *IssueService) finishCreate(
+	ctx context.Context,
+	p IssueCreateParams,
+	opts IssueCreateOpts,
+	result IssueCreateResult,
+) IssueCreateResult {
+	attachments := s.linkAttachments(ctx, result.Issue, p.AttachmentIDs)
 
 	actorID := opts.ActorID
 	if actorID == "" {
-		actorID = util.UUIDToString(issue.CreatorID)
+		actorID = util.UUIDToString(result.Issue.CreatorID)
 	}
 
-	s.publishIssueCreated(issue, attachments, labels, p.CreatorType, actorID, opts)
-	s.captureCreatedAnalytics(issue, p.CreatorType, actorID, opts)
-	s.maybeEnqueueOnAssign(ctx, issue, p.CreatorType, actorID)
+	s.publishIssueCreated(result.Issue, attachments, result.Labels, p.CreatorType, actorID, opts)
+	s.captureCreatedAnalytics(result.Issue, p.CreatorType, actorID, opts)
+	s.maybeEnqueueOnAssign(ctx, result.Issue, p.CreatorType, actorID)
 
-	return IssueCreateResult{Issue: issue, Attachments: attachments, Labels: labels}, nil
+	result.Attachments = attachments
+	return result
 }
 
 // validateIssueLabels checks that every requested label exists in the

@@ -160,6 +160,80 @@ type AgentToLabel struct {
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
 }
 
+type ArtifactCandidate struct {
+	ID                 pgtype.UUID        `json:"id"`
+	WorkspaceID        pgtype.UUID        `json:"workspace_id"`
+	LineageID          pgtype.UUID        `json:"lineage_id"`
+	Revision           int32              `json:"revision"`
+	SupersedesID       pgtype.UUID        `json:"supersedes_id"`
+	StorageKey         string             `json:"storage_key"`
+	DurableObjectRef   string             `json:"durable_object_ref"`
+	Digest             string             `json:"digest"`
+	Filename           string             `json:"filename"`
+	ContentType        string             `json:"content_type"`
+	SizeBytes          int64              `json:"size_bytes"`
+	SourceAttachmentID pgtype.UUID        `json:"source_attachment_id"`
+	SourceCommentID    pgtype.UUID        `json:"source_comment_id"`
+	IdempotencyKey     string             `json:"idempotency_key"`
+	CreatedAt          pgtype.Timestamptz `json:"created_at"`
+}
+
+type ArtifactEvent struct {
+	ID                 pgtype.UUID        `json:"id"`
+	WorkspaceID        pgtype.UUID        `json:"workspace_id"`
+	LineageID          pgtype.UUID        `json:"lineage_id"`
+	Sequence           int32              `json:"sequence"`
+	EventType          string             `json:"event_type"`
+	CandidateID        pgtype.UUID        `json:"candidate_id"`
+	CandidateRevision  int32              `json:"candidate_revision"`
+	CandidateDigest    string             `json:"candidate_digest"`
+	CandidateObjectRef string             `json:"candidate_object_ref"`
+	FormalArtifactRef  pgtype.Text        `json:"formal_artifact_ref"`
+	IdempotencyKey     string             `json:"idempotency_key"`
+	CreatedAt          pgtype.Timestamptz `json:"created_at"`
+}
+
+type ArtifactMaterializationIntent struct {
+	WorkspaceID        pgtype.UUID        `json:"workspace_id"`
+	CandidateID        pgtype.UUID        `json:"candidate_id"`
+	LineageID          pgtype.UUID        `json:"lineage_id"`
+	StorageKey         string             `json:"storage_key"`
+	DurableObjectRef   string             `json:"durable_object_ref"`
+	Digest             string             `json:"digest"`
+	Filename           string             `json:"filename"`
+	ContentType        string             `json:"content_type"`
+	SizeBytes          int64              `json:"size_bytes"`
+	SourceAttachmentID pgtype.UUID        `json:"source_attachment_id"`
+	SourceCommentID    pgtype.UUID        `json:"source_comment_id"`
+	IdempotencyKey     string             `json:"idempotency_key"`
+	State              string             `json:"state"`
+	LastError          pgtype.Text        `json:"last_error"`
+	CreatedAt          pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
+}
+
+type AssignmentDispatchReceipt struct {
+	CommandID         pgtype.UUID        `json:"command_id"`
+	WorkspaceID       pgtype.UUID        `json:"workspace_id"`
+	IssueID           pgtype.UUID        `json:"issue_id"`
+	LocalAgentID      pgtype.UUID        `json:"local_agent_id"`
+	InitialTaskID     pgtype.UUID        `json:"initial_task_id"`
+	WorkOrderRef      string             `json:"work_order_ref"`
+	WorkOrderRevision string             `json:"work_order_revision"`
+	WorkOrderDigest   string             `json:"work_order_digest"`
+	InputDigest       string             `json:"input_digest"`
+	EmployeeRef       string             `json:"employee_ref"`
+	EmployeeRevision  string             `json:"employee_revision"`
+	EmployeeDigest    string             `json:"employee_digest"`
+	BindingRef        string             `json:"binding_ref"`
+	BindingRevision   string             `json:"binding_revision"`
+	BindingDigest     string             `json:"binding_digest"`
+	AgentRef          string             `json:"agent_ref"`
+	AgentRevision     string             `json:"agent_revision"`
+	AgentDigest       string             `json:"agent_digest"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+}
+
 type Attachment struct {
 	ID            pgtype.UUID        `json:"id"`
 	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
@@ -493,6 +567,47 @@ type DaemonToken struct {
 	DaemonID    string             `json:"daemon_id"`
 	ExpiresAt   pgtype.Timestamptz `json:"expires_at"`
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+}
+
+type ExecutionReceipt struct {
+	TaskID              pgtype.UUID        `json:"task_id"`
+	WorkspaceID         pgtype.UUID        `json:"workspace_id"`
+	IssueID             pgtype.UUID        `json:"issue_id"`
+	AssignmentCommandID pgtype.UUID        `json:"assignment_command_id"`
+	WorkOrderRef        string             `json:"work_order_ref"`
+	WorkOrderRevision   string             `json:"work_order_revision"`
+	WorkOrderDigest     string             `json:"work_order_digest"`
+	InputDigest         string             `json:"input_digest"`
+	EmployeeRef         string             `json:"employee_ref"`
+	EmployeeRevision    string             `json:"employee_revision"`
+	EmployeeDigest      string             `json:"employee_digest"`
+	BindingRef          string             `json:"binding_ref"`
+	BindingRevision     string             `json:"binding_revision"`
+	BindingDigest       string             `json:"binding_digest"`
+	AgentRef            string             `json:"agent_ref"`
+	AgentRevision       string             `json:"agent_revision"`
+	AgentDigest         string             `json:"agent_digest"`
+	RuntimeSnapshot     []byte             `json:"runtime_snapshot"`
+	RuntimeDigest       string             `json:"runtime_digest"`
+	ClaimedAt           pgtype.Timestamptz `json:"claimed_at"`
+	TerminalStatus      pgtype.Text        `json:"terminal_status"`
+	CompletedAt         pgtype.Timestamptz `json:"completed_at"`
+	OutputDigest        pgtype.Text        `json:"output_digest"`
+	ResultSnapshot      []byte             `json:"result_snapshot"`
+	TerminalError       pgtype.Text        `json:"terminal_error"`
+	FinalizedAt         pgtype.Timestamptz `json:"finalized_at"`
+	CreatedAt           pgtype.Timestamptz `json:"created_at"`
+}
+
+type ExternalWorkOrderLink struct {
+	WorkspaceID      pgtype.UUID        `json:"workspace_id"`
+	WorkOrderRef     string             `json:"work_order_ref"`
+	LinkedRevision   string             `json:"linked_revision"`
+	LinkedDigest     string             `json:"linked_digest"`
+	SourceObservedAt pgtype.Timestamptz `json:"source_observed_at"`
+	FreshnessAtLink  string             `json:"freshness_at_link"`
+	IssueID          pgtype.UUID        `json:"issue_id"`
+	LinkedAt         pgtype.Timestamptz `json:"linked_at"`
 }
 
 type Feedback struct {

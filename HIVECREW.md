@@ -78,6 +78,13 @@ It is a design baseline, not an implementation or production-state claim.
 
 ## Current state
 
-B0 independent custody is complete. B1 product re-identity is active under
-`WO-HIVECREW-REIDENTITY-B1`. B1 changes only the isolated HiveCrew repository and
-candidate builds; it is not a production deployment, registry activation, or 1421 release.
+B0 independent custody is complete. B1 product re-identity has a verified
+candidate baseline recorded in `docs/evidence/WO-HIVECREW-REIDENTITY-B1-RESULT.md`;
+it is not a production deployment, registry activation, or 1421 release.
+
+William activated `HIVECREW-OWNER-OPERATING-WORKBENCH-V1` on 2026-08-11. P1
+froze the source-backed operating-loop contract; the current frontier is P2's
+first real Owner-to-Outcome vertical slice. Execution state is owned only by
+`docs/goals/HIVECREW-OWNER-OPERATING-WORKBENCH-V1/CHECKLIST.yaml`; the first
+implementation target remains one real Owner-to-Outcome loop rather than a
+graph-wide UI redesign.

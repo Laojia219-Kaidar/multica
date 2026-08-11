@@ -1514,6 +1514,16 @@ func (h *Handler) ClaimTasksByRuntime(w http.ResponseWriter, r *http.Request) {
 			// the reclaim path.
 			continue
 		}
+		executionEvidence, evidenceErr := buildCompanyOpsExecutionPayloadEvidence(resp, rt)
+		if evidenceErr != nil {
+			slog.Error("batch claim: build execution payload evidence failed; requeueing claim",
+				"task_id", uuidToString(task.ID), "error", evidenceErr)
+			if _, rerr := h.TaskService.RequeueTaskAfterClaimFailure(r.Context(), task); rerr != nil {
+				slog.Error("batch claim: requeue after execution evidence failure failed",
+					"task_id", uuidToString(task.ID), "error", rerr)
+			}
+			continue
+		}
 		if !rt.OwnerID.Valid {
 			slog.Error("batch claim: runtime owner missing; cancelling task to avoid unscoped agent credentials",
 				"task_id", uuidToString(task.ID), "runtime_id", uuidToString(task.RuntimeID))
@@ -1545,7 +1555,7 @@ func (h *Handler) ClaimTasksByRuntime(w http.ResponseWriter, r *http.Request) {
 			WorkspaceID: parseUUID(resp.WorkspaceID),
 			UserID:      rt.OwnerID,
 			ExpiresAt:   pgtype.Timestamptz{Time: time.Now().Add(24 * time.Hour), Valid: true},
-		}, deliveredCommentIDs, commentBackedTask)
+		}, deliveredCommentIDs, commentBackedTask, executionEvidence)
 		if ferr != nil {
 			slog.Error("batch claim: finalize task claim failed; requeueing claim",
 				"task_id", uuidToString(task.ID), "error", ferr)
@@ -2500,6 +2510,40 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 	return resp, deliveredCommentIDs, agentSkillCount, builtinSkillCount, nil
 }
 
+func buildCompanyOpsExecutionPayloadEvidence(
+	resp AgentTaskResponse,
+	runtime db.AgentRuntime,
+) (*service.CompanyOpsExecutionPayloadEvidence, error) {
+	observation := service.CompanyOpsExecutionPayloadObservation{
+		TaskID:          resp.ID,
+		AgentID:         resp.AgentID,
+		RuntimeID:       resp.RuntimeID,
+		ConnectedApps:   resp.ConnectedApps,
+		RuntimeName:     runtime.Name,
+		RuntimeMode:     runtime.RuntimeMode,
+		RuntimeProvider: runtime.Provider,
+	}
+	if resp.Agent != nil {
+		observation.AgentName = resp.Agent.Name
+		observation.Instructions = resp.Agent.Instructions
+		observation.CustomEnv = resp.Agent.CustomEnv
+		observation.CustomArgs = resp.Agent.CustomArgs
+		observation.MCPConfig = resp.Agent.McpConfig
+		observation.AgentModel = resp.Agent.Model
+		observation.ThinkingLevel = resp.Agent.ThinkingLevel
+		observation.ServiceTier = resp.Agent.ServiceTier
+		observation.RuntimeConfig = resp.Agent.RuntimeConfig
+		observation.Skills = resp.Agent.Skills
+		observation.SkillRefs = resp.Agent.SkillRefs
+		observation.DisabledRuntimeSkills = resp.Agent.DisabledRuntimeSkills
+	}
+	evidence, err := service.BuildCompanyOpsExecutionPayloadEvidence(observation)
+	if err != nil {
+		return nil, err
+	}
+	return &evidence, nil
+}
+
 // ClaimTaskByRuntime atomically claims the next queued task for a runtime.
 // The response includes the agent's name and skills, fetched fresh from the DB.
 func (h *Handler) ClaimTaskByRuntime(w http.ResponseWriter, r *http.Request) {
@@ -2575,6 +2619,18 @@ func (h *Handler) ClaimTaskByRuntime(w http.ResponseWriter, r *http.Request) {
 		writeError(w, failure.status, failure.message)
 		return
 	}
+	executionEvidence, evidenceErr := buildCompanyOpsExecutionPayloadEvidence(resp, runtime)
+	if evidenceErr != nil {
+		outcome = "error_claim_evidence"
+		slog.Error("task claim: failed to build execution payload evidence",
+			"task_id", uuidToString(task.ID), "error", evidenceErr)
+		if _, rerr := h.TaskService.RequeueTaskAfterClaimFailure(r.Context(), *task); rerr != nil {
+			slog.Error("task claim: failed to requeue after execution evidence error",
+				"task_id", uuidToString(task.ID), "error", rerr)
+		}
+		writeError(w, http.StatusInternalServerError, "failed to freeze task execution payload")
+		return
+	}
 	commentBackedTask := task.TriggerCommentID.Valid || len(task.CoalescedCommentIds) > 0
 	requeueFailedClaim := func(reason string) {
 		if _, err := h.TaskService.RequeueTaskAfterClaimFailure(r.Context(), *task); err != nil {
@@ -2626,7 +2682,7 @@ func (h *Handler) ClaimTaskByRuntime(w http.ResponseWriter, r *http.Request) {
 		WorkspaceID: parseUUID(resp.WorkspaceID),
 		UserID:      runtime.OwnerID,
 		ExpiresAt:   pgtype.Timestamptz{Time: time.Now().Add(24 * time.Hour), Valid: true},
-	}, deliveredCommentIDs, commentBackedTask)
+	}, deliveredCommentIDs, commentBackedTask, executionEvidence)
 	if ferr != nil {
 		outcome = "error_claim_finalize"
 		slog.Error("task claim: failed to finalize token and comment delivery receipt",
@@ -2957,6 +3013,13 @@ func (h *Handler) CompleteTask(w http.ResponseWriter, r *http.Request) {
 		slog.Warn("complete task failed", "task_id", taskID, "error", err)
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+	if h.CompanyOpsArtifacts != nil {
+		if _, artifactErr := h.CompanyOpsArtifacts.MaterializeCompletedTask(r.Context(), workspaceID, *task, req.Output, req.PRURL); artifactErr != nil {
+			slog.Warn("materialize CompanyOps temporary artifact failed", "task_id", taskID, "error", artifactErr)
+			writeError(w, http.StatusInternalServerError, artifactErr.Error())
+			return
+		}
 	}
 
 	h.emitIssueExecutedOnFirstCompletion(r, task)

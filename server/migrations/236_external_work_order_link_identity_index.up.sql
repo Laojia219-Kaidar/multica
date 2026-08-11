@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX CONCURRENTLY external_work_order_link_identity_uidx ON external_work_order_link (workspace_id, work_order_ref);

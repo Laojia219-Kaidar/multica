@@ -124,6 +124,7 @@ vi.mock("./components/use-chat-controller", async () => {
       availableAgents: availableAgentsRef.current,
       agentsSettled: agentsSettledRef.current,
       sessions: [],
+      sessionsLoaded: true,
       activeSessionId: useSyncExternalStore(
         subscribeToStore,
         () => storeRef.current,

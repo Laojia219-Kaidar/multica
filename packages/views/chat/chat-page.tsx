@@ -27,6 +27,43 @@ import { useChatController } from "./components/use-chat-controller";
 import { OfflineBanner } from "./components/offline-banner";
 import { NoAgentBanner } from "./components/no-agent-banner";
 import { ArchivedAgentBanner } from "./components/archived-agent-banner";
+import { OwnerWorkContextCard } from "./components/owner-work-context-card";
+import {
+  hasOwnerWorkContextParams,
+  useOwnerWorkContext,
+} from "./components/use-owner-work-context";
+
+function OwnerWorkContextSurface({
+  wsId,
+  pathname,
+  searchParams,
+  session,
+  sessionsLoaded,
+}: {
+  wsId: string;
+  pathname: string;
+  searchParams: URLSearchParams;
+  session: Pick<ChatSession, "id" | "agent_id"> | null;
+  sessionsLoaded: boolean;
+}) {
+  const binding = useOwnerWorkContext({
+    wsId,
+    pathname,
+    searchParams,
+    session,
+    sessionsLoaded,
+  });
+  if (!binding) return null;
+
+	return (
+		<OwnerWorkContextCard
+			key={binding.contextKey}
+			context={binding.context}
+      onConfirmAssignment={binding.onConfirmAssignment}
+      onReviewArtifact={binding.onReviewArtifact}
+    />
+  );
+}
 
 /**
  * Chat tab — the first-class two-pane surface (thread list on the left,
@@ -49,12 +86,16 @@ import { ArchivedAgentBanner } from "./components/archived-agent-banner";
  */
 export function ChatPage() {
   const { t } = useT("chat");
-  const { searchParams, replace } = useNavigation();
+  const { pathname, searchParams, replace } = useNavigation();
   const wsPaths = useWorkspacePaths();
   const isMobile = useIsMobile();
 
   const c = useChatController({ isActive: true });
-  const urlSession = searchParams.get("session") || null;
+  const hasOwnerWorkContext = hasOwnerWorkContextParams(searchParams);
+  const urlSession =
+    searchParams.get("session") ||
+    (hasOwnerWorkContext ? searchParams.get("session_id") : null) ||
+    null;
   const urlAgent = searchParams.get("agent") || null;
 
   // "Composing a brand-new chat" — the user hit ⊕ but hasn't sent yet, so no
@@ -91,14 +132,15 @@ export function ChatPage() {
 
   // store → URL: thread selection, "new chat", and sessions created by sending.
   useEffect(() => {
+    if (hasOwnerWorkContext) return;
     const live = useChatStore.getState().activeSessionId;
     const current = searchParams.get("session") || null;
     if (live !== current) {
       const base = wsPaths.chat();
       replace(live ? `${base}?session=${live}` : base);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- react to store only
-  }, [c.activeSessionId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- react to store or work-context mode only
+  }, [c.activeSessionId, hasOwnerWorkContext]);
 
   const { defaultLayout, onLayoutChanged } = useDefaultLayout({
     id: "multica_chat_layout",
@@ -234,6 +276,15 @@ export function ChatPage() {
           onArchive={handleArchive}
         />
       )}
+      {hasOwnerWorkContext && (
+        <OwnerWorkContextSurface
+          wsId={c.wsId}
+          pathname={pathname}
+          searchParams={searchParams}
+          session={c.currentSession ?? null}
+          sessionsLoaded={c.sessionsLoaded}
+        />
+      )}
       {c.showSkeleton ? (
         <ChatMessageSkeleton />
       ) : c.hasMessages ? (
@@ -282,7 +333,7 @@ export function ChatPage() {
 
   // -- Mobile: list / conversation toggle -----------------------------------
   if (isMobile) {
-    if (c.activeSessionId || composingNew) {
+    if (c.activeSessionId || composingNew || hasOwnerWorkContext) {
       return (
         <div className="flex flex-1 flex-col min-h-0">
           <div className="flex h-12 shrink-0 items-center border-b px-2">
@@ -315,7 +366,7 @@ export function ChatPage() {
   // there is a chat target — an open thread or a new chat whose agent was just
   // picked via ⊕. With nothing selected there is no agent, so we show a neutral
   // prompt instead of an orphaned compose box. -------------------------------
-  const hasTarget = !!c.activeSessionId || composingNew;
+  const hasTarget = !!c.activeSessionId || composingNew || hasOwnerWorkContext;
   return (
     <ResizablePanelGroup
       orientation="horizontal"

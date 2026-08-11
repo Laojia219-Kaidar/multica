@@ -20,6 +20,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/analytics"
 	"github.com/multica-ai/multica/server/internal/auth"
 	"github.com/multica-ai/multica/server/internal/cloudruntime"
+	companyopsapi "github.com/multica-ai/multica/server/internal/companyops"
 	"github.com/multica-ai/multica/server/internal/daemonws"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/featureflags"
@@ -103,6 +104,68 @@ func appURLFromEnv() string {
 	return strings.TrimRight(strings.TrimSpace(os.Getenv("FRONTEND_ORIGIN")), "/")
 }
 
+// configureCompanyOps wires the optional HiveCosm read authority and the
+// HiveCrew-owned assignment writer. Missing or invalid authority configuration
+// leaves the public endpoints registered but fail-closed with source_gap.
+func configureCompanyOps(h *handler.Handler, queries *db.Queries, pool *pgxpool.Pool) {
+	baseURL := strings.TrimSpace(os.Getenv("HIVECOSM_AUTHORITY_BASE_URL"))
+	if baseURL == "" {
+		return
+	}
+	token := strings.TrimSpace(os.Getenv("HIVECOSM_AUTHORITY_BEARER_TOKEN"))
+	if token == "" {
+		slog.Warn("companyops authority adapter disabled", "error", "HIVECOSM_AUTHORITY_BEARER_TOKEN is unavailable")
+		return
+	}
+
+	transport := companyOpsBearerTransport{base: http.DefaultTransport, token: token}
+	authorityClient, err := companyopsapi.NewHiveCosmAuthorityClient(baseURL, &http.Client{
+		Transport: transport,
+		Timeout:   10 * time.Second,
+	})
+	if err != nil {
+		slog.Warn("companyops authority adapter disabled", "error", err)
+		return
+	}
+	h.CompanyOpsAuthority = service.NewCompanyOpsAuthorityResolver(authorityClient, queries)
+
+	projectionService, err := service.NewCompanyOpsWorkOrderProjectionService(h.IssueService)
+	if err != nil {
+		slog.Warn("companyops WorkOrder projection disabled", "error", err)
+		return
+	}
+	h.CompanyOpsEnsureWorkOrderIssue = func(
+		ctx context.Context,
+		workspaceID pgtype.UUID,
+		actorUserID pgtype.UUID,
+		workOrder companyopsapi.AuthoritySnapshot,
+	) (db.Issue, error) {
+		projection, err := projectionService.Project(ctx, service.CompanyOpsWorkOrderProjectionRequest{
+			WorkspaceID:      workspaceID,
+			ActorUserID:      actorUserID,
+			WorkOrder:        workOrder,
+			SourceObservedAt: time.Now().UTC(),
+		})
+		if err != nil {
+			return db.Issue{}, err
+		}
+		return projection.Issue, nil
+	}
+
+	assignmentBackend, err := service.NewProductionCompanyOpsAssignmentBackend(queries, pool, h.TaskService)
+	if err != nil {
+		slog.Warn("companyops assignment writer disabled", "error", err)
+		return
+	}
+	h.CompanyOpsAssignment = service.NewCompanyOpsAssignmentService(assignmentBackend)
+	artifactService, err := service.NewCompanyOpsArtifactService(queries, pool, h.Storage, h.TaskService)
+	if err != nil {
+		slog.Warn("companyops artifact writer disabled", "error", err)
+		return
+	}
+	h.CompanyOpsArtifacts = artifactService
+}
+
 // parseTrustedProxies parses a comma-separated list of CIDR prefixes from the
 // MULTICA_TRUSTED_PROXIES env var. Invalid entries are dropped with a single
 // warn-line per entry rather than crashing the server — a typo in one CIDR
@@ -169,6 +232,18 @@ type RouterOptions struct {
 	HeartbeatScheduler handler.HeartbeatScheduler
 }
 
+type companyOpsBearerTransport struct {
+	base  http.RoundTripper
+	token string
+}
+
+func (t companyOpsBearerTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	clone := request.Clone(request.Context())
+	clone.Header = request.Header.Clone()
+	clone.Header.Set("Authorization", "Bearer "+t.token)
+	return t.base.RoundTrip(clone)
+}
+
 // NewRouterWithOptions builds the fully-configured Chi router and
 // returns the *handler.Handler it was constructed from. Callers that
 // need to drive background lifecycle on services attached to the
@@ -218,6 +293,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		ServerVersion:            normalizeServerVersion(version),
 	}
 	h := handler.New(queries, pool, hub, bus, emailSvc, store, cfSigner, analyticsClient, signupConfig, daemonHub)
+	configureCompanyOps(h, queries, pool)
 	h.Metrics = opts.BusinessMetrics
 	h.FeatureFlags = opts.FeatureFlags
 	h.TaskService.FeatureFlags = opts.FeatureFlags
@@ -1099,6 +1175,13 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		// --- Workspace-scoped routes (all require workspace membership) ---
 		r.Group(func(r chi.Router) {
 			r.Use(middleware.RequireWorkspaceMember(queries))
+
+			r.Route("/api/company-ops", func(r chi.Router) {
+				r.Use(handler.RequireHumanActor)
+				r.Get("/work-context", h.GetCompanyOpsWorkContext)
+				r.Post("/assignments", h.CreateCompanyOpsAssignment)
+				r.Post("/artifact-reviews", h.CreateCompanyOpsArtifactReview)
+			})
 
 			// Assignee frequency
 			r.Get("/api/assignee-frequency", h.GetAssigneeFrequency)

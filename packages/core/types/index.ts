@@ -213,6 +213,26 @@ export type {
   SquadMemberStatusListResponse,
 } from "./squad";
 export type {
+  CompanyOpsWorkContextRequest,
+  CompanyOpsAuthoritySnapshot,
+  CompanyOpsEmployeeAuthority,
+  CompanyOpsIdentityBindingAuthority,
+  CompanyOpsAgentAuthority,
+  CompanyOpsSessionAuthority,
+  CompanyOpsIssueProjection,
+  CompanyOpsOwnerWorkContext,
+  CompanyOpsAssignmentCommand,
+  CompanyOpsAssignmentDispatchReceipt,
+  CompanyOpsArtifactOutcome,
+  CompanyOpsArtifactReviewCommand,
+  CompanyOpsArtifactReviewReceipt,
+} from "./companyops";
+export {
+  COMPANY_OPS_WORK_CONTEXT_SCHEMA_VERSION,
+  COMPANY_OPS_ASSIGNMENT_DISPATCH_SCHEMA_VERSION,
+  COMPANY_OPS_ARTIFACT_REVIEW_SCHEMA_VERSION,
+} from "./companyops";
+export type {
   BillingBalance,
   BillingTransaction,
   BillingTransactionsPage,

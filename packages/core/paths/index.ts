@@ -31,6 +31,11 @@ export type {
 } from "./tab-presentation";
 export { resolvePostAuthDestination, useHasOnboarded } from "./resolve";
 export {
+  buildHiveCrewWorkContextUrl,
+  parseHiveCrewWorkContextUrl,
+} from "./hivecrew-work-context";
+export type { HiveCrewWorkContext } from "./hivecrew-work-context";
+export {
   WorkspaceSlugProvider,
   useWorkspaceSlug,
   useRequiredWorkspaceSlug,

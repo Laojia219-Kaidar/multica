@@ -164,7 +164,14 @@ import type {
   CreateBillingCheckoutSessionResponse,
   BillingCheckoutSessionStatus,
   CreateBillingPortalSessionResponse,
+  CompanyOpsWorkContextRequest,
+  CompanyOpsOwnerWorkContext,
+  CompanyOpsAssignmentCommand,
+  CompanyOpsAssignmentDispatchReceipt,
+  CompanyOpsArtifactReviewCommand,
+  CompanyOpsArtifactReviewReceipt,
 } from "../types";
+import { z } from "zod";
 import type { OnboardingCompletionPath } from "../onboarding/types";
 import type { CreateFeedbackResponse, FeedbackKind } from "../feedback/types";
 import type {
@@ -176,6 +183,114 @@ import { type Logger, noopLogger } from "../logger";
 import { createRequestId } from "../utils";
 import { getCurrentSlug } from "../platform/workspace-storage";
 import { parseWithFallback } from "./schema";
+
+const CompanyOpsAuthoritySnapshotSchema = z.object({
+  kind: z.string().min(1),
+  source_ref: z.string().min(1),
+  revision: z.string().min(1),
+  content_digest: z.string().min(1),
+  freshness: z.string().min(1),
+  display_name: z.string().optional(),
+});
+
+const CompanyOpsWorkContextRequestSchema = z.object({
+  work_order_source_ref: z.string().min(1),
+  employee_id: z.string().min(1),
+  identity_binding_id: z.string().min(1),
+  agent_id: z.string().uuid(),
+  session_id: z.string().uuid(),
+});
+
+const CompanyOpsOwnerWorkContextSchema = z.object({
+  schema_version: z.literal("hivecrew.owner-work-context.v1"),
+  request: CompanyOpsWorkContextRequestSchema,
+  work_order: CompanyOpsAuthoritySnapshotSchema,
+  employee: z.object({
+    employee_id: z.string().min(1),
+    authority: CompanyOpsAuthoritySnapshotSchema,
+  }),
+  identity_binding: z.object({
+    identity_binding_id: z.string().min(1),
+    employee_ref: z.string().min(1),
+    agent_ref: z.string().min(1),
+    active: z.boolean(),
+    authority: CompanyOpsAuthoritySnapshotSchema,
+  }),
+  agent: z.object({
+    id: z.string().uuid(),
+    name: z.string().min(1),
+    status: z.string().min(1),
+    runtime_mode: z.string().min(1),
+    model: z.string().optional(),
+    authority: CompanyOpsAuthoritySnapshotSchema,
+  }),
+  session: z.object({
+    id: z.string().uuid(),
+    agent_id: z.string().uuid(),
+    status: z.string().min(1),
+  }),
+  issue: z
+    .object({
+      id: z.string().uuid(),
+      number: z.number().int().nonnegative(),
+      title: z.string(),
+      status: z.string().min(1),
+      assignee_id: z.string().uuid().nullable().optional(),
+    })
+    .nullable(),
+  projection_state: z.enum(["not_projected", "projected"]),
+  observed_at: z.string().min(1),
+  outcome: z
+    .object({
+      command_id: z.string().uuid(),
+      issue_id: z.string().uuid(),
+      initial_task_id: z.string().uuid(),
+      current_task_id: z.string().uuid(),
+      execution_state: z.enum(["awaiting_claim", "running", "completed", "failed", "cancelled"]),
+      artifact: z
+        .object({
+          id: z.string().uuid(),
+          revision: z.number().int().positive(),
+          durable_object_ref: z.string().min(1),
+          digest: z.string().min(1),
+          status: z.enum([
+            "submitted",
+            "changes_requested",
+            "approved",
+            "promotion_requested",
+            "promotion_succeeded",
+            "promotion_failed",
+            "authority_readback_confirmed",
+          ]),
+          formal_visible: z.boolean(),
+          formal_artifact_ref: z.string().min(1).optional(),
+        })
+        .optional(),
+    })
+    .optional(),
+});
+
+const CompanyOpsAssignmentDispatchReceiptSchema = z.object({
+  schema_version: z.literal("hivecrew.assignment-dispatch.v1"),
+  command_id: z.string().uuid(),
+  issue_id: z.string().uuid(),
+  initial_task_id: z.string().uuid(),
+  execution_receipt: z.object({
+    state: z.literal("awaiting_claim"),
+    task_id: z.string().uuid(),
+  }),
+  created_at: z.string().min(1).optional(),
+});
+
+const CompanyOpsArtifactReviewReceiptSchema = z.object({
+  schema_version: z.literal("hivecrew.artifact-review.v1"),
+  review_id: z.string().uuid(),
+  event_id: z.string().uuid(),
+  sequence: z.number().int().positive(),
+  decision: z.enum(["changes_requested", "approved"]),
+  candidate_id: z.string().uuid(),
+  rework_task_id: z.string().uuid().optional(),
+});
 import {
   AgentTaskListSchema,
   AgentTemplateSchema,
@@ -2162,6 +2277,70 @@ export class ApiClient {
     return parseWithFallback(raw, AttachmentResponseSchema, EMPTY_ATTACHMENT, {
       endpoint: "POST /api/upload-file",
     });
+  }
+
+  // CompanyOps Owner-to-Outcome bridge
+  async getCompanyOpsWorkContext(
+    request: CompanyOpsWorkContextRequest,
+  ): Promise<CompanyOpsOwnerWorkContext> {
+    const query = new URLSearchParams({
+      work_order_source_ref: request.work_order_source_ref,
+      employee_id: request.employee_id,
+      identity_binding_id: request.identity_binding_id,
+      agent_id: request.agent_id,
+      session_id: request.session_id,
+    });
+    const raw = await this.fetch<unknown>(
+      `/api/company-ops/work-context?${query.toString()}`,
+    );
+    const parsed = parseWithFallback<CompanyOpsOwnerWorkContext | null>(
+      raw,
+      CompanyOpsOwnerWorkContextSchema,
+      null,
+      { endpoint: "GET /api/company-ops/work-context" },
+    );
+    if (!parsed) {
+      throw new Error("Invalid CompanyOps owner work-context response.");
+    }
+    return parsed;
+  }
+
+  async createCompanyOpsAssignment(
+    command: CompanyOpsAssignmentCommand,
+  ): Promise<CompanyOpsAssignmentDispatchReceipt> {
+    const raw = await this.fetch<unknown>("/api/company-ops/assignments", {
+      method: "POST",
+      body: JSON.stringify(command),
+    });
+    const parsed = parseWithFallback<CompanyOpsAssignmentDispatchReceipt | null>(
+      raw,
+      CompanyOpsAssignmentDispatchReceiptSchema,
+      null,
+      { endpoint: "POST /api/company-ops/assignments" },
+    );
+    if (!parsed) {
+      throw new Error("Invalid CompanyOps assignment dispatch response.");
+    }
+    return parsed;
+  }
+
+  async reviewCompanyOpsArtifact(
+    command: CompanyOpsArtifactReviewCommand,
+  ): Promise<CompanyOpsArtifactReviewReceipt> {
+    const raw = await this.fetch<unknown>("/api/company-ops/artifact-reviews", {
+      method: "POST",
+      body: JSON.stringify(command),
+    });
+    const parsed = parseWithFallback<CompanyOpsArtifactReviewReceipt | null>(
+      raw,
+      CompanyOpsArtifactReviewReceiptSchema,
+      null,
+      { endpoint: "POST /api/company-ops/artifact-reviews" },
+    );
+    if (!parsed) {
+      throw new Error("Invalid CompanyOps artifact review response.");
+    }
+    return parsed;
   }
 
   // Chat Sessions

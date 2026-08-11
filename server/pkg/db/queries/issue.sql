@@ -113,6 +113,22 @@ UPDATE issue SET
 WHERE id = $1
 RETURNING *;
 
+-- name: AssignIssueAgentExact :one
+-- CompanyOps assignment is a compare-and-swap, not a partial UpdateIssue.
+-- It is workspace-scoped and only claims an active, wholly-unassigned Issue;
+-- a missing/cross-workspace/terminal/already-assigned row returns no rows so
+-- the caller fails closed without overwriting a concurrent human decision.
+UPDATE issue SET
+    assignee_type = 'agent',
+    assignee_id = @agent_id,
+    updated_at = now()
+WHERE workspace_id = @workspace_id
+  AND id = @issue_id
+  AND assignee_type IS NULL
+  AND assignee_id IS NULL
+  AND status NOT IN ('done', 'cancelled')
+RETURNING *;
+
 -- name: UpdateIssueStatus :one
 -- Workspace_id in the WHERE clause is a SQL-layer tenant guard; see DeleteIssue.
 UPDATE issue SET

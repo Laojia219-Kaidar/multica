@@ -5,6 +5,197 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+describe("ApiClient CompanyOps owner work context", () => {
+  const agentId = "d34db33f-4ef7-4fe1-a32d-8f24c57b07b1";
+  const sessionId = "01972f7e-7e8d-77ef-a13d-1b0ce3e9c001";
+  const request = {
+    work_order_source_ref:
+      "hive://hivecosm/delivery/project/PRJ-HIVECREW-P2/work-order/WO-P2-001",
+    employee_id: "employee-01JOWNER",
+    identity_binding_id: "binding-01JOWNER",
+    agent_id: agentId,
+    session_id: sessionId,
+  };
+  const authority = (kind: string, sourceRef: string) => ({
+    kind,
+    source_ref: sourceRef,
+    revision: `${kind}-revision-1`,
+    content_digest: `${kind}-digest-1`,
+    freshness: "current",
+  });
+  const context = {
+    schema_version: "hivecrew.owner-work-context.v1",
+    request,
+    work_order: authority("WorkOrder", request.work_order_source_ref),
+    employee: {
+      employee_id: request.employee_id,
+      authority: authority(
+        "Employee",
+        `hivecosm://employees/${request.employee_id}`,
+      ),
+    },
+    identity_binding: {
+      identity_binding_id: request.identity_binding_id,
+      employee_ref: `hivecosm://employees/${request.employee_id}`,
+      agent_ref: `/api/agents/${agentId}`,
+      active: true,
+      authority: authority(
+        "IdentityBinding",
+        `hivecosm://identity-bindings/${request.identity_binding_id}`,
+      ),
+    },
+    agent: {
+      id: agentId,
+      name: "Atlas",
+      status: "idle",
+      runtime_mode: "local",
+      model: "gpt-5.6",
+      authority: authority("Agent", `/api/agents/${agentId}`),
+    },
+    session: { id: sessionId, agent_id: agentId, status: "active" },
+    issue: null,
+    projection_state: "not_projected",
+    observed_at: "2026-08-11T10:00:00Z",
+  };
+
+  it("GETs the exact selectors and parses the resolved authority context", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(context), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      new ApiClient("https://api.example.test").getCompanyOpsWorkContext(request),
+    ).resolves.toEqual(context);
+
+    const [url, init] = fetchMock.mock.calls[0]!;
+    const parsed = new URL(url as string);
+    expect(`${parsed.origin}${parsed.pathname}`).toBe(
+      "https://api.example.test/api/company-ops/work-context",
+    );
+    expect(Object.fromEntries(parsed.searchParams)).toEqual(request);
+    expect(init?.method ?? "GET").toBe("GET");
+  });
+
+  it("fails closed when a successful work-context response is malformed", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ ...context, session: { id: 7 } }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      ),
+    );
+
+    await expect(
+      new ApiClient("https://api.example.test").getCompanyOpsWorkContext(request),
+    ).rejects.toThrow("Invalid CompanyOps owner work-context response.");
+  });
+
+  it("POSTs an exact assignment command and parses only truthful dispatch ids", async () => {
+    const command = {
+      command_id: "44444444-4444-4444-8444-444444444444",
+      ...request,
+      handoff_note: "Run the bounded P2 slice.",
+    };
+    const receipt = {
+      schema_version: "hivecrew.assignment-dispatch.v1",
+      command_id: command.command_id,
+      issue_id: "55555555-5555-4555-8555-555555555555",
+      initial_task_id: "66666666-6666-4666-8666-666666666666",
+      execution_receipt: {
+        state: "awaiting_claim",
+        task_id: "66666666-6666-4666-8666-666666666666",
+      },
+      created_at: "2026-08-11T10:01:00Z",
+    };
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(receipt), {
+        status: 201,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      new ApiClient("https://api.example.test").createCompanyOpsAssignment(
+        command,
+      ),
+    ).resolves.toEqual(receipt);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.example.test/api/company-ops/assignments",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify(command),
+      }),
+    );
+  });
+
+  it("fails closed when an assignment response omits its task receipt", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            schema_version: "hivecrew.assignment-dispatch.v1",
+            command_id: "44444444-4444-4444-8444-444444444444",
+            issue_id: "55555555-5555-4555-8555-555555555555",
+            initial_task_id: "66666666-6666-4666-8666-666666666666",
+            execution_receipt: { state: "awaiting_claim" },
+          }),
+          { status: 201, headers: { "Content-Type": "application/json" } },
+        ),
+      ),
+    );
+
+    await expect(
+      new ApiClient("https://api.example.test").createCompanyOpsAssignment({
+        command_id: "44444444-4444-4444-8444-444444444444",
+        ...request,
+        handoff_note: "Run the bounded P2 slice.",
+      }),
+    ).rejects.toThrow("Invalid CompanyOps assignment dispatch response.");
+  });
+
+  it("POSTs an exact temporary-artifact review and parses its rework Run", async () => {
+    const command = {
+      review_id: "77777777-7777-4777-8777-777777777777",
+      ...request,
+      candidate_id: "66666666-6666-4666-8666-666666666666",
+      decision: "changes_requested" as const,
+      feedback: "补充浏览器验收证据",
+    };
+    const receipt = {
+      schema_version: "hivecrew.artifact-review.v1",
+      review_id: command.review_id,
+      event_id: "88888888-8888-4888-8888-888888888888",
+      sequence: 2,
+      decision: command.decision,
+      candidate_id: command.candidate_id,
+      rework_task_id: "99999999-9999-4999-8999-999999999999",
+    };
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(receipt), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      new ApiClient("https://api.example.test").reviewCompanyOpsArtifact(command),
+    ).resolves.toEqual(receipt);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.example.test/api/company-ops/artifact-reviews",
+      expect.objectContaining({ method: "POST", body: JSON.stringify(command) }),
+    );
+  });
+});
+
 describe("ApiClient pull-request response schema", () => {
   const validPR = {
     id: "pr-1",

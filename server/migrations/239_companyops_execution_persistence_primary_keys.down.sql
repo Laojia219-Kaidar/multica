@@ -1,0 +1,3 @@
+ALTER TABLE execution_receipt DROP CONSTRAINT IF EXISTS execution_receipt_pkey;
+ALTER TABLE assignment_dispatch_receipt DROP CONSTRAINT IF EXISTS assignment_dispatch_receipt_pkey;
+ALTER TABLE external_work_order_link DROP CONSTRAINT IF EXISTS external_work_order_link_pkey;
