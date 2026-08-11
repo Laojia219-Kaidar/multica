@@ -90,6 +90,7 @@ describe("useOwnerWorkContext", () => {
   let getCompanyOpsWorkContext: ReturnType<typeof vi.fn>;
   let createCompanyOpsAssignment: ReturnType<typeof vi.fn>;
   let reviewCompanyOpsArtifact: ReturnType<typeof vi.fn>;
+  let promoteCompanyOpsArtifact: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
     queryClient = new QueryClient({
@@ -112,10 +113,21 @@ describe("useOwnerWorkContext", () => {
       candidate_id: TASK_ID,
       rework_task_id: "88888888-8888-4888-8888-888888888888",
     });
+    promoteCompanyOpsArtifact = vi.fn().mockResolvedValue({
+      schema_version: "hivecrew.formal-artifact-promotion.v1",
+      promotion_id: COMMAND_ID,
+      candidate_id: TASK_ID,
+      lifecycle_status: "promotion_requested",
+      formal_visible: false,
+      write_performed: false,
+      event_id: "77777777-7777-4777-8777-777777777777",
+      sequence: 3,
+    });
     setApiInstance({
       getCompanyOpsWorkContext,
       createCompanyOpsAssignment,
       reviewCompanyOpsArtifact,
+      promoteCompanyOpsArtifact,
     } as unknown as ApiClient);
     vi.stubGlobal("crypto", { randomUUID: vi.fn(() => COMMAND_ID) });
   });
@@ -326,5 +338,315 @@ describe("useOwnerWorkContext", () => {
     expect(reviewCompanyOpsArtifact).toHaveBeenCalledTimes(2);
     expect(reviewCompanyOpsArtifact.mock.calls[0]?.[0].review_id).toBe(COMMAND_ID);
     expect(reviewCompanyOpsArtifact.mock.calls[1]?.[0].review_id).toBe(COMMAND_ID);
+  });
+
+  it("promotes an approved artifact and reuses its UUID on network retry", async () => {
+    const withApprovedArtifact: CompanyOpsOwnerWorkContext = {
+      ...RESOLVED_CONTEXT,
+      issue: {
+        id: ISSUE_ID,
+        number: 73,
+        title: "WO-P2-001",
+        status: "in_progress",
+        assignee_id: AGENT_ID,
+      },
+      projection_state: "projected",
+      outcome: {
+        command_id: COMMAND_ID,
+        issue_id: ISSUE_ID,
+        initial_task_id: TASK_ID,
+        current_task_id: TASK_ID,
+        execution_state: "completed",
+        artifact: {
+          id: TASK_ID,
+          revision: 1,
+          durable_object_ref: "/uploads/artifact.md",
+          digest: "sha256:artifact",
+          status: "approved",
+          formal_visible: false,
+        },
+      },
+    };
+    getCompanyOpsWorkContext.mockResolvedValue(withApprovedArtifact);
+    promoteCompanyOpsArtifact
+      .mockRejectedValueOnce(new TypeError("network unavailable"))
+      .mockResolvedValueOnce({
+        schema_version: "hivecrew.formal-artifact-promotion.v1",
+        promotion_id: COMMAND_ID,
+        candidate_id: TASK_ID,
+        lifecycle_status: "promotion_requested",
+        formal_visible: false,
+        write_performed: false,
+        event_id: "77777777-7777-4777-8777-777777777777",
+        sequence: 3,
+      });
+    const { result } = renderHook(
+      () =>
+        useOwnerWorkContext({
+          wsId: WS_ID,
+          pathname: "/acme/chat",
+          searchParams: searchParams(),
+          session: { id: SESSION_ID, agent_id: AGENT_ID },
+          sessionsLoaded: true,
+        }),
+      { wrapper: wrapper(queryClient) },
+    );
+    await waitFor(() => expect(result.current?.context.state).toBe("ready"));
+    const promotion = {
+      ...REQUEST,
+      candidate_id: TASK_ID,
+    };
+    await expect(
+      act(async () => result.current!.onPromoteArtifact(promotion)),
+    ).rejects.toThrow("network unavailable");
+    await expect(
+      act(async () => result.current!.onPromoteArtifact(promotion)),
+    ).resolves.toMatchObject({ promotion_id: COMMAND_ID, candidate_id: TASK_ID });
+    expect(promoteCompanyOpsArtifact).toHaveBeenCalledTimes(2);
+    expect(promoteCompanyOpsArtifact.mock.calls[0]?.[0].promotion_id).toBe(COMMAND_ID);
+    expect(promoteCompanyOpsArtifact.mock.calls[1]?.[0].promotion_id).toBe(COMMAND_ID);
+    expect(globalThis.crypto.randomUUID).toHaveBeenCalledTimes(1);
+  });
+
+  it("refreshes the exact work context after a mutation success", async () => {
+    const withApprovedArtifact: CompanyOpsOwnerWorkContext = {
+      ...RESOLVED_CONTEXT,
+      issue: {
+        id: ISSUE_ID,
+        number: 73,
+        title: "WO-P2-001",
+        status: "in_progress",
+        assignee_id: AGENT_ID,
+      },
+      projection_state: "projected",
+      outcome: {
+        command_id: COMMAND_ID,
+        issue_id: ISSUE_ID,
+        initial_task_id: TASK_ID,
+        current_task_id: TASK_ID,
+        execution_state: "completed",
+        artifact: {
+          id: TASK_ID,
+          revision: 1,
+          durable_object_ref: "/uploads/artifact.md",
+          digest: "sha256:artifact",
+          status: "approved",
+          formal_visible: false,
+        },
+      },
+    };
+    getCompanyOpsWorkContext.mockResolvedValue(withApprovedArtifact);
+    const { result } = renderHook(
+      () =>
+        useOwnerWorkContext({
+          wsId: WS_ID,
+          pathname: "/acme/chat",
+          searchParams: searchParams(),
+          session: { id: SESSION_ID, agent_id: AGENT_ID },
+          sessionsLoaded: true,
+        }),
+      { wrapper: wrapper(queryClient) },
+    );
+    await waitFor(() => expect(result.current?.context.state).toBe("ready"));
+
+    const withPromoted: CompanyOpsOwnerWorkContext = {
+      ...withApprovedArtifact,
+      outcome: {
+        ...withApprovedArtifact.outcome!,
+        artifact: {
+          ...withApprovedArtifact.outcome!.artifact!,
+          status: "promotion_requested",
+        },
+      },
+    };
+    getCompanyOpsWorkContext.mockResolvedValueOnce(withPromoted);
+
+    await act(async () => {
+      await result.current!.onPromoteArtifact({ ...REQUEST, candidate_id: TASK_ID });
+    });
+
+    expect(getCompanyOpsWorkContext.mock.calls.length).toBeGreaterThanOrEqual(2);
+    expect(
+      queryClient.getQueryData(ownerWorkContextKeys.detail(WS_ID, REQUEST)),
+    ).toEqual(withPromoted);
+  });
+
+  it("refreshes the exact work context after a POST-success/readback-fail mutation error", async () => {
+    // Scenario: the POST reaches the backend and records promotion_succeeded
+    // on the artifact, but the HTTP response returns an error because the
+    // readback step failed. The hook's onError must invalidate the exact
+    // context so the UI observes the persisted promotion_succeeded outcome.
+    const withApprovedArtifact: CompanyOpsOwnerWorkContext = {
+      ...RESOLVED_CONTEXT,
+      issue: {
+        id: ISSUE_ID,
+        number: 73,
+        title: "WO-P2-001",
+        status: "in_progress",
+        assignee_id: AGENT_ID,
+      },
+      projection_state: "projected",
+      outcome: {
+        command_id: COMMAND_ID,
+        issue_id: ISSUE_ID,
+        initial_task_id: TASK_ID,
+        current_task_id: TASK_ID,
+        execution_state: "completed",
+        artifact: {
+          id: TASK_ID,
+          revision: 1,
+          durable_object_ref: "/uploads/artifact.md",
+          digest: "sha256:artifact",
+          status: "approved",
+          formal_visible: false,
+        },
+      },
+    };
+    getCompanyOpsWorkContext.mockResolvedValue(withApprovedArtifact);
+    const { result } = renderHook(
+      () =>
+        useOwnerWorkContext({
+          wsId: WS_ID,
+          pathname: "/acme/chat",
+          searchParams: searchParams(),
+          session: { id: SESSION_ID, agent_id: AGENT_ID },
+          sessionsLoaded: true,
+        }),
+      { wrapper: wrapper(queryClient) },
+    );
+    await waitFor(() => expect(result.current?.context.state).toBe("ready"));
+
+    const withPromoted: CompanyOpsOwnerWorkContext = {
+      ...withApprovedArtifact,
+      outcome: {
+        ...withApprovedArtifact.outcome!,
+        artifact: {
+          ...withApprovedArtifact.outcome!.artifact!,
+          status: "promotion_succeeded",
+        },
+      },
+    };
+    promoteCompanyOpsArtifact.mockRejectedValueOnce(
+      new TypeError("readback failed"),
+    );
+    getCompanyOpsWorkContext.mockResolvedValueOnce(withPromoted);
+
+    await expect(
+      act(async () =>
+        result.current!.onPromoteArtifact({ ...REQUEST, candidate_id: TASK_ID }),
+      ),
+    ).rejects.toThrow("readback failed");
+
+    // The onError handler invalidated the exact context query; the refetch
+    // must now expose the persisted promotion_succeeded outcome.
+    await waitFor(() => {
+      expect(
+        queryClient.getQueryData(ownerWorkContextKeys.detail(WS_ID, REQUEST)),
+      ).toEqual(withPromoted);
+    });
+    expect(getCompanyOpsWorkContext.mock.calls.length).toBeGreaterThanOrEqual(2);
+
+    const firstPromotionId = promoteCompanyOpsArtifact.mock.calls[0]?.[0]?.promotion_id;
+    const withConfirmed: CompanyOpsOwnerWorkContext = {
+      ...withPromoted,
+      outcome: {
+        ...withPromoted.outcome!,
+        artifact: {
+          ...withPromoted.outcome!.artifact!,
+          status: "authority_readback_confirmed",
+          formal_visible: true,
+          formal_artifact_ref:
+            "hive://hivecosm/delivery/project/PRJ-HIVECREW-P2/work-order/WO-P2-001/formal-artifact/FA-001",
+        },
+      },
+    };
+    promoteCompanyOpsArtifact.mockResolvedValueOnce({
+      schema_version: "hivecrew.formal-artifact-promotion.v1",
+      promotion_id: firstPromotionId,
+      candidate_id: TASK_ID,
+      lifecycle_status: "authority_readback_confirmed",
+      formal_visible: true,
+      formal_artifact_ref:
+        "hive://hivecosm/delivery/project/PRJ-HIVECREW-P2/work-order/WO-P2-001/formal-artifact/FA-001",
+      write_performed: false,
+      event_id: "77777777-7777-4777-8777-777777777777",
+      sequence: 4,
+    });
+    getCompanyOpsWorkContext.mockResolvedValueOnce(withConfirmed);
+
+    await act(async () => {
+      await result.current!.onPromoteArtifact({
+        ...REQUEST,
+        candidate_id: TASK_ID,
+      });
+    });
+
+    expect(promoteCompanyOpsArtifact).toHaveBeenCalledTimes(2);
+    expect(promoteCompanyOpsArtifact.mock.calls[1]?.[0]?.promotion_id).toBe(
+      firstPromotionId,
+    );
+    await waitFor(() => {
+      expect(
+        queryClient.getQueryData(ownerWorkContextKeys.detail(WS_ID, REQUEST)),
+      ).toEqual(withConfirmed);
+    });
+  });
+
+  it("rejects a promotion receipt whose promotion_id does not match the command", async () => {
+    const withApprovedArtifact: CompanyOpsOwnerWorkContext = {
+      ...RESOLVED_CONTEXT,
+      issue: {
+        id: ISSUE_ID,
+        number: 73,
+        title: "WO-P2-001",
+        status: "in_progress",
+        assignee_id: AGENT_ID,
+      },
+      projection_state: "projected",
+      outcome: {
+        command_id: COMMAND_ID,
+        issue_id: ISSUE_ID,
+        initial_task_id: TASK_ID,
+        current_task_id: TASK_ID,
+        execution_state: "completed",
+        artifact: {
+          id: TASK_ID,
+          revision: 1,
+          durable_object_ref: "/uploads/artifact.md",
+          digest: "sha256:artifact",
+          status: "approved",
+          formal_visible: false,
+        },
+      },
+    };
+    getCompanyOpsWorkContext.mockResolvedValue(withApprovedArtifact);
+    promoteCompanyOpsArtifact.mockResolvedValueOnce({
+      schema_version: "hivecrew.formal-artifact-promotion.v1",
+      promotion_id: "99999999-9999-4999-8999-999999999999",
+      candidate_id: TASK_ID,
+      lifecycle_status: "promotion_requested",
+      formal_visible: false,
+      write_performed: false,
+      event_id: "77777777-7777-4777-8777-777777777777",
+      sequence: 3,
+    });
+    const { result } = renderHook(
+      () =>
+        useOwnerWorkContext({
+          wsId: WS_ID,
+          pathname: "/acme/chat",
+          searchParams: searchParams(),
+          session: { id: SESSION_ID, agent_id: AGENT_ID },
+          sessionsLoaded: true,
+        }),
+      { wrapper: wrapper(queryClient) },
+    );
+    await waitFor(() => expect(result.current?.context.state).toBe("ready"));
+
+    await expect(
+      act(async () =>
+        result.current!.onPromoteArtifact({ ...REQUEST, candidate_id: TASK_ID }),
+      ),
+    ).rejects.toThrow("Artifact promotion receipt does not match the exact command.");
   });
 });

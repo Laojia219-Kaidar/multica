@@ -6,6 +6,8 @@ import { useRef, useState } from "react";
 import type {
   CompanyOpsArtifactReviewCommand,
   CompanyOpsArtifactReviewReceipt,
+  CompanyOpsArtifactPromotionCommand,
+  CompanyOpsArtifactPromotionReceipt,
   CompanyOpsAssignmentCommand,
   CompanyOpsAssignmentDispatchReceipt,
   CompanyOpsOwnerWorkContext,
@@ -52,12 +54,21 @@ export type OwnerArtifactReviewWriter = (
   command: OwnerArtifactReviewCommand,
 ) => Promise<CompanyOpsArtifactReviewReceipt>;
 
+export type OwnerPromotionCommand = Omit<
+  CompanyOpsArtifactPromotionCommand,
+  "promotion_id"
+>;
+export type OwnerArtifactPromotionWriter = (
+  command: OwnerPromotionCommand,
+) => Promise<CompanyOpsArtifactPromotionReceipt>;
+
 type WriterInput<T> = T | (new (...args: never[]) => unknown);
 
 interface OwnerWorkContextCardProps {
   context: OwnerWorkContext;
   onConfirmAssignment: WriterInput<OwnerAssignmentWriter>;
   onReviewArtifact: WriterInput<OwnerArtifactReviewWriter>;
+  onPromoteArtifact: WriterInput<OwnerArtifactPromotionWriter>;
 }
 
 function ProvenanceRow({ label, value }: { label: string; value: string }) {
@@ -91,10 +102,28 @@ function executionStateLabel(state: string): string {
   }
 }
 
+function promotionReceiptMessage(
+  receipt: CompanyOpsArtifactPromotionReceipt,
+): string {
+  switch (receipt.lifecycle_status) {
+    case "promotion_requested":
+      return `晋升请求已记录 ${receipt.promotion_id}，等待 HiveCosm 处理。`;
+    case "promotion_succeeded":
+      return `HiveCosm 写入回执已返回 ${receipt.promotion_id}，正式成果仍等待权威回读确认。`;
+    case "promotion_failed":
+      return `晋升命令 ${receipt.promotion_id} 失败，可以使用同一命令重试。`;
+    case "authority_readback_confirmed":
+      return receipt.formal_visible && receipt.formal_artifact_ref
+        ? `正式成果已经权威回读确认：${receipt.formal_artifact_ref}`
+        : "权威回读回执不完整，尚不能确认正式成果。";
+  }
+}
+
 export function OwnerWorkContextCard({
   context,
   onConfirmAssignment,
   onReviewArtifact,
+  onPromoteArtifact,
 }: OwnerWorkContextCardProps) {
   const [handoffNote, setHandoffNote] = useState("");
   const [feedback, setFeedback] = useState("");
@@ -104,6 +133,8 @@ export function OwnerWorkContextCard({
     useState<CompanyOpsAssignmentDispatchReceipt | null>(null);
   const [reviewReceipt, setReviewReceipt] =
     useState<CompanyOpsArtifactReviewReceipt | null>(null);
+  const [promotionReceipt, setPromotionReceipt] =
+    useState<CompanyOpsArtifactPromotionReceipt | null>(null);
   const pendingRef = useRef(false);
   const isReady = context.state === "ready";
   const resolved = isReady ? context.data : null;
@@ -153,6 +184,38 @@ export function OwnerWorkContextCard({
           candidate_id: artifact.id,
           decision,
           feedback: decision === "changes_requested" ? feedback.trim() : "",
+        }),
+      );
+    } catch (error) {
+      setWriteError(errorMessage(error));
+    } finally {
+      pendingRef.current = false;
+      setIsPending(false);
+    }
+  }
+
+  async function promoteArtifact() {
+    if (!resolved || !artifact || pendingRef.current) return;
+    if (
+      artifact.status !== "approved" &&
+      artifact.status !== "promotion_failed" &&
+      artifact.status !== "promotion_succeeded"
+    ) {
+      return;
+    }
+    if (typeof onPromoteArtifact !== "function") {
+      setWriteError("成果晋升能力尚未接通。");
+      return;
+    }
+    pendingRef.current = true;
+    setIsPending(true);
+    setWriteError(null);
+    try {
+      const writer = onPromoteArtifact as OwnerArtifactPromotionWriter;
+      setPromotionReceipt(
+        await writer({
+          ...resolved.request,
+          candidate_id: artifact.id,
         }),
       );
     } catch (error) {
@@ -317,12 +380,70 @@ export function OwnerWorkContextCard({
                     已要求返工；下一次成功 Run 将自动形成第 {artifact.revision + 1} 版。
                   </p>
                 )}
-                {artifact.status === "approved" && (
-                  <p className="text-sm text-muted-foreground">
-                    临时成果已通过，等待晋升为 HiveCosm 正式成果。
+                {artifact.status === "approved" && !promotionReceipt && (
+                  <div className="space-y-2">
+                    <p className="text-sm text-muted-foreground">
+                      临时成果已通过，可以晋升为 HiveCosm 正式成果。
+                    </p>
+                    <Button
+                      type="button"
+                      disabled={isPending}
+                      onClick={promoteArtifact}
+                    >
+                      {isPending ? "正在晋升…" : "晋升为正式成果"}
+                    </Button>
+                  </div>
+                )}
+                {artifact.status === "promotion_requested" && (
+                  <p className="text-sm text-muted-foreground" aria-live="polite">
+                    晋升请求已发送，等待 HiveCosm 回执。
                   </p>
                 )}
-                {artifact.formal_visible && artifact.formal_artifact_ref && (
+                {artifact.status === "promotion_succeeded" && (
+                  <div className="space-y-2">
+                    <p className="text-sm text-muted-foreground" aria-live="polite">
+                      HiveCosm 写入回执已返回，正式成果仍等待权威回读确认。
+                    </p>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      disabled={isPending}
+                      onClick={promoteArtifact}
+                    >
+                      {isPending ? "正在重新回读…" : "重新执行权威回读"}
+                    </Button>
+                  </div>
+                )}
+                {(artifact.status === "promotion_failed" ||
+                  promotionReceipt?.lifecycle_status === "promotion_failed") && (
+                  <div className="space-y-2">
+                    <p className="text-sm text-muted-foreground">
+                      晋升失败，可以重试。
+                    </p>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      disabled={isPending}
+                      onClick={promoteArtifact}
+                    >
+                      {isPending ? "正在重试…" : "重试晋升"}
+                    </Button>
+                  </div>
+                )}
+                {artifact.status === "authority_readback_confirmed" &&
+                  artifact.formal_visible &&
+                  artifact.formal_artifact_ref && (
+                  <p className="text-sm text-muted-foreground" aria-live="polite">
+                    正式成果已确认归档。
+                  </p>
+                )}
+                {artifact.status === "authority_readback_confirmed" &&
+                  (!artifact.formal_visible || !artifact.formal_artifact_ref) && (
+                    <p className="text-sm text-destructive" aria-live="polite">
+                      权威回读状态不完整，尚不能确认正式成果。
+                    </p>
+                  )}
+                {artifact.formal_visible && artifact.status === "authority_readback_confirmed" && artifact.formal_artifact_ref && (
                   <a className="text-sm underline" href={artifact.formal_artifact_ref}>
                     打开正式成果
                   </a>
@@ -338,6 +459,14 @@ export function OwnerWorkContextCard({
               {reviewReceipt.decision === "changes_requested"
                 ? `返工任务已创建：${reviewReceipt.rework_task_id ?? "等待回读"}`
                 : "成果已确认通过。"}
+            </AlertDescription>
+          </Alert>
+        )}
+
+        {promotionReceipt && (
+          <Alert>
+            <AlertDescription aria-live="polite">
+              {promotionReceiptMessage(promotionReceipt)}
             </AlertDescription>
           </Alert>
         )}

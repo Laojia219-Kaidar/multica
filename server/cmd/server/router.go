@@ -158,7 +158,7 @@ func configureCompanyOps(h *handler.Handler, queries *db.Queries, pool *pgxpool.
 		return
 	}
 	h.CompanyOpsAssignment = service.NewCompanyOpsAssignmentService(assignmentBackend)
-	artifactService, err := service.NewCompanyOpsArtifactService(queries, pool, h.Storage, h.TaskService)
+	artifactService, err := service.NewCompanyOpsArtifactService(queries, pool, h.Storage, h.TaskService, authorityClient)
 	if err != nil {
 		slog.Warn("companyops artifact writer disabled", "error", err)
 		return
@@ -1181,6 +1181,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Get("/work-context", h.GetCompanyOpsWorkContext)
 				r.Post("/assignments", h.CreateCompanyOpsAssignment)
 				r.Post("/artifact-reviews", h.CreateCompanyOpsArtifactReview)
+				r.Post("/formal-artifact-promotions", h.CreateCompanyOpsFormalArtifactPromotion)
 			})
 
 			// Assignee frequency

@@ -293,6 +293,7 @@ beforeEach(() => {
     },
     onConfirmAssignment: mockConfirmOwnerAssignment,
     onReviewArtifact: vi.fn(),
+    onPromoteArtifact: vi.fn(),
   };
 });
 

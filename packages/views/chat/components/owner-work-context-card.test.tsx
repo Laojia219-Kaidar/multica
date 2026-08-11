@@ -6,6 +6,7 @@ import userEvent from "@testing-library/user-event";
 import {
   OwnerWorkContextCard,
   type OwnerArtifactReviewWriter,
+  type OwnerArtifactPromotionWriter,
   type OwnerAssignmentCommand,
   type OwnerAssignmentReceipt,
 } from "./owner-work-context-card";
@@ -67,7 +68,11 @@ const DISPATCH_RECEIPT = {
   },
 };
 
-function artifactContext() {
+function artifactContext(overrides?: {
+  status?: "submitted" | "changes_requested" | "approved" | "promotion_requested" | "promotion_succeeded" | "promotion_failed" | "authority_readback_confirmed";
+  formal_visible?: boolean;
+  formal_artifact_ref?: string;
+}) {
   return {
     state: "ready" as const,
     data: {
@@ -90,8 +95,9 @@ function artifactContext() {
           revision: 1,
           durable_object_ref: "/uploads/workspaces/ws/artifact.md",
           digest: "sha256:artifact",
-          status: "submitted" as const,
-          formal_visible: false,
+          status: overrides?.status ?? "submitted",
+          formal_visible: overrides?.formal_visible ?? false,
+          formal_artifact_ref: overrides?.formal_artifact_ref,
         },
       },
     },
@@ -104,6 +110,7 @@ function renderCard({
     .fn<(command: OwnerAssignmentCommand) => Promise<OwnerAssignmentReceipt>>()
     .mockResolvedValue(DISPATCH_RECEIPT),
   onReviewArtifact = vi.fn<OwnerArtifactReviewWriter>(),
+  onPromoteArtifact = vi.fn<OwnerArtifactPromotionWriter>(),
 }: {
   context?:
     | { state: "ready"; data: typeof READY_DATA | ReturnType<typeof artifactContext>["data"] }
@@ -112,15 +119,17 @@ function renderCard({
     command: OwnerAssignmentCommand,
   ) => Promise<OwnerAssignmentReceipt>;
   onReviewArtifact?: OwnerArtifactReviewWriter;
+  onPromoteArtifact?: OwnerArtifactPromotionWriter;
 } = {}) {
   render(
     <OwnerWorkContextCard
       context={context}
       onConfirmAssignment={onConfirmAssignment}
       onReviewArtifact={onReviewArtifact}
+      onPromoteArtifact={onPromoteArtifact}
     />,
   );
-  return { onConfirmAssignment, onReviewArtifact };
+  return { onConfirmAssignment, onReviewArtifact, onPromoteArtifact };
 }
 
 describe("OwnerWorkContextCard", () => {
@@ -207,4 +216,173 @@ describe("OwnerWorkContextCard", () => {
     await user.click(screen.getByRole("button", { name: "确认通过" }));
     expect(await screen.findByText("成果已确认通过。")).toBeInTheDocument();
   });
+
+  it("promotes an approved artifact to formal", async () => {
+    const user = userEvent.setup();
+    const PROMOTION_RECEIPT = {
+      schema_version: "hivecrew.formal-artifact-promotion.v1" as const,
+      promotion_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      candidate_id: CANDIDATE_ID,
+      lifecycle_status: "promotion_requested" as const,
+      formal_visible: false,
+      write_performed: false,
+      event_id: "11111111-1111-4111-8111-111111111111",
+      sequence: 1,
+    };
+    const onPromoteArtifact = vi.fn<OwnerArtifactPromotionWriter>().mockResolvedValue(PROMOTION_RECEIPT);
+    renderCard({ context: artifactContext({ status: "approved" }), onPromoteArtifact });
+    expect(screen.getByRole("button", { name: "晋升为正式成果" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "晋升为正式成果" }));
+    await waitFor(() =>
+      expect(onPromoteArtifact).toHaveBeenCalledWith({
+        ...REQUEST,
+        candidate_id: CANDIDATE_ID,
+      }),
+    );
+    expect(await screen.findByText(/bbbbbbbb-bbbb/)).toBeInTheDocument();
+  });
+
+  it("shows promotion_requested state and hides the promote button", () => {
+    renderCard({ context: artifactContext({ status: "promotion_requested" }) });
+    expect(screen.getByText(/晋升请求已发送/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "晋升为正式成果" })).not.toBeInTheDocument();
+  });
+
+  it("allows the Owner to resume authority readback after promotion_succeeded", async () => {
+    const user = userEvent.setup();
+    const promotionReceipt = {
+      schema_version: "hivecrew.formal-artifact-promotion.v1" as const,
+      promotion_id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+      candidate_id: CANDIDATE_ID,
+      lifecycle_status: "authority_readback_confirmed" as const,
+      formal_visible: true,
+      formal_artifact_ref:
+        "hive://hivecosm/delivery/project/PRJ-HIVECREW-P2/work-order/WO-P2-001/formal-artifact/FA-001",
+      write_performed: false,
+      event_id: "22222222-2222-4222-8222-222222222222",
+      sequence: 2,
+    };
+    const onPromoteArtifact = vi
+      .fn<OwnerArtifactPromotionWriter>()
+      .mockResolvedValue(promotionReceipt);
+    renderCard({
+      context: artifactContext({ status: "promotion_succeeded" }),
+      onPromoteArtifact,
+    });
+    expect(
+      screen.getByText(/HiveCosm 写入回执已返回，正式成果仍等待权威回读确认/),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "晋升为正式成果" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "重新执行权威回读" }));
+    await waitFor(() =>
+      expect(onPromoteArtifact).toHaveBeenCalledWith({
+        ...REQUEST,
+        candidate_id: CANDIDATE_ID,
+      }),
+    );
+    expect(await screen.findByText(/正式成果已经权威回读确认/)).toBeInTheDocument();
+  });
+
+  it("retries promotion after promotion_failed", async () => {
+    const user = userEvent.setup();
+    const PROMOTION_RECEIPT = {
+      schema_version: "hivecrew.formal-artifact-promotion.v1" as const,
+      promotion_id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+      candidate_id: CANDIDATE_ID,
+      lifecycle_status: "promotion_requested" as const,
+      formal_visible: false,
+      write_performed: false,
+      event_id: "22222222-2222-4222-8222-222222222222",
+      sequence: 1,
+    };
+    const onPromoteArtifact = vi.fn<OwnerArtifactPromotionWriter>().mockResolvedValue(PROMOTION_RECEIPT);
+    renderCard({ context: artifactContext({ status: "promotion_failed" }), onPromoteArtifact });
+    expect(screen.getByRole("button", { name: "重试晋升" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "重试晋升" }));
+    await waitFor(() =>
+      expect(onPromoteArtifact).toHaveBeenCalledWith({
+        ...REQUEST,
+        candidate_id: CANDIDATE_ID,
+      }),
+    );
+  });
+
+  it("shows the formal artifact link only after authority_readback_confirmed", () => {
+    const ref = "hive://hivecosm/delivery/project/PRJ-HIVECREW-P2/work-order/WO-P2-001/formal-artifact/FA-001";
+    renderCard({
+      context: artifactContext({
+        status: "authority_readback_confirmed",
+        formal_visible: true,
+        formal_artifact_ref: ref,
+      }),
+    });
+    expect(screen.getByRole("link", { name: "打开正式成果" })).toHaveAttribute("href", ref);
+  });
+
+  it("does not show the formal artifact link when formal_visible but status is not readback", () => {
+    renderCard({
+      context: artifactContext({
+        status: "promotion_succeeded",
+        formal_visible: true,
+        formal_artifact_ref: "hive://some-ref",
+      }),
+    });
+    expect(screen.queryByRole("link", { name: "打开正式成果" })).not.toBeInTheDocument();
+  });
+
+  it("does not claim a formal artifact when readback lacks visibility or an exact reference", () => {
+    renderCard({
+      context: artifactContext({ status: "authority_readback_confirmed" }),
+    });
+    expect(screen.getByText(/权威回读状态不完整/)).toBeInTheDocument();
+    expect(screen.queryByText(/正式成果已确认归档/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "打开正式成果" })).not.toBeInTheDocument();
+  });
+
+  it("does not claim formal artifact is written when promotion receipt is promotion_succeeded", async () => {
+    const user = userEvent.setup();
+    const PROMOTION_RECEIPT = {
+      schema_version: "hivecrew.formal-artifact-promotion.v1" as const,
+      promotion_id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+      candidate_id: CANDIDATE_ID,
+      lifecycle_status: "promotion_succeeded" as const,
+      formal_visible: false,
+      write_performed: true,
+      event_id: "33333333-3333-4333-8333-333333333333",
+      sequence: 2,
+    };
+    const onPromoteArtifact = vi.fn<OwnerArtifactPromotionWriter>().mockResolvedValue(PROMOTION_RECEIPT);
+    renderCard({ context: artifactContext({ status: "approved" }), onPromoteArtifact });
+    await user.click(screen.getByRole("button", { name: "晋升为正式成果" }));
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(/等待权威回读确认/);
+    expect(alert).not.toHaveTextContent(/正式成果已写入/);
+    expect(alert).not.toHaveTextContent(/已归档/);
+    expect(alert).not.toHaveTextContent(/已完成/);
+  });
+
+  it("keeps retry available after a promotion_failed receipt", async () => {
+    const user = userEvent.setup();
+    const onPromoteArtifact = vi
+      .fn<OwnerArtifactPromotionWriter>()
+      .mockResolvedValue({
+        schema_version: "hivecrew.formal-artifact-promotion.v1",
+        promotion_id: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+        candidate_id: CANDIDATE_ID,
+        lifecycle_status: "promotion_failed",
+        formal_visible: false,
+        write_performed: false,
+        event_id: "44444444-4444-4444-8444-444444444444",
+        sequence: 2,
+      });
+    renderCard({
+      context: artifactContext({ status: "approved" }),
+      onPromoteArtifact,
+    });
+    await user.click(screen.getByRole("button", { name: "晋升为正式成果" }));
+    expect(await screen.findByRole("button", { name: "重试晋升" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "重试晋升" }));
+    await waitFor(() => expect(onPromoteArtifact).toHaveBeenCalledTimes(2));
+  });
+
 });

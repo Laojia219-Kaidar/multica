@@ -61,6 +61,7 @@ function OwnerWorkContextSurface({
 			context={binding.context}
       onConfirmAssignment={binding.onConfirmAssignment}
       onReviewArtifact={binding.onReviewArtifact}
+      onPromoteArtifact={binding.onPromoteArtifact}
     />
   );
 }

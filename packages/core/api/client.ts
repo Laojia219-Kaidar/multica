@@ -170,6 +170,8 @@ import type {
   CompanyOpsAssignmentDispatchReceipt,
   CompanyOpsArtifactReviewCommand,
   CompanyOpsArtifactReviewReceipt,
+  CompanyOpsArtifactPromotionCommand,
+  CompanyOpsArtifactPromotionReceipt,
 } from "../types";
 import { z } from "zod";
 import type { OnboardingCompletionPath } from "../onboarding/types";
@@ -291,6 +293,41 @@ const CompanyOpsArtifactReviewReceiptSchema = z.object({
   candidate_id: z.string().uuid(),
   rework_task_id: z.string().uuid().optional(),
 });
+
+const CompanyOpsFormalArtifactPromotionReceiptSchema = z
+  .object({
+    schema_version: z.literal("hivecrew.formal-artifact-promotion.v1"),
+    promotion_id: z.string().uuid(),
+    candidate_id: z.string().uuid(),
+    lifecycle_status: z.enum([
+      "promotion_requested",
+      "promotion_succeeded",
+      "promotion_failed",
+      "authority_readback_confirmed",
+    ]),
+    formal_visible: z.boolean(),
+    formal_artifact_ref: z.string().min(1).optional(),
+    write_performed: z.boolean(),
+    event_id: z.string().uuid(),
+    sequence: z.number().int().nonnegative(),
+  })
+  .superRefine((receipt, context) => {
+    const isConfirmed = receipt.lifecycle_status === "authority_readback_confirmed";
+    const hasFormalReference = Boolean(receipt.formal_artifact_ref);
+    const hasConfirmedFormalResult =
+      receipt.formal_visible === true && hasFormalReference;
+    if (
+      (isConfirmed && !hasConfirmedFormalResult) ||
+      (!isConfirmed && (receipt.formal_visible || hasFormalReference))
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["formal_artifact_ref"],
+        message:
+          "Formal visibility and reference must exist only with authority readback confirmation.",
+      });
+    }
+  });
 import {
   AgentTaskListSchema,
   AgentTemplateSchema,
@@ -2339,6 +2376,28 @@ export class ApiClient {
     );
     if (!parsed) {
       throw new Error("Invalid CompanyOps artifact review response.");
+    }
+    return parsed;
+  }
+
+  async promoteCompanyOpsArtifact(
+    command: CompanyOpsArtifactPromotionCommand,
+  ): Promise<CompanyOpsArtifactPromotionReceipt> {
+    const raw = await this.fetch<unknown>(
+      "/api/company-ops/formal-artifact-promotions",
+      {
+        method: "POST",
+        body: JSON.stringify(command),
+      },
+    );
+    const parsed = parseWithFallback<CompanyOpsArtifactPromotionReceipt | null>(
+      raw,
+      CompanyOpsFormalArtifactPromotionReceiptSchema,
+      null,
+      { endpoint: "POST /api/company-ops/formal-artifact-promotions" },
+    );
+    if (!parsed) {
+      throw new Error("Invalid CompanyOps formal artifact promotion response.");
     }
     return parsed;
   }

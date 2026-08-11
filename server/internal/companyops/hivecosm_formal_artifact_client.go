@@ -212,12 +212,16 @@ func (c *HiveCosmAuthorityClient) PromoteFormalArtifact(
 func (c *HiveCosmAuthorityClient) ReadFormalArtifact(
 	ctx context.Context,
 	lookup HiveCosmAuthorityLookup,
+	expectedCandidate HiveCosmFormalArtifactCandidate,
 	artifactManifestID string,
 ) (HiveCosmFormalArtifact, error) {
 	if c == nil || c.baseURL == nil || c.httpClient == nil {
 		return HiveCosmFormalArtifact{}, authorityFailure(HiveCosmAuthorityInvalid, 0, errors.New("HiveCosm authority client is not configured"))
 	}
 	if err := validateHiveCosmAuthorityLookup(lookup); err != nil {
+		return HiveCosmFormalArtifact{}, authorityFailure(HiveCosmAuthorityInvalid, 0, err)
+	}
+	if err := validateFormalArtifactCandidate(expectedCandidate); err != nil {
 		return HiveCosmFormalArtifact{}, authorityFailure(HiveCosmAuthorityInvalid, 0, err)
 	}
 	if !formalArtifactIDPattern.MatchString(artifactManifestID) {
@@ -251,7 +255,11 @@ func (c *HiveCosmAuthorityClient) ReadFormalArtifact(
 	if envelope.Request != formalArtifactLookupWire(lookup) {
 		return HiveCosmFormalArtifact{}, authorityFailure(HiveCosmAuthorityInvalid, status, errors.New("formal Artifact readback request echo changed"))
 	}
-	return validateFormalArtifactAuthority(envelope.Artifact, lookup, HiveCosmFormalArtifactCandidate{}, artifactManifestID)
+	artifact, err := validateFormalArtifactAuthority(envelope.Artifact, lookup, expectedCandidate, artifactManifestID)
+	if err != nil {
+		return HiveCosmFormalArtifact{}, authorityFailure(HiveCosmAuthorityInvalid, status, err)
+	}
+	return artifact, nil
 }
 
 func (c *HiveCosmAuthorityClient) doFormalArtifactRequest(
@@ -318,17 +326,8 @@ func validateFormalArtifactPromotionInput(input HiveCosmFormalArtifactPromotionR
 	if parsed, err := uuid.Parse(input.PromotionID); err != nil || parsed.String() != input.PromotionID {
 		return errors.New("promotion_id must be a canonical UUID")
 	}
-	if parsed, err := uuid.Parse(input.Candidate.ID); err != nil || parsed.String() != input.Candidate.ID {
-		return errors.New("candidate_id must be a canonical UUID")
-	}
-	if parsed, err := uuid.Parse(input.Candidate.ApprovalEventID); err != nil || parsed.String() != input.Candidate.ApprovalEventID {
-		return errors.New("approval_event_id must be a canonical UUID")
-	}
-	if input.Candidate.Revision < 1 || strings.TrimSpace(input.Candidate.DurableObjectRef) == "" || strings.TrimSpace(input.Candidate.DurableObjectRef) != input.Candidate.DurableObjectRef {
-		return errors.New("temporary Artifact revision or object reference is invalid")
-	}
-	if !formalArtifactDigestPattern.MatchString(input.Candidate.ContentDigest) {
-		return errors.New("temporary Artifact content digest is invalid")
+	if err := validateFormalArtifactCandidate(input.Candidate); err != nil {
+		return err
 	}
 	for kind, snapshot := range map[string]AuthoritySnapshot{
 		"WorkOrder":       input.WorkOrder,
@@ -338,6 +337,22 @@ func validateFormalArtifactPromotionInput(input HiveCosmFormalArtifactPromotionR
 		if !formalArtifactDigestPattern.MatchString(snapshot.Revision) || !formalArtifactDigestPattern.MatchString(snapshot.ContentDigest) {
 			return fmt.Errorf("%s expected authority digest is invalid", kind)
 		}
+	}
+	return nil
+}
+
+func validateFormalArtifactCandidate(candidate HiveCosmFormalArtifactCandidate) error {
+	if parsed, err := uuid.Parse(candidate.ID); err != nil || parsed.String() != candidate.ID {
+		return errors.New("candidate_id must be a canonical UUID")
+	}
+	if parsed, err := uuid.Parse(candidate.ApprovalEventID); err != nil || parsed.String() != candidate.ApprovalEventID {
+		return errors.New("approval_event_id must be a canonical UUID")
+	}
+	if candidate.Revision < 1 || strings.TrimSpace(candidate.DurableObjectRef) == "" || strings.TrimSpace(candidate.DurableObjectRef) != candidate.DurableObjectRef {
+		return errors.New("temporary Artifact revision or object reference is invalid")
+	}
+	if !formalArtifactDigestPattern.MatchString(candidate.ContentDigest) {
+		return errors.New("temporary Artifact content digest is invalid")
 	}
 	return nil
 }

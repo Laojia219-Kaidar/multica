@@ -194,6 +194,201 @@ describe("ApiClient CompanyOps owner work context", () => {
       expect.objectContaining({ method: "POST", body: JSON.stringify(command) }),
     );
   });
+
+  it("POSTs a formal-artifact promotion to the frozen endpoint and parses the exact receipt", async () => {
+    const command = {
+      promotion_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      ...request,
+      candidate_id: "66666666-6666-4666-8666-666666666666",
+    };
+    const receipt = {
+      schema_version: "hivecrew.formal-artifact-promotion.v1",
+      promotion_id: command.promotion_id,
+      candidate_id: command.candidate_id,
+      lifecycle_status: "promotion_requested",
+      formal_visible: false,
+      write_performed: false,
+      event_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      sequence: 3,
+    };
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(receipt), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      new ApiClient("https://api.example.test").promoteCompanyOpsArtifact(command),
+    ).resolves.toEqual(receipt);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.example.test/api/company-ops/formal-artifact-promotions",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify(command),
+      }),
+    );
+  });
+
+  it("fails closed when a formal-artifact promotion response is malformed", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            schema_version: "hivecrew.formal-artifact-promotion.v1",
+            promotion_id: "not-a-uuid",
+            candidate_id: "66666666-6666-4666-8666-666666666666",
+            lifecycle_status: "promotion_requested",
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      ),
+    );
+
+    await expect(
+      new ApiClient("https://api.example.test").promoteCompanyOpsArtifact({
+        promotion_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        ...request,
+        candidate_id: "66666666-6666-4666-8666-666666666666",
+      }),
+    ).rejects.toThrow("Invalid CompanyOps formal artifact promotion response.");
+  });
+
+  it.each([
+    ["promotion_requested", { formal_visible: false, formal_artifact_ref: undefined }],
+    [
+      "promotion_succeeded",
+      { formal_visible: false, formal_artifact_ref: undefined },
+    ],
+    ["promotion_failed", { formal_visible: false, formal_artifact_ref: undefined }],
+    [
+      "authority_readback_confirmed",
+      {
+        formal_visible: true,
+        formal_artifact_ref: "hivecosm://formal-artifacts/FA-001",
+      },
+    ],
+  ] as const)(
+    "parses lifecycle_status=%s with its exact formal fields",
+    async (lifecycleStatus, formalFields) => {
+      const receipt = {
+        schema_version: "hivecrew.formal-artifact-promotion.v1",
+        promotion_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        candidate_id: "66666666-6666-4666-8666-666666666666",
+        lifecycle_status: lifecycleStatus,
+        write_performed: lifecycleStatus !== "promotion_requested",
+        event_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        sequence: 4,
+        ...formalFields,
+      };
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockResolvedValue(
+          new Response(JSON.stringify(receipt), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        ),
+      );
+
+      const result = await new ApiClient(
+        "https://api.example.test",
+      ).promoteCompanyOpsArtifact({
+        promotion_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        ...request,
+        candidate_id: "66666666-6666-4666-8666-666666666666",
+      });
+      expect(result.lifecycle_status).toBe(lifecycleStatus);
+      expect(result.formal_visible).toBe(formalFields.formal_visible);
+      expect(result.formal_artifact_ref).toBe(formalFields.formal_artifact_ref);
+    },
+  );
+
+  it("fails closed on an unknown lifecycle_status value", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            schema_version: "hivecrew.formal-artifact-promotion.v1",
+            promotion_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            candidate_id: "66666666-6666-4666-8666-666666666666",
+            lifecycle_status: "future_unknown_status",
+            formal_visible: false,
+            write_performed: false,
+            event_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+            sequence: 5,
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      ),
+    );
+
+    await expect(
+      new ApiClient("https://api.example.test").promoteCompanyOpsArtifact({
+        promotion_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        ...request,
+        candidate_id: "66666666-6666-4666-8666-666666666666",
+      }),
+    ).rejects.toThrow("Invalid CompanyOps formal artifact promotion response.");
+  });
+
+  it("fails closed when authority readback is confirmed without an exact formal reference", async () => {
+    const receipt = {
+      schema_version: "hivecrew.formal-artifact-promotion.v1",
+      promotion_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      candidate_id: "66666666-6666-4666-8666-666666666666",
+      lifecycle_status: "authority_readback_confirmed",
+      formal_visible: true,
+      write_performed: true,
+      event_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      sequence: 3,
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify(receipt), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      ),
+    );
+
+    await expect(
+      new ApiClient("https://api.example.test").promoteCompanyOpsArtifact({
+        promotion_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        ...request,
+        candidate_id: "66666666-6666-4666-8666-666666666666",
+      }),
+    ).rejects.toThrow("Invalid CompanyOps formal artifact promotion response.");
+  });
+
+  it("fails closed on the retired artifact-promotion schema", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            schema_version: "hivecrew.artifact-promotion.v1",
+            promotion_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            candidate_id: "66666666-6666-4666-8666-666666666666",
+            promotion_state: "promotion_requested",
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      ),
+    );
+
+    await expect(
+      new ApiClient("https://api.example.test").promoteCompanyOpsArtifact({
+        promotion_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        ...request,
+        candidate_id: "66666666-6666-4666-8666-666666666666",
+      }),
+    ).rejects.toThrow("Invalid CompanyOps formal artifact promotion response.");
+  });
 });
 
 describe("ApiClient pull-request response schema", () => {

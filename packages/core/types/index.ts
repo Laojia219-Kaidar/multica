@@ -226,11 +226,15 @@ export type {
   CompanyOpsArtifactOutcome,
   CompanyOpsArtifactReviewCommand,
   CompanyOpsArtifactReviewReceipt,
+  CompanyOpsArtifactPromotionCommand,
+  CompanyOpsArtifactPromotionReceipt,
+  CompanyOpsArtifactPromotionLifecycleStatus,
 } from "./companyops";
 export {
   COMPANY_OPS_WORK_CONTEXT_SCHEMA_VERSION,
   COMPANY_OPS_ASSIGNMENT_DISPATCH_SCHEMA_VERSION,
   COMPANY_OPS_ARTIFACT_REVIEW_SCHEMA_VERSION,
+  COMPANY_OPS_FORMAL_ARTIFACT_PROMOTION_SCHEMA_VERSION,
 } from "./companyops";
 export type {
   BillingBalance,

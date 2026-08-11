@@ -132,12 +132,60 @@ func TestHiveCosmFormalArtifactClient_PromoteAndExactReadback(t *testing.T) {
 	if !receipt.WritePerformed || receipt.PromotionID != input.PromotionID || receipt.Artifact.FormalArtifactRef != artifact.FormalArtifactRef {
 		t.Fatalf("Promotion receipt = %+v", receipt)
 	}
-	readback, err := client.ReadFormalArtifact(context.Background(), input.Lookup, artifact.ArtifactManifestID)
+	readback, err := client.ReadFormalArtifact(context.Background(), input.Lookup, input.Candidate, artifact.ArtifactManifestID)
 	if err != nil {
 		t.Fatalf("ReadFormalArtifact: %v", err)
 	}
 	if readback != receipt.Artifact {
 		t.Fatalf("readback = %+v, receipt = %+v", readback, receipt.Artifact)
+	}
+}
+
+func TestHiveCosmFormalArtifactClient_ReadbackRejectsApprovedCandidateTamper(t *testing.T) {
+	input := formalClientInput()
+	baseArtifact := formalClientArtifactWire(input)
+	tests := []struct {
+		name   string
+		tamper func(*formalArtifactAuthorityWire)
+	}{
+		{name: "candidate id", tamper: func(wire *formalArtifactAuthorityWire) {
+			wire.TemporaryArtifact.CandidateID = "01972f7e-7e8d-77ef-a13d-1b0ce3e9c099"
+		}},
+		{name: "candidate revision", tamper: func(wire *formalArtifactAuthorityWire) { wire.TemporaryArtifact.Revision++ }},
+		{name: "candidate digest", tamper: func(wire *formalArtifactAuthorityWire) {
+			wire.TemporaryArtifact.ContentDigest = "sha256:" + repeatHex("f")
+		}},
+		{name: "content ref", tamper: func(wire *formalArtifactAuthorityWire) { wire.ContentRef = "/uploads/hivecrew/other.md" }},
+		{name: "approval event", tamper: func(wire *formalArtifactAuthorityWire) {
+			wire.OwnerReview.ApprovalEventID = "01972f7e-7e8d-77ef-a13d-1b0ce3e9c098"
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			artifact := baseArtifact
+			test.tamper(&artifact)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(formalArtifactReadbackEnvelope{
+					SchemaVersion: HiveCosmFormalArtifactAuthorityV1,
+					LookupMode:    "exact",
+					Complete:      true,
+					OK:            true,
+					Request:       formalArtifactLookupWire(input.Lookup),
+					Artifact:      artifact,
+				})
+			}))
+			defer server.Close()
+			client, err := NewHiveCosmAuthorityClient(server.URL, server.Client())
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = client.ReadFormalArtifact(context.Background(), input.Lookup, input.Candidate, baseArtifact.ArtifactManifestID)
+			var authorityErr *HiveCosmAuthorityError
+			if !errors.As(err, &authorityErr) || authorityErr.Kind != HiveCosmAuthorityInvalid {
+				t.Fatalf("tampered readback error = %v, want invalid", err)
+			}
+		})
 	}
 }
 

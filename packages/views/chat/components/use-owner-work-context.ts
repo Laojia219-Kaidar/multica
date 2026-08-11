@@ -9,6 +9,8 @@ import type {
   CompanyOpsAssignmentDispatchReceipt,
   CompanyOpsArtifactReviewCommand,
   CompanyOpsArtifactReviewReceipt,
+  CompanyOpsArtifactPromotionCommand,
+  CompanyOpsArtifactPromotionReceipt,
   CompanyOpsOwnerWorkContext,
   CompanyOpsWorkContextRequest,
 } from "@multica/core/types";
@@ -16,6 +18,7 @@ import type {
   OwnerAssignmentCommand,
   OwnerAssignmentWriter,
   OwnerArtifactReviewWriter,
+  OwnerArtifactPromotionWriter,
   OwnerWorkContext,
 } from "./owner-work-context-card";
 
@@ -58,6 +61,7 @@ export interface OwnerWorkContextBinding {
   context: OwnerWorkContext;
   onConfirmAssignment: OwnerAssignmentWriter;
   onReviewArtifact: OwnerArtifactReviewWriter;
+  onPromoteArtifact: OwnerArtifactPromotionWriter;
 }
 
 type WorkContextPreflight =
@@ -78,6 +82,10 @@ const unavailableArtifactReviewWriter: OwnerArtifactReviewWriter = async () => {
   throw new Error("Owner artifact review writer is unavailable.");
 };
 
+const unavailablePromotionWriter: OwnerArtifactPromotionWriter = async () => {
+  throw new Error("Owner artifact promotion writer is unavailable.");
+};
+
 export function hasOwnerWorkContextParams(
   searchParams: URLSearchParams,
 ): boolean {
@@ -96,6 +104,7 @@ function failClosed(
     context: { state, reason },
     onConfirmAssignment: unavailableAssignmentWriter,
     onReviewArtifact: unavailableArtifactReviewWriter,
+    onPromoteArtifact: unavailablePromotionWriter,
   };
 }
 
@@ -292,6 +301,10 @@ export function useOwnerWorkContext({
     fingerprint: string;
     reviewId: string;
   } | null>(null);
+  const promotionRef = useRef<{
+    fingerprint: string;
+    promotionId: string;
+  } | null>(null);
 
   const contextQuery = useQuery({
     queryKey: ownerWorkContextKeys.detail(wsId, request),
@@ -324,6 +337,23 @@ export function useOwnerWorkContext({
       });
     },
   });
+  const artifactPromotionMutation = useMutation({
+    mutationFn: (command: CompanyOpsArtifactPromotionCommand) =>
+      api.promoteCompanyOpsArtifact(command),
+    retry: false,
+    onSuccess: async (_receipt, command) => {
+      await queryClient.invalidateQueries({
+        queryKey: ownerWorkContextKeys.detail(wsId, command),
+        exact: true,
+      });
+    },
+    onError: async (_error, command) => {
+      await queryClient.invalidateQueries({
+        queryKey: ownerWorkContextKeys.detail(wsId, command),
+        exact: true,
+      });
+    },
+  });
 
   if (preflight.state !== "valid") {
     if (preflight.state === "absent") return null;
@@ -333,6 +363,7 @@ export function useOwnerWorkContext({
         context: { state: "loading", reason: preflight.reason },
         onConfirmAssignment: unavailableAssignmentWriter,
         onReviewArtifact: unavailableArtifactReviewWriter,
+        onPromoteArtifact: unavailablePromotionWriter,
       };
     }
     return failClosed(
@@ -353,6 +384,7 @@ export function useOwnerWorkContext({
       },
       onConfirmAssignment: unavailableAssignmentWriter,
       onReviewArtifact: unavailableArtifactReviewWriter,
+      onPromoteArtifact: unavailablePromotionWriter,
     };
   }
   if (contextQuery.error) {
@@ -428,10 +460,49 @@ export function useOwnerWorkContext({
     return receipt;
   };
 
+  const onPromoteArtifact: OwnerArtifactPromotionWriter = async (command) => {
+    assertExactAssignmentCommand(command, exactRequest);
+    const activeCandidate = resolved.outcome?.artifact;
+    if (!activeCandidate || activeCandidate.id !== command.candidate_id) {
+      throw new Error("Artifact promotion candidate does not match the active outcome.");
+    }
+    if (
+      activeCandidate.status !== "approved" &&
+      activeCandidate.status !== "promotion_failed" &&
+      activeCandidate.status !== "promotion_succeeded"
+    ) {
+      throw new Error("Artifact is not in a promotable state.");
+    }
+    const fingerprint = JSON.stringify([
+      ...WORK_CONTEXT_QUERY_KEYS.map((key) => command[key]),
+      command.candidate_id,
+    ]);
+    if (promotionRef.current?.fingerprint !== fingerprint) {
+      promotionRef.current = {
+        fingerprint,
+        promotionId: globalThis.crypto.randomUUID(),
+      };
+    }
+    const promotionId = promotionRef.current.promotionId;
+    const receipt: CompanyOpsArtifactPromotionReceipt =
+      await artifactPromotionMutation.mutateAsync({
+        promotion_id: promotionId,
+        ...command,
+      });
+    if (
+      receipt.promotion_id !== promotionId ||
+      receipt.candidate_id !== command.candidate_id
+    ) {
+      throw new Error("Artifact promotion receipt does not match the exact command.");
+    }
+    return receipt;
+  };
+
   return {
     contextKey,
     context: { state: "ready", data: resolved },
     onConfirmAssignment,
     onReviewArtifact,
+    onPromoteArtifact,
   };
 }

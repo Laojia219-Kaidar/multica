@@ -21,6 +21,7 @@ const (
 	companyOpsWorkContextSchemaVersion    = "hivecrew.owner-work-context.v1"
 	companyOpsAssignmentSchemaVersion     = "hivecrew.assignment-dispatch.v1"
 	companyOpsArtifactReviewSchemaVersion = "hivecrew.artifact-review.v1"
+	companyOpsFormalArtifactPromotionSchemaVersion = "hivecrew.formal-artifact-promotion.v1"
 	maxCompanyOpsAssignmentBodySize       = 64 << 10
 )
 
@@ -164,6 +165,24 @@ type companyOpsArtifactReviewResponse struct {
 	Decision      string `json:"decision"`
 	CandidateID   string `json:"candidate_id"`
 	ReworkTaskID  string `json:"rework_task_id,omitempty"`
+}
+
+type createCompanyOpsFormalArtifactPromotionRequest struct {
+	companyOpsSelectors
+	CandidateID string `json:"candidate_id"`
+	PromotionID string `json:"promotion_id"`
+}
+
+type companyOpsFormalArtifactPromotionResponse struct {
+	SchemaVersion     string `json:"schema_version"`
+	PromotionID       string `json:"promotion_id"`
+	CandidateID       string `json:"candidate_id"`
+	LifecycleStatus   string `json:"lifecycle_status"`
+	FormalArtifactRef string `json:"formal_artifact_ref,omitempty"`
+	FormalVisible     bool   `json:"formal_visible"`
+	WritePerformed    bool   `json:"write_performed"`
+	EventID           string `json:"event_id"`
+	Sequence          int    `json:"sequence"`
 }
 
 // GetCompanyOpsWorkContext resolves the complete read authority and exact
@@ -370,6 +389,91 @@ func (h *Handler) CreateCompanyOpsArtifactReview(w http.ResponseWriter, r *http.
 		Decision:      string(receipt.Event.Type),
 		CandidateID:   receipt.Event.CandidateID,
 		ReworkTaskID:  reworkTaskID,
+	})
+}
+
+// CreateCompanyOpsFormalArtifactPromotion promotes the exact approved temporary
+// candidate into a HiveCosm Formal Artifact and confirms it through an
+// independent GET readback. The promotion_id is the caller-owned idempotency
+// anchor; replays and retries reuse it so HiveCosm collapses duplicate POSTs.
+func (h *Handler) CreateCompanyOpsFormalArtifactPromotion(w http.ResponseWriter, r *http.Request) {
+	if h.CompanyOpsArtifacts == nil {
+		writeCompanyOpsError(w, http.StatusServiceUnavailable, "writer_unavailable", "CompanyOps artifact writer is not configured")
+		return
+	}
+	decoder := json.NewDecoder(io.LimitReader(r.Body, maxCompanyOpsAssignmentBodySize+1))
+	decoder.DisallowUnknownFields()
+	var request createCompanyOpsFormalArtifactPromotionRequest
+	if err := decoder.Decode(&request); err != nil {
+		writeCompanyOpsError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	var extra any
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		if err == nil {
+			err = errors.New("formal artifact promotion request contains multiple JSON values")
+		}
+		writeCompanyOpsError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	for name, value := range map[string]string{
+		"work_order_source_ref": request.WorkOrderSourceRef,
+		"employee_id":           request.EmployeeID,
+		"identity_binding_id":   request.IdentityBindingID,
+		"agent_id":              request.AgentID,
+		"session_id":            request.SessionID,
+		"candidate_id":          request.CandidateID,
+		"promotion_id":          request.PromotionID,
+	} {
+		if value == "" || strings.TrimSpace(value) != value {
+			writeCompanyOpsError(w, http.StatusBadRequest, "invalid_request", name+" must be a canonical non-empty value")
+			return
+		}
+	}
+	for name, value := range map[string]string{"candidate_id": request.CandidateID, "promotion_id": request.PromotionID} {
+		parsed, err := util.ParseUUID(value)
+		if err != nil || util.UUIDToString(parsed) != value {
+			writeCompanyOpsError(w, http.StatusBadRequest, "invalid_request", name+" must be a canonical UUID")
+			return
+		}
+	}
+	workspaceID, actorUserID, _, resolved, ok := h.resolveCompanyOpsRequest(w, r, request.companyOpsSelectors)
+	if !ok {
+		return
+	}
+	issue, state, err := h.readCompanyOpsIssueProjection(r, workspaceID, resolved.WorkOrder)
+	if err != nil || state != "projected" || !issue.ID.Valid {
+		writeCompanyOpsError(w, http.StatusConflict, "projection_conflict", "the WorkOrder has no exact local Issue projection")
+		return
+	}
+	receipt, err := h.CompanyOpsArtifacts.PromoteArtifact(r.Context(), workspaceID, issue.ID, service.CompanyOpsArtifactPromotion{
+		CandidateID:     request.CandidateID,
+		PromotionID:     request.PromotionID,
+		ActorUserID:     actorUserID,
+		Lookup:          request.lookup(),
+		WorkOrder:       resolved.WorkOrder,
+		Employee:        resolved.Employee,
+		IdentityBinding: resolved.IdentityBinding.Authority,
+	})
+	if err != nil {
+		var authorityErr *companyops.HiveCosmAuthorityError
+		if errors.As(err, &authorityErr) {
+			writeCompanyOpsAuthorityError(w, err)
+			return
+		}
+		writeCompanyOpsServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, companyOpsFormalArtifactPromotionResponse{
+		SchemaVersion:     companyOpsFormalArtifactPromotionSchemaVersion,
+		PromotionID:       receipt.PromotionID,
+		CandidateID:       receipt.CandidateID,
+		LifecycleStatus:   string(receipt.LifecycleStatus),
+		FormalArtifactRef: receipt.FormalArtifactRef,
+		FormalVisible:     receipt.FormalVisible,
+		WritePerformed:    receipt.WritePerformed,
+		EventID:           receipt.TerminalEvent.ID,
+		Sequence:          receipt.TerminalEvent.Sequence,
 	})
 }
 
@@ -588,6 +692,8 @@ func writeCompanyOpsAuthorityError(w http.ResponseWriter, err error) {
 
 func writeCompanyOpsServiceError(w http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, companyops.ErrArtifactIdempotencyRequired):
+		writeCompanyOpsError(w, http.StatusBadRequest, "invalid_request", err.Error())
 	case errors.Is(err, service.ErrCompanyOpsAssignmentConflict),
 		errors.Is(err, service.ErrExternalWorkOrderLinkConflict),
 		errors.Is(err, service.ErrCompanyOpsWorkOrderProjectionConflict),
@@ -597,6 +703,11 @@ func writeCompanyOpsServiceError(w http.ResponseWriter, err error) {
 		writeCompanyOpsError(w, http.StatusConflict, "not_assignable", err.Error())
 	case errors.Is(err, service.ErrCompanyOpsArtifactConflict),
 		errors.Is(err, companyops.ErrInvalidArtifactTransition),
+		errors.Is(err, companyops.ErrInvalidArtifactCandidate),
+		errors.Is(err, companyops.ErrArtifactRevisionMismatch),
+		errors.Is(err, companyops.ErrArtifactDigestMismatch),
+		errors.Is(err, companyops.ErrArtifactObjectRefMismatch),
+		errors.Is(err, companyops.ErrFormalArtifactRefMismatch),
 		errors.Is(err, companyops.ErrArtifactIdempotencyConflict):
 		writeCompanyOpsError(w, http.StatusConflict, "artifact_conflict", err.Error())
 	case errors.Is(err, companyops.ErrArtifactCandidateNotFound):

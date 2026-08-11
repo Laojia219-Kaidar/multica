@@ -7,6 +7,9 @@ export const COMPANY_OPS_ASSIGNMENT_DISPATCH_SCHEMA_VERSION =
 export const COMPANY_OPS_ARTIFACT_REVIEW_SCHEMA_VERSION =
   "hivecrew.artifact-review.v1" as const;
 
+export const COMPANY_OPS_FORMAL_ARTIFACT_PROMOTION_SCHEMA_VERSION =
+  "hivecrew.formal-artifact-promotion.v1" as const;
+
 export interface CompanyOpsWorkContextRequest {
   work_order_source_ref: string;
   employee_id: string;
@@ -125,4 +128,28 @@ export interface CompanyOpsArtifactReviewReceipt {
   decision: "changes_requested" | "approved";
   candidate_id: string;
   rework_task_id?: string;
+}
+
+export interface CompanyOpsArtifactPromotionCommand
+  extends CompanyOpsWorkContextRequest {
+  promotion_id: string;
+  candidate_id: string;
+}
+
+export type CompanyOpsArtifactPromotionLifecycleStatus =
+  | "promotion_requested"
+  | "promotion_succeeded"
+  | "promotion_failed"
+  | "authority_readback_confirmed";
+
+export interface CompanyOpsArtifactPromotionReceipt {
+  schema_version: typeof COMPANY_OPS_FORMAL_ARTIFACT_PROMOTION_SCHEMA_VERSION;
+  promotion_id: string;
+  candidate_id: string;
+  lifecycle_status: CompanyOpsArtifactPromotionLifecycleStatus;
+  formal_visible: boolean;
+  formal_artifact_ref?: string;
+  write_performed: boolean;
+  event_id: string;
+  sequence: number;
 }

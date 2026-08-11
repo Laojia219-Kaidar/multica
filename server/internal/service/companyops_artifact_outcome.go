@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -51,6 +52,42 @@ type CompanyOpsArtifactReviewReceipt struct {
 	ReworkTask *db.AgentTaskQueue
 }
 
+// CompanyOpsFormalArtifactAuthority is the write/read boundary against the
+// HiveCosm Formal Artifact authority. Production wires the authenticated
+// HiveCosmAuthorityClient; a nil authority fails closed at construction so no
+// promotion can synthesize a formal artifact.
+type CompanyOpsFormalArtifactAuthority interface {
+	PromoteFormalArtifact(ctx context.Context, input companyops.HiveCosmFormalArtifactPromotionRequest) (companyops.HiveCosmFormalArtifactPromotionReceipt, error)
+	ReadFormalArtifact(ctx context.Context, lookup companyops.HiveCosmAuthorityLookup, expectedCandidate companyops.HiveCosmFormalArtifactCandidate, artifactManifestID string) (companyops.HiveCosmFormalArtifact, error)
+}
+
+// CompanyOpsArtifactPromotion carries the exact active candidate, a stable
+// promotion id, the required Owner actor, and the freshly resolved authority
+// chain that HiveCosm compares against its current state. The service never
+// invents authority snapshots or promotion ids.
+type CompanyOpsArtifactPromotion struct {
+	CandidateID     string
+	PromotionID     string
+	ActorUserID     pgtype.UUID
+	Lookup          companyops.HiveCosmAuthorityLookup
+	WorkOrder       companyops.AuthoritySnapshot
+	Employee        companyops.AuthoritySnapshot
+	IdentityBinding companyops.AuthoritySnapshot
+}
+
+// CompanyOpsArtifactPromotionReceipt is the durable result of one promotion
+// attempt. FormalArtifactRef and FormalVisible are populated only after the
+// independent GET readback confirms the authority_writeback_confirmed state.
+type CompanyOpsArtifactPromotionReceipt struct {
+	PromotionID       string
+	CandidateID       string
+	LifecycleStatus   companyops.ArtifactEventType
+	FormalArtifactRef string
+	FormalVisible     bool
+	WritePerformed    bool
+	TerminalEvent     companyops.ArtifactEvent
+}
+
 type companyOpsArtifactSource struct {
 	snapshot companyops.ArtifactSourceSnapshot
 }
@@ -65,11 +102,12 @@ func (s companyOpsArtifactSource) ReadArtifactSource(
 // CompanyOpsArtifactService turns a completed canonical Run into one durable
 // temporary artifact candidate and exposes exact lifecycle readback/review.
 type CompanyOpsArtifactService struct {
-	queries     *db.Queries
-	txStarter   companyops.ArtifactPersistenceTxStarter
-	taskService *TaskService
-	repo        *companyops.DurableArtifactMaterializationRepository
-	store       companyops.ArtifactMaterializationObjectStore
+	queries         *db.Queries
+	txStarter       companyops.ArtifactPersistenceTxStarter
+	taskService     *TaskService
+	repo            *companyops.DurableArtifactMaterializationRepository
+	store           companyops.ArtifactMaterializationObjectStore
+	formalAuthority CompanyOpsFormalArtifactAuthority
 }
 
 func NewCompanyOpsArtifactService(
@@ -77,8 +115,9 @@ func NewCompanyOpsArtifactService(
 	txStarter companyops.ArtifactPersistenceTxStarter,
 	store companyops.ArtifactMaterializationObjectStore,
 	taskService *TaskService,
+	formalAuthority CompanyOpsFormalArtifactAuthority,
 ) (*CompanyOpsArtifactService, error) {
-	if queries == nil || txStarter == nil || store == nil || taskService == nil {
+	if queries == nil || txStarter == nil || store == nil || taskService == nil || formalAuthority == nil {
 		return nil, ErrCompanyOpsArtifactUnavailable
 	}
 	repo, err := companyops.NewDurableArtifactMaterializationRepository(txStarter)
@@ -87,6 +126,7 @@ func NewCompanyOpsArtifactService(
 	}
 	return &CompanyOpsArtifactService{
 		queries: queries, txStarter: txStarter, taskService: taskService, repo: repo, store: store,
+		formalAuthority: formalAuthority,
 	}, nil
 }
 
@@ -97,7 +137,7 @@ func (s *CompanyOpsArtifactService) MaterializeCompletedTask(
 	output string,
 	prURL string,
 ) (*CompanyOpsArtifactOutcome, error) {
-	if s == nil || s.queries == nil || s.repo == nil || s.store == nil {
+	if s == nil || s.queries == nil || s.repo == nil || s.store == nil || s.formalAuthority == nil {
 		return nil, ErrCompanyOpsArtifactUnavailable
 	}
 	lineage, err := resolveCompanyOpsAssignmentLineage(ctx, s.queries, task)
@@ -167,7 +207,7 @@ func (s *CompanyOpsArtifactService) GetIssueOutcome(
 	workspaceID pgtype.UUID,
 	issueID pgtype.UUID,
 ) (*CompanyOpsArtifactOutcome, error) {
-	if s == nil || s.queries == nil || s.repo == nil {
+	if s == nil || s.queries == nil || s.repo == nil || s.formalAuthority == nil {
 		return nil, ErrCompanyOpsArtifactUnavailable
 	}
 	receiptRow, err := s.queries.GetLatestAssignmentDispatchReceiptByIssue(ctx, db.GetLatestAssignmentDispatchReceiptByIssueParams{
@@ -394,4 +434,243 @@ func companyOpsArtifactMarkdown(
 		return "", fmt.Errorf("%w: temporary artifact exceeds %d bytes", ErrCompanyOpsArtifactConflict, companyOpsArtifactMaximumBytes)
 	}
 	return body.String(), nil
+}
+
+// PromoteArtifact drives the approved → promotion_requested → HiveCosm Formal
+// Artifact authority POST → promotion_succeeded → independent GET readback →
+// authority_readback_confirmed loop. It is fully re-entrant: a replay after a
+// crash resumes from the durable event ledger without duplicating the external
+// POST, and a genuine retry after promotion_failed re-issues the same stable
+// promotion id so HiveCosm collapses it to one formal artifact.
+func (s *CompanyOpsArtifactService) PromoteArtifact(
+	ctx context.Context,
+	workspaceID pgtype.UUID,
+	issueID pgtype.UUID,
+	promotion CompanyOpsArtifactPromotion,
+) (CompanyOpsArtifactPromotionReceipt, error) {
+	if s == nil || s.queries == nil || s.repo == nil || s.formalAuthority == nil {
+		return CompanyOpsArtifactPromotionReceipt{}, ErrCompanyOpsArtifactUnavailable
+	}
+	if !promotion.ActorUserID.Valid || promotion.ActorUserID.Bytes == ([16]byte{}) {
+		return CompanyOpsArtifactPromotionReceipt{}, fmt.Errorf("%w: Owner identity is required", ErrCompanyOpsArtifactConflict)
+	}
+	promotionID := strings.TrimSpace(promotion.PromotionID)
+	if parsed, err := util.ParseUUID(promotionID); err != nil || util.UUIDToString(parsed) != promotionID {
+		return CompanyOpsArtifactPromotionReceipt{}, fmt.Errorf("%w: promotion_id must be a canonical UUID", ErrCompanyOpsArtifactConflict)
+	}
+
+	workspace := util.UUIDToString(workspaceID)
+	outcome, err := s.GetIssueOutcome(ctx, workspaceID, issueID)
+	if err != nil {
+		return CompanyOpsArtifactPromotionReceipt{}, err
+	}
+	if outcome == nil || outcome.Candidate == nil || outcome.Projection == nil {
+		return CompanyOpsArtifactPromotionReceipt{}, companyops.ErrArtifactCandidateNotFound
+	}
+	if outcome.Candidate.ID != strings.TrimSpace(promotion.CandidateID) {
+		return CompanyOpsArtifactPromotionReceipt{}, companyops.ErrArtifactCandidateNotFound
+	}
+	candidate := *outcome.Candidate
+	projection := *outcome.Projection
+	lineageID := util.UUIDToString(outcome.CommandID)
+
+	events, err := s.repo.ListArtifactEvents(ctx, workspace, lineageID)
+	if err != nil {
+		return CompanyOpsArtifactPromotionReceipt{}, err
+	}
+	approvalEvent, lastEvent, hasLast := companyOpsArtifactPromotionAnchor(events, candidate.ID)
+	if approvalEvent.ID == "" {
+		return CompanyOpsArtifactPromotionReceipt{}, fmt.Errorf("%w: approved decision is unavailable for promotion", ErrCompanyOpsArtifactConflict)
+	}
+
+	switch projection.Status {
+	case companyops.ArtifactEventAuthorityReadbackConfirmed:
+		return CompanyOpsArtifactPromotionReceipt{
+			PromotionID:       promotionID,
+			CandidateID:       candidate.ID,
+			LifecycleStatus:   projection.Status,
+			FormalArtifactRef: projection.FormalArtifactRef,
+			FormalVisible:     projection.FormalVisible,
+			TerminalEvent:     lastEvent,
+		}, nil
+	case companyops.ArtifactEventPromotionSucceeded:
+		succeededRef := companyOpsArtifactSucceededRef(events, candidate.ID)
+		return s.runArtifactReadback(ctx, workspace, lineageID, promotionID, candidate, approvalEvent.ID, promotion.Lookup, succeededRef, false)
+	case companyops.ArtifactEventApproved,
+		companyops.ArtifactEventPromotionRequested,
+		companyops.ArtifactEventPromotionFailed:
+		return s.attemptArtifactPromotion(ctx, workspace, lineageID, promotionID, candidate, promotion, approvalEvent, lastEvent, hasLast)
+	default:
+		return CompanyOpsArtifactPromotionReceipt{}, fmt.Errorf("%w: artifact is not approved for promotion", ErrCompanyOpsArtifactConflict)
+	}
+}
+
+func (s *CompanyOpsArtifactService) attemptArtifactPromotion(
+	ctx context.Context,
+	workspace string,
+	lineageID string,
+	promotionID string,
+	candidate companyops.ArtifactCandidate,
+	promotion CompanyOpsArtifactPromotion,
+	approvalEvent companyops.ArtifactEvent,
+	lastEvent companyops.ArtifactEvent,
+	hasLast bool,
+) (CompanyOpsArtifactPromotionReceipt, error) {
+	requested, err := s.ensureArtifactPromotionRequested(ctx, workspace, lineageID, promotionID, candidate, lastEvent, hasLast)
+	if err != nil {
+		return CompanyOpsArtifactPromotionReceipt{}, err
+	}
+
+	receipt, promoteErr := s.formalAuthority.PromoteFormalArtifact(ctx, companyops.HiveCosmFormalArtifactPromotionRequest{
+		PromotionID:     promotionID,
+		Lookup:          promotion.Lookup,
+		WorkOrder:       promotion.WorkOrder,
+		Employee:        promotion.Employee,
+		IdentityBinding: promotion.IdentityBinding,
+		Candidate: companyops.HiveCosmFormalArtifactCandidate{
+			ID:               candidate.ID,
+			Revision:         candidate.Revision,
+			DurableObjectRef: candidate.DurableObjectRef,
+			ContentDigest:    candidate.Digest,
+			ApprovalEventID:  approvalEvent.ID,
+		},
+	})
+	if promoteErr != nil {
+		failedKey := "formal-promotion:" + promotionID + ":failed:after:" + strconv.Itoa(requested.Sequence)
+		if _, appendErr := s.repo.AppendArtifactEvent(ctx, workspace, lineageID, companyops.ArtifactEventInput{
+			Type:               companyops.ArtifactEventPromotionFailed,
+			CandidateID:        candidate.ID,
+			CandidateRevision:  candidate.Revision,
+			CandidateDigest:    candidate.Digest,
+			CandidateObjectRef: candidate.DurableObjectRef,
+			IdempotencyKey:     failedKey,
+		}); appendErr != nil {
+			return CompanyOpsArtifactPromotionReceipt{}, appendErr
+		}
+		return CompanyOpsArtifactPromotionReceipt{}, promoteErr
+	}
+
+	if _, err := s.repo.AppendArtifactEvent(ctx, workspace, lineageID, companyops.ArtifactEventInput{
+		Type:               companyops.ArtifactEventPromotionSucceeded,
+		CandidateID:        candidate.ID,
+		CandidateRevision:  candidate.Revision,
+		CandidateDigest:    candidate.Digest,
+		CandidateObjectRef: candidate.DurableObjectRef,
+		FormalArtifactRef:  receipt.Artifact.FormalArtifactRef,
+		IdempotencyKey:     "formal-promotion:" + promotionID + ":succeeded",
+	}); err != nil {
+		return CompanyOpsArtifactPromotionReceipt{}, err
+	}
+
+	return s.runArtifactReadback(ctx, workspace, lineageID, promotionID, candidate, approvalEvent.ID, promotion.Lookup, receipt.Artifact.FormalArtifactRef, receipt.WritePerformed)
+}
+
+func (s *CompanyOpsArtifactService) ensureArtifactPromotionRequested(
+	ctx context.Context,
+	workspace string,
+	lineageID string,
+	promotionID string,
+	candidate companyops.ArtifactCandidate,
+	lastEvent companyops.ArtifactEvent,
+	hasLast bool,
+) (companyops.ArtifactEvent, error) {
+	if hasLast && lastEvent.Type == companyops.ArtifactEventPromotionRequested && lastEvent.CandidateID == candidate.ID {
+		return lastEvent, nil
+	}
+	anchorSeq := 0
+	if hasLast {
+		anchorSeq = lastEvent.Sequence
+	}
+	return s.repo.AppendArtifactEvent(ctx, workspace, lineageID, companyops.ArtifactEventInput{
+		Type:               companyops.ArtifactEventPromotionRequested,
+		CandidateID:        candidate.ID,
+		CandidateRevision:  candidate.Revision,
+		CandidateDigest:    candidate.Digest,
+		CandidateObjectRef: candidate.DurableObjectRef,
+		IdempotencyKey:     "formal-promotion:" + promotionID + ":requested:after:" + strconv.Itoa(anchorSeq),
+	})
+}
+
+func (s *CompanyOpsArtifactService) runArtifactReadback(
+	ctx context.Context,
+	workspace string,
+	lineageID string,
+	promotionID string,
+	candidate companyops.ArtifactCandidate,
+	approvalEventID string,
+	lookup companyops.HiveCosmAuthorityLookup,
+	formalArtifactRef string,
+	writePerformed bool,
+) (CompanyOpsArtifactPromotionReceipt, error) {
+	if formalArtifactRef == "" {
+		return CompanyOpsArtifactPromotionReceipt{}, fmt.Errorf("%w: formal artifact reference is missing before readback", ErrCompanyOpsArtifactConflict)
+	}
+	manifestID, ok := companyOpsFormalArtifactManifestID(formalArtifactRef, lookup.WorkOrderSourceRef)
+	if !ok {
+		return CompanyOpsArtifactPromotionReceipt{}, fmt.Errorf("%w: formal artifact reference does not match the WorkOrder scope", ErrCompanyOpsArtifactConflict)
+	}
+	expectedCandidate := companyops.HiveCosmFormalArtifactCandidate{
+		ID:               candidate.ID,
+		Revision:         candidate.Revision,
+		DurableObjectRef: candidate.DurableObjectRef,
+		ContentDigest:    candidate.Digest,
+		ApprovalEventID:  approvalEventID,
+	}
+	if _, err := s.formalAuthority.ReadFormalArtifact(ctx, lookup, expectedCandidate, manifestID); err != nil {
+		return CompanyOpsArtifactPromotionReceipt{}, err
+	}
+	confirmed, err := s.repo.AppendArtifactEvent(ctx, workspace, lineageID, companyops.ArtifactEventInput{
+		Type:               companyops.ArtifactEventAuthorityReadbackConfirmed,
+		CandidateID:        candidate.ID,
+		CandidateRevision:  candidate.Revision,
+		CandidateDigest:    candidate.Digest,
+		CandidateObjectRef: candidate.DurableObjectRef,
+		FormalArtifactRef:  formalArtifactRef,
+		IdempotencyKey:     "formal-promotion:" + promotionID + ":readback",
+	})
+	if err != nil {
+		return CompanyOpsArtifactPromotionReceipt{}, err
+	}
+	return CompanyOpsArtifactPromotionReceipt{
+		PromotionID:       promotionID,
+		CandidateID:       candidate.ID,
+		LifecycleStatus:   confirmed.Type,
+		FormalArtifactRef: formalArtifactRef,
+		FormalVisible:     true,
+		WritePerformed:    writePerformed,
+		TerminalEvent:     confirmed,
+	}, nil
+}
+
+func companyOpsArtifactPromotionAnchor(events []companyops.ArtifactEvent, candidateID string) (companyops.ArtifactEvent, companyops.ArtifactEvent, bool) {
+	var approval companyops.ArtifactEvent
+	var last companyops.ArtifactEvent
+	hasLast := false
+	for i := range events {
+		event := events[i]
+		if event.CandidateID == candidateID && event.Type == companyops.ArtifactEventApproved && approval.ID == "" {
+			approval = event
+		}
+		last = event
+		hasLast = true
+	}
+	return approval, last, hasLast
+}
+
+func companyOpsArtifactSucceededRef(events []companyops.ArtifactEvent, candidateID string) string {
+	for i := range events {
+		event := events[i]
+		if event.CandidateID == candidateID && event.Type == companyops.ArtifactEventPromotionSucceeded {
+			return event.FormalArtifactRef
+		}
+	}
+	return ""
+}
+
+func companyOpsFormalArtifactManifestID(ref string, workOrderSourceRef string) (string, bool) {
+	prefix := workOrderSourceRef + "/formal-artifact/"
+	if !strings.HasPrefix(ref, prefix) {
+		return "", false
+	}
+	return strings.TrimPrefix(ref, prefix), true
 }
