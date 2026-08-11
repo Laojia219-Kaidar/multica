@@ -142,6 +142,7 @@ vi.mock("@multica/core/paths", async (importOriginal) => {
       agentDetail: (id: string) => `/acme/agents/${id}`,
       chat: () => "/acme/chat",
     }),
+    useRequiredWorkspaceSlug: () => "acme",
   };
 });
 
@@ -194,7 +195,7 @@ beforeEach(() => {
     offset: 0,
   });
   mockDossier.mockResolvedValue(dossier());
-  mockDossier.mockImplementation((employeeId: string) => {
+  mockDossier.mockImplementation((_slug: string, employeeId: string) => {
     if (employeeId === "DE-ENG-002") {
       return Promise.resolve(
         dossier({
@@ -246,6 +247,7 @@ describe("OrganizationPage", () => {
     expect(replace).toHaveBeenCalledWith("/acme/organization?tab=roster");
     expect(await screen.findByText("Coco")).toBeInTheDocument();
     expect(mockRoster).toHaveBeenCalledWith(
+      "acme",
       expect.objectContaining({ limit: 50, offset: 0 }),
     );
   });
@@ -260,11 +262,13 @@ describe("OrganizationPage", () => {
     expect(replace).toHaveBeenCalledWith(
       "/acme/organization?tab=roster&employee=DE-ENG-002",
     );
-    expect(
-      await screen.findAllByText(
-        "Multiple active bindings exist. Resolve the conflict in HiveCosm before assigning.",
-      ),
-    ).toHaveLength(2);
+    await waitFor(() =>
+      expect(
+        screen.getAllByText(
+          "Multiple active bindings exist. Resolve the conflict in HiveCosm before assigning.",
+        ),
+      ).toHaveLength(2),
+    );
     expect(screen.queryByRole("link", { name: "Open chat to assign" })).not.toBeInTheDocument();
   });
 

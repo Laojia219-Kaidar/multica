@@ -962,11 +962,12 @@ describe("ApiClient CompanyOps outcome center", () => {
 
 describe("ApiClient CompanyOps organization & employees", () => {
   const agentUuid = "d34db33f-4ef7-4fe1-a32d-8f24c57b07b1";
+  const DIGEST = `sha256:${"a".repeat(64)}`;
   const authority = {
     kind: "Employee",
     source_ref: "hivecosm://employees/DE-CEO-001",
     revision: "rev-1",
-    content_digest: "sha256:abc",
+    content_digest: DIGEST,
     freshness: "current",
   };
 
@@ -1007,7 +1008,7 @@ describe("ApiClient CompanyOps organization & employees", () => {
     authority,
   };
 
-  it("GETs the organization projection and parses the department tree", async () => {
+  it("GETs the organization projection with the exact workspace slug header", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(JSON.stringify(organization), {
         status: 200,
@@ -1017,10 +1018,13 @@ describe("ApiClient CompanyOps organization & employees", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     await expect(
-      new ApiClient("https://api.example.test").getCompanyOpsOrganization(),
+      new ApiClient("https://api.example.test").getCompanyOpsOrganization(
+        "acme",
+      ),
     ).resolves.toEqual(organization);
-    const [url] = fetchMock.mock.calls[0]!;
+    const [url, init] = fetchMock.mock.calls[0]!;
     expect(url).toBe("https://api.example.test/api/company-ops/organization");
+    expect(init?.headers).toMatchObject({ "X-Workspace-Slug": "acme" });
   });
 
   it("fails closed when a successful organization projection is malformed", async () => {
@@ -1039,11 +1043,59 @@ describe("ApiClient CompanyOps organization & employees", () => {
     );
 
     await expect(
-      new ApiClient("https://api.example.test").getCompanyOpsOrganization(),
+      new ApiClient("https://api.example.test").getCompanyOpsOrganization(
+        "acme",
+      ),
     ).rejects.toThrow("Invalid CompanyOps organization projection response.");
   });
 
-  it("GETs the roster list with exact query params and parses items", async () => {
+  it("rejects unknown keys instead of silently stripping them", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            schema_version: "hivecrew.organization.v1",
+            departments: [
+              { ...organization.departments[0], extra_field: "sneaky" },
+            ],
+            observed_at: "2026-08-12T00:00:00Z",
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      ),
+    );
+
+    await expect(
+      new ApiClient("https://api.example.test").getCompanyOpsOrganization(
+        "acme",
+      ),
+    ).rejects.toThrow("Invalid CompanyOps organization projection response.");
+  });
+
+  it("rejects a non-RFC3339 observed_at", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            schema_version: "hivecrew.organization.v1",
+            departments: [organization.departments[0]],
+            observed_at: "not-a-timestamp",
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      ),
+    );
+
+    await expect(
+      new ApiClient("https://api.example.test").getCompanyOpsOrganization(
+        "acme",
+      ),
+    ).rejects.toThrow("Invalid CompanyOps organization projection response.");
+  });
+
+  it("GETs the roster list with exact query params and the slug header", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(
         JSON.stringify({
@@ -1059,12 +1111,10 @@ describe("ApiClient CompanyOps organization & employees", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     await expect(
-      new ApiClient("https://api.example.test").listCompanyOpsEmployees({
-        q: "coco",
-        status: "available",
-        limit: 50,
-        offset: 0,
-      }),
+      new ApiClient("https://api.example.test").listCompanyOpsEmployees(
+        "acme",
+        { q: "coco", status: "available", limit: 50, offset: 0 },
+      ),
     ).resolves.toEqual({
       schema_version: "hivecrew.organization.v1",
       items: [rosterItem],
@@ -1073,7 +1123,7 @@ describe("ApiClient CompanyOps organization & employees", () => {
       offset: 0,
     });
 
-    const [url] = fetchMock.mock.calls[0]!;
+    const [url, init] = fetchMock.mock.calls[0]!;
     const parsed = new URL(url as string);
     expect(`${parsed.origin}${parsed.pathname}`).toBe(
       "https://api.example.test/api/company-ops/employees",
@@ -1084,6 +1134,7 @@ describe("ApiClient CompanyOps organization & employees", () => {
       limit: "50",
       offset: "0",
     });
+    expect(init?.headers).toMatchObject({ "X-Workspace-Slug": "acme" });
   });
 
   it("fails closed when a roster row carries a non-UUID hivecrew_agent_id", async () => {
@@ -1104,7 +1155,73 @@ describe("ApiClient CompanyOps organization & employees", () => {
     );
 
     await expect(
-      new ApiClient("https://api.example.test").listCompanyOpsEmployees(),
+      new ApiClient("https://api.example.test").listCompanyOpsEmployees("acme"),
+    ).rejects.toThrow("Invalid CompanyOps employees roster response.");
+  });
+
+  it("rejects an employee_id that violates the DE-only namespace", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            schema_version: "hivecrew.organization.v1",
+            items: [{ ...rosterItem, employee_id: "KT-OTHER" }],
+            total: 1,
+            limit: 50,
+            offset: 0,
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      ),
+    );
+
+    await expect(
+      new ApiClient("https://api.example.test").listCompanyOpsEmployees("acme"),
+    ).rejects.toThrow("Invalid CompanyOps employees roster response.");
+  });
+
+  it("rejects a workforce_agent_id outside the KT-/EXT- namespace", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            schema_version: "hivecrew.organization.v1",
+            items: [{ ...rosterItem, workforce_agent_id: "DE-CEO-001" }],
+            total: 1,
+            limit: 50,
+            offset: 0,
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      ),
+    );
+
+    await expect(
+      new ApiClient("https://api.example.test").listCompanyOpsEmployees("acme"),
+    ).rejects.toThrow("Invalid CompanyOps employees roster response.");
+  });
+
+  it("rejects available rows without a hivecrew_agent_id (cross-field invariant)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            schema_version: "hivecrew.organization.v1",
+            items: [{ ...rosterItem, hivecrew_agent_id: null }],
+            total: 1,
+            limit: 50,
+            offset: 0,
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      ),
+    );
+
+    await expect(
+      new ApiClient("https://api.example.test").listCompanyOpsEmployees("acme"),
     ).rejects.toThrow("Invalid CompanyOps employees roster response.");
   });
 
@@ -1126,7 +1243,7 @@ describe("ApiClient CompanyOps organization & employees", () => {
     );
 
     await expect(
-      new ApiClient("https://api.example.test").listCompanyOpsEmployees(),
+      new ApiClient("https://api.example.test").listCompanyOpsEmployees("acme"),
     ).rejects.toThrow("Invalid CompanyOps employees roster response.");
   });
 
@@ -1170,13 +1287,80 @@ describe("ApiClient CompanyOps organization & employees", () => {
 
     await expect(
       new ApiClient("https://api.example.test").getCompanyOpsEmployee(
+        "acme",
         "DE-CEO-001",
       ),
     ).resolves.toEqual(dossier);
-    const [url] = fetchMock.mock.calls[0]!;
+    const [url, init] = fetchMock.mock.calls[0]!;
     expect(url).toBe(
       "https://api.example.test/api/company-ops/employees/DE-CEO-001",
     );
+    expect(init?.headers).toMatchObject({ "X-Workspace-Slug": "acme" });
+  });
+
+  it("rejects an available dossier without a resolved local agent", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            schema_version: "hivecrew.organization.v1",
+            employee_id: "DE-CEO-001",
+            workforce_agent_id: "KT-002",
+            hivecrew_agent_id: agentUuid,
+            bindings: [],
+            binding_state: "available",
+            local_agent: null,
+            authority,
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      ),
+    );
+
+    await expect(
+      new ApiClient("https://api.example.test").getCompanyOpsEmployee(
+        "acme",
+        "DE-CEO-001",
+      ),
+    ).rejects.toThrow("Invalid CompanyOps employee dossier response.");
+  });
+
+  it("rejects a binding whose agent_ref is not /api/agents/{uuid}", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            schema_version: "hivecrew.organization.v1",
+            employee_id: "DE-CEO-001",
+            workforce_agent_id: "KT-002",
+            hivecrew_agent_id: null,
+            bindings: [
+              {
+                identity_binding_id: "BIND-001",
+                employee_ref: "hivecosm://employees/DE-CEO-001",
+                workforce_agent_id: "KT-002",
+                agent_ref: "hivecosm://agents/wrong",
+                active: true,
+                authority,
+              },
+            ],
+            binding_state: "inactive_only",
+            local_agent: null,
+            authority,
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      ),
+    );
+
+    await expect(
+      new ApiClient("https://api.example.test").getCompanyOpsEmployee(
+        "acme",
+        "DE-CEO-001",
+      ),
+    ).rejects.toThrow("Invalid CompanyOps employee dossier response.");
   });
 
   it("fails closed when a successful dossier is malformed", async () => {
@@ -1198,6 +1382,7 @@ describe("ApiClient CompanyOps organization & employees", () => {
 
     await expect(
       new ApiClient("https://api.example.test").getCompanyOpsEmployee(
+        "acme",
         "DE-CEO-001",
       ),
     ).rejects.toThrow("Invalid CompanyOps employee dossier response.");

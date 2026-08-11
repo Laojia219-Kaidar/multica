@@ -14,7 +14,7 @@ import { useQuery } from "@tanstack/react-query";
 import { ArrowLeft, Building2, PanelLeftClose, UserRound } from "lucide-react";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { useNavigation } from "../navigation";
-import { useWorkspacePaths } from "@multica/core/paths";
+import { useRequiredWorkspaceSlug, useWorkspacePaths } from "@multica/core/paths";
 import { ApiError } from "@multica/core/api";
 import { Button } from "@multica/ui/components/ui/button";
 import { PageHeader } from "../layout/page-header";
@@ -44,6 +44,7 @@ const DETAIL_PANEL_ID = "detail";
 export function OrganizationPage() {
   const { t } = useT("organization");
   const wsId = useWorkspaceId();
+  const wsSlug = useRequiredWorkspaceSlug();
   const wsPaths = useWorkspacePaths();
   const { searchParams, replace } = useNavigation();
   const isCompact = useOrganizationCompact();
@@ -89,16 +90,18 @@ export function OrganizationPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [qDraft]);
 
-  const treeQuery = useQuery(organizationTreeOptions(wsId));
+  const treeQuery = useQuery(organizationTreeOptions(wsId, wsSlug));
   const rosterQuery = useQuery(
-    rosterListOptions(wsId, {
+    rosterListOptions(wsId, wsSlug, {
       q: urlQ || undefined,
       status: urlStatus || undefined,
       limit: 50,
       offset: 0,
     }),
   );
-  const dossierQuery = useQuery(employeeDossierOptions(wsId, urlEmployee));
+  const dossierQuery = useQuery(
+    employeeDossierOptions(wsId, wsSlug, urlEmployee),
+  );
 
   const rosterTab = urlTab === "roster";
   const departments = treeQuery.data?.departments ?? [];

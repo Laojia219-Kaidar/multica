@@ -3,7 +3,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { ArrowLeft, Building2 } from "lucide-react";
 import { useWorkspaceId } from "@multica/core/hooks";
-import { useWorkspacePaths } from "@multica/core/paths";
+import { useRequiredWorkspaceSlug, useWorkspacePaths } from "@multica/core/paths";
 import { ApiError } from "@multica/core/api";
 import { Button } from "@multica/ui/components/ui/button";
 import { useT } from "../i18n";
@@ -23,9 +23,10 @@ import { SourceGapBanner } from "./source-gap";
 export function EmployeeDossierPage({ employeeId }: { employeeId: string }) {
   const { t } = useT("organization");
   const wsId = useWorkspaceId();
+  const wsSlug = useRequiredWorkspaceSlug();
   const wsPaths = useWorkspacePaths();
   const { push } = useNavigation();
-  const query = useQuery(employeeDossierOptions(wsId, employeeId));
+  const query = useQuery(employeeDossierOptions(wsId, wsSlug, employeeId));
 
   const notFound =
     query.isError &&

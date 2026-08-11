@@ -163,13 +163,13 @@ export function RosterList({
                           </span>
                         )}
                       </span>
-                      {item.binding_state !== "available" && (
-                        <span className="mt-1.5 block">
-                          <BindingStateExplanation state={item.binding_state} />
-                        </span>
-                      )}
                     </span>
                   </button>
+                  {item.binding_state !== "available" && (
+                    <div className="px-2 pb-1.5">
+                      <BindingStateExplanation state={item.binding_state} />
+                    </div>
+                  )}
                 </li>
               );
             })}

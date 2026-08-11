@@ -74,7 +74,7 @@ const PENDING_RESOURCE_KEYS: ReadonlySet<TabLabelKey> = new Set<TabLabelKey>([
 ]);
 
 /** Gather cached entity data for a subject. All reads are cache-only. */
-function useTabEntityData(subject: TabSubject, wsId: string): TabEntityData {
+function useTabEntityData(subject: TabSubject, wsId: string, wsSlug: string): TabEntityData {
   const { t: chatT } = useT("chat");
 
   // Read both inbox lists cache-only; the archived view keeps its own list, so
@@ -122,6 +122,7 @@ function useTabEntityData(subject: TabSubject, wsId: string): TabEntityData {
   const employeeDossier = useQuery({
     ...employeeDossierOptions(
       wsId,
+      wsSlug,
       subject.kind === "employee" ? subject.employeeId : NONE,
     ),
     enabled: false,
@@ -242,7 +243,8 @@ export function useTabPresentation(
   const subject = useMemo(() => parseTabSubject(url), [url]);
   const ws = useCurrentWorkspace();
   const wsId = ws?.id ?? "";
-  const data = useTabEntityData(subject, wsId);
+  const wsSlug = ws?.slug ?? "";
+  const data = useTabEntityData(subject, wsId, wsSlug);
   const { visual, title: titleSpec } = resolveTabPresentation(subject, data);
   const title = useTabTitle(titleSpec, fallbackTitle);
 

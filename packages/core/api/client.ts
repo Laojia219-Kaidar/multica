@@ -509,82 +509,176 @@ const CompanyOpsBindingStateSchema = z.enum([
   "source_gap",
 ]);
 
-const CompanyOpsDepartmentAppointmentSchema = z.object({
-  appointment_id: z.string().min(1),
-  employee_id: z.string().min(1),
-  authority: CompanyOpsAuthoritySnapshotSchema,
-});
+// Organization/employees wire is strictly three-namespace and strict-key:
+// - employee_id is an opaque company employee id, DE-* only (frozen P4 contract).
+// - workforce_agent_id is the authority-side workforce agent id, KT-*/EXT-* only.
+// - hivecrew_agent_id is always a canonical UUID, never derived from the other two.
+// Any unknown key is rejected (`.strict()`), any namespace violation fails
+// closed rather than being silently stripped. Digest/freshness/RFC3339 follow
+// the authority contract (sha256:64hex / current|stale / RFC3339).
+const EMPLOYEE_ID_PATTERN = /^DE-[A-Za-z0-9][A-Za-z0-9@._:-]{0,191}$/;
+const WORKFORCE_AGENT_ID_PATTERN =
+  /^(KT|EXT)-[A-Za-z0-9][A-Za-z0-9@._:-]{0,191}$/;
+const SHA256_DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/;
+const EMPLOYEE_REF_PATTERN = /^hivecosm:\/\/employees\//;
+const AGENT_REF_PATTERN =
+  /^\/api\/agents\/[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
-const CompanyOpsDepartmentPositionSchema = z.object({
-  position_id: z.string().min(1),
-  title: z.string().min(1),
-  appointments: z.array(CompanyOpsDepartmentAppointmentSchema),
-  authority: CompanyOpsAuthoritySnapshotSchema,
-});
+const CompanyOpsOrgAuthoritySchema = z
+  .object({
+    kind: z.string().min(1),
+    source_ref: z.string().min(1),
+    revision: z.string().min(1),
+    content_digest: z.string().regex(
+      SHA256_DIGEST_PATTERN,
+      "content_digest must be sha256:64hex",
+    ),
+    freshness: z.enum(["current", "stale"]),
+    display_name: z.string().min(1).optional(),
+  })
+  .strict();
 
-const CompanyOpsDepartmentNodeSchema = z.object({
-  department_id: z.string().min(1),
-  name: z.string().min(1),
-  positions: z.array(CompanyOpsDepartmentPositionSchema),
-  authority: CompanyOpsAuthoritySnapshotSchema,
-});
+const CompanyOpsDepartmentAppointmentSchema = z
+  .object({
+    appointment_id: z.string().min(1),
+    employee_id: z.string().regex(EMPLOYEE_ID_PATTERN, "employee_id must be DE-*"),
+    authority: CompanyOpsOrgAuthoritySchema,
+  })
+  .strict();
 
-const CompanyOpsOrganizationSchema = z.object({
-  schema_version: z.literal("hivecrew.organization.v1"),
-  departments: z.array(CompanyOpsDepartmentNodeSchema),
-  observed_at: z.string().min(1),
-});
+const CompanyOpsDepartmentPositionSchema = z
+  .object({
+    position_id: z.string().min(1),
+    title: z.string().min(1),
+    appointments: z.array(CompanyOpsDepartmentAppointmentSchema),
+    authority: CompanyOpsOrgAuthoritySchema,
+  })
+  .strict();
 
-const CompanyOpsRosterItemSchema = z.object({
-  employee_id: z.string().min(1),
-  display_name: z.string().min(1).optional(),
-  department_ref: z.string().min(1).optional(),
-  position_ref: z.string().min(1).optional(),
-  workforce_agent_id: z.string().nullable(),
-  hivecrew_agent_id: z.string().uuid().nullable(),
-  binding_state: CompanyOpsBindingStateSchema,
-  authority: CompanyOpsAuthoritySnapshotSchema,
-});
+const CompanyOpsDepartmentNodeSchema = z
+  .object({
+    department_id: z.string().min(1),
+    name: z.string().min(1),
+    positions: z.array(CompanyOpsDepartmentPositionSchema),
+    authority: CompanyOpsOrgAuthoritySchema,
+  })
+  .strict();
 
-const CompanyOpsRosterResponseSchema = z.object({
-  schema_version: z.literal("hivecrew.organization.v1"),
-  items: z.array(CompanyOpsRosterItemSchema),
-  total: z.number().int().nonnegative(),
-  limit: z.number().int().nonnegative(),
-  offset: z.number().int().nonnegative(),
-});
+const CompanyOpsOrganizationSchema = z
+  .object({
+    schema_version: z.literal("hivecrew.organization.v1"),
+    departments: z.array(CompanyOpsDepartmentNodeSchema),
+    observed_at: z.string().datetime({ offset: true }),
+  })
+  .strict();
 
-const CompanyOpsEmployeeBindingSchema = z.object({
-  identity_binding_id: z.string().min(1),
-  employee_ref: z.string().min(1),
-  workforce_agent_id: z.string().min(1),
-  agent_ref: z.string().min(1),
-  active: z.boolean(),
-  authority: CompanyOpsAuthoritySnapshotSchema,
-});
+const CompanyOpsRosterItemSchema = z
+  .object({
+    employee_id: z.string().regex(EMPLOYEE_ID_PATTERN, "employee_id must be DE-*"),
+    display_name: z.string().min(1).optional(),
+    department_ref: z.string().min(1).optional(),
+    position_ref: z.string().min(1).optional(),
+    workforce_agent_id: z
+      .string()
+      .regex(WORKFORCE_AGENT_ID_PATTERN, "workforce_agent_id must be KT-*/EXT-*")
+      .nullable(),
+    hivecrew_agent_id: z.string().uuid().nullable(),
+    binding_state: CompanyOpsBindingStateSchema,
+    authority: CompanyOpsOrgAuthoritySchema,
+  })
+  .strict()
+  .superRefine((row, context) => {
+    if (row.binding_state === "available" && !row.hivecrew_agent_id) {
+      context.addIssue({
+        code: "custom",
+        path: ["hivecrew_agent_id"],
+        message:
+          "available binding_state requires a canonical hivecrew_agent_id",
+      });
+    }
+  });
 
-const CompanyOpsEmployeeLocalAgentSchema = z.object({
-  id: z.string().uuid(),
-  name: z.string().min(1),
-  status: z.string().min(1),
-  runtime_mode: z.string().min(1),
-  model: z.string().min(1).optional(),
-  authority: CompanyOpsAuthoritySnapshotSchema,
-});
+const CompanyOpsRosterResponseSchema = z
+  .object({
+    schema_version: z.literal("hivecrew.organization.v1"),
+    items: z.array(CompanyOpsRosterItemSchema),
+    total: z.number().int().nonnegative(),
+    limit: z.number().int().nonnegative(),
+    offset: z.number().int().nonnegative(),
+  })
+  .strict();
 
-const CompanyOpsEmployeeDossierSchema = z.object({
-  schema_version: z.literal("hivecrew.organization.v1"),
-  employee_id: z.string().min(1),
-  display_name: z.string().min(1).optional(),
-  department_ref: z.string().min(1).optional(),
-  position_ref: z.string().min(1).optional(),
-  workforce_agent_id: z.string().nullable(),
-  hivecrew_agent_id: z.string().uuid().nullable(),
-  bindings: z.array(CompanyOpsEmployeeBindingSchema),
-  binding_state: CompanyOpsBindingStateSchema,
-  local_agent: CompanyOpsEmployeeLocalAgentSchema.nullable(),
-  authority: CompanyOpsAuthoritySnapshotSchema,
-});
+const CompanyOpsEmployeeBindingSchema = z
+  .object({
+    identity_binding_id: z.string().min(1),
+    employee_ref: z
+      .string()
+      .regex(EMPLOYEE_REF_PATTERN, "employee_ref must be hivecosm://employees/..."),
+    workforce_agent_id: z
+      .string()
+      .regex(WORKFORCE_AGENT_ID_PATTERN, "workforce_agent_id must be KT-*/EXT-*"),
+    agent_ref: z
+      .string()
+      .regex(AGENT_REF_PATTERN, "agent_ref must be /api/agents/{uuid}"),
+    active: z.boolean(),
+    authority: CompanyOpsOrgAuthoritySchema,
+  })
+  .strict();
+
+const CompanyOpsEmployeeLocalAgentSchema = z
+  .object({
+    id: z.string().uuid(),
+    name: z.string().min(1),
+    status: z.string().min(1),
+    runtime_mode: z.string().min(1),
+    model: z.string().min(1).optional(),
+    authority: CompanyOpsOrgAuthoritySchema,
+  })
+  .strict();
+
+const CompanyOpsEmployeeDossierSchema = z
+  .object({
+    schema_version: z.literal("hivecrew.organization.v1"),
+    employee_id: z.string().regex(EMPLOYEE_ID_PATTERN, "employee_id must be DE-*"),
+    display_name: z.string().min(1).optional(),
+    department_ref: z.string().min(1).optional(),
+    position_ref: z.string().min(1).optional(),
+    workforce_agent_id: z
+      .string()
+      .regex(WORKFORCE_AGENT_ID_PATTERN, "workforce_agent_id must be KT-*/EXT-*")
+      .nullable(),
+    hivecrew_agent_id: z.string().uuid().nullable(),
+    bindings: z.array(CompanyOpsEmployeeBindingSchema),
+    binding_state: CompanyOpsBindingStateSchema,
+    local_agent: CompanyOpsEmployeeLocalAgentSchema.nullable(),
+    authority: CompanyOpsOrgAuthoritySchema,
+  })
+  .strict()
+  .superRefine((dossier, context) => {
+    if (dossier.binding_state === "available") {
+      if (!dossier.hivecrew_agent_id) {
+        context.addIssue({
+          code: "custom",
+          path: ["hivecrew_agent_id"],
+          message: "available binding_state requires a canonical hivecrew_agent_id",
+        });
+      }
+      if (!dossier.local_agent) {
+        context.addIssue({
+          code: "custom",
+          path: ["local_agent"],
+          message: "available binding_state requires a resolved local agent",
+        });
+      }
+      if (!dossier.workforce_agent_id) {
+        context.addIssue({
+          code: "custom",
+          path: ["workforce_agent_id"],
+          message: "available binding_state requires a workforce_agent_id",
+        });
+      }
+    }
+  });
 import {
   AgentTaskListSchema,
   AgentTemplateSchema,
@@ -2704,10 +2798,17 @@ export class ApiClient {
   }
 
   // CompanyOps Organization & Employees — hivecrew.organization.v1
-  async getCompanyOpsOrganization(): Promise<CompanyOpsOrganization> {
-    const raw = await this.fetch<unknown>(
-      "/api/company-ops/organization",
-    );
+  //
+  // Every request is explicitly workspace-bound: the caller passes the exact
+  // workspace slug, it is sent as `X-Workspace-Slug` (overriding the global
+  // mirror) and the caller's query key must embed the same slug — the cache
+  // fingerprint and the request fingerprint can never diverge.
+  async getCompanyOpsOrganization(
+    workspaceSlug: string,
+  ): Promise<CompanyOpsOrganization> {
+    const raw = await this.fetch<unknown>("/api/company-ops/organization", {
+      headers: { "X-Workspace-Slug": workspaceSlug },
+    });
     const parsed = parseWithFallback<CompanyOpsOrganization | null>(
       raw,
       CompanyOpsOrganizationSchema,
@@ -2721,6 +2822,7 @@ export class ApiClient {
   }
 
   async listCompanyOpsEmployees(
+    workspaceSlug: string,
     params?: CompanyOpsRosterParams,
   ): Promise<CompanyOpsRosterResponse> {
     const search = new URLSearchParams();
@@ -2731,6 +2833,7 @@ export class ApiClient {
     const query = search.toString();
     const raw = await this.fetch<unknown>(
       `/api/company-ops/employees${query ? `?${query}` : ""}`,
+      { headers: { "X-Workspace-Slug": workspaceSlug } },
     );
     const parsed = parseWithFallback<CompanyOpsRosterResponse | null>(
       raw,
@@ -2745,10 +2848,12 @@ export class ApiClient {
   }
 
   async getCompanyOpsEmployee(
+    workspaceSlug: string,
     employeeId: string,
   ): Promise<CompanyOpsEmployeeDossier> {
     const raw = await this.fetch<unknown>(
       `/api/company-ops/employees/${encodeURIComponent(employeeId)}`,
+      { headers: { "X-Workspace-Slug": workspaceSlug } },
     );
     const parsed = parseWithFallback<CompanyOpsEmployeeDossier | null>(
       raw,

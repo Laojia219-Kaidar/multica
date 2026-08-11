@@ -160,4 +160,16 @@ describe("route coverage stays in step with paths.ts", () => {
       expect(bucketDiagnosticPath(built), `unrecognized: ${built}`).not.toContain("*");
     }
   });
+
+  it("templates the organization page and its employee dossier deep link", () => {
+    expect(bucketDiagnosticPath("/acme/organization")).toBe(
+      "/:slug/organization",
+    );
+    expect(bucketDiagnosticPath("/acme/organization?tab=roster&q=x")).toBe(
+      "/:slug/organization",
+    );
+    expect(bucketDiagnosticPath("/acme/organization/employees/DE-CEO-001")).toBe(
+      "/:slug/organization/employees/:id",
+    );
+  });
 });
