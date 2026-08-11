@@ -56,6 +56,11 @@ complete this slice.
 
 ## Development phases
 
+The accepted company-object, workforce and execution-resource design direction for
+B2 is recorded in
+[`docs/architecture/HIVECREW-B2-COMPANY-OBJECT-WORKFORCE-MODEL.md`](docs/architecture/HIVECREW-B2-COMPANY-OBJECT-WORKFORCE-MODEL.md).
+It is a design baseline, not an implementation or production-state claim.
+
 - **B0 — Independent custody:** source baseline, independent Git, project charter,
   provenance, DGX development workspace, no upstream and no secrets.
 - **B1 — Product re-identity:** HiveCrew names, packages, assets, URLs, service units,
