@@ -81,7 +81,7 @@
     "changes_requested": "変更要求済み",
     "approved": "承認済み",
     "promotion_requested": "昇格要求中",
-    "promotion_succeeded": "昇格成功",
+    "promotion_succeeded": "権威リードバック確認待ち",
     "promotion_failed": "昇格失敗",
     "authority_readback_confirmed": "正式リードバック確認済み"
   }

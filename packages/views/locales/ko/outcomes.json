@@ -81,7 +81,7 @@
     "changes_requested": "변경 요청됨",
     "approved": "승인됨",
     "promotion_requested": "승격 요청됨",
-    "promotion_succeeded": "승격 성공",
+    "promotion_succeeded": "권위 읽기 확인 대기 중",
     "promotion_failed": "승격 실패",
     "authority_readback_confirmed": "공식 리드백 확인됨"
   }

@@ -56,19 +56,19 @@ type companyOpsOutcomeArtifactResponse struct {
 }
 
 type companyOpsOutcomeSummaryResponse struct {
-	ID                  string                              `json:"id"`
-	Issue               companyOpsOutcomeIssueResponse      `json:"issue"`
-	WorkOrder           companyOpsOutcomeWorkOrderResponse  `json:"work_order"`
-	Employee            companyOpsOutcomeEntityResponse     `json:"employee"`
-	IdentityBinding     companyOpsOutcomeEntityResponse     `json:"identity_binding"`
-	ExecutionTarget     companyOpsOutcomeExecTargetResponse `json:"execution_target"`
+	ID                  string                                `json:"id"`
+	Issue               companyOpsOutcomeIssueResponse        `json:"issue"`
+	WorkOrder           companyOpsOutcomeWorkOrderResponse    `json:"work_order"`
+	Employee            companyOpsOutcomeEntityResponse       `json:"employee"`
+	IdentityBinding     companyOpsOutcomeEntityResponse       `json:"identity_binding"`
+	ExecutionTarget     companyOpsOutcomeExecTargetResponse   `json:"execution_target"`
 	CurrentAgentDisplay companyOpsOutcomeAgentDisplayResponse `json:"current_agent_display"`
-	InitialTaskID       string                              `json:"initial_task_id"`
-	CurrentTaskID       string                              `json:"current_task_id"`
-	ExecutionState      string                              `json:"execution_state"`
-	ActiveArtifact      *companyOpsOutcomeArtifactResponse  `json:"active_artifact,omitempty"`
-	VersionCount        int32                               `json:"version_count"`
-	LatestEventAt       string                              `json:"latest_event_at,omitempty"`
+	InitialTaskID       string                                `json:"initial_task_id"`
+	CurrentTaskID       string                                `json:"current_task_id"`
+	ExecutionState      string                                `json:"execution_state"`
+	ActiveArtifact      *companyOpsOutcomeArtifactResponse    `json:"active_artifact,omitempty"`
+	VersionCount        int32                                 `json:"version_count"`
+	LatestEventAt       string                                `json:"latest_event_at,omitempty"`
 }
 
 type companyOpsOutcomeVersionResponse struct {
@@ -90,27 +90,27 @@ type companyOpsOutcomeEventResponse struct {
 }
 
 type companyOpsOutcomeRunResponse struct {
-	TaskID        string  `json:"task_id"`
-	Status        string  `json:"status"`
-	CompletedAt   string  `json:"completed_at,omitempty"`
-	OutputDigest  string  `json:"output_digest,omitempty"`
-	TerminalError string  `json:"terminal_error,omitempty"`
+	TaskID        string `json:"task_id"`
+	Status        string `json:"status"`
+	CompletedAt   string `json:"completed_at,omitempty"`
+	OutputDigest  string `json:"output_digest,omitempty"`
+	TerminalError string `json:"terminal_error,omitempty"`
 }
 
 type companyOpsOutcomeListResponse struct {
-	SchemaVersion string                          `json:"schema_version"`
+	SchemaVersion string                             `json:"schema_version"`
 	Items         []companyOpsOutcomeSummaryResponse `json:"items"`
-	Total         int64                           `json:"total"`
-	Limit         int                             `json:"limit"`
-	Offset        int                             `json:"offset"`
+	Total         int64                              `json:"total"`
+	Limit         int                                `json:"limit"`
+	Offset        int                                `json:"offset"`
 }
 
 type companyOpsOutcomeDetailResponse struct {
-	SchemaVersion string                              `json:"schema_version"`
-	Summary       companyOpsOutcomeSummaryResponse     `json:"summary"`
-	Versions      []companyOpsOutcomeVersionResponse   `json:"versions"`
-	Events        []companyOpsOutcomeEventResponse     `json:"events"`
-	Runs          []companyOpsOutcomeRunResponse       `json:"runs"`
+	SchemaVersion string                             `json:"schema_version"`
+	Summary       companyOpsOutcomeSummaryResponse   `json:"summary"`
+	Versions      []companyOpsOutcomeVersionResponse `json:"versions"`
+	Events        []companyOpsOutcomeEventResponse   `json:"events"`
+	Runs          []companyOpsOutcomeRunResponse     `json:"runs"`
 }
 
 // writeCompanyOpsOutcomeServiceError maps outcome-center service errors to
@@ -294,15 +294,7 @@ func (h *Handler) GetCompanyOpsOutcome(w http.ResponseWriter, r *http.Request) {
 
 	events := make([]companyOpsOutcomeEventResponse, 0, len(detail.Events))
 	for i := range detail.Events {
-		e := detail.Events[i]
-		events = append(events, companyOpsOutcomeEventResponse{
-			ID:                e.ID,
-			Sequence:          e.Sequence,
-			Type:              e.Type,
-			CandidateID:       e.CandidateID,
-			CandidateRevision: e.CandidateRevision,
-			FormalArtifactRef: e.FormalArtifactRef,
-		})
+		events = append(events, companyOpsOutcomeEventWire(detail.Events[i]))
 	}
 
 	runs := make([]companyOpsOutcomeRunResponse, 0, len(detail.Runs))
@@ -327,6 +319,21 @@ func (h *Handler) GetCompanyOpsOutcome(w http.ResponseWriter, r *http.Request) {
 		Events:        events,
 		Runs:          runs,
 	})
+}
+
+func companyOpsOutcomeEventWire(e service.CompanyOpsOutcomeEvent) companyOpsOutcomeEventResponse {
+	formalArtifactRef := ""
+	if e.Type == "authority_readback_confirmed" {
+		formalArtifactRef = e.FormalArtifactRef
+	}
+	return companyOpsOutcomeEventResponse{
+		ID:                e.ID,
+		Sequence:          e.Sequence,
+		Type:              e.Type,
+		CandidateID:       e.CandidateID,
+		CandidateRevision: e.CandidateRevision,
+		FormalArtifactRef: formalArtifactRef,
+	}
 }
 
 func companyOpsOutcomeSummaryWire(s service.CompanyOpsOutcomeSummary) companyOpsOutcomeSummaryResponse {
@@ -370,6 +377,12 @@ func companyOpsOutcomeSummaryWire(s service.CompanyOpsOutcomeSummary) companyOps
 		VersionCount:   s.VersionCount,
 	}
 	if s.ActiveArtifact != nil {
+		formalVisible := s.ActiveArtifact.Status == "authority_readback_confirmed" &&
+			s.ActiveArtifact.FormalVisible && strings.TrimSpace(s.ActiveArtifact.FormalArtifactRef) != ""
+		formalArtifactRef := ""
+		if formalVisible {
+			formalArtifactRef = s.ActiveArtifact.FormalArtifactRef
+		}
 		resp.ActiveArtifact = &companyOpsOutcomeArtifactResponse{
 			ID:                s.ActiveArtifact.ID,
 			Revision:          s.ActiveArtifact.Revision,
@@ -377,8 +390,8 @@ func companyOpsOutcomeSummaryWire(s service.CompanyOpsOutcomeSummary) companyOps
 			Digest:            s.ActiveArtifact.Digest,
 			ContentType:       s.ActiveArtifact.ContentType,
 			Status:            s.ActiveArtifact.Status,
-			FormalVisible:     s.ActiveArtifact.FormalVisible,
-			FormalArtifactRef: s.ActiveArtifact.FormalArtifactRef,
+			FormalVisible:     formalVisible,
+			FormalArtifactRef: formalArtifactRef,
 		}
 	}
 	if s.LatestEventAt != nil {

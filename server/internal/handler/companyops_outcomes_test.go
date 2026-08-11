@@ -79,19 +79,19 @@ func TestCompanyOpsOutcomeDetailResponseSchema(t *testing.T) {
 
 func TestCompanyOpsOutcomeArtifactResponseOmitEmpty(t *testing.T) {
 	cases := []struct {
-		name    string
+		name     string
 		artifact companyOpsOutcomeArtifactResponse
-		wantRef bool
+		wantRef  bool
 	}{
 		{
-			name:    "empty formal_artifact_ref omitted",
+			name:     "empty formal_artifact_ref omitted",
 			artifact: companyOpsOutcomeArtifactResponse{ID: "c1", Revision: 1, Status: "submitted"},
-			wantRef: false,
+			wantRef:  false,
 		},
 		{
-			name:    "non-empty formal_artifact_ref present",
+			name:     "non-empty formal_artifact_ref present",
 			artifact: companyOpsOutcomeArtifactResponse{ID: "c1", Revision: 1, Status: "authority_readback_confirmed", FormalVisible: true, FormalArtifactRef: "hivecosm://formal/FA-1"},
-			wantRef: true,
+			wantRef:  true,
 		},
 	}
 	for _, tc := range cases {
@@ -169,8 +169,8 @@ func TestCompanyOpsOutcomeSummaryWireFullMapping(t *testing.T) {
 			Model:  "gpt-4",
 			Status: "online",
 		},
-		InitialTaskID: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
-		CurrentTaskID: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+		InitialTaskID:  "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+		CurrentTaskID:  "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
 		ExecutionState: "completed",
 		ActiveArtifact: &service.CompanyOpsOutcomeArtifact{
 			ID:                "ffffffff-ffff-4fff-8fff-ffffffffffff",
@@ -193,6 +193,45 @@ func TestCompanyOpsOutcomeSummaryWireFullMapping(t *testing.T) {
 		!wire.ActiveArtifact.FormalVisible ||
 		wire.LatestEventAt != eventAt {
 		t.Fatalf("wire mapping incomplete: %+v", wire)
+	}
+}
+
+func TestCompanyOpsOutcomeWireSuppressesPrematureFormalReferences(t *testing.T) {
+	summary := service.CompanyOpsOutcomeSummary{
+		ActiveArtifact: &service.CompanyOpsOutcomeArtifact{
+			ID:                "ffffffff-ffff-4fff-8fff-ffffffffffff",
+			Revision:          2,
+			DurableObjectRef:  "/uploads/workspaces/ws/artifact-candidates/candidate/digest",
+			Digest:            "sha256:digest",
+			Status:            "promotion_succeeded",
+			FormalVisible:     true,
+			FormalArtifactRef: "hive://formal/FA-PREMATURE",
+		},
+	}
+	wire := companyOpsOutcomeSummaryWire(summary)
+	if wire.ActiveArtifact == nil {
+		t.Fatal("active artifact missing")
+	}
+	if wire.ActiveArtifact.FormalVisible || wire.ActiveArtifact.FormalArtifactRef != "" {
+		t.Fatalf("promotion_succeeded wire exposed formal fields: %+v", wire.ActiveArtifact)
+	}
+
+	event := companyOpsOutcomeEventWire(service.CompanyOpsOutcomeEvent{
+		Type:              "promotion_succeeded",
+		FormalArtifactRef: "hive://formal/FA-PREMATURE",
+	})
+	if event.FormalArtifactRef != "" {
+		t.Fatalf("promotion_succeeded event wire exposed formal_artifact_ref %q", event.FormalArtifactRef)
+	}
+}
+
+func TestCompanyOpsOutcomeEventWireKeepsConfirmedFormalReference(t *testing.T) {
+	event := companyOpsOutcomeEventWire(service.CompanyOpsOutcomeEvent{
+		Type:              "authority_readback_confirmed",
+		FormalArtifactRef: "hive://formal/FA-1",
+	})
+	if event.FormalArtifactRef != "hive://formal/FA-1" {
+		t.Fatalf("confirmed formal_artifact_ref = %q", event.FormalArtifactRef)
 	}
 }
 
@@ -339,10 +378,10 @@ func TestGetCompanyOpsOutcomes_RejectsNonCanonicalEmployeeID(t *testing.T) {
 		CompanyOpsOutcomeCenter: service.NewCompanyOpsOutcomeCenterService(nil),
 	}
 	cases := map[string]string{
-		"extra_slash":    "EMP/extra",
-		"query_string":   "EMP?query=1",
-		"fragment":       "EMP#fragment",
-		"leading_space":  " EMP",
+		"extra_slash":   "EMP/extra",
+		"query_string":  "EMP?query=1",
+		"fragment":      "EMP#fragment",
+		"leading_space": " EMP",
 	}
 	for name, v := range cases {
 		t.Run(name, func(t *testing.T) {

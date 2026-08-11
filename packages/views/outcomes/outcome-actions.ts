@@ -38,6 +38,33 @@ export function outcomeCandidateId(
   return summary.active_artifact?.id ?? null;
 }
 
+const CANONICAL_UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const SHA256_DIGEST_PATTERN = /^sha256:([0-9a-f]{64})$/;
+
+/**
+ * Resolve the current candidate's same-origin read-only object URL. The exact
+ * workspace, candidate and digest are all bound into the materialized key;
+ * anything else stays non-clickable instead of becoming an arbitrary link.
+ */
+export function outcomeCandidatePreviewRef(
+  summary: CompanyOpsOutcomeSummary,
+  wsId: string,
+): string | null {
+  const candidate = summary.active_artifact;
+  if (
+    !candidate ||
+    !CANONICAL_UUID_PATTERN.test(wsId) ||
+    !CANONICAL_UUID_PATTERN.test(candidate.id)
+  ) {
+    return null;
+  }
+  const digest = SHA256_DIGEST_PATTERN.exec(candidate.digest);
+  if (!digest) return null;
+  const expected = `/uploads/workspaces/${wsId}/artifact-candidates/${candidate.id}/${digest[1]}`;
+  return candidate.durable_object_ref === expected ? expected : null;
+}
+
 /** The artifact is promotable when it already passed an explicit approval. */
 export function isOutcomePromotable(
   summary: CompanyOpsOutcomeSummary,

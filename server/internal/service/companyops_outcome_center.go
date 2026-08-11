@@ -25,23 +25,23 @@ var (
 )
 
 const (
-	hiveCosmEmployeeRefPrefix       = "hivecosm://employees/"
+	hiveCosmEmployeeRefPrefix        = "hivecosm://employees/"
 	hiveCosmIdentityBindingRefPrefix = "hivecosm://identity-bindings/"
 )
 
 var companyOpsOutcomeValidStatuses = map[string]struct{}{
-	"awaiting_claim":                {},
-	"running":                       {},
-	"completed":                     {},
-	"failed":                        {},
-	"cancelled":                     {},
-	"submitted":                     {},
-	"changes_requested":             {},
-	"approved":                      {},
-	"promotion_requested":           {},
-	"promotion_succeeded":           {},
-	"promotion_failed":              {},
-	"authority_readback_confirmed":  {},
+	"awaiting_claim":               {},
+	"running":                      {},
+	"completed":                    {},
+	"failed":                       {},
+	"cancelled":                    {},
+	"submitted":                    {},
+	"changes_requested":            {},
+	"approved":                     {},
+	"promotion_requested":          {},
+	"promotion_succeeded":          {},
+	"promotion_failed":             {},
+	"authority_readback_confirmed": {},
 }
 
 // IsValidCompanyOpsOutcomeStatus reports whether s is in the closed status
@@ -203,16 +203,16 @@ type CompanyOpsOutcomeEvent struct {
 
 // CompanyOpsOutcomeRun is one execution receipt in the detail view.
 type CompanyOpsOutcomeRun struct {
-	TaskID         string
-	Status         string
-	CompletedAt    *string
-	OutputDigest   string
-	TerminalError  string
+	TaskID        string
+	Status        string
+	CompletedAt   *string
+	OutputDigest  string
+	TerminalError string
 }
 
 // CompanyOpsOutcomeDetail is the full detail response for one outcome.
 type CompanyOpsOutcomeDetail struct {
-	Summary CompanyOpsOutcomeSummary
+	Summary  CompanyOpsOutcomeSummary
 	Versions []CompanyOpsOutcomeVersion
 	Events   []CompanyOpsOutcomeEvent
 	Runs     []CompanyOpsOutcomeRun
@@ -477,29 +477,25 @@ func (s *CompanyOpsOutcomeCenterService) GetOutcome(
 	events := make([]CompanyOpsOutcomeEvent, 0, len(eventRows))
 	for i := range eventRows {
 		e := eventRows[i]
+		formalArtifactRef := ""
+		if e.EventType == string(companyops.ArtifactEventAuthorityReadbackConfirmed) {
+			formalArtifactRef = e.FormalArtifactRef.String
+		}
 		events = append(events, CompanyOpsOutcomeEvent{
 			ID:                util.UUIDToString(e.ID),
 			Sequence:          e.Sequence,
 			Type:              e.EventType,
 			CandidateID:       util.UUIDToString(e.CandidateID),
 			CandidateRevision: e.CandidateRevision,
-			FormalArtifactRef: e.FormalArtifactRef.String,
+			FormalArtifactRef: formalArtifactRef,
 		})
 	}
 
 	runs := make([]CompanyOpsOutcomeRun, 0, len(runRows))
 	for i := range runRows {
-		r := runRows[i]
-		run := CompanyOpsOutcomeRun{
-			TaskID:       util.UUIDToString(r.TaskID),
-			OutputDigest: r.OutputDigest.String,
-			TerminalError: r.TerminalError.String,
-		}
-		if r.TerminalStatus.Valid {
-			run.Status = r.TerminalStatus.String
-		}
-		if r.CompletedAt.Valid {
-			run.CompletedAt = ptrString(r.CompletedAt.Time.UTC().Format("2006-01-02T15:04:05.999999999Z"))
+		run, runErr := companyOpsOutcomeRunFromRow(runRows[i])
+		if runErr != nil {
+			return nil, runErr
 		}
 		runs = append(runs, run)
 	}
@@ -510,6 +506,36 @@ func (s *CompanyOpsOutcomeCenterService) GetOutcome(
 		Events:   events,
 		Runs:     runs,
 	}, nil
+}
+
+func companyOpsOutcomeRunFromRow(row db.ExecutionReceipt) (CompanyOpsOutcomeRun, error) {
+	run := CompanyOpsOutcomeRun{
+		TaskID:        util.UUIDToString(row.TaskID),
+		Status:        "running",
+		OutputDigest:  row.OutputDigest.String,
+		TerminalError: row.TerminalError.String,
+	}
+	if !row.TerminalStatus.Valid {
+		return run, nil
+	}
+	switch row.TerminalStatus.String {
+	case "completed", "failed", "cancelled":
+		run.Status = row.TerminalStatus.String
+	default:
+		return CompanyOpsOutcomeRun{}, fmt.Errorf(
+			"%w: unknown execution receipt terminal status %q",
+			ErrCompanyOpsOutcomeLedgerConflict,
+			row.TerminalStatus.String,
+		)
+	}
+	if !row.CompletedAt.Valid {
+		return CompanyOpsOutcomeRun{}, fmt.Errorf(
+			"%w: terminal execution receipt missing completed_at",
+			ErrCompanyOpsOutcomeLedgerConflict,
+		)
+	}
+	run.CompletedAt = ptrString(row.CompletedAt.Time.UTC().Format("2006-01-02T15:04:05.999999999Z"))
+	return run, nil
 }
 
 func companyOpsOutcomeSummaryFromRow(row db.ListCompanyOpsOutcomeRowsRow) (CompanyOpsOutcomeSummary, error) {
@@ -585,8 +611,19 @@ func companyOpsOutcomeSummaryFromRow(row db.ListCompanyOpsOutcomeRowsRow) (Compa
 	}
 
 	if row.ArtifactCandidateID.Valid {
+		if row.ArtifactLifecycleStatus == string(companyops.ArtifactEventAuthorityReadbackConfirmed) &&
+			strings.TrimSpace(row.ArtifactFormalRef.String) == "" {
+			return CompanyOpsOutcomeSummary{}, fmt.Errorf(
+				"%w: authority_readback_confirmed without formal_artifact_ref",
+				ErrCompanyOpsOutcomeLedgerConflict,
+			)
+		}
 		formalVisible := row.ArtifactLifecycleStatus == string(companyops.ArtifactEventAuthorityReadbackConfirmed) &&
 			strings.TrimSpace(row.ArtifactFormalRef.String) != ""
+		formalArtifactRef := ""
+		if formalVisible {
+			formalArtifactRef = row.ArtifactFormalRef.String
+		}
 		summary.ActiveArtifact = &CompanyOpsOutcomeArtifact{
 			ID:                util.UUIDToString(row.ArtifactCandidateID),
 			Revision:          row.ArtifactCandidateRevision,
@@ -595,7 +632,7 @@ func companyOpsOutcomeSummaryFromRow(row db.ListCompanyOpsOutcomeRowsRow) (Compa
 			ContentType:       row.ArtifactContentType,
 			Status:            row.ArtifactLifecycleStatus,
 			FormalVisible:     formalVisible,
-			FormalArtifactRef: row.ArtifactFormalRef.String,
+			FormalArtifactRef: formalArtifactRef,
 		}
 	}
 

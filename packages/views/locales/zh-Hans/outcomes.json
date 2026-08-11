@@ -81,7 +81,7 @@
     "changes_requested": "已要求修改",
     "approved": "已通过",
     "promotion_requested": "晋升中",
-    "promotion_succeeded": "晋升成功",
+    "promotion_succeeded": "等待权威回读确认",
     "promotion_failed": "晋升失败",
     "authority_readback_confirmed": "正式回读已确认"
   }

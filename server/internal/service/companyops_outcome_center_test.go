@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/companyops"
 	"github.com/multica-ai/multica/server/internal/util"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 func TestCompanyOpsOutcomeCenter_SchemaVersion(t *testing.T) {
@@ -290,6 +291,27 @@ func TestCompanyOpsOutcomeCenter_PromotionSucceededNotFormal(t *testing.T) {
 	if detail.Summary.ActiveArtifact.FormalVisible {
 		t.Fatal("promotion_succeeded artifact must not be formal_visible until readback")
 	}
+	if detail.Summary.ActiveArtifact.FormalArtifactRef != "" {
+		t.Fatalf("promotion_succeeded formal_artifact_ref = %q, want suppressed", detail.Summary.ActiveArtifact.FormalArtifactRef)
+	}
+	for _, event := range detail.Events {
+		if event.Type == "promotion_succeeded" && event.FormalArtifactRef != "" {
+			t.Fatalf("promotion_succeeded event exposed formal_artifact_ref %q", event.FormalArtifactRef)
+		}
+	}
+
+	summaries, _, err := svc.ListOutcomes(ctx, CompanyOpsOutcomeListRequest{
+		WorkspaceID: fixture.company.workspaceID,
+	})
+	if err != nil {
+		t.Fatalf("ListOutcomes: %v", err)
+	}
+	if len(summaries) != 1 || summaries[0].ActiveArtifact == nil {
+		t.Fatalf("ListOutcomes active artifact = %+v", summaries)
+	}
+	if summaries[0].ActiveArtifact.FormalArtifactRef != "" {
+		t.Fatalf("list promotion_succeeded formal_artifact_ref = %q, want suppressed", summaries[0].ActiveArtifact.FormalArtifactRef)
+	}
 }
 
 func TestCompanyOpsOutcomeCenter_AuthorityReadbackConfirmedFormal(t *testing.T) {
@@ -320,6 +342,18 @@ func TestCompanyOpsOutcomeCenter_AuthorityReadbackConfirmedFormal(t *testing.T) 
 	if detail.Summary.ActiveArtifact.FormalArtifactRef != promotionTestFormalArtifactRef {
 		t.Fatalf("formal_artifact_ref = %q, want %q", detail.Summary.ActiveArtifact.FormalArtifactRef, promotionTestFormalArtifactRef)
 	}
+	confirmedEventFound := false
+	for _, event := range detail.Events {
+		if event.Type == "authority_readback_confirmed" {
+			confirmedEventFound = true
+			if event.FormalArtifactRef != promotionTestFormalArtifactRef {
+				t.Fatalf("confirmed event formal_artifact_ref = %q, want %q", event.FormalArtifactRef, promotionTestFormalArtifactRef)
+			}
+		}
+	}
+	if !confirmedEventFound {
+		t.Fatal("authority_readback_confirmed event not found")
+	}
 
 	// Verify formal_visible=true filter finds it.
 	formalTrue := true
@@ -332,6 +366,10 @@ func TestCompanyOpsOutcomeCenter_AuthorityReadbackConfirmedFormal(t *testing.T) 
 	}
 	if total != 1 || len(summaries) != 1 {
 		t.Fatalf("formal_visible=true: total=%d items=%d", total, len(summaries))
+	}
+	if summaries[0].ActiveArtifact == nil ||
+		summaries[0].ActiveArtifact.FormalArtifactRef != promotionTestFormalArtifactRef {
+		t.Fatalf("confirmed list active artifact = %+v", summaries[0].ActiveArtifact)
 	}
 }
 
@@ -522,6 +560,39 @@ func TestCompanyOpsOutcomeCenter_DetailRunsIncludeExecutionReceipts(t *testing.T
 	}
 	if len(detail.Events) < 1 {
 		t.Fatalf("expected at least 1 event, got %d", len(detail.Events))
+	}
+}
+
+func TestCompanyOpsOutcomeCenter_ClaimedReceiptProjectsRunning(t *testing.T) {
+	ctx, fixture := newCompanyOpsExecutionTestFixture(t)
+	task := claimAndFinalizeCompanyOpsExecutionTestTask(t, ctx, fixture)
+
+	detail, err := NewCompanyOpsOutcomeCenterService(fixture.queries).GetOutcome(
+		ctx,
+		fixture.company.workspaceID,
+		fixture.assignment.CommandID,
+	)
+	if err != nil {
+		t.Fatalf("GetOutcome: %v", err)
+	}
+	if len(detail.Runs) != 1 {
+		t.Fatalf("runs = %d, want 1", len(detail.Runs))
+	}
+	if detail.Runs[0].TaskID != util.UUIDToString(task.ID) || detail.Runs[0].Status != "running" {
+		t.Fatalf("claimed run = %+v, want task %s running", detail.Runs[0], util.UUIDToString(task.ID))
+	}
+	if detail.Runs[0].CompletedAt != nil {
+		t.Fatalf("claimed run completed_at = %v, want nil", detail.Runs[0].CompletedAt)
+	}
+}
+
+func TestCompanyOpsOutcomeRunFromRowRejectsUnknownTerminal(t *testing.T) {
+	_, err := companyOpsOutcomeRunFromRow(db.ExecutionReceipt{
+		TaskID:         util.MustParseUUID(uuid.NewString()),
+		TerminalStatus: pgtype.Text{String: "future_terminal", Valid: true},
+	})
+	if !errors.Is(err, ErrCompanyOpsOutcomeLedgerConflict) {
+		t.Fatalf("error = %v, want ErrCompanyOpsOutcomeLedgerConflict", err)
 	}
 }
 
@@ -771,6 +842,12 @@ func TestCompanyOpsOutcomeCenter_ConfirmedEmptyFormalRefConflict(t *testing.T) {
 	if !errors.Is(err, ErrCompanyOpsOutcomeLedgerConflict) {
 		t.Fatalf("GetOutcome with confirmed-empty-ref error = %v, want ErrCompanyOpsOutcomeLedgerConflict", err)
 	}
+	_, _, err = svc.ListOutcomes(ctx, CompanyOpsOutcomeListRequest{
+		WorkspaceID: fixture.company.workspaceID,
+	})
+	if !errors.Is(err, ErrCompanyOpsOutcomeLedgerConflict) {
+		t.Fatalf("ListOutcomes with confirmed-empty-ref error = %v, want ErrCompanyOpsOutcomeLedgerConflict", err)
+	}
 }
 
 func TestCompanyOpsOutcomeCenter_EmployeeAndTypeFilters(t *testing.T) {
@@ -839,8 +916,8 @@ func TestCompanyOpsOutcomeCenter_ListCountSameSemantics(t *testing.T) {
 	svc := NewCompanyOpsOutcomeCenterService(fixture.queries)
 
 	cases := []struct {
-		name    string
-		modify  func(req *CompanyOpsOutcomeListRequest)
+		name   string
+		modify func(req *CompanyOpsOutcomeListRequest)
 	}{
 		{"q", func(r *CompanyOpsOutcomeListRequest) { r.Q = "assignment" }},
 		{"status", func(r *CompanyOpsOutcomeListRequest) { r.Status = "approved" }},

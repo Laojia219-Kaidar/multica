@@ -11,6 +11,7 @@ import {
   isOutcomeFormal,
   isOutcomePromotable,
   outcomeCandidateId,
+  outcomeCandidatePreviewRef,
   outcomeSelectors,
   useOutcomeActions,
 } from "./outcome-actions";
@@ -170,6 +171,51 @@ describe("outcomeSelectors / outcomeCandidateId / isOutcomePromotable / isOutcom
       }),
     ).toBe(false);
     expect(isOutcomeFormal({ ...baseSummary, active_artifact: undefined })).toBe(false);
+  });
+});
+
+describe("outcomeCandidatePreviewRef", () => {
+  const wsId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  const candidateId = baseSummary.active_artifact!.id;
+  const digestHex = "a".repeat(64);
+  const validRef = `/uploads/workspaces/${wsId}/artifact-candidates/${candidateId}/${digestHex}`;
+  const previewSummary: CompanyOpsOutcomeSummary = {
+    ...baseSummary,
+    active_artifact: {
+      ...baseSummary.active_artifact!,
+      durable_object_ref: validRef,
+      digest: `sha256:${digestHex}`,
+    },
+  };
+
+  it("returns the exact same-origin candidate object ref", () => {
+    expect(outcomeCandidatePreviewRef(previewSummary, wsId)).toBe(validRef);
+  });
+
+  it.each([
+    ["cross workspace", validRef.replace(wsId, "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")],
+    ["wrong candidate", validRef.replace(candidateId, "77777777-7777-4777-8777-777777777777")],
+    ["wrong digest", `${validRef.slice(0, -64)}${"b".repeat(64)}`],
+    ["absolute URL", `https://evil.invalid${validRef}`],
+    ["javascript URL", "javascript:alert(1)"],
+    ["path traversal", `${validRef}/../secret`],
+    ["query", `${validRef}?download=1`],
+    ["fragment", `${validRef}#preview`],
+    ["encoded traversal", validRef.replace("/artifact-candidates/", "/artifact-candidates/%2e%2e/")],
+    ["encoded separator", validRef.replace(candidateId, `${candidateId}%2fescape`)],
+  ])("rejects %s", (_name, durableObjectRef) => {
+    expect(
+      outcomeCandidatePreviewRef(
+        {
+          ...previewSummary,
+          active_artifact: {
+            ...previewSummary.active_artifact!,
+            durable_object_ref: durableObjectRef,
+          },
+        },
+        wsId,
+      ),
+    ).toBeNull();
   });
 });
 

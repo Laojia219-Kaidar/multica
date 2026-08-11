@@ -60,8 +60,10 @@ const summary = {
   active_artifact: {
     id: "66666666-6666-4666-8666-666666666666",
     revision: 2,
-    durable_object_ref: "hive://hivecosm/artifacts/66666666-6666-4666-8666-666666666666",
-    digest: "sha256:abc123",
+    durable_object_ref:
+      "/uploads/workspaces/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/artifact-candidates/66666666-6666-4666-8666-666666666666/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    digest:
+      "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     content_type: "application/json",
     status: "approved",
     formal_visible: false,
@@ -134,7 +136,7 @@ vi.mock("./use-outcomes-compact", () => ({
 }));
 
 vi.mock("@multica/core/hooks", () => ({
-  useWorkspaceId: () => "ws-1",
+  useWorkspaceId: () => "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
 }));
 
 vi.mock("./outcome-actions", async (importOriginal) => {
@@ -294,8 +296,39 @@ describe("OutcomesPage", () => {
     expect(screen.getByText(summary.issue.project_id!)).toBeInTheDocument();
     expect(screen.getByText("Atlas")).toBeInTheDocument();
     const candidateLink = screen.getByRole("link", { name: "Preview candidate" });
-    expect(candidateLink).toHaveAttribute("href", `/acme/issues/${summary.issue.id}`);
+    expect(candidateLink).toHaveAttribute(
+      "href",
+      summary.active_artifact.durable_object_ref,
+    );
+    expect(candidateLink).toHaveAttribute("target", "_blank");
+    expect(candidateLink).toHaveAttribute("data-candidate-id", summary.active_artifact.id);
+    expect(candidateLink).toHaveAttribute(
+      "data-candidate-revision",
+      String(summary.active_artifact.revision),
+    );
+    expect(candidateLink).toHaveAttribute(
+      "data-candidate-digest",
+      summary.active_artifact.digest,
+    );
     expect(candidateLink).not.toHaveAttribute("role", "button");
+  });
+
+  it("does not expose an unbound candidate object ref as a preview", async () => {
+    mockDetail.mockResolvedValue({
+      ...detail,
+      summary: {
+        ...summary,
+        active_artifact: {
+          ...summary.active_artifact,
+          durable_object_ref: "https://evil.invalid/candidate",
+        },
+      },
+    });
+    renderPage(new URLSearchParams({ outcome: commandId }));
+    await screen.findByText("#42");
+    expect(
+      screen.queryByRole("link", { name: "Preview candidate" }),
+    ).not.toBeInTheDocument();
   });
 
   it("shows an explicit not-found for an invalid/deleted outcome id", async () => {
@@ -455,6 +488,39 @@ candidate_id: summary.active_artifact!.id,
     // "Not yet formal" appears in the header and the formal section (both
     // badges) — either way, no readback-confirmed badge is rendered.
     expect(screen.getAllByText("Not yet formal").length).toBeGreaterThan(0);
+  });
+
+  it("shows promotion success as waiting for readback and suppresses premature refs", async () => {
+    const prematureRef = "hivecosm://formal-artifacts/FA-PREMATURE";
+    mockDetail.mockResolvedValue({
+      ...detail,
+      summary: {
+        ...summary,
+        active_artifact: {
+          ...summary.active_artifact,
+          status: "promotion_succeeded",
+          formal_visible: false,
+          formal_artifact_ref: prematureRef,
+        },
+      },
+      events: [
+        {
+          id: "88888888-8888-4888-8888-888888888888",
+          sequence: 2,
+          type: "promotion_succeeded",
+          candidate_id: summary.active_artifact.id,
+          candidate_revision: summary.active_artifact.revision,
+          formal_artifact_ref: prematureRef,
+        },
+      ],
+    });
+    renderPage(new URLSearchParams({ outcome: commandId }));
+    await screen.findByText("#42");
+    expect(
+      screen.getAllByText("Awaiting authority readback confirmation").length,
+    ).toBeGreaterThan(0);
+    expect(screen.queryByText(prematureRef)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Formal reference:/)).not.toBeInTheDocument();
   });
 });
 

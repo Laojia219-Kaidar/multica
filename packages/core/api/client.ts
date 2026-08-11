@@ -370,6 +370,13 @@ const CompanyOpsOutcomeAgentDisplaySchema = z.object({
   status: z.string().min(1),
 });
 
+const CompanyOpsCanonicalFormalArtifactRefSchema = z
+  .string()
+  .min(1)
+  .refine((value) => value === value.trim(), {
+    message: "Formal artifact reference must be canonical and nonblank.",
+  });
+
 const CompanyOpsOutcomeActiveArtifactSchema = z
   .object({
     id: z.string().uuid(),
@@ -387,7 +394,23 @@ const CompanyOpsOutcomeActiveArtifactSchema = z
       "authority_readback_confirmed",
     ]),
     formal_visible: z.boolean(),
-    formal_artifact_ref: z.string().min(1).optional(),
+    formal_artifact_ref: CompanyOpsCanonicalFormalArtifactRefSchema.optional(),
+  })
+  .strict()
+  .superRefine((artifact, ctx) => {
+    const confirmed = artifact.status === "authority_readback_confirmed";
+    const hasFormalRef = artifact.formal_artifact_ref !== undefined;
+    if (
+      (confirmed && (!artifact.formal_visible || !hasFormalRef)) ||
+      (!confirmed && (artifact.formal_visible || hasFormalRef))
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["formal_artifact_ref"],
+        message:
+          "Formal artifact reference must exist exactly when authority readback is confirmed and visible.",
+      });
+    }
   })
   .optional();
 
@@ -416,22 +439,46 @@ const CompanyOpsOutcomeVersionSchema = z.object({
   content_type: z.string().min(1).optional(),
 });
 
-const CompanyOpsOutcomeEventSchema = z.object({
-  id: z.string().uuid(),
-  sequence: z.number().int().nonnegative(),
-  type: z.string().min(1),
-  candidate_id: z.string().uuid(),
-  candidate_revision: z.number().int().positive(),
-  formal_artifact_ref: z.string().min(1).optional(),
-});
+const CompanyOpsOutcomeEventSchema = z
+  .object({
+    id: z.string().uuid(),
+    sequence: z.number().int().positive(),
+    type: z.enum([
+      "submitted",
+      "changes_requested",
+      "approved",
+      "promotion_requested",
+      "promotion_succeeded",
+      "promotion_failed",
+      "authority_readback_confirmed",
+    ]),
+    candidate_id: z.string().uuid(),
+    candidate_revision: z.number().int().positive(),
+    formal_artifact_ref: CompanyOpsCanonicalFormalArtifactRefSchema.optional(),
+  })
+  .strict()
+  .superRefine((event, ctx) => {
+    const confirmed = event.type === "authority_readback_confirmed";
+    const hasFormalRef = event.formal_artifact_ref !== undefined;
+    if (confirmed !== hasFormalRef) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["formal_artifact_ref"],
+        message:
+          "Formal artifact reference must exist exactly on authority readback confirmation events.",
+      });
+    }
+  });
 
-const CompanyOpsOutcomeRunSchema = z.object({
-  task_id: z.string().uuid(),
-  status: z.string(),
-  completed_at: z.string().min(1).optional(),
-  output_digest: z.string().min(1).optional(),
-  terminal_error: z.string().min(1).optional(),
-});
+const CompanyOpsOutcomeRunSchema = z
+  .object({
+    task_id: z.string().uuid(),
+    status: z.enum(["running", "completed", "failed", "cancelled"]),
+    completed_at: z.string().min(1).optional(),
+    output_digest: z.string().min(1).optional(),
+    terminal_error: z.string().min(1).optional(),
+  })
+  .strict();
 
 const CompanyOpsOutcomeListResponseSchema = z.object({
   schema_version: z.literal("hivecrew.outcome-center.v1"),

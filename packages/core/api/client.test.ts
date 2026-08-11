@@ -512,6 +512,112 @@ describe("ApiClient CompanyOps outcome center", () => {
     ).rejects.toThrow("Invalid CompanyOps outcome center list response.");
   });
 
+  it.each([
+    [
+      "promotion_succeeded formal reference",
+      {
+        ...summary.active_artifact,
+        status: "promotion_succeeded",
+        formal_visible: false,
+        formal_artifact_ref: "hivecosm://formal-artifacts/FA-PREMATURE",
+      },
+    ],
+    [
+      "confirmed without visible formal reference",
+      {
+        ...summary.active_artifact,
+        status: "authority_readback_confirmed",
+        formal_visible: false,
+      },
+    ],
+    [
+      "non-confirmed formal visibility",
+      { ...summary.active_artifact, formal_visible: true },
+    ],
+    [
+      "unknown active artifact field",
+      { ...summary.active_artifact, future_formal_state: true },
+    ],
+    [
+      "blank confirmed formal reference",
+      {
+        ...summary.active_artifact,
+        status: "authority_readback_confirmed",
+        formal_visible: true,
+        formal_artifact_ref: " ",
+      },
+    ],
+    [
+      "leading-space confirmed formal reference",
+      {
+        ...summary.active_artifact,
+        status: "authority_readback_confirmed",
+        formal_visible: true,
+        formal_artifact_ref: " hivecosm://formal-artifacts/FA-001",
+      },
+    ],
+    [
+      "trailing-space confirmed formal reference",
+      {
+        ...summary.active_artifact,
+        status: "authority_readback_confirmed",
+        formal_visible: true,
+        formal_artifact_ref: "hivecosm://formal-artifacts/FA-001 ",
+      },
+    ],
+  ])("fails closed on a malformed 200 outcome list with %s", async (_name, activeArtifact) => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            schema_version: "hivecrew.outcome-center.v1",
+            items: [{ ...summary, active_artifact: activeArtifact }],
+            total: 1,
+            limit: 50,
+            offset: 0,
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      ),
+    );
+
+    await expect(
+      new ApiClient("https://api.example.test").listCompanyOpsOutcomes(),
+    ).rejects.toThrow("Invalid CompanyOps outcome center list response.");
+  });
+
+  it("accepts the confirmed active-artifact formal reference", async () => {
+    const confirmed = {
+      ...summary,
+      active_artifact: {
+        ...summary.active_artifact,
+        status: "authority_readback_confirmed",
+        formal_visible: true,
+        formal_artifact_ref: "hivecosm://formal-artifacts/FA-001",
+      },
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            schema_version: "hivecrew.outcome-center.v1",
+            items: [confirmed],
+            total: 1,
+            limit: 50,
+            offset: 0,
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      ),
+    );
+
+    await expect(
+      new ApiClient("https://api.example.test").listCompanyOpsOutcomes(),
+    ).resolves.toMatchObject({ items: [confirmed] });
+  });
+
   it("accepts the exact backend wire when optional display hints are omitted", async () => {
     const backendSummary = {
       ...summary,
@@ -618,6 +724,219 @@ describe("ApiClient CompanyOps outcome center", () => {
     await expect(
       new ApiClient("https://api.example.test").getCompanyOpsOutcome(commandId),
     ).rejects.toThrow("Invalid CompanyOps outcome center detail response.");
+  });
+
+  it.each([
+    [
+      "promotion_succeeded event formal reference",
+      {
+        events: [
+          {
+            id: "88888888-8888-4888-8888-888888888888",
+            sequence: 1,
+            type: "promotion_succeeded",
+            candidate_id: "77777777-7777-4777-8777-777777777777",
+            candidate_revision: 1,
+            formal_artifact_ref: "hivecosm://formal-artifacts/FA-PREMATURE",
+          },
+        ],
+        runs: [],
+      },
+    ],
+    [
+      "confirmed event without formal reference",
+      {
+        events: [
+          {
+            id: "88888888-8888-4888-8888-888888888888",
+            sequence: 1,
+            type: "authority_readback_confirmed",
+            candidate_id: "77777777-7777-4777-8777-777777777777",
+            candidate_revision: 1,
+          },
+        ],
+        runs: [],
+      },
+    ],
+    [
+      "zero event sequence",
+      {
+        events: [
+          {
+            id: "88888888-8888-4888-8888-888888888888",
+            sequence: 0,
+            type: "submitted",
+            candidate_id: "77777777-7777-4777-8777-777777777777",
+            candidate_revision: 1,
+          },
+        ],
+        runs: [],
+      },
+    ],
+    [
+      "unknown event type",
+      {
+        events: [
+          {
+            id: "88888888-8888-4888-8888-888888888888",
+            sequence: 1,
+            type: "future_event",
+            candidate_id: "77777777-7777-4777-8777-777777777777",
+            candidate_revision: 1,
+          },
+        ],
+        runs: [],
+      },
+    ],
+    [
+      "empty run status",
+      {
+        events: [],
+        runs: [
+          {
+            task_id: "99999999-9999-4999-8999-999999999999",
+            status: "",
+          },
+        ],
+      },
+    ],
+    [
+      "unknown run status",
+      {
+        events: [],
+        runs: [
+          {
+            task_id: "99999999-9999-4999-8999-999999999999",
+            status: "queued",
+          },
+        ],
+      },
+    ],
+  ])("fails closed when outcome detail has %s", async (_name, malformed) => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            schema_version: "hivecrew.outcome-center.v1",
+            summary,
+            versions: [],
+            ...malformed,
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      ),
+    );
+
+    await expect(
+      new ApiClient("https://api.example.test").getCompanyOpsOutcome(commandId),
+    ).rejects.toThrow("Invalid CompanyOps outcome center detail response.");
+  });
+
+  it.each([
+    ["blank", " "],
+    ["leading whitespace", " hivecosm://formal-artifacts/FA-001"],
+    ["trailing whitespace", "hivecosm://formal-artifacts/FA-001 "],
+  ])("fails closed on %s in a confirmed detail event ref", async (_name, formalArtifactRef) => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            schema_version: "hivecrew.outcome-center.v1",
+            summary,
+            versions: [],
+            events: [
+              {
+                id: "88888888-8888-4888-8888-888888888888",
+                sequence: 1,
+                type: "authority_readback_confirmed",
+                candidate_id: "77777777-7777-4777-8777-777777777777",
+                candidate_revision: 1,
+                formal_artifact_ref: formalArtifactRef,
+              },
+            ],
+            runs: [],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      ),
+    );
+
+    await expect(
+      new ApiClient("https://api.example.test").getCompanyOpsOutcome(commandId),
+    ).rejects.toThrow("Invalid CompanyOps outcome center detail response.");
+  });
+
+  it.each([
+    ["blank", " "],
+    ["leading whitespace", " hivecosm://formal-artifacts/FA-001"],
+    ["trailing whitespace", "hivecosm://formal-artifacts/FA-001 "],
+  ])("fails closed on %s in a confirmed detail active ref", async (_name, formalArtifactRef) => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            schema_version: "hivecrew.outcome-center.v1",
+            summary: {
+              ...summary,
+              active_artifact: {
+                ...summary.active_artifact,
+                status: "authority_readback_confirmed",
+                formal_visible: true,
+                formal_artifact_ref: formalArtifactRef,
+              },
+            },
+            versions: [],
+            events: [],
+            runs: [],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      ),
+    );
+
+    await expect(
+      new ApiClient("https://api.example.test").getCompanyOpsOutcome(commandId),
+    ).rejects.toThrow("Invalid CompanyOps outcome center detail response.");
+  });
+
+  it("accepts confirmed event reference and an active running receipt", async () => {
+    const exact = {
+      schema_version: "hivecrew.outcome-center.v1",
+      summary,
+      versions: [],
+      events: [
+        {
+          id: "88888888-8888-4888-8888-888888888888",
+          sequence: 1,
+          type: "authority_readback_confirmed",
+          candidate_id: "77777777-7777-4777-8777-777777777777",
+          candidate_revision: 1,
+          formal_artifact_ref: "hivecosm://formal-artifacts/FA-001",
+        },
+      ],
+      runs: [
+        {
+          task_id: "99999999-9999-4999-8999-999999999999",
+          status: "running",
+        },
+      ],
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify(exact), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      ),
+    );
+
+    await expect(
+      new ApiClient("https://api.example.test").getCompanyOpsOutcome(commandId),
+    ).resolves.toEqual(exact);
   });
 
   it("fails closed on an unknown outcome-center schema version", async () => {

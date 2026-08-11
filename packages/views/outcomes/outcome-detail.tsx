@@ -19,7 +19,11 @@ import { buttonVariants } from "@multica/ui/components/ui/button";
 import { useWorkspacePaths } from "@multica/core/paths";
 import type { CompanyOpsOutcomeDetail } from "@multica/core/types";
 import { useT } from "../i18n";
-import { isOutcomeFormal, isOutcomePromotable } from "./outcome-actions";
+import {
+  isOutcomeFormal,
+  isOutcomePromotable,
+  outcomeCandidatePreviewRef,
+} from "./outcome-actions";
 import { OutcomeSessionGate } from "./outcome-session-gate";
 import type { OutcomeActions } from "./outcome-actions";
 
@@ -83,6 +87,10 @@ export function OutcomeDetail({
   const wsPaths = useWorkspacePaths();
   const summary = detail.summary;
   const candidate = summary.active_artifact ?? null;
+  const candidatePreviewRef = useMemo(
+    () => outcomeCandidatePreviewRef(summary, wsId),
+    [summary, wsId],
+  );
   const promotable = useMemo(() => isOutcomePromotable(summary), [summary]);
   const formal = useMemo(() => isOutcomeFormal(summary), [summary]);
   const title = summary.issue
@@ -134,6 +142,10 @@ export function OutcomeDetail({
               )}
               {formal ? (
                 <Badge>{t(($) => $.detail.formal_readback_confirmed)}</Badge>
+              ) : candidate?.status === "promotion_succeeded" ? (
+                <Badge variant="secondary">
+                  {statusLabel("promotion_succeeded")}
+                </Badge>
               ) : (
                 <Badge variant="secondary">
                   {t(($) => $.detail.formal_not_promoted)}
@@ -210,9 +222,14 @@ export function OutcomeDetail({
                 <span className="truncate text-xs text-muted-foreground">
                   {candidate.digest.slice(0, 16)}
                 </span>
-                {summary.issue && (
+                {candidatePreviewRef && (
                   <a
-                    href={wsPaths.issueDetail(summary.issue.id)}
+                    href={candidatePreviewRef}
+                    target="_blank"
+                    rel="noreferrer"
+                    data-candidate-id={candidate.id}
+                    data-candidate-revision={candidate.revision}
+                    data-candidate-digest={candidate.digest}
                     className={buttonVariants({
                       size: "sm",
                       variant: "outline",
@@ -236,6 +253,10 @@ export function OutcomeDetail({
             <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
               {formal ? (
                 <Badge>{t(($) => $.detail.formal_readback_confirmed)}</Badge>
+              ) : candidate?.status === "promotion_succeeded" ? (
+                <Badge variant="secondary">
+                  {statusLabel("promotion_succeeded")}
+                </Badge>
               ) : (
                 <Badge variant="secondary">
                   {t(($) => $.detail.formal_not_promoted)}
@@ -318,7 +339,10 @@ export function OutcomeDetail({
                     <div className="text-sm">{e.type}</div>
                     <div className="text-xs text-muted-foreground">
                       {t(($) => $.detail.revision, { revision: e.candidate_revision })}
-                      {e.formal_artifact_ref ? ` · ${e.formal_artifact_ref}` : ""}
+                      {e.type === "authority_readback_confirmed" &&
+                      e.formal_artifact_ref
+                        ? ` · ${e.formal_artifact_ref}`
+                        : ""}
                     </div>
                   </li>
                 ))}

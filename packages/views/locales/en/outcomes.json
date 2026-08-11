@@ -82,7 +82,7 @@
     "changes_requested": "Changes requested",
     "approved": "Approved",
     "promotion_requested": "Promotion requested",
-    "promotion_succeeded": "Promotion succeeded",
+    "promotion_succeeded": "Awaiting authority readback confirmation",
     "promotion_failed": "Promotion failed",
     "authority_readback_confirmed": "Formal readback confirmed"
   }
