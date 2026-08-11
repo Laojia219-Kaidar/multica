@@ -49,24 +49,45 @@ type HiveCosmFormalArtifactPromotionRequest struct {
 }
 
 type HiveCosmFormalArtifact struct {
-	FormalArtifactRef  string
-	Revision           string
-	ContentDigest      string
-	ProjectID          string
-	WorkOrderID        string
-	AssignmentID       string
-	EmployeeID         string
-	AgentID            string
-	IdentityBindingID  string
-	ArtifactManifestID string
-	ContentObjectID    string
-	ContentRef         string
+	FormalArtifactRef   string
+	Revision            string
+	ContentDigest       string
+	ProjectID           string
+	WorkOrderID         string
+	AssignmentID        string
+	EmployeeID          string
+	AgentID             string
+	IdentityBindingID   string
+	ArtifactManifestID  string
+	ContentObjectID     string
+	ContentRef          string
+	CandidateID         string
+	CandidateRevision   int
+	CandidateDigest     string
+	ReviewDecisionID    string
+	ReviewerID          string
+	ApprovalEventID     string
+	WorkOrderTransition *HiveCosmWorkOrderTransitionProof
+}
+
+type HiveCosmAuthorityTransitionSnapshot struct {
+	Revision      string
+	ContentDigest string
+}
+
+// HiveCosmWorkOrderTransitionProof is the authority-issued bridge between the
+// immutable WorkOrder observation linked by HiveCrew and the current WorkOrder
+// observation after Formal Artifact Promotion self-advances that authority.
+// It is returned only by the Formal Artifact GET readback and never mutates the
+// local external_work_order_link.
+type HiveCosmWorkOrderTransitionProof struct {
+	WorkOrderSourceRef string
+	PreviousAuthority  HiveCosmAuthorityTransitionSnapshot
+	ResultingAuthority HiveCosmAuthorityTransitionSnapshot
+	PromotionID        string
 	CandidateID        string
-	CandidateRevision  int
-	CandidateDigest    string
-	ReviewDecisionID   string
-	ReviewerID         string
 	ApprovalEventID    string
+	FormalArtifactRef  string
 }
 
 type HiveCosmFormalArtifactPromotionReceipt struct {
@@ -116,6 +137,16 @@ type formalArtifactOwnerReviewWire struct {
 	ApprovalEventID  string `json:"approval_event_id"`
 }
 
+type formalArtifactWorkOrderTransitionWire struct {
+	WorkOrderSourceRef string                              `json:"work_order_source_ref"`
+	PreviousAuthority  formalArtifactExpectedAuthorityWire `json:"previous_authority"`
+	ResultingAuthority formalArtifactExpectedAuthorityWire `json:"resulting_authority"`
+	PromotionID        string                              `json:"promotion_id"`
+	CandidateID        string                              `json:"candidate_id"`
+	ApprovalEventID    string                              `json:"approval_event_id"`
+	FormalArtifactRef  string                              `json:"formal_artifact_ref"`
+}
+
 type formalArtifactAuthorityWire struct {
 	SchemaVersion      string                        `json:"schema_version"`
 	FormalArtifactRef  string                        `json:"formal_artifact_ref"`
@@ -146,13 +177,14 @@ type formalArtifactPromotionEnvelope struct {
 }
 
 type formalArtifactReadbackEnvelope struct {
-	SchemaVersion string                       `json:"schema_version"`
-	LookupMode    string                       `json:"lookup_mode"`
-	Complete      bool                         `json:"complete"`
-	OK            bool                         `json:"ok"`
-	Request       hiveCosmAuthorityRequestEcho `json:"request"`
-	Artifact      formalArtifactAuthorityWire  `json:"formal_artifact"`
-	Error         *hiveCosmAuthorityWireError  `json:"error,omitempty"`
+	SchemaVersion       string                                 `json:"schema_version"`
+	LookupMode          string                                 `json:"lookup_mode"`
+	Complete            bool                                   `json:"complete"`
+	OK                  bool                                   `json:"ok"`
+	Request             hiveCosmAuthorityRequestEcho           `json:"request"`
+	Artifact            formalArtifactAuthorityWire            `json:"formal_artifact"`
+	WorkOrderTransition *formalArtifactWorkOrderTransitionWire `json:"work_order_transition"`
+	Error               *hiveCosmAuthorityWireError            `json:"error,omitempty"`
 }
 
 func (c *HiveCosmAuthorityClient) PromoteFormalArtifact(
@@ -259,6 +291,11 @@ func (c *HiveCosmAuthorityClient) ReadFormalArtifact(
 	if err != nil {
 		return HiveCosmFormalArtifact{}, authorityFailure(HiveCosmAuthorityInvalid, status, err)
 	}
+	transition, err := validateFormalArtifactWorkOrderTransition(envelope.WorkOrderTransition, lookup, expectedCandidate, artifact.FormalArtifactRef)
+	if err != nil {
+		return HiveCosmFormalArtifact{}, authorityFailure(HiveCosmAuthorityInvalid, status, err)
+	}
+	artifact.WorkOrderTransition = &transition
 	return artifact, nil
 }
 
@@ -415,6 +452,49 @@ func validateFormalArtifactAuthority(
 		ReviewDecisionID:   wire.OwnerReview.ReviewDecisionID,
 		ReviewerID:         wire.OwnerReview.ReviewerID,
 		ApprovalEventID:    wire.OwnerReview.ApprovalEventID,
+	}, nil
+}
+
+func validateFormalArtifactWorkOrderTransition(
+	wire *formalArtifactWorkOrderTransitionWire,
+	lookup HiveCosmAuthorityLookup,
+	expectedCandidate HiveCosmFormalArtifactCandidate,
+	expectedFormalArtifactRef string,
+) (HiveCosmWorkOrderTransitionProof, error) {
+	if wire == nil {
+		return HiveCosmWorkOrderTransitionProof{}, errors.New("formal Artifact readback is missing the WorkOrder transition proof")
+	}
+	if wire.WorkOrderSourceRef != lookup.WorkOrderSourceRef {
+		return HiveCosmWorkOrderTransitionProof{}, errors.New("formal Artifact WorkOrder transition identity changed")
+	}
+	for name, snapshot := range map[string]formalArtifactExpectedAuthorityWire{
+		"previous":  wire.PreviousAuthority,
+		"resulting": wire.ResultingAuthority,
+	} {
+		if !formalArtifactDigestPattern.MatchString(snapshot.Revision) || !formalArtifactDigestPattern.MatchString(snapshot.ContentDigest) {
+			return HiveCosmWorkOrderTransitionProof{}, fmt.Errorf("formal Artifact WorkOrder transition %s authority is invalid", name)
+		}
+	}
+	if parsed, err := uuid.Parse(wire.PromotionID); err != nil || parsed.String() != wire.PromotionID {
+		return HiveCosmWorkOrderTransitionProof{}, errors.New("formal Artifact WorkOrder transition promotion_id is invalid")
+	}
+	if wire.CandidateID != expectedCandidate.ID || wire.ApprovalEventID != expectedCandidate.ApprovalEventID || wire.FormalArtifactRef != expectedFormalArtifactRef {
+		return HiveCosmWorkOrderTransitionProof{}, errors.New("formal Artifact WorkOrder transition provenance changed")
+	}
+	return HiveCosmWorkOrderTransitionProof{
+		WorkOrderSourceRef: wire.WorkOrderSourceRef,
+		PreviousAuthority: HiveCosmAuthorityTransitionSnapshot{
+			Revision:      wire.PreviousAuthority.Revision,
+			ContentDigest: wire.PreviousAuthority.ContentDigest,
+		},
+		ResultingAuthority: HiveCosmAuthorityTransitionSnapshot{
+			Revision:      wire.ResultingAuthority.Revision,
+			ContentDigest: wire.ResultingAuthority.ContentDigest,
+		},
+		PromotionID:       wire.PromotionID,
+		CandidateID:       wire.CandidateID,
+		ApprovalEventID:   wire.ApprovalEventID,
+		FormalArtifactRef: wire.FormalArtifactRef,
 	}, nil
 }
 

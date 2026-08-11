@@ -198,7 +198,7 @@ func (h *Handler) GetCompanyOpsWorkContext(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	issue, state, err := h.readCompanyOpsIssueProjection(r, workspaceID, resolved.WorkOrder)
+	issue, state, err := h.readCompanyOpsIssueProjectionForGet(r, workspaceID, selectors.lookup(), resolved)
 	if err != nil {
 		writeCompanyOpsError(w, http.StatusConflict, "projection_conflict", err.Error())
 		return
@@ -454,6 +454,7 @@ func (h *Handler) CreateCompanyOpsFormalArtifactPromotion(w http.ResponseWriter,
 		WorkOrder:       resolved.WorkOrder,
 		Employee:        resolved.Employee,
 		IdentityBinding: resolved.IdentityBinding.Authority,
+		Agent:           resolved.AgentAuthority,
 	})
 	if err != nil {
 		var authorityErr *companyops.HiveCosmAuthorityError
@@ -546,7 +547,7 @@ func (h *Handler) readCompanyOpsIssueProjection(
 	if err != nil {
 		return db.Issue{}, "", fmt.Errorf("read WorkOrder projection link: %w", err)
 	}
-	if link.LinkedRevision != workOrder.Revision || link.LinkedDigest != workOrder.ContentDigest {
+	if !companyOpsWorkOrderLinkMatches(link.LinkedRevision, link.LinkedDigest, workOrder) {
 		return db.Issue{}, "", errors.New("the local WorkOrder projection was linked from a different authority revision")
 	}
 	issue, err := h.Queries.GetIssueInWorkspace(r.Context(), db.GetIssueInWorkspaceParams{
@@ -557,6 +558,60 @@ func (h *Handler) readCompanyOpsIssueProjection(
 		return db.Issue{}, "", fmt.Errorf("linked local Issue is unavailable: %w", err)
 	}
 	return issue, "projected", nil
+}
+
+// readCompanyOpsIssueProjectionForGet is the sole stale-link exception. It
+// keeps the persisted link immutable and permits only this read endpoint to
+// follow a WorkOrder revision advanced by Formal Artifact Promotion, after the
+// artifact service independently re-reads and verifies the exact transition.
+func (h *Handler) readCompanyOpsIssueProjectionForGet(
+	r *http.Request,
+	workspaceID pgtype.UUID,
+	lookup companyops.HiveCosmAuthorityLookup,
+	resolved service.ResolvedCompanyOpsAuthority,
+) (db.Issue, string, error) {
+	workOrder := resolved.WorkOrder
+	link, err := h.Queries.GetExternalWorkOrderLink(r.Context(), db.GetExternalWorkOrderLinkParams{
+		WorkspaceID:  workspaceID,
+		WorkOrderRef: workOrder.SourceRef,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return db.Issue{}, "not_projected", nil
+	}
+	if err != nil {
+		return db.Issue{}, "", fmt.Errorf("read WorkOrder projection link: %w", err)
+	}
+	if !companyOpsWorkOrderLinkMatches(link.LinkedRevision, link.LinkedDigest, workOrder) {
+		if h.CompanyOpsArtifacts == nil {
+			return db.Issue{}, "", errors.New("the local WorkOrder projection was linked from a different authority revision")
+		}
+		if err := h.CompanyOpsArtifacts.VerifyWorkOrderTransitionForGet(r.Context(), workspaceID, link.IssueID, service.CompanyOpsWorkOrderTransitionExpectation{
+			Lookup:          lookup,
+			Employee:        resolved.Employee,
+			IdentityBinding: resolved.IdentityBinding.Authority,
+			Agent:           resolved.AgentAuthority,
+			LocalAgentID:    resolved.Agent.ID,
+			PreviousAuthority: companyops.HiveCosmAuthorityTransitionSnapshot{
+				Revision:      link.LinkedRevision,
+				ContentDigest: link.LinkedDigest,
+			},
+			ResultingAuthority: workOrder,
+		}); err != nil {
+			return db.Issue{}, "", fmt.Errorf("verify WorkOrder authority transition: %w", err)
+		}
+	}
+	issue, err := h.Queries.GetIssueInWorkspace(r.Context(), db.GetIssueInWorkspaceParams{
+		ID:          link.IssueID,
+		WorkspaceID: workspaceID,
+	})
+	if err != nil {
+		return db.Issue{}, "", fmt.Errorf("linked local Issue is unavailable: %w", err)
+	}
+	return issue, "projected", nil
+}
+
+func companyOpsWorkOrderLinkMatches(linkedRevision, linkedDigest string, workOrder companyops.AuthoritySnapshot) bool {
+	return linkedRevision == workOrder.Revision && linkedDigest == workOrder.ContentDigest
 }
 
 func companyOpsSelectorsFromQuery(r *http.Request) (companyOpsSelectors, error) {

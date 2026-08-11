@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 )
 
@@ -82,9 +83,28 @@ func formalClientArtifactWire(input HiveCosmFormalArtifactPromotionRequest) form
 	}
 }
 
+func formalClientTransitionWire(input HiveCosmFormalArtifactPromotionRequest, formalArtifactRef string) *formalArtifactWorkOrderTransitionWire {
+	return &formalArtifactWorkOrderTransitionWire{
+		WorkOrderSourceRef: input.Lookup.WorkOrderSourceRef,
+		PreviousAuthority: formalArtifactExpectedAuthorityWire{
+			Revision:      input.WorkOrder.Revision,
+			ContentDigest: input.WorkOrder.ContentDigest,
+		},
+		ResultingAuthority: formalArtifactExpectedAuthorityWire{
+			Revision:      "sha256:" + repeatHex("1"),
+			ContentDigest: "sha256:" + repeatHex("1"),
+		},
+		PromotionID:       input.PromotionID,
+		CandidateID:       input.Candidate.ID,
+		ApprovalEventID:   input.Candidate.ApprovalEventID,
+		FormalArtifactRef: formalArtifactRef,
+	}
+}
+
 func TestHiveCosmFormalArtifactClient_PromoteAndExactReadback(t *testing.T) {
 	input := formalClientInput()
 	artifact := formalClientArtifactWire(input)
+	transition := formalClientTransitionWire(input, artifact.FormalArtifactRef)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
@@ -109,12 +129,13 @@ func TestHiveCosmFormalArtifactClient_PromoteAndExactReadback(t *testing.T) {
 				t.Fatalf("readback query = %v", r.URL.Query())
 			}
 			_ = json.NewEncoder(w).Encode(formalArtifactReadbackEnvelope{
-				SchemaVersion: HiveCosmFormalArtifactAuthorityV1,
-				LookupMode:    "exact",
-				Complete:      true,
-				OK:            true,
-				Request:       formalArtifactLookupWire(input.Lookup),
-				Artifact:      artifact,
+				SchemaVersion:       HiveCosmFormalArtifactAuthorityV1,
+				LookupMode:          "exact",
+				Complete:            true,
+				OK:                  true,
+				Request:             formalArtifactLookupWire(input.Lookup),
+				Artifact:            artifact,
+				WorkOrderTransition: transition,
 			})
 		default:
 			http.NotFound(w, r)
@@ -136,14 +157,28 @@ func TestHiveCosmFormalArtifactClient_PromoteAndExactReadback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadFormalArtifact: %v", err)
 	}
-	if readback != receipt.Artifact {
+	if !reflect.DeepEqual(readback, readbackArtifactToPublic(artifact, transition)) {
 		t.Fatalf("readback = %+v, receipt = %+v", readback, receipt.Artifact)
 	}
+}
+
+func readbackArtifactToPublic(wire formalArtifactAuthorityWire, transitionWire *formalArtifactWorkOrderTransitionWire) HiveCosmFormalArtifact {
+	artifact, err := validateFormalArtifactAuthority(wire, formalClientInput().Lookup, formalClientInput().Candidate, wire.ArtifactManifestID)
+	if err != nil {
+		panic(err)
+	}
+	transition, err := validateFormalArtifactWorkOrderTransition(transitionWire, formalClientInput().Lookup, formalClientInput().Candidate, wire.FormalArtifactRef)
+	if err != nil {
+		panic(err)
+	}
+	artifact.WorkOrderTransition = &transition
+	return artifact
 }
 
 func TestHiveCosmFormalArtifactClient_ReadbackRejectsApprovedCandidateTamper(t *testing.T) {
 	input := formalClientInput()
 	baseArtifact := formalClientArtifactWire(input)
+	transition := formalClientTransitionWire(input, baseArtifact.FormalArtifactRef)
 	tests := []struct {
 		name   string
 		tamper func(*formalArtifactAuthorityWire)
@@ -167,12 +202,13 @@ func TestHiveCosmFormalArtifactClient_ReadbackRejectsApprovedCandidateTamper(t *
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				_ = json.NewEncoder(w).Encode(formalArtifactReadbackEnvelope{
-					SchemaVersion: HiveCosmFormalArtifactAuthorityV1,
-					LookupMode:    "exact",
-					Complete:      true,
-					OK:            true,
-					Request:       formalArtifactLookupWire(input.Lookup),
-					Artifact:      artifact,
+					SchemaVersion:       HiveCosmFormalArtifactAuthorityV1,
+					LookupMode:          "exact",
+					Complete:            true,
+					OK:                  true,
+					Request:             formalArtifactLookupWire(input.Lookup),
+					Artifact:            artifact,
+					WorkOrderTransition: transition,
 				})
 			}))
 			defer server.Close()
@@ -184,6 +220,64 @@ func TestHiveCosmFormalArtifactClient_ReadbackRejectsApprovedCandidateTamper(t *
 			var authorityErr *HiveCosmAuthorityError
 			if !errors.As(err, &authorityErr) || authorityErr.Kind != HiveCosmAuthorityInvalid {
 				t.Fatalf("tampered readback error = %v, want invalid", err)
+			}
+		})
+	}
+}
+
+func TestHiveCosmFormalArtifactClient_ReadbackRejectsWorkOrderTransitionTamper(t *testing.T) {
+	input := formalClientInput()
+	baseArtifact := formalClientArtifactWire(input)
+	baseTransition := formalClientTransitionWire(input, baseArtifact.FormalArtifactRef)
+	tests := []struct {
+		name   string
+		tamper func(**formalArtifactWorkOrderTransitionWire)
+	}{
+		{name: "missing proof", tamper: func(wire **formalArtifactWorkOrderTransitionWire) { *wire = nil }},
+		{name: "source ref", tamper: func(wire **formalArtifactWorkOrderTransitionWire) { (*wire).WorkOrderSourceRef += "-other" }},
+		{name: "previous revision", tamper: func(wire **formalArtifactWorkOrderTransitionWire) { (*wire).PreviousAuthority.Revision = " bad" }},
+		{name: "previous digest", tamper: func(wire **formalArtifactWorkOrderTransitionWire) {
+			(*wire).PreviousAuthority.ContentDigest = "sha256:BAD"
+		}},
+		{name: "resulting revision", tamper: func(wire **formalArtifactWorkOrderTransitionWire) { (*wire).ResultingAuthority.Revision = "" }},
+		{name: "resulting digest", tamper: func(wire **formalArtifactWorkOrderTransitionWire) {
+			(*wire).ResultingAuthority.ContentDigest = "sha256:BAD"
+		}},
+		{name: "promotion id", tamper: func(wire **formalArtifactWorkOrderTransitionWire) { (*wire).PromotionID = "not-a-uuid" }},
+		{name: "candidate id", tamper: func(wire **formalArtifactWorkOrderTransitionWire) {
+			(*wire).CandidateID = "01972f7e-7e8d-77ef-a13d-1b0ce3e9c099"
+		}},
+		{name: "approval id", tamper: func(wire **formalArtifactWorkOrderTransitionWire) {
+			(*wire).ApprovalEventID = "01972f7e-7e8d-77ef-a13d-1b0ce3e9c098"
+		}},
+		{name: "formal ref", tamper: func(wire **formalArtifactWorkOrderTransitionWire) { (*wire).FormalArtifactRef += "-other" }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			proof := *baseTransition
+			transition := &proof
+			test.tamper(&transition)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(formalArtifactReadbackEnvelope{
+					SchemaVersion:       HiveCosmFormalArtifactAuthorityV1,
+					LookupMode:          "exact",
+					Complete:            true,
+					OK:                  true,
+					Request:             formalArtifactLookupWire(input.Lookup),
+					Artifact:            baseArtifact,
+					WorkOrderTransition: transition,
+				})
+			}))
+			defer server.Close()
+			client, err := NewHiveCosmAuthorityClient(server.URL, server.Client())
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = client.ReadFormalArtifact(context.Background(), input.Lookup, input.Candidate, baseArtifact.ArtifactManifestID)
+			var authorityErr *HiveCosmAuthorityError
+			if !errors.As(err, &authorityErr) || authorityErr.Kind != HiveCosmAuthorityInvalid {
+				t.Fatalf("tampered transition error = %v, want invalid", err)
 			}
 		})
 	}

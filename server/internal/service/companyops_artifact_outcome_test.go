@@ -23,6 +23,7 @@ type fakeFormalArtifactAuthority struct {
 	promoteCount      int
 	readCount         int
 	formalArtifactRef string
+	readArtifact      *companyops.HiveCosmFormalArtifact
 	lastReadCandidate companyops.HiveCosmFormalArtifactCandidate
 }
 
@@ -53,6 +54,9 @@ func (f *fakeFormalArtifactAuthority) ReadFormalArtifact(
 	f.lastReadCandidate = expectedCandidate
 	if f.readErr != nil {
 		return companyops.HiveCosmFormalArtifact{}, f.readErr
+	}
+	if f.readArtifact != nil {
+		return *f.readArtifact, nil
 	}
 	return companyops.HiveCosmFormalArtifact{FormalArtifactRef: f.formalArtifactRef}, nil
 }
@@ -122,6 +126,7 @@ func companyOpsArtifactPromotionRequest(fixture companyOpsExecutionTestFixture, 
 		WorkOrder:       assignmentAuthority("WorkOrder", assignmentWorkOrderRef, "wo-rev-7", "a"),
 		Employee:        assignmentAuthority("Employee", assignmentEmployeeRef, "employee-rev-5", "c"),
 		IdentityBinding: assignmentAuthority("IdentityBinding", assignmentBindingRef, "binding-rev-11", "d"),
+		Agent:           assignmentAuthority("Agent", assignmentAgentRef, "agent-rev-19", "e"),
 	}
 }
 
@@ -386,6 +391,284 @@ func statusOrEmpty(outcome *CompanyOpsArtifactOutcome) string {
 		return ""
 	}
 	return string(outcome.Projection.Status)
+}
+
+func TestVerifyCompanyOpsWorkOrderTransitionArtifactRejectsEveryDrift(t *testing.T) {
+	approvalID := uuid.NewString()
+	candidate := companyops.ArtifactCandidate{
+		ID:               uuid.NewString(),
+		LineageID:        uuid.NewString(),
+		Revision:         2,
+		SupersedesID:     uuid.NewString(),
+		DurableObjectRef: "/uploads/hivecrew/outcome-r2.md",
+		Digest:           "sha256:" + strings.Repeat("d", 64),
+	}
+	baseProof := companyops.HiveCosmWorkOrderTransitionProof{
+		WorkOrderSourceRef: assignmentWorkOrderRef,
+		PreviousAuthority: companyops.HiveCosmAuthorityTransitionSnapshot{
+			Revision:      "sha256:" + strings.Repeat("e", 64),
+			ContentDigest: "sha256:" + strings.Repeat("e", 64),
+		},
+		ResultingAuthority: companyops.HiveCosmAuthorityTransitionSnapshot{
+			Revision:      "sha256:" + strings.Repeat("f", 64),
+			ContentDigest: "sha256:" + strings.Repeat("f", 64),
+		},
+		PromotionID:       uuid.NewString(),
+		CandidateID:       candidate.ID,
+		ApprovalEventID:   approvalID,
+		FormalArtifactRef: promotionTestFormalArtifactRef,
+	}
+	baseArtifact := companyops.HiveCosmFormalArtifact{
+		FormalArtifactRef:   baseProof.FormalArtifactRef,
+		CandidateID:         candidate.ID,
+		CandidateRevision:   candidate.Revision,
+		CandidateDigest:     candidate.Digest,
+		ApprovalEventID:     approvalID,
+		WorkOrderTransition: &baseProof,
+	}
+	if err := verifyCompanyOpsWorkOrderTransitionArtifact(baseArtifact, baseProof, candidate, approvalID); err != nil {
+		t.Fatalf("exact artifact rejected: %v", err)
+	}
+
+	tests := []struct {
+		name   string
+		tamper func(*companyops.HiveCosmFormalArtifact)
+	}{
+		{name: "formal artifact core ref", tamper: func(artifact *companyops.HiveCosmFormalArtifact) { artifact.FormalArtifactRef += "-other" }},
+		{name: "formal artifact core candidate", tamper: func(artifact *companyops.HiveCosmFormalArtifact) { artifact.CandidateID = uuid.NewString() }},
+		{name: "formal artifact core revision", tamper: func(artifact *companyops.HiveCosmFormalArtifact) { artifact.CandidateRevision++ }},
+		{name: "formal artifact core digest", tamper: func(artifact *companyops.HiveCosmFormalArtifact) {
+			artifact.CandidateDigest = "sha256:" + strings.Repeat("0", 64)
+		}},
+		{name: "formal artifact core approval", tamper: func(artifact *companyops.HiveCosmFormalArtifact) { artifact.ApprovalEventID = uuid.NewString() }},
+		{name: "missing proof", tamper: func(artifact *companyops.HiveCosmFormalArtifact) { artifact.WorkOrderTransition = nil }},
+		{name: "source ref", tamper: func(artifact *companyops.HiveCosmFormalArtifact) {
+			artifact.WorkOrderTransition.WorkOrderSourceRef += "-other"
+		}},
+		{name: "previous revision", tamper: func(artifact *companyops.HiveCosmFormalArtifact) {
+			artifact.WorkOrderTransition.PreviousAuthority.Revision += "-other"
+		}},
+		{name: "previous digest", tamper: func(artifact *companyops.HiveCosmFormalArtifact) {
+			artifact.WorkOrderTransition.PreviousAuthority.ContentDigest = "sha256:" + strings.Repeat("0", 64)
+		}},
+		{name: "resulting revision", tamper: func(artifact *companyops.HiveCosmFormalArtifact) {
+			artifact.WorkOrderTransition.ResultingAuthority.Revision += "-other"
+		}},
+		{name: "resulting digest", tamper: func(artifact *companyops.HiveCosmFormalArtifact) {
+			artifact.WorkOrderTransition.ResultingAuthority.ContentDigest = "sha256:" + strings.Repeat("0", 64)
+		}},
+		{name: "promotion id", tamper: func(artifact *companyops.HiveCosmFormalArtifact) {
+			artifact.WorkOrderTransition.PromotionID = uuid.NewString()
+		}},
+		{name: "candidate id", tamper: func(artifact *companyops.HiveCosmFormalArtifact) {
+			artifact.WorkOrderTransition.CandidateID = uuid.NewString()
+		}},
+		{name: "approval id", tamper: func(artifact *companyops.HiveCosmFormalArtifact) {
+			artifact.WorkOrderTransition.ApprovalEventID = uuid.NewString()
+		}},
+		{name: "formal ref", tamper: func(artifact *companyops.HiveCosmFormalArtifact) {
+			artifact.WorkOrderTransition.FormalArtifactRef += "-other"
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			artifact := baseArtifact
+			proof := baseProof
+			artifact.WorkOrderTransition = &proof
+			test.tamper(&artifact)
+			if err := verifyCompanyOpsWorkOrderTransitionArtifact(artifact, baseProof, candidate, approvalID); !errors.Is(err, ErrCompanyOpsArtifactConflict) {
+				t.Fatalf("verification error = %v, want ErrCompanyOpsArtifactConflict", err)
+			}
+		})
+	}
+}
+
+func TestCompanyOpsArtifactOutcome_VerifyWorkOrderTransitionForGetFailsClosedOnDrift(t *testing.T) {
+	ctx, fixture := newCompanyOpsExecutionTestFixture(t)
+	fake := &fakeFormalArtifactAuthority{formalArtifactRef: promotionTestFormalArtifactRef}
+	artifactService := newCompanyOpsArtifactServiceWithFakeAuthority(t, fixture, fake)
+	outcome := materializeAndApproveCompanyOpsArtifact(t, ctx, fixture, artifactService)
+
+	promotionID := uuid.NewString()
+	promotion := companyOpsArtifactPromotionRequest(fixture, outcome.Candidate.ID, promotionID)
+	if _, err := artifactService.PromoteArtifact(ctx, fixture.company.workspaceID, fixture.company.issueID, promotion); err != nil {
+		t.Fatalf("PromoteArtifact: %v", err)
+	}
+	confirmed, err := artifactService.GetIssueOutcome(ctx, fixture.company.workspaceID, fixture.company.issueID)
+	if err != nil {
+		t.Fatalf("GetIssueOutcome: %v", err)
+	}
+	previous := companyops.HiveCosmAuthorityTransitionSnapshot{
+		Revision:      "sha256:" + strings.Repeat("e", 64),
+		ContentDigest: "sha256:" + strings.Repeat("e", 64),
+	}
+	resulting := promotion.WorkOrder
+	resulting.Revision = "sha256:" + strings.Repeat("f", 64)
+	resulting.ContentDigest = resulting.Revision
+	expectation := CompanyOpsWorkOrderTransitionExpectation{
+		Lookup:             promotion.Lookup,
+		PreviousAuthority:  previous,
+		ResultingAuthority: resulting,
+		Employee:           promotion.Employee,
+		IdentityBinding:    promotion.IdentityBinding,
+		Agent:              promotion.Agent,
+		LocalAgentID:       fixture.company.agentID,
+	}
+	baseProof := companyops.HiveCosmWorkOrderTransitionProof{
+		WorkOrderSourceRef: promotion.Lookup.WorkOrderSourceRef,
+		PreviousAuthority:  previous,
+		ResultingAuthority: companyops.HiveCosmAuthorityTransitionSnapshot{
+			Revision:      resulting.Revision,
+			ContentDigest: resulting.ContentDigest,
+		},
+		PromotionID:       promotionID,
+		CandidateID:       confirmed.Candidate.ID,
+		ApprovalEventID:   fake.lastReadCandidate.ApprovalEventID,
+		FormalArtifactRef: promotionTestFormalArtifactRef,
+	}
+	baseArtifact := companyops.HiveCosmFormalArtifact{
+		FormalArtifactRef:   promotionTestFormalArtifactRef,
+		CandidateID:         confirmed.Candidate.ID,
+		CandidateRevision:   confirmed.Candidate.Revision,
+		CandidateDigest:     confirmed.Candidate.Digest,
+		ApprovalEventID:     fake.lastReadCandidate.ApprovalEventID,
+		WorkOrderTransition: &baseProof,
+	}
+	fake.readArtifact = &baseArtifact
+	if err := artifactService.VerifyWorkOrderTransitionForGet(ctx, fixture.company.workspaceID, fixture.company.issueID, expectation); err != nil {
+		t.Fatalf("VerifyWorkOrderTransitionForGet: %v", err)
+	}
+
+	expectationDrifts := []struct {
+		name   string
+		tamper func(*CompanyOpsWorkOrderTransitionExpectation)
+	}{
+		{name: "local Agent ID", tamper: func(value *CompanyOpsWorkOrderTransitionExpectation) {
+			value.LocalAgentID = util.MustParseUUID(uuid.NewString())
+		}},
+		{name: "previous WorkOrder revision", tamper: func(value *CompanyOpsWorkOrderTransitionExpectation) { value.PreviousAuthority.Revision += "-other" }},
+		{name: "Employee ref", tamper: func(value *CompanyOpsWorkOrderTransitionExpectation) { value.Employee.SourceRef += "-other" }},
+		{name: "IdentityBinding ref", tamper: func(value *CompanyOpsWorkOrderTransitionExpectation) { value.IdentityBinding.SourceRef += "-other" }},
+		{name: "Agent ref", tamper: func(value *CompanyOpsWorkOrderTransitionExpectation) {
+			value.Agent.SourceRef = "/api/agents/77777777-7777-4777-8777-777777777777"
+		}},
+	}
+	for _, test := range expectationDrifts {
+		t.Run("assignment receipt "+test.name, func(t *testing.T) {
+			drifted := expectation
+			test.tamper(&drifted)
+			readCountBefore := fake.readCount
+			if err := artifactService.VerifyWorkOrderTransitionForGet(ctx, fixture.company.workspaceID, fixture.company.issueID, drifted); !errors.Is(err, ErrCompanyOpsArtifactConflict) {
+				t.Fatalf("VerifyWorkOrderTransitionForGet error = %v, want ErrCompanyOpsArtifactConflict", err)
+			}
+			if fake.readCount != readCountBefore {
+				t.Fatalf("assignment drift touched Formal Artifact authority: read count %d, want %d", fake.readCount, readCountBefore)
+			}
+		})
+	}
+
+	t.Run("same Agent identity may evolve after the formal Run", func(t *testing.T) {
+		evolved := expectation
+		evolved.Agent.Revision = "updated_at:2026-08-11T11:32:36.054371Z"
+		evolved.Agent.ContentDigest = "sha256:" + strings.Repeat("9", 64)
+		readCountBefore := fake.readCount
+		if err := artifactService.VerifyWorkOrderTransitionForGet(ctx, fixture.company.workspaceID, fixture.company.issueID, evolved); err != nil {
+			t.Fatalf("VerifyWorkOrderTransitionForGet after Agent configuration evolution: %v", err)
+		}
+		if fake.readCount != readCountBefore+1 {
+			t.Fatalf("formal readback count = %d, want %d", fake.readCount, readCountBefore+1)
+		}
+	})
+
+	tests := []struct {
+		name   string
+		tamper func(*companyops.HiveCosmFormalArtifact)
+	}{
+		{name: "formal artifact core ref", tamper: func(artifact *companyops.HiveCosmFormalArtifact) { artifact.FormalArtifactRef += "-other" }},
+		{name: "formal artifact core candidate", tamper: func(artifact *companyops.HiveCosmFormalArtifact) { artifact.CandidateID = uuid.NewString() }},
+		{name: "formal artifact core revision", tamper: func(artifact *companyops.HiveCosmFormalArtifact) { artifact.CandidateRevision++ }},
+		{name: "formal artifact core digest", tamper: func(artifact *companyops.HiveCosmFormalArtifact) {
+			artifact.CandidateDigest = "sha256:" + strings.Repeat("0", 64)
+		}},
+		{name: "formal artifact core approval", tamper: func(artifact *companyops.HiveCosmFormalArtifact) { artifact.ApprovalEventID = uuid.NewString() }},
+		{name: "missing proof", tamper: func(artifact *companyops.HiveCosmFormalArtifact) { artifact.WorkOrderTransition = nil }},
+		{name: "source ref", tamper: func(artifact *companyops.HiveCosmFormalArtifact) {
+			artifact.WorkOrderTransition.WorkOrderSourceRef += "-other"
+		}},
+		{name: "previous revision", tamper: func(artifact *companyops.HiveCosmFormalArtifact) {
+			artifact.WorkOrderTransition.PreviousAuthority.Revision += "-other"
+		}},
+		{name: "previous digest", tamper: func(artifact *companyops.HiveCosmFormalArtifact) {
+			artifact.WorkOrderTransition.PreviousAuthority.ContentDigest = "sha256:" + strings.Repeat("0", 64)
+		}},
+		{name: "resulting revision", tamper: func(artifact *companyops.HiveCosmFormalArtifact) {
+			artifact.WorkOrderTransition.ResultingAuthority.Revision += "-other"
+		}},
+		{name: "resulting digest", tamper: func(artifact *companyops.HiveCosmFormalArtifact) {
+			artifact.WorkOrderTransition.ResultingAuthority.ContentDigest = "sha256:" + strings.Repeat("0", 64)
+		}},
+		{name: "promotion id", tamper: func(artifact *companyops.HiveCosmFormalArtifact) {
+			artifact.WorkOrderTransition.PromotionID = uuid.NewString()
+		}},
+		{name: "candidate id", tamper: func(artifact *companyops.HiveCosmFormalArtifact) {
+			artifact.WorkOrderTransition.CandidateID = uuid.NewString()
+		}},
+		{name: "approval id", tamper: func(artifact *companyops.HiveCosmFormalArtifact) {
+			artifact.WorkOrderTransition.ApprovalEventID = uuid.NewString()
+		}},
+		{name: "formal ref", tamper: func(artifact *companyops.HiveCosmFormalArtifact) {
+			artifact.WorkOrderTransition.FormalArtifactRef += "-other"
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			artifact := baseArtifact
+			proof := baseProof
+			artifact.WorkOrderTransition = &proof
+			test.tamper(&artifact)
+			fake.readArtifact = &artifact
+			if err := artifactService.VerifyWorkOrderTransitionForGet(ctx, fixture.company.workspaceID, fixture.company.issueID, expectation); !errors.Is(err, ErrCompanyOpsArtifactConflict) {
+				t.Fatalf("VerifyWorkOrderTransitionForGet error = %v, want ErrCompanyOpsArtifactConflict", err)
+			}
+		})
+	}
+}
+
+func TestCompanyOpsArtifactOutcome_PromotionRejectsAssignmentTargetDriftBeforeAuthority(t *testing.T) {
+	ctx, fixture := newCompanyOpsExecutionTestFixture(t)
+	fake := &fakeFormalArtifactAuthority{formalArtifactRef: promotionTestFormalArtifactRef}
+	artifactService := newCompanyOpsArtifactServiceWithFakeAuthority(t, fixture, fake)
+	outcome := materializeAndApproveCompanyOpsArtifact(t, ctx, fixture, artifactService)
+	base := companyOpsArtifactPromotionRequest(fixture, outcome.Candidate.ID, uuid.NewString())
+
+	tests := []struct {
+		name   string
+		tamper func(*CompanyOpsArtifactPromotion)
+	}{
+		{name: "local Agent ID", tamper: func(value *CompanyOpsArtifactPromotion) { value.Lookup.AgentID = uuid.NewString() }},
+		{name: "WorkOrder revision", tamper: func(value *CompanyOpsArtifactPromotion) { value.WorkOrder.Revision += "-other" }},
+		{name: "WorkOrder digest", tamper: func(value *CompanyOpsArtifactPromotion) {
+			value.WorkOrder.ContentDigest = "sha256:" + strings.Repeat("0", 64)
+		}},
+		{name: "Employee ref", tamper: func(value *CompanyOpsArtifactPromotion) { value.Employee.SourceRef += "-other" }},
+		{name: "Binding ref", tamper: func(value *CompanyOpsArtifactPromotion) { value.IdentityBinding.SourceRef += "-other" }},
+		{name: "Agent digest", tamper: func(value *CompanyOpsArtifactPromotion) {
+			value.Agent.ContentDigest = "sha256:" + strings.Repeat("0", 64)
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			drifted := base
+			drifted.PromotionID = uuid.NewString()
+			test.tamper(&drifted)
+			if _, err := artifactService.PromoteArtifact(ctx, fixture.company.workspaceID, fixture.company.issueID, drifted); !errors.Is(err, ErrCompanyOpsArtifactConflict) {
+				t.Fatalf("PromoteArtifact error = %v, want ErrCompanyOpsArtifactConflict", err)
+			}
+			if fake.promoteCount != 0 || fake.readCount != 0 {
+				t.Fatalf("assignment drift touched authority: promote %d read %d, want 0/0", fake.promoteCount, fake.readCount)
+			}
+		})
+	}
 }
 
 // appendCompanyOpsPromotionEvent writes a promotion-phase ledger event

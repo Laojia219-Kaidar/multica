@@ -29,6 +29,7 @@ type CompanyOpsArtifactOutcome struct {
 	CommandID      pgtype.UUID
 	IssueID        pgtype.UUID
 	LocalAgentID   pgtype.UUID
+	Target         companyops.ExecutionTargetSnapshot
 	InitialTaskID  pgtype.UUID
 	CurrentTaskID  pgtype.UUID
 	ExecutionState string
@@ -73,6 +74,7 @@ type CompanyOpsArtifactPromotion struct {
 	WorkOrder       companyops.AuthoritySnapshot
 	Employee        companyops.AuthoritySnapshot
 	IdentityBinding companyops.AuthoritySnapshot
+	Agent           companyops.AuthoritySnapshot
 }
 
 // CompanyOpsArtifactPromotionReceipt is the durable result of one promotion
@@ -86,6 +88,20 @@ type CompanyOpsArtifactPromotionReceipt struct {
 	FormalVisible     bool
 	WritePerformed    bool
 	TerminalEvent     companyops.ArtifactEvent
+}
+
+// CompanyOpsWorkOrderTransitionExpectation is the immutable pair bridged by
+// HiveCosm's Formal Artifact GET proof. PreviousAuthority is the observation
+// sealed in HiveCrew's external_work_order_link; ResultingAuthority is the
+// fresh WorkOrder observation resolved for this GET request.
+type CompanyOpsWorkOrderTransitionExpectation struct {
+	Lookup             companyops.HiveCosmAuthorityLookup
+	PreviousAuthority  companyops.HiveCosmAuthorityTransitionSnapshot
+	ResultingAuthority companyops.AuthoritySnapshot
+	Employee           companyops.AuthoritySnapshot
+	IdentityBinding    companyops.AuthoritySnapshot
+	Agent              companyops.AuthoritySnapshot
+	LocalAgentID       pgtype.UUID
 }
 
 type companyOpsArtifactSource struct {
@@ -225,6 +241,7 @@ func (s *CompanyOpsArtifactService) GetIssueOutcome(
 		CommandID:      receipt.CommandID,
 		IssueID:        receipt.IssueID,
 		LocalAgentID:   receipt.LocalAgentID,
+		Target:         receipt.Target,
 		InitialTaskID:  receipt.InitialTaskID,
 		CurrentTaskID:  receipt.InitialTaskID,
 		ExecutionState: "awaiting_claim",
@@ -271,6 +288,133 @@ func (s *CompanyOpsArtifactService) GetIssueOutcome(
 		return nil, err
 	}
 	return outcome, nil
+}
+
+// VerifyWorkOrderTransitionForGet permits a stale local projection link to be
+// read without rewriting it only after a fresh Formal Artifact GET proves the
+// exact authority transition for the same Issue assignment lineage. This seam
+// is intentionally read-only and must never be reused by review, promotion, or
+// assignment writes, which continue to require an exact local link.
+func (s *CompanyOpsArtifactService) VerifyWorkOrderTransitionForGet(
+	ctx context.Context,
+	workspaceID pgtype.UUID,
+	issueID pgtype.UUID,
+	expectation CompanyOpsWorkOrderTransitionExpectation,
+) error {
+	if s == nil || s.repo == nil || s.formalAuthority == nil {
+		return ErrCompanyOpsArtifactUnavailable
+	}
+	if expectation.Lookup.WorkOrderSourceRef == "" ||
+		expectation.ResultingAuthority.SourceRef != expectation.Lookup.WorkOrderSourceRef ||
+		expectation.PreviousAuthority.Revision == "" || expectation.PreviousAuthority.ContentDigest == "" ||
+		expectation.ResultingAuthority.Revision == "" || expectation.ResultingAuthority.ContentDigest == "" {
+		return fmt.Errorf("%w: WorkOrder transition expectation is incomplete", ErrCompanyOpsArtifactConflict)
+	}
+	outcome, err := s.GetIssueOutcome(ctx, workspaceID, issueID)
+	if err != nil {
+		return err
+	}
+	if outcome == nil || outcome.IssueID != issueID || outcome.Candidate == nil || outcome.Projection == nil {
+		return fmt.Errorf("%w: the linked Issue has no formal outcome", ErrCompanyOpsArtifactConflict)
+	}
+	if !companyOpsTransitionExpectationMatchesDispatch(outcome, expectation) {
+		return fmt.Errorf("%w: current Owner selectors do not match the formal outcome assignment receipt", ErrCompanyOpsArtifactConflict)
+	}
+	candidate := *outcome.Candidate
+	projection := *outcome.Projection
+	if projection.CandidateID != candidate.ID ||
+		projection.Status != companyops.ArtifactEventAuthorityReadbackConfirmed ||
+		!projection.FormalVisible || projection.FormalArtifactRef == "" {
+		return fmt.Errorf("%w: the linked Issue has no authority_readback_confirmed formal outcome", ErrCompanyOpsArtifactConflict)
+	}
+
+	workspace := util.UUIDToString(workspaceID)
+	lineageID := util.UUIDToString(outcome.CommandID)
+	events, err := s.repo.ListArtifactEvents(ctx, workspace, lineageID)
+	if err != nil {
+		return err
+	}
+	approval, last, hasLast := companyOpsArtifactPromotionAnchor(events, candidate.ID)
+	if approval.ID == "" || !hasLast || last.Type != companyops.ArtifactEventAuthorityReadbackConfirmed ||
+		last.FormalArtifactRef != projection.FormalArtifactRef {
+		return fmt.Errorf("%w: formal outcome projection and lineage ledger disagree", ErrCompanyOpsArtifactConflict)
+	}
+	promotionID, established, err := companyOpsResolveAnchoredPromotionID(events, candidate.ID)
+	if err != nil {
+		return err
+	}
+	if !established {
+		return fmt.Errorf("%w: formal outcome has no anchored promotion", ErrCompanyOpsArtifactConflict)
+	}
+	manifestID, ok := companyOpsFormalArtifactManifestID(projection.FormalArtifactRef, expectation.Lookup.WorkOrderSourceRef)
+	if !ok {
+		return fmt.Errorf("%w: formal artifact reference does not match the WorkOrder scope", ErrCompanyOpsArtifactConflict)
+	}
+	expectedCandidate := companyops.HiveCosmFormalArtifactCandidate{
+		ID:               candidate.ID,
+		Revision:         candidate.Revision,
+		DurableObjectRef: candidate.DurableObjectRef,
+		ContentDigest:    candidate.Digest,
+		ApprovalEventID:  approval.ID,
+	}
+	artifact, err := s.formalAuthority.ReadFormalArtifact(ctx, expectation.Lookup, expectedCandidate, manifestID)
+	if err != nil {
+		return err
+	}
+	expectedProof := companyops.HiveCosmWorkOrderTransitionProof{
+		WorkOrderSourceRef: expectation.Lookup.WorkOrderSourceRef,
+		PreviousAuthority:  expectation.PreviousAuthority,
+		ResultingAuthority: companyops.HiveCosmAuthorityTransitionSnapshot{
+			Revision:      expectation.ResultingAuthority.Revision,
+			ContentDigest: expectation.ResultingAuthority.ContentDigest,
+		},
+		PromotionID:       promotionID,
+		CandidateID:       candidate.ID,
+		ApprovalEventID:   approval.ID,
+		FormalArtifactRef: projection.FormalArtifactRef,
+	}
+	return verifyCompanyOpsWorkOrderTransitionArtifact(artifact, expectedProof, candidate, approval.ID)
+}
+
+func companyOpsTransitionExpectationMatchesDispatch(
+	outcome *CompanyOpsArtifactOutcome,
+	expectation CompanyOpsWorkOrderTransitionExpectation,
+) bool {
+	if outcome == nil || !expectation.LocalAgentID.Valid || outcome.LocalAgentID != expectation.LocalAgentID {
+		return false
+	}
+	target := outcome.Target
+	return target.WorkOrderRef == expectation.Lookup.WorkOrderSourceRef &&
+		target.WorkOrderRevision == expectation.PreviousAuthority.Revision &&
+		target.WorkOrderDigest == expectation.PreviousAuthority.ContentDigest &&
+		target.EmployeeRef == expectation.Employee.SourceRef &&
+		target.EmployeeRevision == expectation.Employee.Revision &&
+		target.EmployeeDigest == expectation.Employee.ContentDigest &&
+		target.BindingRef == expectation.IdentityBinding.SourceRef &&
+		target.BindingRevision == expectation.IdentityBinding.Revision &&
+		target.BindingDigest == expectation.IdentityBinding.ContentDigest &&
+		// Agent execution configuration is intentionally mutable after a Run.
+		// Historical formal readback binds the stable local Agent identity here;
+		// the exact execution-time revision/digest remain frozen in target and
+		// were required by the initial Promotion path before the authority POST.
+		target.AgentRef == expectation.Agent.SourceRef
+}
+
+func verifyCompanyOpsWorkOrderTransitionArtifact(
+	artifact companyops.HiveCosmFormalArtifact,
+	expectedProof companyops.HiveCosmWorkOrderTransitionProof,
+	candidate companyops.ArtifactCandidate,
+	approvalEventID string,
+) error {
+	if artifact.FormalArtifactRef != expectedProof.FormalArtifactRef ||
+		artifact.CandidateID != candidate.ID ||
+		artifact.CandidateRevision != candidate.Revision ||
+		artifact.CandidateDigest != candidate.Digest ||
+		artifact.ApprovalEventID != approvalEventID ||
+		artifact.WorkOrderTransition == nil || *artifact.WorkOrderTransition != expectedProof {
+		return fmt.Errorf("%w: Formal Artifact GET did not prove the exact WorkOrder transition", ErrCompanyOpsArtifactConflict)
+	}
+	return nil
 }
 
 func companyOpsCurrentExecutionState(
@@ -470,6 +614,9 @@ func (s *CompanyOpsArtifactService) PromoteArtifact(
 	if outcome.Candidate.ID != strings.TrimSpace(promotion.CandidateID) {
 		return CompanyOpsArtifactPromotionReceipt{}, companyops.ErrArtifactCandidateNotFound
 	}
+	if !companyOpsPromotionMatchesDispatch(outcome, promotion) {
+		return CompanyOpsArtifactPromotionReceipt{}, fmt.Errorf("%w: promotion authority does not match the latest assignment receipt", ErrCompanyOpsArtifactConflict)
+	}
 	candidate := *outcome.Candidate
 	projection := *outcome.Projection
 	lineageID := util.UUIDToString(outcome.CommandID)
@@ -532,6 +679,33 @@ func (s *CompanyOpsArtifactService) PromoteArtifact(
 	default:
 		return CompanyOpsArtifactPromotionReceipt{}, fmt.Errorf("%w: artifact is not approved for promotion", ErrCompanyOpsArtifactConflict)
 	}
+}
+
+func companyOpsPromotionMatchesDispatch(
+	outcome *CompanyOpsArtifactOutcome,
+	promotion CompanyOpsArtifactPromotion,
+) bool {
+	if outcome == nil {
+		return false
+	}
+	localAgentID, err := util.ParseUUID(promotion.Lookup.AgentID)
+	if err != nil || !localAgentID.Valid || outcome.LocalAgentID != localAgentID {
+		return false
+	}
+	target := outcome.Target
+	return target.WorkOrderRef == promotion.Lookup.WorkOrderSourceRef &&
+		target.WorkOrderRef == promotion.WorkOrder.SourceRef &&
+		target.WorkOrderRevision == promotion.WorkOrder.Revision &&
+		target.WorkOrderDigest == promotion.WorkOrder.ContentDigest &&
+		target.EmployeeRef == promotion.Employee.SourceRef &&
+		target.EmployeeRevision == promotion.Employee.Revision &&
+		target.EmployeeDigest == promotion.Employee.ContentDigest &&
+		target.BindingRef == promotion.IdentityBinding.SourceRef &&
+		target.BindingRevision == promotion.IdentityBinding.Revision &&
+		target.BindingDigest == promotion.IdentityBinding.ContentDigest &&
+		target.AgentRef == promotion.Agent.SourceRef &&
+		target.AgentRevision == promotion.Agent.Revision &&
+		target.AgentDigest == promotion.Agent.ContentDigest
 }
 
 func (s *CompanyOpsArtifactService) attemptArtifactPromotion(

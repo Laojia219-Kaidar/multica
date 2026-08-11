@@ -114,6 +114,27 @@ func TestCompanyOpsSelectorsFromQueryRequiresExactStableSelectors(t *testing.T) 
 	}
 }
 
+func TestCompanyOpsWorkOrderLinkMatchesRequiresExactRevisionAndDigest(t *testing.T) {
+	workOrder := companyops.AuthoritySnapshot{
+		Revision:      "sha256:" + strings.Repeat("a", 64),
+		ContentDigest: "sha256:" + strings.Repeat("b", 64),
+	}
+	if !companyOpsWorkOrderLinkMatches(workOrder.Revision, workOrder.ContentDigest, workOrder) {
+		t.Fatal("exact WorkOrder link was treated as stale")
+	}
+	for name, link := range map[string][2]string{
+		"revision drift": {"sha256:" + strings.Repeat("c", 64), workOrder.ContentDigest},
+		"digest drift":   {workOrder.Revision, "sha256:" + strings.Repeat("d", 64)},
+		"both drift":     {"sha256:" + strings.Repeat("c", 64), "sha256:" + strings.Repeat("d", 64)},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if companyOpsWorkOrderLinkMatches(link[0], link[1], workOrder) {
+				t.Fatal("drifted WorkOrder link was treated as exact")
+			}
+		})
+	}
+}
+
 func TestDecodeCompanyOpsAssignmentRequestStrictJSON(t *testing.T) {
 	valid := `{
 		"command_id":"11111111-1111-4111-8111-111111111111",
