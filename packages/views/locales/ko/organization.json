@@ -1,0 +1,76 @@
+{
+  "page": {
+    "title": "조직",
+    "loading": "조직을 불러오는 중…",
+    "empty_title": "조직 투영 없음",
+    "empty_description": "이 작업 공간에 대해 승인된 조직 투영이 없습니다.",
+    "error_title": "조직을 불러올 수 없음",
+    "error_description": "조직 권위 서비스에 연결할 수 없습니다. 잠시 후 다시 시도하세요.",
+    "not_found_title": "직원을 찾을 수 없음",
+    "not_found_description": "이 직원은 존재하지 않거나 승인된 투영이 없습니다.",
+    "select_prompt": "열람할 직원을 선택하세요",
+    "source_gap_title": "조직 권위 서비스 사용 불가",
+    "source_gap_description": "회사 권위 투영에 연결할 수 없습니다. 로컬 데이터로 대체하지 않습니다."
+  },
+  "tabs": {
+    "tree": "조직 트리",
+    "roster": "직원 명부"
+  },
+  "tree": {
+    "departments_label": "부서",
+    "positions_label": "직책",
+    "appointments_label": "임명",
+    "no_departments": "부서 투영이 없습니다.",
+    "no_positions": "이 부서에 직책이 없습니다.",
+    "no_appointments": "이 직책에 임명이 없습니다.",
+    "observed_at": "투영 관측 시각 {{at}}",
+    "open_roster": "직원 명부 열기"
+  },
+  "roster": {
+    "search_placeholder": "직원 검색",
+    "status_all": "모든 바인딩 상태",
+    "status_filter_label": "바인딩 상태",
+    "total_other": "직원 {{count}}명",
+    "empty_description": "승인된 명부에 직원이 없습니다.",
+    "open_dossier": "열람"
+  },
+  "dossier": {
+    "back": "조직으로 돌아가기",
+    "identity_label": "신원",
+    "employee_id_label": "직원 ID",
+    "department_label": "부서",
+    "position_label": "직책",
+    "bindings_label": "신원 바인딩",
+    "bindings_empty": "이 직원에 대해 등록된 신원 바인딩이 없습니다.",
+    "binding_inactive_note": "비활성 바인딩 — 기록 버전만 표시됩니다.",
+    "binding_active": "활성",
+    "binding_inactive": "비활성",
+    "execution_identity_label": "실행 신원",
+    "execution_identity_none": "사용 가능한 실행 신원이 없습니다.",
+    "open_agent_settings": "에이전트 설정 열기",
+    "open_chat_to_assign": "채팅 열어 배정",
+    "authority_unavailable": "회사 권위 투영을 사용할 수 없어 이 열람을 검증할 수 없습니다.",
+    "authority_basis": "기술 근거",
+    "source_ref": "소스 참조",
+    "revision": "버전",
+    "digest": "다이제스트",
+    "freshness": "신선도",
+    "observed_at": "관측 시각",
+    "workforce_agent_label": "워크포스 에이전트"
+  },
+  "states": {
+    "available": "바인딩됨 · 배정 가능",
+    "none": "실행 신원 바인딩 없음",
+    "inactive_only": "바인딩 비활성",
+    "multiple_active_conflict": "바인딩 충돌",
+    "local_agent_missing_or_invalid": "실행 신원 확인 실패",
+    "source_gap": "권위 사용 불가"
+  },
+  "state_reasons": {
+    "none": "배정 전에 HiveCosm에서 IdentityBinding을 등록해야 합니다.",
+    "inactive_only": "모든 바인딩이 비활성입니다. HiveCosm에서만 다시 활성화할 수 있습니다.",
+    "multiple_active_conflict": "여러 활성 바인딩이 있습니다. 배정 전에 HiveCosm에서 충돌을 해결하세요.",
+    "local_agent_missing_or_invalid": "바인딩된 에이전트를 로컬 실행 에이전트로 확인할 수 없습니다.",
+    "source_gap": "권위 투영에 연결할 수 없어 사용할 수 있는 작업이 없습니다."
+  }
+}

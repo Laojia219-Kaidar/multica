@@ -15,6 +15,7 @@ import enInbox from "./en/inbox.json";
 import enWorkspace from "./en/workspace.json";
 import enProjects from "./en/projects.json";
 import enOutcomes from "./en/outcomes.json";
+import enOrganization from "./en/organization.json";
 import enAutopilots from "./en/autopilots.json";
 import enSkills from "./en/skills.json";
 import enChat from "./en/chat.json";
@@ -41,6 +42,7 @@ import zhHansInbox from "./zh-Hans/inbox.json";
 import zhHansWorkspace from "./zh-Hans/workspace.json";
 import zhHansProjects from "./zh-Hans/projects.json";
 import zhHansOutcomes from "./zh-Hans/outcomes.json";
+import zhHansOrganization from "./zh-Hans/organization.json";
 import zhHansAutopilots from "./zh-Hans/autopilots.json";
 import zhHansSkills from "./zh-Hans/skills.json";
 import zhHansChat from "./zh-Hans/chat.json";
@@ -67,6 +69,7 @@ import koInbox from "./ko/inbox.json";
 import koWorkspace from "./ko/workspace.json";
 import koProjects from "./ko/projects.json";
 import koOutcomes from "./ko/outcomes.json";
+import koOrganization from "./ko/organization.json";
 import koAutopilots from "./ko/autopilots.json";
 import koSkills from "./ko/skills.json";
 import koChat from "./ko/chat.json";
@@ -93,6 +96,7 @@ import jaInbox from "./ja/inbox.json";
 import jaWorkspace from "./ja/workspace.json";
 import jaProjects from "./ja/projects.json";
 import jaOutcomes from "./ja/outcomes.json";
+import jaOrganization from "./ja/organization.json";
 import jaAutopilots from "./ja/autopilots.json";
 import jaSkills from "./ja/skills.json";
 import jaChat from "./ja/chat.json";
@@ -125,6 +129,7 @@ export const RESOURCES: Record<SupportedLocale, LocaleResources> = {
     workspace: enWorkspace,
     projects: enProjects,
     outcomes: enOutcomes,
+    organization: enOrganization,
     autopilots: enAutopilots,
     skills: enSkills,
     chat: enChat,
@@ -153,6 +158,7 @@ export const RESOURCES: Record<SupportedLocale, LocaleResources> = {
     workspace: zhHansWorkspace,
     projects: zhHansProjects,
     outcomes: zhHansOutcomes,
+    organization: zhHansOrganization,
     autopilots: zhHansAutopilots,
     skills: zhHansSkills,
     chat: zhHansChat,
@@ -181,6 +187,7 @@ export const RESOURCES: Record<SupportedLocale, LocaleResources> = {
     workspace: koWorkspace,
     projects: koProjects,
     outcomes: koOutcomes,
+    organization: koOrganization,
     autopilots: koAutopilots,
     skills: koSkills,
     chat: koChat,
@@ -209,6 +216,7 @@ export const RESOURCES: Record<SupportedLocale, LocaleResources> = {
     workspace: jaWorkspace,
     projects: jaProjects,
     outcomes: jaOutcomes,
+    organization: jaOrganization,
     autopilots: jaAutopilots,
     skills: jaSkills,
     chat: jaChat,

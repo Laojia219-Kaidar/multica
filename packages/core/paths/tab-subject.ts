@@ -26,6 +26,8 @@ export type TabSubject =
   | { kind: "project"; id: string }
   /** A single autopilot detail. */
   | { kind: "autopilot"; id: string }
+  /** A company employee dossier (`/organization/employees/:employeeId`). */
+  | { kind: "employee"; employeeId: string }
   /** An agent / member / squad detail (has an avatar identity). */
   | { kind: "actor"; actorType: TabActorType; id: string }
   /** A single skill detail. */
@@ -84,6 +86,12 @@ export function parseTabSubject(url: string): TabSubject {
       return id ? { kind: "project", id } : { kind: "page", page: "projects" };
     case "outcomes":
       return { kind: "page", page: "outcomes" };
+    case "organization":
+      // `/organization/employees/:employeeId` — dossier deep link.
+      if (segments[2] === "employees" && segments[3]) {
+        return { kind: "employee", employeeId: segments[3] };
+      }
+      return { kind: "page", page: "organization" };
     case "autopilots":
       return id ? { kind: "autopilot", id } : { kind: "page", page: "autopilots" };
     case "agents":
@@ -149,6 +157,8 @@ export function tabSubjectKey(subject: TabSubject): string {
       return `project:${subject.id}`;
     case "autopilot":
       return `autopilot:${subject.id}`;
+    case "employee":
+      return `employee:${subject.employeeId}`;
     case "actor":
       return `actor:${subject.actorType}:${subject.id}`;
     case "skill":

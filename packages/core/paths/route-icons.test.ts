@@ -46,6 +46,7 @@ describe("pageForSegment", () => {
     expect(pageForSegment("projects")).toBe("projects");
     expect(pageForSegment("my-issues")).toBe("myIssues");
     expect(pageForSegment("outcomes")).toBe("outcomes");
+    expect(pageForSegment("organization")).toBe("organization");
     expect(pageForSegment("settings")).toBe("settings");
   });
 
@@ -59,6 +60,7 @@ describe("resolveRouteIconName", () => {
   it("resolves a page path to its page icon", () => {
     expect(resolveRouteIconName("/acme/projects")).toBe("FolderKanban");
     expect(resolveRouteIconName("/acme/outcomes")).toBe("FileCheck2");
+    expect(resolveRouteIconName("/acme/organization")).toBe("Building2");
     expect(resolveRouteIconName("/acme/autopilots")).toBe("Zap");
     expect(resolveRouteIconName("/acme/chat")).toBe("MessageSquare");
     expect(resolveRouteIconName("/acme/squads")).toBe("Users");

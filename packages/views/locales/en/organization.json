@@ -1,0 +1,77 @@
+{
+  "page": {
+    "title": "Organization",
+    "loading": "Loading organization…",
+    "empty_title": "No organization projection",
+    "empty_description": "No authorized organization projection is available for this workspace.",
+    "error_title": "Unable to load organization",
+    "error_description": "The organization authority is unavailable. Try again in a moment.",
+    "not_found_title": "Employee not found",
+    "not_found_description": "This employee does not exist or has no authorized projection.",
+    "select_prompt": "Select an employee to view their dossier",
+    "source_gap_title": "Organization authority unavailable",
+    "source_gap_description": "The company authority projection could not be reached. No local data is used as a fallback."
+  },
+  "tabs": {
+    "tree": "Organization tree",
+    "roster": "Employees roster"
+  },
+  "tree": {
+    "departments_label": "Departments",
+    "positions_label": "Positions",
+    "appointments_label": "Appointments",
+    "no_departments": "No department projection available.",
+    "no_positions": "No positions in this department.",
+    "no_appointments": "No appointments in this position.",
+    "observed_at": "Projection observed at {{at}}",
+    "open_roster": "Open employees roster"
+  },
+  "roster": {
+    "search_placeholder": "Search employees",
+    "status_all": "All binding states",
+    "status_filter_label": "Binding state",
+    "total_one": "{{count}} employee",
+    "total_other": "{{count}} employees",
+    "empty_description": "No employees in the authorized roster.",
+    "open_dossier": "Open dossier"
+  },
+  "dossier": {
+    "back": "Back to organization",
+    "identity_label": "Identity",
+    "employee_id_label": "Employee ID",
+    "department_label": "Department",
+    "position_label": "Position",
+    "bindings_label": "Identity bindings",
+    "bindings_empty": "No identity binding has been registered for this employee.",
+    "binding_inactive_note": "Inactive binding — historical revision only.",
+    "binding_active": "Active",
+    "binding_inactive": "Inactive",
+    "execution_identity_label": "Execution identity",
+    "execution_identity_none": "No execution identity is available.",
+    "open_agent_settings": "Open agent settings",
+    "open_chat_to_assign": "Open chat to assign",
+    "authority_unavailable": "The company authority projection is unavailable. This dossier cannot be verified.",
+    "authority_basis": "Technical basis",
+    "source_ref": "Source ref",
+    "revision": "Revision",
+    "digest": "Digest",
+    "freshness": "Freshness",
+    "observed_at": "Observed at",
+    "workforce_agent_label": "Workforce agent"
+  },
+  "states": {
+    "available": "Bound — assignable",
+    "none": "No execution identity binding",
+    "inactive_only": "Binding inactive",
+    "multiple_active_conflict": "Binding conflict",
+    "local_agent_missing_or_invalid": "Execution identity resolution failed",
+    "source_gap": "Authority unavailable"
+  },
+  "state_reasons": {
+    "none": "Register an IdentityBinding in HiveCosm before this employee can be assigned.",
+    "inactive_only": "All bindings are inactive. Re-activation is only possible in HiveCosm.",
+    "multiple_active_conflict": "Multiple active bindings exist. Resolve the conflict in HiveCosm before assigning.",
+    "local_agent_missing_or_invalid": "The bound agent cannot be resolved as a local execution agent.",
+    "source_gap": "The authority projection is unreachable. No operation is available."
+  }
+}

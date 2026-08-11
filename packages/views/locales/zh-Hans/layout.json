@@ -12,7 +12,8 @@
     "usage": "用量",
     "runtimes": "运行时",
     "skills": "技能",
-    "settings": "设置"
+    "settings": "设置",
+    "organization": "组织"
   },
   "tab": {
     "issue": "议题",
@@ -26,7 +27,8 @@
     "runtime": "运行时",
     "attachment": "附件",
     "create_agent": "创建数字员工",
-    "unknown": "未知页面"
+    "unknown": "未知页面",
+    "employee": "员工"
   },
   "help": {
     "trigger": "帮助",

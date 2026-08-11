@@ -12,6 +12,8 @@ describe("parseTabSubject", () => {
     ["/acme/my-issues", { kind: "page", page: "myIssues" }],
     ["/acme/projects", { kind: "page", page: "projects" }],
     ["/acme/outcomes", { kind: "page", page: "outcomes" }],
+    ["/acme/organization", { kind: "page", page: "organization" }],
+    ["/acme/organization?tab=roster", { kind: "page", page: "organization" }],
     ["/acme/autopilots", { kind: "page", page: "autopilots" }],
     ["/acme/agents", { kind: "page", page: "agents" }],
     ["/acme/squads", { kind: "page", page: "squads" }],
@@ -23,6 +25,7 @@ describe("parseTabSubject", () => {
     ["/acme/issues/bug-1", { kind: "issue", id: "bug-1" }],
     ["/acme/projects/p1", { kind: "project", id: "p1" }],
     ["/acme/autopilots/a1", { kind: "autopilot", id: "a1" }],
+    ["/acme/organization/employees/DE-CEO-001", { kind: "employee", employeeId: "DE-CEO-001" }],
     ["/acme/skills/s1", { kind: "skill", id: "s1" }],
     ["/acme/attachments/att1/preview", { kind: "attachment", id: "att1", filename: null }],
     [
@@ -94,6 +97,9 @@ describe("tabSubjectKey", () => {
     expect(tabSubjectKey({ kind: "chat", sessionId: null })).toBe("chat:");
     expect(tabSubjectKey({ kind: "chat", sessionId: "s1" })).toBe("chat:s1");
     expect(tabSubjectKey({ kind: "page", page: "outcomes" })).toBe("page:outcomes");
+    expect(
+      tabSubjectKey({ kind: "employee", employeeId: "DE-CEO-001" }),
+    ).toBe("employee:DE-CEO-001");
     expect(
       tabSubjectKey({ kind: "actor", actorType: "member", id: "m1" }),
     ).toBe("actor:member:m1");

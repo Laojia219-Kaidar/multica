@@ -40,6 +40,7 @@ export type TabLabelKey =
   | "issue"
   | "project"
   | "autopilot"
+  | "employee"
   | "agent"
   | "member"
   | "squad"
@@ -78,6 +79,8 @@ export interface TabEntityData {
   issue?: { identifier: string; title: string; status: IssueStatus };
   project?: { icon: string | null; title: string };
   autopilot?: { title: string };
+  /** Resolved display name for an employee dossier subject. */
+  employeeName?: string;
   /** Resolved display name for an actor subject. */
   actorName?: string;
   skill?: { name: string };
@@ -168,6 +171,11 @@ export function resolveTabPresentation(
       return {
         visual: { kind: "icon", icon: "Zap" },
         title: textOr(data.autopilot?.title, "autopilot"),
+      };
+    case "employee":
+      return {
+        visual: { kind: "icon", icon: "Building2" },
+        title: textOr(data.employeeName, "employee"),
       };
     case "actor":
       return {

@@ -10,6 +10,11 @@ describe("paths.workspace(slug)", () => {
     expect(ws.issueDetail("abc-123")).toBe("/acme/issues/abc-123");
     expect(ws.projects()).toBe("/acme/projects");
     expect(ws.projectDetail("p1")).toBe("/acme/projects/p1");
+    expect(ws.outcomes()).toBe("/acme/outcomes");
+    expect(ws.organization()).toBe("/acme/organization");
+    expect(ws.employeeDossier("DE-CEO-001")).toBe(
+      "/acme/organization/employees/DE-CEO-001",
+    );
     expect(ws.autopilots()).toBe("/acme/autopilots");
     expect(ws.autopilotDetail("a1")).toBe("/acme/autopilots/a1");
     expect(ws.agents()).toBe("/acme/agents");
@@ -31,6 +36,9 @@ describe("paths.workspace(slug)", () => {
 
   it("URL-encodes special characters in ids", () => {
     expect(ws.issueDetail("id with space")).toBe("/acme/issues/id%20with%20space");
+    expect(ws.employeeDossier("DE-EMP 001")).toBe(
+      "/acme/organization/employees/DE-EMP%20001",
+    );
   });
 });
 

@@ -243,6 +243,17 @@ export type {
   CompanyOpsOutcomeRun,
   CompanyOpsOutcomeDetail,
   CompanyOpsOutcomeListResponse,
+  CompanyOpsBindingState,
+  CompanyOpsDepartmentAppointment,
+  CompanyOpsDepartmentPosition,
+  CompanyOpsDepartmentNode,
+  CompanyOpsOrganization,
+  CompanyOpsRosterParams,
+  CompanyOpsRosterItem,
+  CompanyOpsRosterResponse,
+  CompanyOpsEmployeeBinding,
+  CompanyOpsEmployeeLocalAgent,
+  CompanyOpsEmployeeDossier,
 } from "./companyops";
 export {
   COMPANY_OPS_WORK_CONTEXT_SCHEMA_VERSION,
@@ -250,6 +261,7 @@ export {
   COMPANY_OPS_ARTIFACT_REVIEW_SCHEMA_VERSION,
   COMPANY_OPS_FORMAL_ARTIFACT_PROMOTION_SCHEMA_VERSION,
   COMPANY_OPS_OUTCOME_CENTER_SCHEMA_VERSION,
+  COMPANY_OPS_ORGANIZATION_SCHEMA_VERSION,
 } from "./companyops";
 export type {
   BillingBalance,

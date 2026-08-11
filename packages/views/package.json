@@ -23,6 +23,7 @@
     "./modals/create-issue": "./modals/create-issue.tsx",
     "./my-issues": "./my-issues/index.ts",
     "./outcomes": "./outcomes/index.ts",
+    "./organization": "./organization/index.ts",
     "./skills": "./skills/index.ts",
     "./agents": "./agents/index.ts",
     "./members": "./members/index.ts",

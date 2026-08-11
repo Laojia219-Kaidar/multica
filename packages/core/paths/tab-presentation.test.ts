@@ -27,6 +27,27 @@ describe("resolveTabPresentation — pages", () => {
       visual: { kind: "icon", icon: "FileCheck2" },
       title: { kind: "nav", navKey: "outcomes" },
     });
+    expect(present("/acme/organization")).toEqual({
+      visual: { kind: "icon", icon: "Building2" },
+      title: { kind: "nav", navKey: "organization" },
+    });
+  });
+});
+
+describe("resolveTabPresentation — employee dossier", () => {
+  it("shows the Building2 icon and the employee name once resolved", () => {
+    expect(present("/acme/organization/employees/DE-CEO-001")).toEqual({
+      visual: { kind: "icon", icon: "Building2" },
+      title: { kind: "tab", tabKey: "employee" },
+    });
+    expect(
+      present("/acme/organization/employees/DE-CEO-001", {
+        employeeName: "Coco",
+      }),
+    ).toEqual({
+      visual: { kind: "icon", icon: "Building2" },
+      title: { kind: "text", text: "Coco" },
+    });
   });
 });
 

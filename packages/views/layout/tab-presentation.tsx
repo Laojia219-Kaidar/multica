@@ -28,6 +28,7 @@ import {
   inboxListOptions,
   archivedInboxListOptions,
 } from "@multica/core/inbox/queries";
+import { employeeDossierOptions } from "../organization/organization-queries";
 import { cn } from "@multica/ui/lib/utils";
 import { StatusIcon } from "../issues/components";
 import { ProjectIcon } from "../projects/components/project-icon";
@@ -118,6 +119,13 @@ function useTabEntityData(subject: TabSubject, wsId: string): TabEntityData {
     ...skillDetailOptions(wsId, subject.kind === "skill" ? subject.id : NONE),
     enabled: false,
   }).data;
+  const employeeDossier = useQuery({
+    ...employeeDossierOptions(
+      wsId,
+      subject.kind === "employee" ? subject.employeeId : NONE,
+    ),
+    enabled: false,
+  }).data;
 
   const agents = useQuery({ ...agentListOptions(wsId), enabled: false }).data;
   const members = useQuery({ ...memberListOptions(wsId), enabled: false }).data;
@@ -144,6 +152,12 @@ function useTabEntityData(subject: TabSubject, wsId: string): TabEntityData {
       break;
     case "skill":
       if (skill) data.skill = { name: skill.name };
+      break;
+    case "employee":
+      if (employeeDossier) {
+        data.employeeName =
+          employeeDossier.display_name ?? employeeDossier.employee_id;
+      }
       break;
     case "actor": {
       const name =

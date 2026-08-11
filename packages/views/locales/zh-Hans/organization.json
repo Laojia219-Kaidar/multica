@@ -1,0 +1,76 @@
+{
+  "page": {
+    "title": "组织",
+    "loading": "正在加载组织…",
+    "empty_title": "无组织投影",
+    "empty_description": "当前工作区没有可用的授权组织投影。",
+    "error_title": "组织加载失败",
+    "error_description": "组织权威暂不可用，请稍后重试。",
+    "not_found_title": "员工不存在",
+    "not_found_description": "该员工不存在或没有授权投影。",
+    "select_prompt": "选择一个员工查看其档案",
+    "source_gap_title": "组织权威不可用",
+    "source_gap_description": "无法连接到公司权威投影，不使用任何本地数据兜底。"
+  },
+  "tabs": {
+    "tree": "组织树",
+    "roster": "员工名册"
+  },
+  "tree": {
+    "departments_label": "部门",
+    "positions_label": "岗位",
+    "appointments_label": "任职",
+    "no_departments": "暂无部门投影。",
+    "no_positions": "该部门下暂无岗位。",
+    "no_appointments": "该岗位下暂无任职。",
+    "observed_at": "投影观测时间 {{at}}",
+    "open_roster": "打开员工名册"
+  },
+  "roster": {
+    "search_placeholder": "搜索员工",
+    "status_all": "全部绑定状态",
+    "status_filter_label": "绑定状态",
+    "total_other": "{{count}} 名员工",
+    "empty_description": "授权名册中暂无员工。",
+    "open_dossier": "打开档案"
+  },
+  "dossier": {
+    "back": "返回组织",
+    "identity_label": "身份",
+    "employee_id_label": "员工 ID",
+    "department_label": "部门",
+    "position_label": "岗位",
+    "bindings_label": "身份绑定",
+    "bindings_empty": "该员工尚未登记身份绑定。",
+    "binding_inactive_note": "已失效绑定——仅显示历史版本。",
+    "binding_active": "生效",
+    "binding_inactive": "失效",
+    "execution_identity_label": "执行身份",
+    "execution_identity_none": "暂无可用执行身份。",
+    "open_agent_settings": "打开智能体设置",
+    "open_chat_to_assign": "打开聊天以派工",
+    "authority_unavailable": "公司权威投影不可用，无法核验该档案。",
+    "authority_basis": "技术依据",
+    "source_ref": "来源引用",
+    "revision": "版本",
+    "digest": "摘要",
+    "freshness": "新鲜度",
+    "observed_at": "观测时间",
+    "workforce_agent_label": "数字员工"
+  },
+  "states": {
+    "available": "已绑定 · 可派工",
+    "none": "未建立执行身份绑定",
+    "inactive_only": "绑定已失效",
+    "multiple_active_conflict": "绑定冲突",
+    "local_agent_missing_or_invalid": "执行身份解析失败",
+    "source_gap": "权威不可用"
+  },
+  "state_reasons": {
+    "none": "需先在 HiveCosm 登记 IdentityBinding，员工才可被派工。",
+    "inactive_only": "所有绑定均已失效，只能在 HiveCosm 中重新激活。",
+    "multiple_active_conflict": "存在多条生效绑定，需先在 HiveCosm 解决冲突。",
+    "local_agent_missing_or_invalid": "绑定的智能体无法解析为本地执行智能体。",
+    "source_gap": "权威投影不可达，当前无可执行操作。"
+  }
+}

@@ -175,6 +175,10 @@ import type {
   CompanyOpsOutcomeListParams,
   CompanyOpsOutcomeListResponse,
   CompanyOpsOutcomeDetail,
+  CompanyOpsOrganization,
+  CompanyOpsRosterParams,
+  CompanyOpsRosterResponse,
+  CompanyOpsEmployeeDossier,
 } from "../types";
 import { z } from "zod";
 import type { OnboardingCompletionPath } from "../onboarding/types";
@@ -494,6 +498,92 @@ const CompanyOpsOutcomeDetailSchema = z.object({
   versions: z.array(CompanyOpsOutcomeVersionSchema),
   events: z.array(CompanyOpsOutcomeEventSchema),
   runs: z.array(CompanyOpsOutcomeRunSchema),
+});
+
+const CompanyOpsBindingStateSchema = z.enum([
+  "available",
+  "none",
+  "inactive_only",
+  "multiple_active_conflict",
+  "local_agent_missing_or_invalid",
+  "source_gap",
+]);
+
+const CompanyOpsDepartmentAppointmentSchema = z.object({
+  appointment_id: z.string().min(1),
+  employee_id: z.string().min(1),
+  authority: CompanyOpsAuthoritySnapshotSchema,
+});
+
+const CompanyOpsDepartmentPositionSchema = z.object({
+  position_id: z.string().min(1),
+  title: z.string().min(1),
+  appointments: z.array(CompanyOpsDepartmentAppointmentSchema),
+  authority: CompanyOpsAuthoritySnapshotSchema,
+});
+
+const CompanyOpsDepartmentNodeSchema = z.object({
+  department_id: z.string().min(1),
+  name: z.string().min(1),
+  positions: z.array(CompanyOpsDepartmentPositionSchema),
+  authority: CompanyOpsAuthoritySnapshotSchema,
+});
+
+const CompanyOpsOrganizationSchema = z.object({
+  schema_version: z.literal("hivecrew.organization.v1"),
+  departments: z.array(CompanyOpsDepartmentNodeSchema),
+  observed_at: z.string().min(1),
+});
+
+const CompanyOpsRosterItemSchema = z.object({
+  employee_id: z.string().min(1),
+  display_name: z.string().min(1).optional(),
+  department_ref: z.string().min(1).optional(),
+  position_ref: z.string().min(1).optional(),
+  workforce_agent_id: z.string().nullable(),
+  hivecrew_agent_id: z.string().uuid().nullable(),
+  binding_state: CompanyOpsBindingStateSchema,
+  authority: CompanyOpsAuthoritySnapshotSchema,
+});
+
+const CompanyOpsRosterResponseSchema = z.object({
+  schema_version: z.literal("hivecrew.organization.v1"),
+  items: z.array(CompanyOpsRosterItemSchema),
+  total: z.number().int().nonnegative(),
+  limit: z.number().int().nonnegative(),
+  offset: z.number().int().nonnegative(),
+});
+
+const CompanyOpsEmployeeBindingSchema = z.object({
+  identity_binding_id: z.string().min(1),
+  employee_ref: z.string().min(1),
+  workforce_agent_id: z.string().min(1),
+  agent_ref: z.string().min(1),
+  active: z.boolean(),
+  authority: CompanyOpsAuthoritySnapshotSchema,
+});
+
+const CompanyOpsEmployeeLocalAgentSchema = z.object({
+  id: z.string().uuid(),
+  name: z.string().min(1),
+  status: z.string().min(1),
+  runtime_mode: z.string().min(1),
+  model: z.string().min(1).optional(),
+  authority: CompanyOpsAuthoritySnapshotSchema,
+});
+
+const CompanyOpsEmployeeDossierSchema = z.object({
+  schema_version: z.literal("hivecrew.organization.v1"),
+  employee_id: z.string().min(1),
+  display_name: z.string().min(1).optional(),
+  department_ref: z.string().min(1).optional(),
+  position_ref: z.string().min(1).optional(),
+  workforce_agent_id: z.string().nullable(),
+  hivecrew_agent_id: z.string().uuid().nullable(),
+  bindings: z.array(CompanyOpsEmployeeBindingSchema),
+  binding_state: CompanyOpsBindingStateSchema,
+  local_agent: CompanyOpsEmployeeLocalAgentSchema.nullable(),
+  authority: CompanyOpsAuthoritySnapshotSchema,
 });
 import {
   AgentTaskListSchema,
@@ -2609,6 +2699,65 @@ export class ApiClient {
     );
     if (!parsed) {
       throw new Error("Invalid CompanyOps outcome center detail response.");
+    }
+    return parsed;
+  }
+
+  // CompanyOps Organization & Employees — hivecrew.organization.v1
+  async getCompanyOpsOrganization(): Promise<CompanyOpsOrganization> {
+    const raw = await this.fetch<unknown>(
+      "/api/company-ops/organization",
+    );
+    const parsed = parseWithFallback<CompanyOpsOrganization | null>(
+      raw,
+      CompanyOpsOrganizationSchema,
+      null,
+      { endpoint: "GET /api/company-ops/organization" },
+    );
+    if (!parsed) {
+      throw new Error("Invalid CompanyOps organization projection response.");
+    }
+    return parsed;
+  }
+
+  async listCompanyOpsEmployees(
+    params?: CompanyOpsRosterParams,
+  ): Promise<CompanyOpsRosterResponse> {
+    const search = new URLSearchParams();
+    if (params?.q?.trim()) search.set("q", params.q.trim());
+    if (params?.status) search.set("status", params.status);
+    if (params?.limit !== undefined) search.set("limit", String(params.limit));
+    if (params?.offset !== undefined) search.set("offset", String(params.offset));
+    const query = search.toString();
+    const raw = await this.fetch<unknown>(
+      `/api/company-ops/employees${query ? `?${query}` : ""}`,
+    );
+    const parsed = parseWithFallback<CompanyOpsRosterResponse | null>(
+      raw,
+      CompanyOpsRosterResponseSchema,
+      null,
+      { endpoint: "GET /api/company-ops/employees" },
+    );
+    if (!parsed) {
+      throw new Error("Invalid CompanyOps employees roster response.");
+    }
+    return parsed;
+  }
+
+  async getCompanyOpsEmployee(
+    employeeId: string,
+  ): Promise<CompanyOpsEmployeeDossier> {
+    const raw = await this.fetch<unknown>(
+      `/api/company-ops/employees/${encodeURIComponent(employeeId)}`,
+    );
+    const parsed = parseWithFallback<CompanyOpsEmployeeDossier | null>(
+      raw,
+      CompanyOpsEmployeeDossierSchema,
+      null,
+      { endpoint: "GET /api/company-ops/employees/:employee_id" },
+    );
+    if (!parsed) {
+      throw new Error("Invalid CompanyOps employee dossier response.");
     }
     return parsed;
   }

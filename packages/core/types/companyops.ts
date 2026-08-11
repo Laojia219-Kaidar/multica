@@ -13,6 +13,9 @@ export const COMPANY_OPS_FORMAL_ARTIFACT_PROMOTION_SCHEMA_VERSION =
 export const COMPANY_OPS_OUTCOME_CENTER_SCHEMA_VERSION =
   "hivecrew.outcome-center.v1" as const;
 
+export const COMPANY_OPS_ORGANIZATION_SCHEMA_VERSION =
+  "hivecrew.organization.v1" as const;
+
 export interface CompanyOpsWorkContextRequest {
   work_order_source_ref: string;
   employee_id: string;
@@ -286,4 +289,115 @@ export interface CompanyOpsOutcomeListResponse {
   total: number;
   limit: number;
   offset: number;
+}
+
+// ---------------------------------------------------------------------------
+// Organization & Employees roster/dossier — hivecrew.organization.v1
+//
+// Company-identity projection consumed by the Organization entry (three-level
+// surface: Organization tree → Employees roster → Employee dossier). The
+// authority wire is strictly three-namespace: `employee_id` is an opaque
+// company employee id (DE-*), `workforce_agent_id` is the workforce agent id
+// from the authority projection (KT-*/EXT-*), and `hivecrew_agent_id` is the
+// canonical UUID of the local execution agent — never derived from each other.
+//
+// Every roster row / dossier carries a `binding_state` computed by the
+// backend across the authority IdentityBinding and the local agent
+// registry. Only `available` may enable Agent settings / Chat / assignment
+// links; every other state is fail-closed (non-operable + explainable).
+//
+// The org tree is read-only: Department → Position → Appointment, all backed
+// by an authority snapshot. It never borrows Member/Squad/Agent collections.
+// ---------------------------------------------------------------------------
+
+export type CompanyOpsBindingState =
+  | "available"
+  | "none"
+  | "inactive_only"
+  | "multiple_active_conflict"
+  | "local_agent_missing_or_invalid"
+  | "source_gap";
+
+export interface CompanyOpsDepartmentAppointment {
+  appointment_id: string;
+  employee_id: string;
+  authority: CompanyOpsAuthoritySnapshot;
+}
+
+export interface CompanyOpsDepartmentPosition {
+  position_id: string;
+  title: string;
+  appointments: CompanyOpsDepartmentAppointment[];
+  authority: CompanyOpsAuthoritySnapshot;
+}
+
+export interface CompanyOpsDepartmentNode {
+  department_id: string;
+  name: string;
+  positions: CompanyOpsDepartmentPosition[];
+  authority: CompanyOpsAuthoritySnapshot;
+}
+
+export interface CompanyOpsOrganization {
+  schema_version: typeof COMPANY_OPS_ORGANIZATION_SCHEMA_VERSION;
+  departments: CompanyOpsDepartmentNode[];
+  observed_at: string;
+}
+
+export interface CompanyOpsRosterParams {
+  q?: string;
+  status?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export interface CompanyOpsRosterItem {
+  employee_id: string;
+  display_name?: string;
+  department_ref?: string;
+  position_ref?: string;
+  workforce_agent_id: string | null;
+  hivecrew_agent_id: string | null;
+  binding_state: CompanyOpsBindingState;
+  authority: CompanyOpsAuthoritySnapshot;
+}
+
+export interface CompanyOpsRosterResponse {
+  schema_version: typeof COMPANY_OPS_ORGANIZATION_SCHEMA_VERSION;
+  items: CompanyOpsRosterItem[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface CompanyOpsEmployeeBinding {
+  identity_binding_id: string;
+  employee_ref: string;
+  workforce_agent_id: string;
+  agent_ref: string;
+  active: boolean;
+  authority: CompanyOpsAuthoritySnapshot;
+}
+
+export interface CompanyOpsEmployeeLocalAgent {
+  id: string;
+  name: string;
+  status: string;
+  runtime_mode: string;
+  model?: string;
+  authority: CompanyOpsAuthoritySnapshot;
+}
+
+export interface CompanyOpsEmployeeDossier {
+  schema_version: typeof COMPANY_OPS_ORGANIZATION_SCHEMA_VERSION;
+  employee_id: string;
+  display_name?: string;
+  department_ref?: string;
+  position_ref?: string;
+  workforce_agent_id: string | null;
+  hivecrew_agent_id: string | null;
+  bindings: CompanyOpsEmployeeBinding[];
+  binding_state: CompanyOpsBindingState;
+  local_agent: CompanyOpsEmployeeLocalAgent | null;
+  authority: CompanyOpsAuthoritySnapshot;
 }

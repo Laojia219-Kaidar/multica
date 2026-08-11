@@ -12,7 +12,8 @@
     "usage": "Usage",
     "runtimes": "Runtimes",
     "skills": "Skills",
-    "settings": "Settings"
+    "settings": "Settings",
+    "organization": "Organization"
   },
   "tab": {
     "issue": "Issue",
@@ -26,7 +27,8 @@
     "runtime": "Runtime",
     "attachment": "Attachment",
     "create_agent": "Create Agent",
-    "unknown": "Unknown page"
+    "unknown": "Unknown page",
+    "employee": "Employee"
   },
   "help": {
     "trigger": "Help",

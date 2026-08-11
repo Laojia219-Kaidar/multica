@@ -1,0 +1,76 @@
+{
+  "page": {
+    "title": "組織",
+    "loading": "組織を読み込み中…",
+    "empty_title": "組織プロジェクションなし",
+    "empty_description": "このワークスペースで利用できる承認された組織プロジェクションがありません。",
+    "error_title": "組織を読み込めません",
+    "error_description": "組織権威サービスに接続できません。しばらくしてから再試行してください。",
+    "not_found_title": "従業員が見つかりません",
+    "not_found_description": "この従業員は存在しないか、承認されたプロジェクションがありません。",
+    "select_prompt": "従業員を選択してドシエを表示",
+    "source_gap_title": "組織権威を利用できません",
+    "source_gap_description": "会社権威プロジェクションに接続できませんでした。ローカルデータで代替しません。"
+  },
+  "tabs": {
+    "tree": "組織ツリー",
+    "roster": "従業員名簿"
+  },
+  "tree": {
+    "departments_label": "部門",
+    "positions_label": "役職",
+    "appointments_label": "任命",
+    "no_departments": "部門プロジェクションがありません。",
+    "no_positions": "この部門に役職がありません。",
+    "no_appointments": "この役職に任命がありません。",
+    "observed_at": "プロジェクション観測時刻 {{at}}",
+    "open_roster": "従業員名簿を開く"
+  },
+  "roster": {
+    "search_placeholder": "従業員を検索",
+    "status_all": "すべてのバインディング状態",
+    "status_filter_label": "バインディング状態",
+    "total_other": "従業員 {{count}} 名",
+    "empty_description": "承認された名簿に従業員がいません。",
+    "open_dossier": "ドシエを開く"
+  },
+  "dossier": {
+    "back": "組織に戻る",
+    "identity_label": "身元",
+    "employee_id_label": "従業員 ID",
+    "department_label": "部門",
+    "position_label": "役職",
+    "bindings_label": "身元バインディング",
+    "bindings_empty": "この従業員に登録された身元バインディングがありません。",
+    "binding_inactive_note": "非アクティブなバインディング — 履歴版のみ表示。",
+    "binding_active": "アクティブ",
+    "binding_inactive": "非アクティブ",
+    "execution_identity_label": "実行身元",
+    "execution_identity_none": "利用可能な実行身元がありません。",
+    "open_agent_settings": "エージェント設定を開く",
+    "open_chat_to_assign": "チャットを開いて割り当て",
+    "authority_unavailable": "会社権威プロジェクションを利用できないため、このドシエを検証できません。",
+    "authority_basis": "技術的根拠",
+    "source_ref": "ソース参照",
+    "revision": "リビジョン",
+    "digest": "ダイジェスト",
+    "freshness": "鮮度",
+    "observed_at": "観測時刻",
+    "workforce_agent_label": "ワークフォースエージェント"
+  },
+  "states": {
+    "available": "バインド済み · 割り当て可能",
+    "none": "実行身元バインディングなし",
+    "inactive_only": "バインディング非アクティブ",
+    "multiple_active_conflict": "バインディング競合",
+    "local_agent_missing_or_invalid": "実行身元の解決に失敗",
+    "source_gap": "権威を利用できません"
+  },
+  "state_reasons": {
+    "none": "割り当てる前に HiveCosm で IdentityBinding を登録してください。",
+    "inactive_only": "すべてのバインディングが非アクティブです。再アクティブ化は HiveCosm でのみ可能です。",
+    "multiple_active_conflict": "アクティブなバインディングが複数あります。割り当て前に HiveCosm で競合を解決してください。",
+    "local_agent_missing_or_invalid": "バインドされたエージェントをローカル実行エージェントとして解決できません。",
+    "source_gap": "権威プロジェクションに接続できないため、操作は利用できません。"
+  }
+}
