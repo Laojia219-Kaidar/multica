@@ -524,6 +524,11 @@ describe("ApiClient CompanyOps outcome center", () => {
       },
     };
     delete (backendSummary as { latest_event_at?: string }).latest_event_at;
+    const activeArtifact = {
+      ...backendSummary.active_artifact,
+    } as Record<string, unknown>;
+    delete activeArtifact.content_type;
+    backendSummary.active_artifact = activeArtifact as typeof summary.active_artifact;
 
     vi.stubGlobal(
       "fetch",

@@ -15,7 +15,7 @@ import {
 import { cn } from "@multica/ui/lib/utils";
 import { Badge } from "@multica/ui/components/ui/badge";
 import { Skeleton } from "@multica/ui/components/ui/skeleton";
-import { Button } from "@multica/ui/components/ui/button";
+import { buttonVariants } from "@multica/ui/components/ui/button";
 import { useWorkspacePaths } from "@multica/core/paths";
 import type { CompanyOpsOutcomeDetail } from "@multica/core/types";
 import { useT } from "../i18n";
@@ -211,18 +211,17 @@ export function OutcomeDetail({
                   {candidate.digest.slice(0, 16)}
                 </span>
                 {summary.issue && (
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    className="ml-auto gap-1.5"
-                    nativeButton={false}
-                    render={
-                      <a href={wsPaths.issueDetail(summary.issue.id)} />
-                    }
+                  <a
+                    href={wsPaths.issueDetail(summary.issue.id)}
+                    className={buttonVariants({
+                      size: "sm",
+                      variant: "outline",
+                      className: "ml-auto gap-1.5",
+                    })}
                   >
                     <ExternalLink className="size-3.5" />
                     {t(($) => $.detail.candidate_preview)}
-                  </Button>
+                  </a>
                 )}
               </div>
             </div>

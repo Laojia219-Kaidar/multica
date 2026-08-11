@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { MessageSquare, RefreshCw } from "lucide-react";
-import { Button } from "@multica/ui/components/ui/button";
+import { Button, buttonVariants } from "@multica/ui/components/ui/button";
 import { NativeSelect, NativeSelectOption } from "@multica/ui/components/ui/native-select";
 import { Textarea } from "@multica/ui/components/ui/textarea";
 import { Badge } from "@multica/ui/components/ui/badge";
@@ -105,17 +105,17 @@ export function OutcomeSessionGate({
         <p className="mt-1 text-xs text-muted-foreground">
           {t(($) => $.session.no_session_description)}
         </p>
-        <Button
-          size="sm"
-          variant="outline"
-          className="mt-3 gap-1.5"
-          render={
-            <a href={`${wsPaths.chat()}?agent=${encodeURIComponent(summary.execution_target.local_agent_id)}`} />
-          }
+        <a
+          href={`${wsPaths.chat()}?agent=${encodeURIComponent(summary.execution_target.local_agent_id)}`}
+          className={buttonVariants({
+            size: "sm",
+            variant: "outline",
+            className: "mt-3 gap-1.5",
+          })}
         >
           <MessageSquare className="size-3.5" />
           {t(($) => $.session.open_chat)}
-        </Button>
+        </a>
       </div>
     );
   }

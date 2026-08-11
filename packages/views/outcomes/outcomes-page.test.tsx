@@ -293,6 +293,9 @@ describe("OutcomesPage", () => {
     expect(await screen.findByText("#42")).toBeInTheDocument();
     expect(screen.getByText(summary.issue.project_id!)).toBeInTheDocument();
     expect(screen.getByText("Atlas")).toBeInTheDocument();
+    const candidateLink = screen.getByRole("link", { name: "Preview candidate" });
+    expect(candidateLink).toHaveAttribute("href", `/acme/issues/${summary.issue.id}`);
+    expect(candidateLink).not.toHaveAttribute("role", "button");
   });
 
   it("shows an explicit not-found for an invalid/deleted outcome id", async () => {

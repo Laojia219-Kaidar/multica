@@ -376,7 +376,7 @@ const CompanyOpsOutcomeActiveArtifactSchema = z
     revision: z.number().int().positive(),
     durable_object_ref: z.string().min(1),
     digest: z.string().min(1),
-    content_type: z.string().min(1),
+    content_type: z.string().min(1).optional(),
     status: z.enum([
       "submitted",
       "changes_requested",

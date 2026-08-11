@@ -223,7 +223,7 @@ export interface CompanyOpsOutcomeActiveArtifact {
   revision: number;
   durable_object_ref: string;
   digest: string;
-  content_type: string;
+  content_type?: string;
   status: string;
   formal_visible: boolean;
   formal_artifact_ref?: string;
