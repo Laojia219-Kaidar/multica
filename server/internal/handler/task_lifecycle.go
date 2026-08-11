@@ -29,19 +29,16 @@ func (h *Handler) RecoverOrphanedTasks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rows, err := h.Queries.RecoverOrphanedTasksForRuntime(r.Context(), parseUUID(runtimeID))
+	if h.TaskService == nil {
+		writeError(w, http.StatusInternalServerError, "task service unavailable")
+		return
+	}
+	rows, retried, err := h.TaskService.RecoverOrphanedTasksForRuntime(r.Context(), parseUUID(runtimeID))
 	if err != nil {
 		slog.Warn("recover-orphans failed", "runtime_id", runtimeID, "error", err)
 		writeError(w, http.StatusInternalServerError, "recover orphans failed")
 		return
 	}
-
-	// Funnel through the shared post-failure pipeline so we get the same
-	// task:failed events, agent reconcile, issue rollback, and auto-retry
-	// behaviour as the runtime sweeper. This was previously a fast-path
-	// that bypassed those side effects, leaving the UI stale when no retry
-	// was created (max_attempts exhausted, autopilot, non-retryable reason).
-	retried := h.TaskService.HandleFailedTasks(r.Context(), rows)
 
 	if len(rows) > 0 {
 		slog.Info("recover-orphans completed",

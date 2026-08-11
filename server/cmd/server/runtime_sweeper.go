@@ -168,12 +168,15 @@ func sweepStaleRuntimes(ctx context.Context, queries *db.Queries, liveness handl
 	slog.Info("runtime sweeper: marked stale runtimes offline", "count", len(staleRows), "workspaces", len(workspaces))
 
 	// Fail orphaned tasks (dispatched/running) whose runtimes just went offline.
-	failedTasks, err := queries.FailTasksForOfflineRuntimes(ctx)
-	if err != nil {
-		slog.Warn("runtime sweeper: failed to clean up stale tasks", "error", err)
-	} else if len(failedTasks) > 0 {
-		slog.Info("runtime sweeper: failed orphaned tasks", "count", len(failedTasks))
-		taskSvc.HandleFailedTasks(ctx, failedTasks)
+	if taskSvc == nil {
+		slog.Error("runtime sweeper: task service unavailable; deferring orphan failure transition")
+	} else {
+		failedTasks, _, err := taskSvc.FailTasksForOfflineRuntimes(ctx)
+		if err != nil {
+			slog.Warn("runtime sweeper: failed to clean up stale tasks", "error", err)
+		} else if len(failedTasks) > 0 {
+			slog.Info("runtime sweeper: failed orphaned tasks", "count", len(failedTasks))
+		}
 	}
 
 	// Notify frontend clients so they re-fetch runtime list.
@@ -269,7 +272,11 @@ func gcRuntimes(ctx context.Context, queries *db.Queries, bus *events.Bus) {
 // edge where a runtime row lingers online-with-stale-heartbeat past the
 // wall clock (MUL-4107).
 func sweepStaleTasks(ctx context.Context, queries *db.Queries, taskSvc *service.TaskService, bus *events.Bus) {
-	failedTasks, err := queries.FailStaleTasks(ctx, db.FailStaleTasksParams{
+	if taskSvc == nil {
+		slog.Error("task sweeper: task service unavailable; deferring stale-task transition")
+		return
+	}
+	failedTasks, _, err := taskSvc.FailStaleTasks(ctx, db.FailStaleTasksParams{
 		DispatchTimeoutSecs: dispatchTimeoutSeconds,
 		RunningTimeoutSecs:  runningTimeoutSeconds,
 		// Reuse the runtime stale window so the running-task backstop
@@ -286,7 +293,6 @@ func sweepStaleTasks(ctx context.Context, queries *db.Queries, taskSvc *service.
 
 	slog.Info("task sweeper: failed stale tasks", "count", len(failedTasks))
 	taskSvc.CaptureLeaseExpiredTasks(ctx, failedTasks)
-	taskSvc.HandleFailedTasks(ctx, failedTasks)
 }
 
 // sweepExpiredQueuedTasks fails tasks that have been sitting in 'queued' for
@@ -296,7 +302,11 @@ func sweepStaleTasks(ctx context.Context, queries *db.Queries, taskSvc *service.
 // a task is already queued. Capped to queuedExpireBatchSize per tick so a
 // big backlog can't monopolise the DB.
 func sweepExpiredQueuedTasks(ctx context.Context, queries *db.Queries, taskSvc *service.TaskService) {
-	failedTasks, err := queries.ExpireStaleQueuedTasks(ctx, db.ExpireStaleQueuedTasksParams{
+	if taskSvc == nil {
+		slog.Error("task sweeper: task service unavailable; deferring queued-expiry transition")
+		return
+	}
+	failedTasks, _, err := taskSvc.ExpireStaleQueuedTasks(ctx, db.ExpireStaleQueuedTasksParams{
 		TtlSecs:    queuedTTLSeconds,
 		MaxPerTick: queuedExpireBatchSize,
 	})
@@ -310,7 +320,6 @@ func sweepExpiredQueuedTasks(ctx context.Context, queries *db.Queries, taskSvc *
 
 	slog.Info("task sweeper: expired stale queued tasks", "count", len(failedTasks))
 	taskSvc.CaptureQueuedExpiredTasks(ctx, failedTasks)
-	taskSvc.HandleFailedTasks(ctx, failedTasks)
 }
 
 // sweepDeferredChatFinalizations settles cancelled chat tasks whose deferred

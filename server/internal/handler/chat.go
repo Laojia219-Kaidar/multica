@@ -600,6 +600,16 @@ func (h *Handler) DeleteChatSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to cancel chat session tasks")
 		return
 	}
+	if len(cancelled) > 0 {
+		if h.TaskService == nil {
+			writeError(w, http.StatusInternalServerError, "task service unavailable")
+			return
+		}
+		if err := h.TaskService.FinalizeCancelledTasksInTx(r.Context(), qtx, cancelled); err != nil {
+			writeError(w, http.StatusConflict, "failed to finalize chat session task cancellations")
+			return
+		}
+	}
 
 	// channel_chat_session_binding used to carry a chat_session FK with
 	// ON DELETE CASCADE; MUL-3515 §4 dropped every channel_* foreign key, so

@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -58,7 +59,9 @@ func (r *mockRow) Scan(dest ...any) error {
 // mockDBTX routes QueryRow calls: complete/fail queries return ErrNoRows,
 // getAgentTask returns the stored task.
 type mockDBTX struct {
-	task db.AgentTaskQueue
+	task                  db.AgentTaskQueue
+	getTaskErr            error
+	terminalWriteAttempts int
 }
 
 func (m *mockDBTX) Exec(_ context.Context, _ string, _ ...interface{}) (pgconn.CommandTag, error) {
@@ -72,10 +75,55 @@ func (m *mockDBTX) Query(_ context.Context, _ string, _ ...interface{}) (pgx.Row
 func (m *mockDBTX) QueryRow(_ context.Context, sql string, _ ...interface{}) pgx.Row {
 	// CompleteAgentTask and FailAgentTask SQL contain "SET status ="
 	if strings.Contains(sql, "SET status =") {
+		m.terminalWriteAttempts++
 		return &mockRow{err: pgx.ErrNoRows}
 	}
 	// GetAgentTask — return the existing task
-	return &mockRow{task: &m.task}
+	if strings.Contains(sql, "FROM agent_task_queue") {
+		if m.getTaskErr != nil {
+			return &mockRow{err: m.getTaskErr}
+		}
+		return &mockRow{task: &m.task}
+	}
+	// Unknown queries (e.g., GetExecutionReceipt, assignment_dispatch_receipt)
+	// return ErrNoRows so CompanyOps receipt lookups report "not found".
+	return &mockRow{err: pgx.ErrNoRows}
+}
+
+func TestNilTxTerminalPreflightPropagatesTaskReadErrorBeforeCAS(t *testing.T) {
+	taskID := testUUID(31)
+	readErr := errors.New("task read unavailable")
+	for _, tc := range []struct {
+		name string
+		run  func(*TaskService) error
+	}{
+		{
+			name: "cancel",
+			run: func(svc *TaskService) error {
+				_, err := svc.CancelTask(context.Background(), taskID)
+				return err
+			},
+		},
+		{
+			name: "fail",
+			run: func(svc *TaskService) error {
+				_, err := svc.FailTask(context.Background(), taskID, "boom", "", "", "agent_error", false, "")
+				return err
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mock := &mockDBTX{getTaskErr: readErr}
+			svc := &TaskService{Queries: db.New(mock), Bus: events.New()}
+			err := tc.run(svc)
+			if !errors.Is(err, readErr) {
+				t.Fatalf("error = %v, want wrapped task read error", err)
+			}
+			if mock.terminalWriteAttempts != 0 {
+				t.Fatalf("terminal CAS attempts = %d, want 0", mock.terminalWriteAttempts)
+			}
+		})
+	}
 }
 
 func testUUID(b byte) pgtype.UUID {

@@ -9,7 +9,16 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sort"
+	"strings"
 	"testing"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/companyops"
+	"github.com/multica-ai/multica/server/internal/service"
+	"github.com/multica-ai/multica/server/internal/util"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 func TestCreateWorkspace_RejectsReservedSlug(t *testing.T) {
@@ -579,6 +588,191 @@ VALUES ($1, $2, $3, now() + interval '1 day')
 		TaskID:       taskID,
 		DaemonID:     daemonID,
 		TokenHash:    tokenHash,
+	}
+}
+
+func revocationCompanyOpsAuthority(kind, sourceRef, revision, digestChar string) companyops.AuthoritySnapshot {
+	return companyops.AuthoritySnapshot{
+		Kind:          kind,
+		SourceRef:     sourceRef,
+		Revision:      revision,
+		ContentDigest: "sha256:" + strings.Repeat(digestChar, 64),
+		Freshness:     "current",
+	}
+}
+
+// setupRevocationCompanyOpsTask creates a real assignment-dispatch task and
+// advances it through the canonical claim finalizer. The returned receipt is
+// therefore suitable for proving that workspace revocation rolls back its
+// earlier archive/cancel writes when terminal receipt validation conflicts.
+func setupRevocationCompanyOpsTask(t *testing.T, fx revocationFixture) db.AgentTaskQueue {
+	t.Helper()
+	ctx := context.Background()
+	t.Cleanup(func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_, _ = testPool.Exec(cleanupCtx, `DELETE FROM execution_receipt WHERE workspace_id = $1`, fx.WorkspaceID)
+		_, _ = testPool.Exec(cleanupCtx, `DELETE FROM assignment_dispatch_receipt WHERE workspace_id = $1`, fx.WorkspaceID)
+		_, _ = testPool.Exec(cleanupCtx, `DELETE FROM external_work_order_link WHERE workspace_id = $1`, fx.WorkspaceID)
+	})
+
+	// Remove the fixture's generic queued task so ClaimTask deterministically
+	// selects the canonical CompanyOps task created below.
+	if _, err := testPool.Exec(ctx, `DELETE FROM agent_task_queue WHERE id = $1`, fx.TaskID); err != nil {
+		t.Fatalf("delete generic revocation task: %v", err)
+	}
+
+	var issueID pgtype.UUID
+	if err := testPool.QueryRow(ctx, `
+INSERT INTO issue (workspace_id, title, status, priority, creator_type, creator_id, number)
+SELECT $1, 'CompanyOps revocation rollback', 'todo', 'medium', 'member', $2,
+       COALESCE(MAX(number), 0) + 1
+FROM issue WHERE workspace_id = $1
+RETURNING id
+`, parseUUID(fx.WorkspaceID), parseUUID(fx.TargetUserID)).Scan(&issueID); err != nil {
+		t.Fatalf("insert CompanyOps revocation issue: %v", err)
+	}
+
+	agentRef := "/api/agents/" + fx.AgentID
+	employeeRef := "hivecosm://employees/EMP-REVOKE-ROLLBACK"
+	bindingRef := "hivecosm://identity-bindings/BIND-REVOKE-ROLLBACK"
+	handoff := "Prove workspace revocation and execution receipt finalization are one transaction."
+	request := service.CompanyOpsAssignmentRequest{
+		CommandID:           util.MustParseUUID(uuid.NewString()),
+		WorkspaceID:         parseUUID(fx.WorkspaceID),
+		IssueID:             issueID,
+		LocalAgentID:        parseUUID(fx.AgentID),
+		LocalAgentSourceRef: agentRef,
+		ActorUserID:         parseUUID(fx.TargetUserID),
+		HandoffNote:         handoff,
+		WorkOrder: revocationCompanyOpsAuthority(
+			"WorkOrder",
+			"hive://hivecosm/delivery/project/PRJ-HIVECREW-P2/work-order/WO-REVOKE-ROLLBACK",
+			"wo-rev-1",
+			"a",
+		),
+		InputDigest: service.CompanyOpsHandoffInputDigest(handoff),
+		Employee:    revocationCompanyOpsAuthority("Employee", employeeRef, "employee-rev-1", "b"),
+		Bindings: []companyops.IdentityBinding{{
+			Authority:   revocationCompanyOpsAuthority("IdentityBinding", bindingRef, "binding-rev-1", "c"),
+			EmployeeRef: employeeRef,
+			AgentRef:    agentRef,
+			Active:      true,
+		}},
+		Agents: []companyops.AuthoritySnapshot{
+			revocationCompanyOpsAuthority("Agent", agentRef, "agent-rev-1", "d"),
+		},
+	}
+	backend, err := service.NewProductionCompanyOpsAssignmentBackend(testHandler.Queries, testPool, testHandler.TaskService)
+	if err != nil {
+		t.Fatalf("NewProductionCompanyOpsAssignmentBackend: %v", err)
+	}
+	if _, err := service.NewCompanyOpsAssignmentService(backend).Dispatch(ctx, request); err != nil {
+		t.Fatalf("dispatch CompanyOps revocation task: %v", err)
+	}
+
+	task, err := testHandler.TaskService.ClaimTask(ctx, parseUUID(fx.AgentID))
+	if err != nil {
+		t.Fatalf("claim CompanyOps revocation task: %v", err)
+	}
+	if task == nil {
+		t.Fatal("claim CompanyOps revocation task returned nil")
+	}
+	agent, err := testHandler.Queries.GetAgent(ctx, task.AgentID)
+	if err != nil {
+		t.Fatalf("get CompanyOps revocation agent: %v", err)
+	}
+	runtime, err := testHandler.Queries.GetAgentRuntime(ctx, task.RuntimeID)
+	if err != nil {
+		t.Fatalf("get CompanyOps revocation runtime: %v", err)
+	}
+	var customEnv map[string]string
+	if len(agent.CustomEnv) > 0 {
+		if err := json.Unmarshal(agent.CustomEnv, &customEnv); err != nil {
+			t.Fatalf("decode CompanyOps revocation custom env: %v", err)
+		}
+	}
+	evidence, err := service.BuildCompanyOpsExecutionPayloadEvidence(service.CompanyOpsExecutionPayloadObservation{
+		TaskID:          uuidToString(task.ID),
+		AgentID:         uuidToString(task.AgentID),
+		RuntimeID:       uuidToString(task.RuntimeID),
+		AgentName:       agent.Name,
+		Instructions:    agent.Instructions,
+		CustomEnv:       customEnv,
+		AgentModel:      agent.Model.String,
+		ThinkingLevel:   agent.ThinkingLevel.String,
+		ServiceTier:     agent.ServiceTier.String,
+		RuntimeName:     runtime.Name,
+		RuntimeMode:     runtime.RuntimeMode,
+		RuntimeProvider: runtime.Provider,
+	})
+	if err != nil {
+		t.Fatalf("build CompanyOps revocation evidence: %v", err)
+	}
+	if _, err := testHandler.TaskService.FinalizeTaskClaim(ctx, *task, db.CreateTaskTokenParams{
+		TokenHash:   "workspace-revoke-" + uuid.NewString(),
+		TaskID:      task.ID,
+		AgentID:     task.AgentID,
+		WorkspaceID: parseUUID(fx.WorkspaceID),
+		UserID:      parseUUID(fx.TargetUserID),
+		ExpiresAt:   pgtype.Timestamptz{Time: time.Now().Add(time.Hour), Valid: true},
+	}, nil, false, &evidence); err != nil {
+		t.Fatalf("finalize CompanyOps revocation claim: %v", err)
+	}
+	return *task
+}
+
+func TestRevokeAndRemoveMember_CompanyOpsReceiptConflictRollsBackEverything(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	fx := setupRevocationFixture(t, "handler-tests-revoke-companyops-conflict", "daemon-revoke-companyops-conflict")
+	task := setupRevocationCompanyOpsTask(t, fx)
+	ctx := context.Background()
+
+	if _, err := testPool.Exec(ctx,
+		`UPDATE execution_receipt SET runtime_digest = $2 WHERE task_id = $1`,
+		task.ID,
+		"sha256:"+strings.Repeat("f", 64),
+	); err != nil {
+		t.Fatalf("corrupt CompanyOps revocation receipt: %v", err)
+	}
+
+	if _, err := testHandler.revokeAndRemoveMember(
+		ctx,
+		parseUUID(fx.WorkspaceID),
+		parseUUID(fx.TargetUserID),
+		parseUUID(fx.MemberID),
+		parseUUID(testUserID),
+	); err == nil {
+		t.Fatal("revokeAndRemoveMember accepted a conflicting CompanyOps receipt")
+	}
+
+	var (
+		memberExists  bool
+		runtimeStatus string
+		archivedAt    *string
+		taskStatus    string
+		terminal      *string
+	)
+	if err := testPool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM member WHERE id = $1)`, fx.MemberID).Scan(&memberExists); err != nil {
+		t.Fatalf("query rolled-back member: %v", err)
+	}
+	if err := testPool.QueryRow(ctx, `SELECT status FROM agent_runtime WHERE id = $1`, fx.RuntimeID).Scan(&runtimeStatus); err != nil {
+		t.Fatalf("query rolled-back runtime: %v", err)
+	}
+	if err := testPool.QueryRow(ctx, `SELECT archived_at::text FROM agent WHERE id = $1`, fx.AgentID).Scan(&archivedAt); err != nil {
+		t.Fatalf("query rolled-back agent: %v", err)
+	}
+	if err := testPool.QueryRow(ctx, `SELECT status FROM agent_task_queue WHERE id = $1`, uuidToString(task.ID)).Scan(&taskStatus); err != nil {
+		t.Fatalf("query rolled-back task: %v", err)
+	}
+	if err := testPool.QueryRow(ctx, `SELECT terminal_status FROM execution_receipt WHERE task_id = $1`, uuidToString(task.ID)).Scan(&terminal); err != nil {
+		t.Fatalf("query rolled-back receipt: %v", err)
+	}
+	if !memberExists || runtimeStatus != "online" || archivedAt != nil || taskStatus != "dispatched" || terminal != nil {
+		t.Fatalf("revoke conflict left partial state: member=%t runtime=%q archived_at=%v task=%q terminal=%v",
+			memberExists, runtimeStatus, archivedAt, taskStatus, terminal)
 	}
 }
 

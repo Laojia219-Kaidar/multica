@@ -1977,25 +1977,20 @@ func (h *Handler) ArchiveAgent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	userID := requestUserID(r)
-	archived, err := h.Queries.ArchiveAgent(r.Context(), db.ArchiveAgentParams{
-		ID:         agent.ID,
-		ArchivedBy: parseUUID(userID),
-	})
+	if h.TaskService == nil {
+		writeError(w, http.StatusInternalServerError, "task service unavailable")
+		return
+	}
+	archived, cancelled, err := h.TaskService.ArchiveAgentAndCancelTasks(r.Context(), agent.ID, parseUUID(userID))
 	if err != nil {
 		slog.Warn("archive agent failed", append(logger.RequestAttrs(r), "error", err, "agent_id", id)...)
 		writeError(w, http.StatusInternalServerError, "failed to archive agent")
 		return
 	}
 
-	// Cancel all pending/active tasks for this agent. Discard the returned
-	// rows here — the agent:archived event below already triggers a full
-	// active-tasks invalidation on every connected client, so per-task
-	// task:cancelled events would be redundant noise.
-	if cancelled, err := h.Queries.CancelAgentTasksByAgent(r.Context(), agent.ID); err != nil {
-		slog.Warn("cancel agent tasks on archive failed", append(logger.RequestAttrs(r), "error", err, "agent_id", id)...)
-	} else {
-		h.TaskService.CaptureCancelledTasks(r.Context(), cancelled)
-	}
+	// The agent:archived event below triggers a full active-tasks invalidation;
+	// retain the historical metrics capture without duplicating per-task events.
+	h.TaskService.CaptureCancelledTasks(r.Context(), cancelled)
 
 	wsID := uuidToString(archived.WorkspaceID)
 	slog.Info("agent archived", append(logger.RequestAttrs(r), "agent_id", id, "workspace_id", wsID)...)

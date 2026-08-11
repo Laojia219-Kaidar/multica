@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 
 	"github.com/jackc/pgx/v5/pgtype"
@@ -94,6 +95,14 @@ func (h *Handler) revokeAndRemoveMember(ctx context.Context, workspaceID, userID
 		})
 		if err != nil {
 			return empty, err
+		}
+		if len(result.CancelledTasks) > 0 {
+			if h.TaskService == nil {
+				return empty, errors.New("task service unavailable")
+			}
+			if err := h.TaskService.FinalizeCancelledTasksInTx(ctx, qtx, result.CancelledTasks); err != nil {
+				return empty, err
+			}
 		}
 
 		result.OfflineRuntimeIDs, err = qtx.ForceOfflineRuntimesByIDs(ctx, runtimeIDs)

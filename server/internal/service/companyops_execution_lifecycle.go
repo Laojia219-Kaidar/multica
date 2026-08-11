@@ -109,6 +109,20 @@ type companyOpsFailedSnapshot struct {
 	FailureReason string `json:"failure_reason"`
 }
 
+type companyOpsCancelledSnapshot struct {
+	SchemaVersion string `json:"schema_version"`
+	Status        string `json:"status"`
+	Error         string `json:"error"`
+	FailureReason string `json:"failure_reason"`
+}
+
+// ErrCompanyOpsTxStarterRequired is returned when a CompanyOps terminal
+// operation is attempted with a nil TxStarter. Production wiring always
+// passes a pool transaction; a nil TxStarter means the caller skipped the
+// transaction boundary, which is unsafe for receipt finalization. Fail
+// closed rather than silently running without atomicity.
+var ErrCompanyOpsTxStarterRequired = errors.New("CompanyOps terminal operation requires a transaction starter")
+
 // ensureCompanyOpsExecutionClaim appends the immutable claim receipt for an
 // assignment task. Non-CompanyOps tasks are deliberately a no-op. The caller
 // must pass transaction-bound queries so a receipt failure rolls back the task
@@ -242,6 +256,22 @@ func finalizeCompanyOpsExecutionFailed(
 	return nil
 }
 
+func finalizeCompanyOpsExecutionCancelled(
+	ctx context.Context,
+	queries *db.Queries,
+	task db.AgentTaskQueue,
+) error {
+	terminal, assignment, err := companyOpsCancelledTerminal(ctx, queries, task)
+	if err != nil || !assignment {
+		return err
+	}
+	_, err = NewCompanyOpsPersistenceRepositoryWithQueries(queries).FinalizeExecutionReceipt(ctx, terminal)
+	if err != nil {
+		return fmt.Errorf("finalize cancelled CompanyOps execution receipt: %w", err)
+	}
+	return nil
+}
+
 // replayCompanyOpsExecutionCompleted verifies an already-completed assignment
 // callback against the immutable stored terminal. It never repairs a missing
 // receipt; recovery belongs to a separately governed recovery path.
@@ -265,6 +295,18 @@ func replayCompanyOpsExecutionFailed(
 	errMsg, failureReason string,
 ) (bool, error) {
 	terminal, assignment, err := companyOpsFailedTerminal(ctx, queries, task, errMsg, failureReason)
+	if err != nil || !assignment {
+		return assignment, err
+	}
+	return true, requireExactCompanyOpsTerminal(ctx, queries, terminal)
+}
+
+func replayCompanyOpsExecutionCancelled(
+	ctx context.Context,
+	queries *db.Queries,
+	task db.AgentTaskQueue,
+) (bool, error) {
+	terminal, assignment, err := companyOpsCancelledTerminal(ctx, queries, task)
 	if err != nil || !assignment {
 		return assignment, err
 	}
@@ -340,6 +382,48 @@ func companyOpsFailedTerminal(
 		OutputDigest:   outputDigest,
 		ResultSnapshot: resultSnapshot,
 		Error:          errMsg,
+	}, true, nil
+}
+
+func companyOpsCancelledTerminal(
+	ctx context.Context,
+	queries *db.Queries,
+	task db.AgentTaskQueue,
+) (ExecutionReceiptTerminal, bool, error) {
+	lineage, err := resolveCompanyOpsAssignmentLineage(ctx, queries, task)
+	if err != nil || lineage == nil {
+		return ExecutionReceiptTerminal{}, lineage != nil, err
+	}
+	if task.Status != "cancelled" || !task.CompletedAt.Valid {
+		return ExecutionReceiptTerminal{}, true, fmt.Errorf("%w: cancelled callback does not match task terminal state", ErrExecutionReceiptConflict)
+	}
+	if err := requireCompanyOpsExecutionClaim(ctx, queries, task); err != nil {
+		return ExecutionReceiptTerminal{}, true, err
+	}
+	cancelledError := ""
+	if task.Error.Valid {
+		cancelledError = task.Error.String
+	}
+	cancelledReason := ""
+	if task.FailureReason.Valid {
+		cancelledReason = task.FailureReason.String
+	}
+	resultSnapshot, outputDigest, err := canonicalSnapshot(companyOpsCancelledSnapshot{
+		SchemaVersion: companyOpsTerminalSnapshotSchema,
+		Status:        "cancelled",
+		Error:         cancelledError,
+		FailureReason: cancelledReason,
+	})
+	if err != nil {
+		return ExecutionReceiptTerminal{}, true, fmt.Errorf("build cancelled CompanyOps terminal snapshot: %w", err)
+	}
+	return ExecutionReceiptTerminal{
+		TaskID:         task.ID,
+		Status:         "cancelled",
+		CompletedAt:    task.CompletedAt.Time.UTC(),
+		OutputDigest:   outputDigest,
+		ResultSnapshot: resultSnapshot,
+		Error:          cancelledError,
 	}, true, nil
 }
 
@@ -632,4 +716,35 @@ func canonicalJSON(value []byte) (json.RawMessage, error) {
 func companyOpsDigest(value []byte) string {
 	sum := sha256.Sum256(value)
 	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+// requireTxForCompanyOpsTask enforces fail-closed when a CompanyOps terminal
+// operation is attempted without a transaction. The primary signal is the
+// execution receipt row (only CompanyOps tasks ever receive a claim), but a
+// task may be canonical CompanyOps before the receipt exists — e.g., between
+// assignment dispatch and claim finalization, or if the receipt row was
+// deleted. The canonical lineage resolver catches those cases so the gate and
+// the finalization classifier agree on what is CompanyOps. Any DB error other
+// than ErrExecutionReceiptNotFound propagates so a transient failure cannot
+// mask a CompanyOps task and silently bypass the transaction gate.
+func requireTxForCompanyOpsTask(ctx context.Context, queries *db.Queries, task db.AgentTaskQueue) error {
+	_, err := NewCompanyOpsPersistenceRepositoryWithQueries(queries).GetExecutionReceipt(ctx, task.ID)
+	if err == nil {
+		return ErrCompanyOpsTxStarterRequired
+	}
+	if !errors.Is(err, ErrExecutionReceiptNotFound) {
+		return err
+	}
+	// Receipt not found. Check canonical lineage to catch CompanyOps tasks
+	// that have no receipt yet (pre-claim) or whose receipt was removed. This
+	// keeps the classification consistent with the finalization path, which
+	// also uses resolveCompanyOpsAssignmentLineage.
+	lineage, lerr := resolveCompanyOpsAssignmentLineage(ctx, queries, task)
+	if lerr != nil {
+		return lerr
+	}
+	if lineage != nil {
+		return ErrCompanyOpsTxStarterRequired
+	}
+	return nil
 }

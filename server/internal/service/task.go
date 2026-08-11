@@ -34,6 +34,12 @@ import (
 type TaskService struct {
 	Queries   *db.Queries
 	TxStarter TxStarter
+	// nonTxDB is the narrow fallback seam for legacy/test-only TaskService
+	// instances that deliberately omit TxStarter. Bulk failure helpers use one
+	// statement to freeze candidates and refuse the entire write set when any
+	// candidate carries CompanyOps lineage. Production wiring derives this from
+	// TxStarter and continues to use explicit transactions.
+	nonTxDB   db.DBTX
 	Hub       *realtime.Hub
 	Bus       *events.Bus
 	Analytics analytics.Client
@@ -241,7 +247,11 @@ func NewTaskService(q *db.Queries, tx TxStarter, hub *realtime.Hub, bus *events.
 	if len(wakeups) > 0 {
 		wakeup = wakeups[0]
 	}
-	return &TaskService{Queries: q, TxStarter: tx, Hub: hub, Bus: bus, Wakeup: wakeup}
+	var nonTxDB db.DBTX
+	if candidate, ok := tx.(db.DBTX); ok {
+		nonTxDB = candidate
+	}
+	return &TaskService{Queries: q, TxStarter: tx, nonTxDB: nonTxDB, Hub: hub, Bus: bus, Wakeup: wakeup}
 }
 
 var trivialDoneMarkers = []string{
@@ -1180,7 +1190,37 @@ func (s *TaskService) enqueueMentionTask(ctx context.Context, issue db.Issue, ag
 }
 
 func (s *TaskService) enqueueMentionTaskWithCommentPlan(ctx context.Context, issue db.Issue, agentID pgtype.UUID, triggerCommentID pgtype.UUID, coalescedCommentIDs []pgtype.UUID, isLeader bool, squadID pgtype.UUID, forceFreshSession bool, handoffNote string, actorUserID pgtype.UUID, rerunOfTaskID pgtype.UUID) (db.AgentTaskQueue, error) {
-	agent, err := s.Queries.GetAgent(ctx, agentID)
+	task, err := s.prepareMentionTaskWithCommentPlan(ctx, s.Queries, issue, agentID, triggerCommentID, coalescedCommentIDs, isLeader, squadID, forceFreshSession, handoffNote, actorUserID, rerunOfTaskID)
+	if err != nil {
+		return db.AgentTaskQueue{}, err
+	}
+
+	slog.Info("mention task enqueued", "task_id", util.UUIDToString(task.ID), "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID), "is_leader_task", isLeader)
+	// See EnqueueTaskForIssue for ordering rationale.
+	s.broadcastTaskEvent(ctx, protocol.EventTaskQueued, task)
+	s.NotifyTaskEnqueued(ctx, task)
+	return task, nil
+}
+
+func (s *TaskService) prepareMentionTaskWithCommentPlan(
+	ctx context.Context,
+	queries *db.Queries,
+	issue db.Issue,
+	agentID, triggerCommentID pgtype.UUID,
+	coalescedCommentIDs []pgtype.UUID,
+	isLeader bool,
+	squadID pgtype.UUID,
+	forceFreshSession bool,
+	handoffNote string,
+	actorUserID, rerunOfTaskID pgtype.UUID,
+) (db.AgentTaskQueue, error) {
+	if s == nil || queries == nil {
+		return db.AgentTaskQueue{}, fmt.Errorf("task prepare queries are required")
+	}
+	preparer := *s
+	preparer.Queries = queries
+
+	agent, err := preparer.Queries.GetAgent(ctx, agentID)
 	if err != nil {
 		slog.Error("mention task enqueue failed: agent not found", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID), "error", err)
 		return db.AgentTaskQueue{}, fmt.Errorf("load agent: %w", err)
@@ -1198,25 +1238,25 @@ func (s *TaskService) enqueueMentionTaskWithCommentPlan(ctx context.Context, iss
 	// agent-authored comment is a delegation (the parent task's human is
 	// copied); a member mention is direct_human. attr.UserID matches the
 	// pre-MUL-4302 value, so authorization is unchanged.
-	attr := s.attributionForIssueTask(ctx, issue, triggerCommentID, attribution.SourceDelegation, actorUserID)
+	attr := preparer.attributionForIssueTask(ctx, issue, triggerCommentID, attribution.SourceDelegation, actorUserID)
 	// No precise human resolved → owner_fallback (accountable = agent owner), or
 	// refuse the enqueue if the workspace is fail-closed (MUL-4302 §3.5).
-	attr, err = s.applyAttributionFallback(ctx, attr, agent)
+	attr, err = preparer.applyAttributionFallback(ctx, attr, agent)
 	if err != nil {
 		slog.Warn("mention task enqueue refused: attribution fail-closed", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID))
 		return db.AgentTaskQueue{}, err
 	}
 	originatorUserID := attr.UserID
-	runtimeMCPOverlay := s.buildRuntimeMCPOverlay(ctx, originatorUserID, agent)
+	runtimeMCPOverlay := preparer.buildRuntimeMCPOverlay(ctx, originatorUserID, agent)
 	attrSource, attrDelegatedFrom, attrEvidenceKind, attrEvidenceRef := attributionCreateParams(attr)
-	task, err := s.Queries.CreateAgentTask(ctx, db.CreateAgentTaskParams{
+	task, err := preparer.Queries.CreateAgentTask(ctx, db.CreateAgentTaskParams{
 		AgentID:              agentID,
 		RuntimeID:            agent.RuntimeID,
 		IssueID:              issue.ID,
 		Priority:             priorityToInt(issue.Priority),
 		TriggerCommentID:     triggerCommentID,
 		CoalescedCommentIds:  coalescedCommentIDs,
-		TriggerSummary:       s.buildCommentTriggerSummary(ctx, issue.WorkspaceID, triggerCommentID),
+		TriggerSummary:       preparer.buildCommentTriggerSummary(ctx, issue.WorkspaceID, triggerCommentID),
 		IsLeaderTask:         pgtype.Bool{Bool: isLeader, Valid: isLeader},
 		ForceFreshSession:    pgtype.Bool{Bool: forceFreshSession, Valid: forceFreshSession},
 		HandoffNote:          pgtype.Text{String: handoffNote, Valid: handoffNote != ""},
@@ -1233,7 +1273,7 @@ func (s *TaskService) enqueueMentionTaskWithCommentPlan(ctx context.Context, iss
 		TriggerEvidenceRefID: attrEvidenceRef,
 		// Stamp the reviewed head so dedup can distinguish this run's target
 		// from a later request against a new HEAD (TEN-356).
-		HeadSha: headShaText(s.ResolveIssueReviewSHA(ctx, issue.ID)),
+		HeadSha: headShaText(preparer.ResolveIssueReviewSHA(ctx, issue.ID)),
 	})
 	if err != nil {
 		// A concurrent enqueue for the same (issue, agent) won the race and the
@@ -1249,10 +1289,6 @@ func (s *TaskService) enqueueMentionTaskWithCommentPlan(ctx context.Context, iss
 		return db.AgentTaskQueue{}, fmt.Errorf("create task: %w", err)
 	}
 
-	slog.Info("mention task enqueued", "task_id", util.UUIDToString(task.ID), "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID), "is_leader_task", isLeader)
-	// See EnqueueTaskForIssue for ordering rationale.
-	s.broadcastTaskEvent(ctx, protocol.EventTaskQueued, task)
-	s.NotifyTaskEnqueued(ctx, task)
 	return task, nil
 }
 
@@ -1808,16 +1844,15 @@ func (s *TaskService) SendDirectChatMessage(ctx context.Context, session db.Chat
 // `multica agent update <id> --status idle` to unwedge. It now reconciles agent
 // status and broadcasts task:cancelled, matching CancelTask and RerunIssue.
 func (s *TaskService) CancelTasksForIssue(ctx context.Context, issueID pgtype.UUID) error {
-	cancelled, err := s.Queries.CancelAgentTasksByIssue(ctx, issueID)
+	cancelled, err := s.cancelTasksTransactional(ctx, func(queries *db.Queries) ([]db.AgentTaskQueue, error) {
+		return queries.ListTasksByIssue(ctx, issueID)
+	}, func(qtx *db.Queries) ([]db.AgentTaskQueue, error) {
+		return qtx.CancelAgentTasksByIssue(ctx, issueID)
+	})
 	if err != nil {
 		return err
 	}
-	for _, t := range cancelled {
-		s.captureTaskCancelled(ctx, t)
-		s.ReconcileAgentStatus(ctx, t.AgentID)
-		s.broadcastTaskEvent(ctx, protocol.EventTaskCancelled, t)
-	}
-	s.notifyTasksFinished(cancelled)
+	s.postCancelBroadcast(ctx, cancelled)
 	return nil
 }
 
@@ -1828,7 +1863,11 @@ func (s *TaskService) CancelTasksForIssue(ctx context.Context, issueID pgtype.UU
 //
 // Returns the cancelled rows so callers can report counts / log them.
 func (s *TaskService) CancelTasksForAgent(ctx context.Context, agentID pgtype.UUID) ([]db.AgentTaskQueue, error) {
-	cancelled, err := s.Queries.CancelAgentTasksByAgent(ctx, agentID)
+	cancelled, err := s.cancelTasksTransactional(ctx, func(queries *db.Queries) ([]db.AgentTaskQueue, error) {
+		return queries.ListAgentTasks(ctx, agentID)
+	}, func(qtx *db.Queries) ([]db.AgentTaskQueue, error) {
+		return qtx.CancelAgentTasksByAgent(ctx, agentID)
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -1836,9 +1875,6 @@ func (s *TaskService) CancelTasksForAgent(ctx context.Context, agentID pgtype.UU
 		s.captureTaskCancelled(ctx, t)
 		s.broadcastTaskEvent(ctx, protocol.EventTaskCancelled, t)
 	}
-	// Reconcile once after the loop — agent transitions from
-	// working→available based on remaining task counts, no need to call
-	// per row (the rows we just cancelled all belong to the same agent).
 	s.ReconcileAgentStatus(ctx, agentID)
 	s.notifyTasksFinished(cancelled)
 	return cancelled, nil
@@ -1849,30 +1885,159 @@ func (s *TaskService) CancelTasksForAgent(ctx context.Context, agentID pgtype.UU
 // retained for call-site stability. It must run before deletion clears the
 // trigger FK; the returned rows let the handler re-route every surviving input.
 func (s *TaskService) CancelTasksByTriggerComment(ctx context.Context, commentID pgtype.UUID) ([]db.AgentTaskQueue, error) {
-	cancelled, err := s.Queries.CancelAgentTasksByTriggerComment(ctx, commentID)
+	cancelled, err := s.cancelTasksTransactional(ctx, func(queries *db.Queries) ([]db.AgentTaskQueue, error) {
+		comment, err := queries.GetComment(ctx, commentID)
+		if err != nil {
+			return nil, err
+		}
+		tasks, err := queries.ListTasksByIssue(ctx, comment.IssueID)
+		if err != nil {
+			return nil, err
+		}
+		matches := make([]db.AgentTaskQueue, 0, len(tasks))
+		for _, task := range tasks {
+			if taskMatchesTriggerComment(task, commentID) {
+				matches = append(matches, task)
+			}
+		}
+		return matches, nil
+	}, func(qtx *db.Queries) ([]db.AgentTaskQueue, error) {
+		return qtx.CancelAgentTasksByTriggerComment(ctx, commentID)
+	})
 	if err != nil {
 		return nil, err
 	}
-	for _, t := range cancelled {
-		s.captureTaskCancelled(ctx, t)
-		s.ReconcileAgentStatus(ctx, t.AgentID)
-		s.broadcastTaskEvent(ctx, protocol.EventTaskCancelled, t)
-	}
-	s.notifyTasksFinished(cancelled)
+	s.postCancelBroadcast(ctx, cancelled)
 	return cancelled, nil
 }
 
 // BroadcastCancelledTasks reconciles each affected agent's status and emits
-// task:cancelled for every row. Callers must invoke this AFTER committing the
-// cancellation so subscribers don't observe a "cancelled" event for a row
-// that the tx might still roll back.
+// task:cancelled for every row. It performs post-commit side effects only.
+// Callers that cancel rows in an outer transaction MUST call
+// FinalizeCancelledTasksInTx before committing that transaction.
 func (s *TaskService) BroadcastCancelledTasks(ctx context.Context, cancelled []db.AgentTaskQueue) {
+	s.postCancelBroadcast(ctx, cancelled)
+}
+
+// cancelTasksTransactional executes the bulk cancel CAS and CompanyOps receipt
+// finalization inside a single transaction. When TxStarter is nil, preflight
+// runs before any terminal CAS and rejects canonical CompanyOps tasks while
+// preserving the legacy non-CompanyOps fallback used by focused tests.
+func (s *TaskService) cancelTasksTransactional(
+	ctx context.Context,
+	preflightFn func(queries *db.Queries) ([]db.AgentTaskQueue, error),
+	cancelFn func(qtx *db.Queries) ([]db.AgentTaskQueue, error),
+) ([]db.AgentTaskQueue, error) {
+	if s.TxStarter == nil {
+		candidates, err := preflightFn(s.Queries)
+		if err != nil {
+			return nil, err
+		}
+		for _, task := range candidates {
+			if !isBulkCancellableStatus(task.Status) {
+				continue
+			}
+			if err := requireTxForCompanyOpsTask(ctx, s.Queries, task); err != nil {
+				return nil, err
+			}
+		}
+	}
+
+	var cancelled []db.AgentTaskQueue
+	if err := s.runInTx(ctx, func(qtx *db.Queries) error {
+		rows, err := cancelFn(qtx)
+		if err != nil {
+			return err
+		}
+		for _, t := range rows {
+			if ferr := finalizeCompanyOpsExecutionCancelled(ctx, qtx, t); ferr != nil {
+				return ferr
+			}
+		}
+		cancelled = rows
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	return cancelled, nil
+}
+
+func isBulkCancellableStatus(status string) bool {
+	switch status {
+	case "queued", "dispatched", "running", "waiting_local_directory", "deferred":
+		return true
+	default:
+		return false
+	}
+}
+
+func taskMatchesTriggerComment(task db.AgentTaskQueue, commentID pgtype.UUID) bool {
+	if task.TriggerCommentID == commentID {
+		return true
+	}
+	for _, id := range task.CoalescedCommentIds {
+		if id == commentID {
+			return true
+		}
+	}
+	return false
+}
+
+// postCancelBroadcast runs the post-commit side effects for a set of
+// successfully cancelled tasks.
+func (s *TaskService) postCancelBroadcast(ctx context.Context, cancelled []db.AgentTaskQueue) {
 	for _, t := range cancelled {
 		s.captureTaskCancelled(ctx, t)
 		s.ReconcileAgentStatus(ctx, t.AgentID)
 		s.broadcastTaskEvent(ctx, protocol.EventTaskCancelled, t)
 	}
 	s.notifyTasksFinished(cancelled)
+}
+
+// FinalizeCancelledTasksInTx appends CompanyOps cancellation terminals using
+// the caller's transaction-bound queries. It deliberately has no fallback:
+// returning an error lets the caller roll back both the cancellation CAS and
+// every surrounding destructive write before any terminal state is visible.
+func (s *TaskService) FinalizeCancelledTasksInTx(ctx context.Context, qtx *db.Queries, tasks []db.AgentTaskQueue) error {
+	for _, task := range tasks {
+		if err := finalizeCompanyOpsExecutionCancelled(ctx, qtx, task); err != nil {
+			return fmt.Errorf("finalize cancelled task %s: %w", util.UUIDToString(task.ID), err)
+		}
+	}
+	return nil
+}
+
+// ArchiveAgentAndCancelTasks owns the archive/cancel terminal transaction.
+// The Agent archive, every active-task cancellation, and every canonical
+// CompanyOps receipt terminal either commit together or remain untouched.
+func (s *TaskService) ArchiveAgentAndCancelTasks(
+	ctx context.Context,
+	agentID, archivedBy pgtype.UUID,
+) (db.Agent, []db.AgentTaskQueue, error) {
+	if s == nil || s.TxStarter == nil {
+		return db.Agent{}, nil, ErrCompanyOpsTxStarterRequired
+	}
+	var archived db.Agent
+	var cancelled []db.AgentTaskQueue
+	err := s.runInTx(ctx, func(qtx *db.Queries) error {
+		var err error
+		archived, err = qtx.ArchiveAgent(ctx, db.ArchiveAgentParams{
+			ID:         agentID,
+			ArchivedBy: archivedBy,
+		})
+		if err != nil {
+			return err
+		}
+		cancelled, err = qtx.CancelAgentTasksByAgent(ctx, agentID)
+		if err != nil {
+			return err
+		}
+		return s.FinalizeCancelledTasksInTx(ctx, qtx, cancelled)
+	})
+	if err != nil {
+		return db.Agent{}, nil, err
+	}
+	return archived, cancelled, nil
 }
 
 func (s *TaskService) CaptureCancelledTasks(ctx context.Context, cancelled []db.AgentTaskQueue) {
@@ -1927,16 +2092,74 @@ func (s *TaskService) CancelTask(ctx context.Context, taskID pgtype.UUID) (*db.A
 // CancelTaskWithResult cancels a single task and returns any chat-specific
 // cleanup result needed by user-facing callers.
 func (s *TaskService) CancelTaskWithResult(ctx context.Context, taskID pgtype.UUID, opts CancelTaskOptions) (*CancelTaskResult, error) {
-	task, err := s.Queries.CancelAgentTask(ctx, taskID)
-	if errors.Is(err, pgx.ErrNoRows) {
+	// When TxStarter is nil, runInTx falls back to a non-transactional
+	// execution where the CAS commits before the receipt finalization can
+	// reject. Detect CompanyOps lineage BEFORE the CAS so a nil-tx caller can
+	// never partial-commit a CompanyOps terminal transition.
+	if s.TxStarter == nil {
 		existing, err := s.Queries.GetAgentTask(ctx, taskID)
 		if err != nil {
-			return nil, fmt.Errorf("cancel task: %w", err)
+			if !errors.Is(err, pgx.ErrNoRows) {
+				return nil, fmt.Errorf("load task before cancel: %w", err)
+			}
+		} else if cerr := requireTxForCompanyOpsTask(ctx, s.Queries, existing); cerr != nil {
+			return nil, cerr
 		}
-		return &CancelTaskResult{Task: existing}, nil
 	}
-	if err != nil {
+
+	var task db.AgentTaskQueue
+	var terminalReplay bool
+	if err := s.runInTx(ctx, func(qtx *db.Queries) error {
+		t, err := qtx.CancelAgentTask(ctx, taskID)
+		if err != nil {
+			if !errors.Is(err, pgx.ErrNoRows) {
+				return err
+			}
+			existing, lookupErr := qtx.GetAgentTask(ctx, taskID)
+			if lookupErr != nil {
+				return err
+			}
+			if s.TxStarter == nil {
+				if cerr := requireTxForCompanyOpsTask(ctx, qtx, existing); cerr != nil {
+					return cerr
+				}
+			}
+			if _, replayErr := replayCompanyOpsExecutionCancelled(ctx, qtx, existing); replayErr != nil {
+				return replayErr
+			}
+			task = existing
+			terminalReplay = true
+			return nil
+		}
+		task = t
+		if s.TxStarter == nil {
+			if cerr := requireTxForCompanyOpsTask(ctx, qtx, task); cerr != nil {
+				return cerr
+			}
+		}
+		return finalizeCompanyOpsExecutionCancelled(ctx, qtx, t)
+	}); err != nil {
+		if existing, lookupErr := s.Queries.GetAgentTask(ctx, taskID); lookupErr == nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				slog.Info("cancel task: already finalized",
+					"task_id", util.UUIDToString(taskID),
+					"current_status", existing.Status,
+					"agent_id", util.UUIDToString(existing.AgentID),
+				)
+				return &CancelTaskResult{Task: existing}, nil
+			}
+			slog.Warn("cancel task failed",
+				"task_id", util.UUIDToString(taskID),
+				"current_status", existing.Status,
+				"issue_id", util.UUIDToString(existing.IssueID),
+				"agent_id", util.UUIDToString(existing.AgentID),
+				"error", err,
+			)
+		}
 		return nil, fmt.Errorf("cancel task: %w", err)
+	}
+	if terminalReplay {
+		return &CancelTaskResult{Task: task}, nil
 	}
 
 	slog.Info("task cancelled", "task_id", util.UUIDToString(task.ID), "issue_id", util.UUIDToString(task.IssueID))
@@ -3231,6 +3454,21 @@ func (s *TaskService) FailTask(ctx context.Context, taskID pgtype.UUID, errMsg, 
 	// reason is what decides retry eligibility.
 	failureReason = taskfailure.NormalizeDaemonReason(failureReason, errMsg).String()
 
+	// When TxStarter is nil, runInTx falls back to a non-transactional
+	// execution where the CAS commits before the receipt finalization can
+	// reject. Detect CompanyOps lineage BEFORE the CAS so a nil-tx caller can
+	// never partial-commit a CompanyOps terminal transition.
+	if s.TxStarter == nil {
+		existing, err := s.Queries.GetAgentTask(ctx, taskID)
+		if err != nil {
+			if !errors.Is(err, pgx.ErrNoRows) {
+				return nil, fmt.Errorf("load task before fail: %w", err)
+			}
+		} else if cerr := requireTxForCompanyOpsTask(ctx, s.Queries, existing); cerr != nil {
+			return nil, cerr
+		}
+	}
+
 	// Pre-compute the auto-retry so the retry child can be created inside the
 	// SAME transaction as the fail (MUL-4351). Doing it atomically closes the
 	// window between the fail committing and the retry appearing during which a
@@ -3841,33 +4079,67 @@ func (s *TaskService) RerunIssue(ctx context.Context, issueID pgtype.UUID, sourc
 		}
 	}
 
-	// Cancel only the target agent's active/queued tasks on this issue.
-	cancelled, err := s.Queries.CancelAgentTasksByIssueAndAgent(ctx, db.CancelAgentTasksByIssueAndAgentParams{
-		IssueID: issueID,
-		AgentID: agentID,
-	})
-	if err != nil {
-		slog.Warn("rerun: cancel prior tasks failed",
-			"issue_id", util.UUIDToString(issueID),
-			"agent_id", util.UUIDToString(agentID),
-			"error", err,
-		)
-	}
-	for _, t := range cancelled {
-		s.captureTaskCancelled(ctx, t)
-		s.ReconcileAgentStatus(ctx, t.AgentID)
-		s.broadcastTaskEvent(ctx, protocol.EventTaskCancelled, t)
-	}
-
 	// A manual rerun is a NEW direct_human trigger attributed to the rerunning
 	// member, not the original run's human (MUL-4302 §5); actorUserID carries them.
 	// sourceTaskID is the rerun lineage: it rides the CreateAgentTask insert
 	// (rerun_of_task_id) so the queued event / daemon claim never sees a NULL
 	// lineage, and it stays distinct from system-retry's retry_of_task_id (§5).
-	task, err := s.enqueueRerunTask(ctx, issue, agentID, triggerCommentID, coalescedCommentIDs, isLeader, squadID, actorUserID, sourceTaskID)
-	if err != nil {
-		return nil, err
+	var cancelled []db.AgentTaskQueue
+	var task db.AgentTaskQueue
+	if s.TxStarter == nil {
+		// Preserve the legacy no-transaction seam for pure non-CompanyOps tests
+		// and adapters, but classify the complete cancel set before its first
+		// write. Any canonical lineage (including lookup errors) fails closed.
+		candidates, listErr := s.Queries.ListTasksByIssue(ctx, issueID)
+		if listErr != nil {
+			return nil, fmt.Errorf("preflight prior rerun tasks: %w", listErr)
+		}
+		for _, candidate := range candidates {
+			if candidate.AgentID != agentID || !isBulkCancellableStatus(candidate.Status) {
+				continue
+			}
+			if preflightErr := requireTxForCompanyOpsTask(ctx, s.Queries, candidate); preflightErr != nil {
+				return nil, preflightErr
+			}
+		}
+		cancelled, err = s.Queries.CancelAgentTasksByIssueAndAgent(ctx, db.CancelAgentTasksByIssueAndAgentParams{
+			IssueID: issueID,
+			AgentID: agentID,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("cancel prior rerun tasks: %w", err)
+		}
+		task, err = s.prepareRerunTask(ctx, s.Queries, issue, agentID, triggerCommentID, coalescedCommentIDs, isLeader, squadID, actorUserID, sourceTaskID)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		err = s.runInTx(ctx, func(qtx *db.Queries) error {
+			var err error
+			cancelled, err = qtx.CancelAgentTasksByIssueAndAgent(ctx, db.CancelAgentTasksByIssueAndAgentParams{
+				IssueID: issueID,
+				AgentID: agentID,
+			})
+			if err != nil {
+				return fmt.Errorf("cancel prior rerun tasks: %w", err)
+			}
+			if err := s.FinalizeCancelledTasksInTx(ctx, qtx, cancelled); err != nil {
+				return err
+			}
+			task, err = s.prepareRerunTask(ctx, qtx, issue, agentID, triggerCommentID, coalescedCommentIDs, isLeader, squadID, actorUserID, sourceTaskID)
+			return err
+		})
+		if err != nil {
+			return nil, err
+		}
 	}
+	for _, cancelledTask := range cancelled {
+		s.captureTaskCancelled(ctx, cancelledTask)
+		s.ReconcileAgentStatus(ctx, cancelledTask.AgentID)
+		s.broadcastTaskEvent(ctx, protocol.EventTaskCancelled, cancelledTask)
+	}
+	s.broadcastTaskEvent(ctx, protocol.EventTaskQueued, task)
+	s.NotifyTaskEnqueued(ctx, task)
 	slog.Info("issue rerun enqueued",
 		"task_id", util.UUIDToString(task.ID),
 		"issue_id", util.UUIDToString(issueID),
@@ -3943,12 +4215,325 @@ func (s *TaskService) promoteNewestSurvivingComment(ctx context.Context, ids []p
 // handler ignores this flag for reruns and instead reads the exact source task
 // (rerun_of_task_id) to reuse its workdir and, when the failure did not poison
 // the conversation, resume its session (MUL-4869).
-func (s *TaskService) enqueueRerunTask(ctx context.Context, issue db.Issue, agentID pgtype.UUID, triggerCommentID pgtype.UUID, coalescedCommentIDs []pgtype.UUID, isLeader bool, squadID pgtype.UUID, actorUserID pgtype.UUID, rerunOfTaskID pgtype.UUID) (db.AgentTaskQueue, error) {
+func (s *TaskService) prepareRerunTask(ctx context.Context, queries *db.Queries, issue db.Issue, agentID pgtype.UUID, triggerCommentID pgtype.UUID, coalescedCommentIDs []pgtype.UUID, isLeader bool, squadID pgtype.UUID, actorUserID pgtype.UUID, rerunOfTaskID pgtype.UUID) (db.AgentTaskQueue, error) {
 	if issue.AssigneeType.String == "agent" && issue.AssigneeID.Valid &&
 		util.UUIDToString(issue.AssigneeID) == util.UUIDToString(agentID) {
-		return s.enqueueIssueTaskWithCommentPlan(ctx, issue, triggerCommentID, coalescedCommentIDs, true, "", actorUserID, rerunOfTaskID)
+		return s.prepareIssueTaskWithCommentPlan(ctx, queries, issue, triggerCommentID, coalescedCommentIDs, true, "", actorUserID, rerunOfTaskID, nil)
 	}
-	return s.enqueueMentionTaskWithCommentPlan(ctx, issue, agentID, triggerCommentID, coalescedCommentIDs, isLeader, squadID, true, "", actorUserID, rerunOfTaskID)
+	return s.prepareMentionTaskWithCommentPlan(ctx, queries, issue, agentID, triggerCommentID, coalescedCommentIDs, isLeader, squadID, true, "", actorUserID, rerunOfTaskID)
+}
+
+type atomicFailedTasks struct {
+	tasks              []db.AgentTaskQueue
+	companyOpsTaskIDs  map[string]struct{}
+	companyOpsChildren map[string]*db.AgentTaskQueue
+}
+
+// Each fallback statement freezes the exact mutation candidates, classifies
+// the whole set before writing, and updates only when no candidate has either
+// an execution receipt or canonical CompanyOps trigger evidence. The LEFT JOIN
+// guarantees one row even when no task was updated so callers can distinguish
+// "blocked" from an empty sweep without a second, racy query.
+const nilTxFailOfflineTasksSQL = `
+WITH candidates AS MATERIALIZED (
+    SELECT t.id
+    FROM agent_task_queue t
+    WHERE t.status IN ('dispatched', 'running', 'waiting_local_directory')
+      AND t.runtime_id IN (SELECT id FROM agent_runtime WHERE status = 'offline')
+    FOR UPDATE
+), blocked AS (
+    SELECT EXISTS (
+        SELECT 1
+        FROM candidates c
+        JOIN agent_task_queue t ON t.id = c.id
+        LEFT JOIN execution_receipt er ON er.task_id = t.id
+        WHERE er.task_id IS NOT NULL
+           OR t.trigger_evidence_kind IN ('assignment_dispatch', 'artifact_revision')
+    ) AS companyops
+), updated AS (
+    UPDATE agent_task_queue t
+    SET status = 'failed', completed_at = now(), error = 'runtime went offline',
+        failure_reason = 'runtime_offline', wait_reason = NULL
+    FROM candidates c, blocked b
+    WHERE t.id = c.id AND NOT b.companyops
+    RETURNING t.id
+)
+SELECT b.companyops, u.id FROM blocked b LEFT JOIN updated u ON TRUE`
+
+const nilTxFailStaleTasksSQL = `
+WITH candidates AS MATERIALIZED (
+    SELECT t.id
+    FROM agent_task_queue t
+    WHERE (
+        t.status = 'dispatched'
+        AND t.dispatched_at < now() - make_interval(secs => $1::double precision)
+        AND (t.prepare_lease_expires_at IS NULL OR t.prepare_lease_expires_at < now())
+      ) OR (
+        t.status = 'running'
+        AND t.started_at < now() - make_interval(secs => $2::double precision)
+        AND NOT EXISTS (
+            SELECT 1 FROM agent_runtime r
+            WHERE r.id = t.runtime_id
+              AND r.status = 'online'
+              AND r.last_seen_at >= now() - make_interval(secs => $3::double precision)
+        )
+      )
+    FOR UPDATE
+), blocked AS (
+    SELECT EXISTS (
+        SELECT 1
+        FROM candidates c
+        JOIN agent_task_queue t ON t.id = c.id
+        LEFT JOIN execution_receipt er ON er.task_id = t.id
+        WHERE er.task_id IS NOT NULL
+           OR t.trigger_evidence_kind IN ('assignment_dispatch', 'artifact_revision')
+    ) AS companyops
+), updated AS (
+    UPDATE agent_task_queue t
+    SET status = 'failed', completed_at = now(), error = 'task timed out',
+        failure_reason = 'timeout', prepare_lease_expires_at = NULL
+    FROM candidates c, blocked b
+    WHERE t.id = c.id AND NOT b.companyops
+    RETURNING t.id
+)
+SELECT b.companyops, u.id FROM blocked b LEFT JOIN updated u ON TRUE`
+
+const nilTxExpireQueuedTasksSQL = `
+WITH candidates AS MATERIALIZED (
+    SELECT t.id
+    FROM agent_task_queue t
+    WHERE t.status = 'queued'
+      AND t.created_at < now() - make_interval(secs => $1::double precision)
+    ORDER BY t.created_at ASC
+    LIMIT $2::int
+    FOR UPDATE SKIP LOCKED
+), blocked AS (
+    SELECT EXISTS (
+        SELECT 1
+        FROM candidates c
+        JOIN agent_task_queue t ON t.id = c.id
+        LEFT JOIN execution_receipt er ON er.task_id = t.id
+        WHERE er.task_id IS NOT NULL
+           OR t.trigger_evidence_kind IN ('assignment_dispatch', 'artifact_revision')
+    ) AS companyops
+), updated AS (
+    UPDATE agent_task_queue t
+    SET status = 'failed', completed_at = now(), error = 'task expired in queue',
+        failure_reason = 'queued_expired', prepare_lease_expires_at = NULL
+    FROM candidates c, blocked b
+    WHERE t.id = c.id AND NOT b.companyops
+    RETURNING t.id
+)
+SELECT b.companyops, u.id FROM blocked b LEFT JOIN updated u ON TRUE`
+
+const nilTxRecoverOrphanedTasksSQL = `
+WITH candidates AS MATERIALIZED (
+    SELECT t.id
+    FROM agent_task_queue t
+    WHERE t.runtime_id = $1
+      AND t.status IN ('dispatched', 'running', 'waiting_local_directory')
+    FOR UPDATE
+), blocked AS (
+    SELECT EXISTS (
+        SELECT 1
+        FROM candidates c
+        JOIN agent_task_queue t ON t.id = c.id
+        LEFT JOIN execution_receipt er ON er.task_id = t.id
+        WHERE er.task_id IS NOT NULL
+           OR t.trigger_evidence_kind IN ('assignment_dispatch', 'artifact_revision')
+    ) AS companyops
+), updated AS (
+    UPDATE agent_task_queue t
+    SET status = 'failed', completed_at = now(),
+        error = 'daemon restarted while task was in flight',
+        failure_reason = 'runtime_recovery', wait_reason = NULL,
+        prepare_lease_expires_at = NULL
+    FROM candidates c, blocked b
+    WHERE t.id = c.id AND NOT b.companyops
+    RETURNING t.id
+)
+SELECT b.companyops, u.id FROM blocked b LEFT JOIN updated u ON TRUE`
+
+// failTasksAtomicAndHandle owns the full CompanyOps failure transition. The
+// bulk failure CAS, execution-receipt terminal, and optional retry child either
+// commit together or roll back together; only then do UI and agent side effects
+// run. A nil TxStarter cannot provide that contract and therefore fails before
+// invoking failFn.
+func (s *TaskService) failTasksAtomicAndHandle(
+	ctx context.Context,
+	failFn func(qtx *db.Queries) ([]db.AgentTaskQueue, error),
+	nilTxSQL string,
+	nilTxArgs ...any,
+) ([]db.AgentTaskQueue, int, error) {
+	if s.TxStarter == nil {
+		tasks, err := s.failNonCompanyOpsTasksWithoutTx(ctx, nilTxSQL, nilTxArgs...)
+		if err != nil {
+			return nil, 0, err
+		}
+		return tasks, s.handleFailedTasks(ctx, tasks, nil, nil), nil
+	}
+
+	result := atomicFailedTasks{
+		companyOpsTaskIDs:  make(map[string]struct{}),
+		companyOpsChildren: make(map[string]*db.AgentTaskQueue),
+	}
+	err := s.runInTx(ctx, func(qtx *db.Queries) error {
+		tasks, err := failFn(qtx)
+		if err != nil {
+			return err
+		}
+		result.tasks = tasks
+		for _, task := range tasks {
+			child, isCompanyOps, err := s.finalizeCompanyOpsFailedTaskAndRetryInTx(ctx, qtx, task)
+			if err != nil {
+				return err
+			}
+			if !isCompanyOps {
+				continue
+			}
+			key := util.UUIDToString(task.ID)
+			result.companyOpsTaskIDs[key] = struct{}{}
+			if child != nil {
+				result.companyOpsChildren[key] = child
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, 0, err
+	}
+	retried := s.handleFailedTasks(ctx, result.tasks, result.companyOpsTaskIDs, result.companyOpsChildren)
+	return result.tasks, retried, nil
+}
+
+func (s *TaskService) failNonCompanyOpsTasksWithoutTx(ctx context.Context, statement string, args ...any) ([]db.AgentTaskQueue, error) {
+	if s == nil || s.nonTxDB == nil || statement == "" {
+		return nil, ErrCompanyOpsTxStarterRequired
+	}
+	rows, err := s.nonTxDB.Query(ctx, statement, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var taskIDs []pgtype.UUID
+	blocked := false
+	for rows.Next() {
+		var taskID pgtype.UUID
+		if err := rows.Scan(&blocked, &taskID); err != nil {
+			return nil, err
+		}
+		if taskID.Valid {
+			taskIDs = append(taskIDs, taskID)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if blocked {
+		return nil, ErrCompanyOpsTxStarterRequired
+	}
+
+	tasks := make([]db.AgentTaskQueue, 0, len(taskIDs))
+	for _, taskID := range taskIDs {
+		task, err := s.Queries.GetAgentTask(ctx, taskID)
+		if err != nil {
+			return nil, fmt.Errorf("reload nil-tx failed task %s: %w", util.UUIDToString(taskID), err)
+		}
+		tasks = append(tasks, task)
+	}
+	return tasks, nil
+}
+
+func (s *TaskService) FailTasksForOfflineRuntimes(ctx context.Context) ([]db.AgentTaskQueue, int, error) {
+	return s.failTasksAtomicAndHandle(ctx, func(qtx *db.Queries) ([]db.AgentTaskQueue, error) {
+		return qtx.FailTasksForOfflineRuntimes(ctx)
+	}, nilTxFailOfflineTasksSQL)
+}
+
+func (s *TaskService) FailStaleTasks(ctx context.Context, params db.FailStaleTasksParams) ([]db.AgentTaskQueue, int, error) {
+	return s.failTasksAtomicAndHandle(ctx, func(qtx *db.Queries) ([]db.AgentTaskQueue, error) {
+		return qtx.FailStaleTasks(ctx, params)
+	}, nilTxFailStaleTasksSQL, params.DispatchTimeoutSecs, params.RunningTimeoutSecs, params.RuntimeStaleSecs)
+}
+
+func (s *TaskService) ExpireStaleQueuedTasks(ctx context.Context, params db.ExpireStaleQueuedTasksParams) ([]db.AgentTaskQueue, int, error) {
+	return s.failTasksAtomicAndHandle(ctx, func(qtx *db.Queries) ([]db.AgentTaskQueue, error) {
+		return qtx.ExpireStaleQueuedTasks(ctx, params)
+	}, nilTxExpireQueuedTasksSQL, params.TtlSecs, params.MaxPerTick)
+}
+
+func (s *TaskService) RecoverOrphanedTasksForRuntime(ctx context.Context, runtimeID pgtype.UUID) ([]db.AgentTaskQueue, int, error) {
+	return s.failTasksAtomicAndHandle(ctx, func(qtx *db.Queries) ([]db.AgentTaskQueue, error) {
+		return qtx.RecoverOrphanedTasksForRuntime(ctx, runtimeID)
+	}, nilTxRecoverOrphanedTasksSQL, runtimeID)
+}
+
+// finalizeCompanyOpsFailedTaskAndRetryInTx finalizes one CompanyOps receipt
+// and creates its retry child using the same transaction-bound queries that
+// performed the failure CAS. Non-CompanyOps tasks are a no-op.
+func (s *TaskService) finalizeCompanyOpsFailedTaskAndRetryInTx(
+	ctx context.Context,
+	qtx *db.Queries,
+	task db.AgentTaskQueue,
+) (*db.AgentTaskQueue, bool, error) {
+	lineage, lerr := resolveCompanyOpsAssignmentLineage(ctx, qtx, task)
+	if lerr != nil {
+		return nil, false, lerr
+	}
+	if lineage == nil {
+		return nil, false, nil
+	}
+
+	errMsg := ""
+	if task.Error.Valid {
+		errMsg = task.Error.String
+	}
+	failureReason := ""
+	if task.FailureReason.Valid {
+		failureReason = task.FailureReason.String
+	}
+
+	// Finalize receipt first: if this fails (conflict/missing), the retry
+	// child is NOT created and the entire operation rolls back.
+	if ferr := finalizeCompanyOpsExecutionFailed(ctx, qtx, task, errMsg, failureReason); ferr != nil {
+		return nil, true, ferr
+	}
+
+	// Create retry child if eligible (mirrors MaybeRetryFailedTask / FailTask).
+	if !retryableReasons[failureReason] || !retryEligible(failureReason, task) {
+		return nil, true, nil
+	}
+	retryMaxAttempts := pgtype.Int4{
+		Int32: retryAttemptCeiling(failureReason, task.MaxAttempts),
+		Valid: true,
+	}
+	var retryFireAt pgtype.Timestamptz
+	if delay := retryDelayForAttempt(failureReason, task.Attempt); delay > 0 {
+		retryFireAt = pgtype.Timestamptz{Time: time.Now().Add(delay), Valid: true}
+	}
+	var retryOverlay runtimeMCPOverlayData
+	agent, agentErr := qtx.GetAgent(ctx, task.AgentID)
+	if agentErr != nil {
+		slog.Warn("companyops failed-task retry: load agent for overlay failed",
+			"task_id", util.UUIDToString(task.ID),
+			"agent_id", util.UUIDToString(task.AgentID),
+			"error", agentErr,
+		)
+	} else {
+		retryOverlay = s.buildRuntimeMCPOverlay(ctx, task.OriginatorUserID, agent)
+	}
+	child, cerr := qtx.CreateRetryTask(ctx, db.CreateRetryTaskParams{
+		ID:                   task.ID,
+		FireAt:               retryFireAt,
+		MaxAttempts:          retryMaxAttempts,
+		RuntimeMcpOverlay:    retryOverlay.Overlay,
+		RuntimeConnectedApps: retryOverlay.ConnectedApps,
+	})
+	if cerr != nil {
+		return nil, true, fmt.Errorf("create companyops retry task: %w", cerr)
+	}
+	return &child, true, nil
 }
 
 // HandleFailedTasks runs the post-failure side effects for a batch of
@@ -3961,6 +4546,15 @@ func (s *TaskService) enqueueRerunTask(ctx context.Context, issue db.Issue, agen
 // recover-orphans — funnel through here so the same UI-consistency
 // guarantees apply on every code path.
 func (s *TaskService) HandleFailedTasks(ctx context.Context, tasks []db.AgentTaskQueue) int {
+	return s.handleFailedTasks(ctx, tasks, nil, nil)
+}
+
+func (s *TaskService) handleFailedTasks(
+	ctx context.Context,
+	tasks []db.AgentTaskQueue,
+	companyOpsTaskIDs map[string]struct{},
+	companyOpsChildren map[string]*db.AgentTaskQueue,
+) int {
 	if len(tasks) == 0 {
 		return 0
 	}
@@ -3971,12 +4565,46 @@ func (s *TaskService) HandleFailedTasks(ctx context.Context, tasks []db.AgentTas
 	retried := 0
 
 	for _, t := range tasks {
-		// Auto-retry first so the issue stays in_progress rather than
-		// flapping todo → in_progress within a tick.
-		if child, _ := s.MaybeRetryFailedTask(ctx, t); child != nil {
+		key := util.UUIDToString(t.ID)
+		child, transitionedCompanyOps := companyOpsChildren[key]
+		if _, ok := companyOpsTaskIDs[key]; ok {
+			transitionedCompanyOps = true
+		}
+		if !transitionedCompanyOps {
+			lineage, err := resolveCompanyOpsAssignmentLineage(ctx, s.Queries, t)
+			if err != nil {
+				slog.Error("failed-task lineage lookup failed; blocking downstream side effects",
+					"task_id", key,
+					"error", err,
+				)
+				continue
+			}
+			if lineage != nil {
+				slog.Error("companyops failed task bypassed atomic transition; blocking downstream side effects",
+					"task_id", key,
+					"issue_id", util.UUIDToString(t.IssueID),
+				)
+				continue
+			}
+			child, _ = s.MaybeRetryFailedTask(ctx, t)
+		}
+		if child != nil {
 			retried++
 			if t.IssueID.Valid {
 				retriedIssues[util.UUIDToString(t.IssueID)] = true
+			}
+			if transitionedCompanyOps {
+				slog.Info("task auto-retry enqueued",
+					"parent_task_id", key,
+					"child_task_id", util.UUIDToString(child.ID),
+					"attempt", child.Attempt,
+					"max_attempts", child.MaxAttempts,
+					"status", child.Status,
+				)
+				if child.Status == "queued" {
+					s.broadcastTaskEvent(ctx, protocol.EventTaskQueued, *child)
+					s.NotifyTaskEnqueued(ctx, *child)
+				}
 			}
 		}
 
