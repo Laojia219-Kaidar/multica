@@ -10,6 +10,9 @@ export const COMPANY_OPS_ARTIFACT_REVIEW_SCHEMA_VERSION =
 export const COMPANY_OPS_FORMAL_ARTIFACT_PROMOTION_SCHEMA_VERSION =
   "hivecrew.formal-artifact-promotion.v1" as const;
 
+export const COMPANY_OPS_OUTCOME_CENTER_SCHEMA_VERSION =
+  "hivecrew.outcome-center.v1" as const;
+
 export interface CompanyOpsWorkContextRequest {
   work_order_source_ref: string;
   employee_id: string;
@@ -152,4 +155,132 @@ export interface CompanyOpsArtifactPromotionReceipt {
   write_performed: boolean;
   event_id: string;
   sequence: number;
+}
+
+// ---------------------------------------------------------------------------
+// Outcome Center — hivecrew.outcome-center.v1
+//
+// The Outcome Center is the owner-facing discovery/operating surface over the
+// company-ops execution graph. Every Outcome's summary `id` is the canonical
+// command_id the assignment writer returned. The list endpoint returns
+// summary rows under `items`; the detail endpoint returns the full record with
+// summary, versions, events and runs. The review/promotion writers consume
+// selectors derived from the summary's WorkOrder / Employee / IdentityBinding
+// / ExecutionTarget authorities plus an explicitly selected session_id — never
+// a guessed one.
+// ---------------------------------------------------------------------------
+
+export interface CompanyOpsOutcomeListParams {
+  q?: string;
+  status?: string;
+  agent_id?: string;
+  project_id?: string;
+  formal_visible?: boolean;
+  limit?: number;
+  offset?: number;
+}
+
+export interface CompanyOpsOutcomeIssueRef {
+  id: string;
+  number: number;
+  identifier: string;
+  title: string;
+  status: string;
+  project_id: string | null;
+}
+
+export interface CompanyOpsOutcomeWorkOrderRef {
+  source_ref: string;
+  revision: string;
+  digest: string;
+}
+
+export interface CompanyOpsOutcomeEmployeeRef {
+  source_ref: string;
+  id: string;
+}
+
+export interface CompanyOpsOutcomeIdentityBindingRef {
+  source_ref: string;
+  id: string;
+}
+
+export interface CompanyOpsOutcomeExecutionTarget {
+  local_agent_id: string;
+  agent_ref: string;
+  agent_revision: string;
+  agent_digest: string;
+}
+
+export interface CompanyOpsOutcomeAgentDisplay {
+  name: string;
+  model: string;
+  status: string;
+}
+
+export interface CompanyOpsOutcomeActiveArtifact {
+  id: string;
+  revision: number;
+  durable_object_ref: string;
+  digest: string;
+  content_type: string;
+  status: string;
+  formal_visible: boolean;
+  formal_artifact_ref?: string;
+}
+
+/** Compact row returned by the list endpoint and embedded in the detail. */
+export interface CompanyOpsOutcomeSummary {
+  id: string;
+  issue: CompanyOpsOutcomeIssueRef | null;
+  work_order: CompanyOpsOutcomeWorkOrderRef;
+  employee: CompanyOpsOutcomeEmployeeRef;
+  identity_binding: CompanyOpsOutcomeIdentityBindingRef;
+  execution_target: CompanyOpsOutcomeExecutionTarget;
+  current_agent_display: CompanyOpsOutcomeAgentDisplay;
+  initial_task_id: string;
+  current_task_id: string;
+  execution_state: string;
+  active_artifact?: CompanyOpsOutcomeActiveArtifact;
+  version_count: number;
+  latest_event_at: string;
+}
+
+export interface CompanyOpsOutcomeVersion {
+  id: string;
+  revision: number;
+  status: string;
+  durable_object_ref: string;
+  digest: string;
+  created_at: string;
+}
+
+export interface CompanyOpsOutcomeEvent {
+  id: string;
+  sequence: number;
+  type: string;
+  actor: string;
+  created_at: string;
+}
+
+export interface CompanyOpsOutcomeRun {
+  id: string;
+  status: string;
+  created_at: string;
+}
+
+export interface CompanyOpsOutcomeDetail {
+  schema_version: typeof COMPANY_OPS_OUTCOME_CENTER_SCHEMA_VERSION;
+  summary: CompanyOpsOutcomeSummary;
+  versions: CompanyOpsOutcomeVersion[];
+  events: CompanyOpsOutcomeEvent[];
+  runs: CompanyOpsOutcomeRun[];
+}
+
+export interface CompanyOpsOutcomeListResponse {
+  schema_version: typeof COMPANY_OPS_OUTCOME_CENTER_SCHEMA_VERSION;
+  items: CompanyOpsOutcomeSummary[];
+  total: number;
+  limit: number;
+  offset: number;
 }

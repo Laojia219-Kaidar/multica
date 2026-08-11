@@ -391,6 +391,218 @@ describe("ApiClient CompanyOps owner work context", () => {
   });
 });
 
+describe("ApiClient CompanyOps outcome center", () => {
+  const agentId = "d34db33f-4ef7-4fe1-a32d-8f24c57b07b1";
+  const commandId = "44444444-4444-4444-8444-444444444444";
+  const summary = {
+    id: commandId,
+    issue: {
+      id: "55555555-5555-4555-8555-555555555555",
+      number: 42,
+      identifier: "MUL-42",
+      title: "Deliver bounded P2 slice",
+      status: "in_review",
+      project_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    },
+    work_order: {
+      source_ref:
+        "hive://hivecosm/delivery/project/PRJ-HIVECREW-P2/work-order/WO-P2-001",
+      revision: "work-order-revision-1",
+      digest: "work-order-digest-1",
+    },
+    employee: {
+      source_ref: "hivecosm://employees/employee-01JOWNER",
+      id: "employee-01JOWNER",
+    },
+    identity_binding: {
+      source_ref: "hivecosm://identity-bindings/binding-01JOWNER",
+      id: "binding-01JOWNER",
+    },
+    execution_target: {
+      local_agent_id: agentId,
+      agent_ref: `/api/agents/${agentId}`,
+      agent_revision: "agent-revision-1",
+      agent_digest: "agent-digest-1",
+    },
+    current_agent_display: {
+      name: "Atlas",
+      model: "gpt-5.6",
+      status: "idle",
+    },
+    initial_task_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    current_task_id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+    execution_state: "completed",
+    active_artifact: {
+      id: "66666666-6666-4666-8666-666666666666",
+      revision: 2,
+      durable_object_ref: "hive://hivecosm/artifacts/66666666-6666-4666-8666-666666666666",
+      digest: "sha256:abc123",
+      content_type: "application/json",
+      status: "approved",
+      formal_visible: false,
+    },
+    version_count: 2,
+    latest_event_at: "2026-08-11T10:00:00Z",
+  };
+
+  it("GETs the exact outcome list query and parses the summary items", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          schema_version: "hivecrew.outcome-center.v1",
+          items: [summary],
+          total: 1,
+          limit: 50,
+          offset: 0,
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      new ApiClient("https://api.example.test").listCompanyOpsOutcomes({
+        q: "bounded",
+        status: "completed",
+        formal_visible: false,
+        limit: 50,
+        offset: 0,
+      }),
+    ).resolves.toEqual({
+      schema_version: "hivecrew.outcome-center.v1",
+      items: [summary],
+      total: 1,
+      limit: 50,
+      offset: 0,
+    });
+
+    const [url] = fetchMock.mock.calls[0]!;
+    const parsed = new URL(url as string);
+    expect(`${parsed.origin}${parsed.pathname}`).toBe(
+      "https://api.example.test/api/company-ops/outcomes",
+    );
+    expect(Object.fromEntries(parsed.searchParams)).toEqual({
+      q: "bounded",
+      status: "completed",
+      formal_visible: "false",
+      limit: "50",
+      offset: "0",
+    });
+  });
+
+  it("fails closed when a successful outcome list is malformed", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            schema_version: "hivecrew.outcome-center.v1",
+            items: [{ ...summary, id: "not-a-uuid" }],
+            total: 1,
+            limit: 50,
+            offset: 0,
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      ),
+    );
+
+    await expect(
+      new ApiClient("https://api.example.test").listCompanyOpsOutcomes(),
+    ).rejects.toThrow("Invalid CompanyOps outcome center list response.");
+  });
+
+  it("GETs the exact outcome detail and parses summary/versions/events/runs", async () => {
+    const detail = {
+      schema_version: "hivecrew.outcome-center.v1",
+      summary,
+      versions: [
+        {
+          id: "77777777-7777-4777-8777-777777777777",
+          revision: 1,
+          status: "submitted",
+          durable_object_ref: "hive://hivecosm/artifacts/77777777-7777-4777-8777-777777777777",
+          digest: "sha256:first",
+          created_at: "2026-08-11T09:00:00Z",
+        },
+      ],
+      events: [
+        {
+          id: "88888888-8888-4888-8888-888888888888",
+          sequence: 1,
+          type: "candidate.submitted",
+          actor: "Atlas",
+          created_at: "2026-08-11T09:00:00Z",
+        },
+      ],
+      runs: [
+        {
+          id: "99999999-9999-4999-8999-999999999999",
+          status: "completed",
+          created_at: "2026-08-11T10:00:00Z",
+        },
+      ],
+    };
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(detail), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      new ApiClient("https://api.example.test").getCompanyOpsOutcome(commandId),
+    ).resolves.toEqual(detail);
+    const [url] = fetchMock.mock.calls[0]!;
+    expect(url).toBe(
+      `https://api.example.test/api/company-ops/outcomes/${commandId}`,
+    );
+  });
+
+  it("fails closed when a successful outcome detail is malformed", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            schema_version: "hivecrew.outcome-center.v1",
+            summary,
+            versions: [{ id: 7 }],
+            events: [],
+            runs: [],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      ),
+    );
+
+    await expect(
+      new ApiClient("https://api.example.test").getCompanyOpsOutcome(commandId),
+    ).rejects.toThrow("Invalid CompanyOps outcome center detail response.");
+  });
+
+  it("fails closed on an unknown outcome-center schema version", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            schema_version: "hivecrew.outcome-center.v9",
+            items: [summary],
+            total: 1,
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      ),
+    );
+
+    await expect(
+      new ApiClient("https://api.example.test").listCompanyOpsOutcomes(),
+    ).rejects.toThrow("Invalid CompanyOps outcome center list response.");
+  });
+});
+
 describe("ApiClient pull-request response schema", () => {
   const validPR = {
     id: "pr-1",

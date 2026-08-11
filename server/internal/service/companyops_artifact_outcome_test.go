@@ -113,20 +113,45 @@ func materializeAndApproveCompanyOpsArtifact(
 }
 
 func companyOpsArtifactPromotionRequest(fixture companyOpsExecutionTestFixture, candidateID, promotionID string) CompanyOpsArtifactPromotion {
+	target := fixture.assignment.Target
 	return CompanyOpsArtifactPromotion{
 		CandidateID: candidateID,
 		PromotionID: promotionID,
 		ActorUserID: fixture.company.userID,
 		Lookup: companyops.HiveCosmAuthorityLookup{
-			WorkOrderSourceRef: assignmentWorkOrderRef,
+			WorkOrderSourceRef: target.WorkOrderRef,
 			EmployeeID:         "EMP-ASSIGNMENT-001",
 			IdentityBindingID:  "BIND-ASSIGNMENT-001",
 			AgentID:            util.UUIDToString(fixture.company.agentID),
 		},
-		WorkOrder:       assignmentAuthority("WorkOrder", assignmentWorkOrderRef, "wo-rev-7", "a"),
-		Employee:        assignmentAuthority("Employee", assignmentEmployeeRef, "employee-rev-5", "c"),
-		IdentityBinding: assignmentAuthority("IdentityBinding", assignmentBindingRef, "binding-rev-11", "d"),
-		Agent:           assignmentAuthority("Agent", assignmentAgentRef, "agent-rev-19", "e"),
+		WorkOrder: companyops.AuthoritySnapshot{
+			Kind:          "WorkOrder",
+			SourceRef:     target.WorkOrderRef,
+			Revision:      target.WorkOrderRevision,
+			ContentDigest: target.WorkOrderDigest,
+			Freshness:     "current",
+		},
+		Employee: companyops.AuthoritySnapshot{
+			Kind:          "Employee",
+			SourceRef:     target.EmployeeRef,
+			Revision:      target.EmployeeRevision,
+			ContentDigest: target.EmployeeDigest,
+			Freshness:     "current",
+		},
+		IdentityBinding: companyops.AuthoritySnapshot{
+			Kind:          "IdentityBinding",
+			SourceRef:     target.BindingRef,
+			Revision:      target.BindingRevision,
+			ContentDigest: target.BindingDigest,
+			Freshness:     "current",
+		},
+		Agent: companyops.AuthoritySnapshot{
+			Kind:          "Agent",
+			SourceRef:     target.AgentRef,
+			Revision:      target.AgentRevision,
+			ContentDigest: target.AgentDigest,
+			Freshness:     "current",
+		},
 	}
 }
 
@@ -499,8 +524,8 @@ func TestCompanyOpsArtifactOutcome_VerifyWorkOrderTransitionForGetFailsClosedOnD
 		t.Fatalf("GetIssueOutcome: %v", err)
 	}
 	previous := companyops.HiveCosmAuthorityTransitionSnapshot{
-		Revision:      "sha256:" + strings.Repeat("e", 64),
-		ContentDigest: "sha256:" + strings.Repeat("e", 64),
+		Revision:      promotion.WorkOrder.Revision,
+		ContentDigest: promotion.WorkOrder.ContentDigest,
 	}
 	resulting := promotion.WorkOrder
 	resulting.Revision = "sha256:" + strings.Repeat("f", 64)
@@ -1263,9 +1288,10 @@ func TestCompanyOpsArtifactOutcome_PromotionMalformedSuffixRejection(t *testing.
 }
 
 // TestCompanyOpsArtifactOutcome_PromotionPayloadDriftConflict verifies that a
-// replay carrying the same promotion_id but a different authority payload
-// (e.g., different WorkOrder revision) fails closed at the durable claim
-// without any authority POST, GET, or event append.
+// replay carrying the same promotion_id but a different payload fails closed
+// before any authority POST, GET, or event append. Authority snapshot drift is
+// rejected by the latest-dispatch guard; claim-only drift is rejected by the
+// durable promotion claim.
 func TestCompanyOpsArtifactOutcome_PromotionPayloadDriftConflict(t *testing.T) {
 	ctx, fixture := newCompanyOpsExecutionTestFixture(t)
 	fake := &fakeFormalArtifactAuthority{formalArtifactRef: promotionTestFormalArtifactRef}
@@ -1289,19 +1315,21 @@ func TestCompanyOpsArtifactOutcome_PromotionPayloadDriftConflict(t *testing.T) {
 	}
 
 	drifts := []struct {
-		name   string
-		mutate func(*CompanyOpsArtifactPromotion)
+		name    string
+		mutate  func(*CompanyOpsArtifactPromotion)
+		wantErr error
 	}{
-		{"work order content digest", func(p *CompanyOpsArtifactPromotion) { p.WorkOrder.ContentDigest = "sha256:drifted" }},
-		{"employee content digest", func(p *CompanyOpsArtifactPromotion) { p.Employee.ContentDigest = "sha256:drifted" }},
-		{"identity binding content digest", func(p *CompanyOpsArtifactPromotion) { p.IdentityBinding.ContentDigest = "sha256:drifted" }},
+		{"work order content digest", func(p *CompanyOpsArtifactPromotion) { p.WorkOrder.ContentDigest = "sha256:drifted" }, ErrCompanyOpsArtifactConflict},
+		{"employee content digest", func(p *CompanyOpsArtifactPromotion) { p.Employee.ContentDigest = "sha256:drifted" }, ErrCompanyOpsArtifactConflict},
+		{"identity binding content digest", func(p *CompanyOpsArtifactPromotion) { p.IdentityBinding.ContentDigest = "sha256:drifted" }, ErrCompanyOpsArtifactConflict},
+		{"lookup employee id", func(p *CompanyOpsArtifactPromotion) { p.Lookup.EmployeeID += "-drifted" }, companyops.ErrArtifactPromotionConflict},
 	}
 	for _, drift := range drifts {
 		t.Run(drift.name, func(t *testing.T) {
 			drifted := promotion
 			drift.mutate(&drifted)
-			if _, err := artifactService.PromoteArtifact(ctx, fixture.company.workspaceID, fixture.company.issueID, drifted); !errors.Is(err, companyops.ErrArtifactPromotionConflict) {
-				t.Fatalf("payload drift error = %v, want ErrArtifactPromotionConflict", err)
+			if _, err := artifactService.PromoteArtifact(ctx, fixture.company.workspaceID, fixture.company.issueID, drifted); !errors.Is(err, drift.wantErr) {
+				t.Fatalf("payload drift error = %v, want %v", err, drift.wantErr)
 			}
 			if fake.promoteCount != 1 || fake.readCount != 1 {
 				t.Fatalf("payload drift touched authority: promote %d read %d, want 1/1", fake.promoteCount, fake.readCount)
@@ -1356,7 +1384,10 @@ func TestCompanyOpsArtifactOutcome_PromotionPayloadDriftOnSucceededConflict(t *t
 
 	readCountBefore := fake.readCount
 	drifted := promotion
-	drifted.WorkOrder.ContentDigest = "sha256:drifted"
+	// Lookup.EmployeeID is part of the durable promotion claim payload but is
+	// not an execution-target snapshot field, so this exercises VerifyPromotion
+	// rather than the earlier latest-dispatch guard.
+	drifted.Lookup.EmployeeID += "-drifted"
 	if _, err := artifactService.PromoteArtifact(ctx, fixture.company.workspaceID, fixture.company.issueID, drifted); !errors.Is(err, companyops.ErrArtifactPromotionConflict) {
 		t.Fatalf("payload drift on succeeded error = %v, want ErrArtifactPromotionConflict", err)
 	}

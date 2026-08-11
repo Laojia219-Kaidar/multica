@@ -172,6 +172,9 @@ import type {
   CompanyOpsArtifactReviewReceipt,
   CompanyOpsArtifactPromotionCommand,
   CompanyOpsArtifactPromotionReceipt,
+  CompanyOpsOutcomeListParams,
+  CompanyOpsOutcomeListResponse,
+  CompanyOpsOutcomeDetail,
 } from "../types";
 import { z } from "zod";
 import type { OnboardingCompletionPath } from "../onboarding/types";
@@ -328,6 +331,120 @@ const CompanyOpsFormalArtifactPromotionReceiptSchema = z
       });
     }
   });
+
+const CompanyOpsOutcomeIssueRefSchema = z.object({
+  id: z.string().uuid(),
+  number: z.number().int().nonnegative(),
+  identifier: z.string().min(1),
+  title: z.string(),
+  status: z.string().min(1),
+  project_id: z.string().uuid().nullable(),
+});
+
+const CompanyOpsOutcomeWorkOrderRefSchema = z.object({
+  source_ref: z.string().min(1),
+  revision: z.string().min(1),
+  digest: z.string().min(1),
+});
+
+const CompanyOpsOutcomeEmployeeRefSchema = z.object({
+  source_ref: z.string().min(1),
+  id: z.string().min(1),
+});
+
+const CompanyOpsOutcomeIdentityBindingRefSchema = z.object({
+  source_ref: z.string().min(1),
+  id: z.string().min(1),
+});
+
+const CompanyOpsOutcomeExecutionTargetSchema = z.object({
+  local_agent_id: z.string().uuid(),
+  agent_ref: z.string().min(1),
+  agent_revision: z.string().min(1),
+  agent_digest: z.string().min(1),
+});
+
+const CompanyOpsOutcomeAgentDisplaySchema = z.object({
+  name: z.string().min(1),
+  model: z.string().min(1),
+  status: z.string().min(1),
+});
+
+const CompanyOpsOutcomeActiveArtifactSchema = z
+  .object({
+    id: z.string().uuid(),
+    revision: z.number().int().positive(),
+    durable_object_ref: z.string().min(1),
+    digest: z.string().min(1),
+    content_type: z.string().min(1),
+    status: z.enum([
+      "submitted",
+      "changes_requested",
+      "approved",
+      "promotion_requested",
+      "promotion_succeeded",
+      "promotion_failed",
+      "authority_readback_confirmed",
+    ]),
+    formal_visible: z.boolean(),
+    formal_artifact_ref: z.string().min(1).optional(),
+  })
+  .optional();
+
+const CompanyOpsOutcomeSummarySchema = z.object({
+  id: z.string().uuid(),
+  issue: CompanyOpsOutcomeIssueRefSchema.nullable(),
+  work_order: CompanyOpsOutcomeWorkOrderRefSchema,
+  employee: CompanyOpsOutcomeEmployeeRefSchema,
+  identity_binding: CompanyOpsOutcomeIdentityBindingRefSchema,
+  execution_target: CompanyOpsOutcomeExecutionTargetSchema,
+  current_agent_display: CompanyOpsOutcomeAgentDisplaySchema,
+  initial_task_id: z.string().uuid(),
+  current_task_id: z.string().uuid(),
+  execution_state: z.string().min(1),
+  active_artifact: CompanyOpsOutcomeActiveArtifactSchema,
+  version_count: z.number().int().nonnegative(),
+  latest_event_at: z.string().min(1),
+});
+
+const CompanyOpsOutcomeVersionSchema = z.object({
+  id: z.string().uuid(),
+  revision: z.number().int().positive(),
+  status: z.string().min(1),
+  durable_object_ref: z.string().min(1),
+  digest: z.string().min(1),
+  created_at: z.string().min(1),
+});
+
+const CompanyOpsOutcomeEventSchema = z.object({
+  id: z.string().uuid(),
+  sequence: z.number().int().nonnegative(),
+  type: z.string().min(1),
+  actor: z.string().min(1),
+  created_at: z.string().min(1),
+});
+
+const CompanyOpsOutcomeRunSchema = z.object({
+  id: z.string().uuid(),
+  status: z.string().min(1),
+  created_at: z.string().min(1),
+});
+
+const CompanyOpsOutcomeListResponseSchema = z.object({
+  schema_version: z.literal("hivecrew.outcome-center.v1"),
+  items: z.array(CompanyOpsOutcomeSummarySchema),
+  total: z.number().int().nonnegative(),
+  limit: z.number().int().nonnegative(),
+  offset: z.number().int().nonnegative(),
+});
+
+const CompanyOpsOutcomeDetailSchema = z.object({
+  schema_version: z.literal("hivecrew.outcome-center.v1"),
+  summary: CompanyOpsOutcomeSummarySchema,
+  versions: z.array(CompanyOpsOutcomeVersionSchema),
+  events: z.array(CompanyOpsOutcomeEventSchema),
+  runs: z.array(CompanyOpsOutcomeRunSchema),
+});
 import {
   AgentTaskListSchema,
   AgentTemplateSchema,
@@ -2398,6 +2515,50 @@ export class ApiClient {
     );
     if (!parsed) {
       throw new Error("Invalid CompanyOps formal artifact promotion response.");
+    }
+    return parsed;
+  }
+
+  // CompanyOps Outcome Center — hivecrew.outcome-center.v1
+  async listCompanyOpsOutcomes(
+    params?: CompanyOpsOutcomeListParams,
+  ): Promise<CompanyOpsOutcomeListResponse> {
+    const search = new URLSearchParams();
+    if (params?.q?.trim()) search.set("q", params.q.trim());
+    if (params?.status) search.set("status", params.status);
+    if (params?.agent_id) search.set("agent_id", params.agent_id);
+    if (params?.project_id) search.set("project_id", params.project_id);
+    if (params?.formal_visible !== undefined) search.set("formal_visible", String(params.formal_visible));
+    if (params?.limit !== undefined) search.set("limit", String(params.limit));
+    if (params?.offset !== undefined) search.set("offset", String(params.offset));
+    const query = search.toString();
+    const raw = await this.fetch<unknown>(
+      `/api/company-ops/outcomes${query ? `?${query}` : ""}`,
+    );
+    const parsed = parseWithFallback<CompanyOpsOutcomeListResponse | null>(
+      raw,
+      CompanyOpsOutcomeListResponseSchema,
+      null,
+      { endpoint: "GET /api/company-ops/outcomes" },
+    );
+    if (!parsed) {
+      throw new Error("Invalid CompanyOps outcome center list response.");
+    }
+    return parsed;
+  }
+
+  async getCompanyOpsOutcome(commandId: string): Promise<CompanyOpsOutcomeDetail> {
+    const raw = await this.fetch<unknown>(
+      `/api/company-ops/outcomes/${encodeURIComponent(commandId)}`,
+    );
+    const parsed = parseWithFallback<CompanyOpsOutcomeDetail | null>(
+      raw,
+      CompanyOpsOutcomeDetailSchema,
+      null,
+      { endpoint: "GET /api/company-ops/outcomes/:command_id" },
+    );
+    if (!parsed) {
+      throw new Error("Invalid CompanyOps outcome center detail response.");
     }
     return parsed;
   }

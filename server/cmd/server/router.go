@@ -294,6 +294,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	}
 	h := handler.New(queries, pool, hub, bus, emailSvc, store, cfSigner, analyticsClient, signupConfig, daemonHub)
 	configureCompanyOps(h, queries, pool)
+	h.CompanyOpsOutcomeCenter = service.NewCompanyOpsOutcomeCenterService(queries)
 	h.Metrics = opts.BusinessMetrics
 	h.FeatureFlags = opts.FeatureFlags
 	h.TaskService.FeatureFlags = opts.FeatureFlags
@@ -1179,6 +1180,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			r.Route("/api/company-ops", func(r chi.Router) {
 				r.Use(handler.RequireHumanActor)
 				r.Get("/work-context", h.GetCompanyOpsWorkContext)
+				r.Get("/outcomes", h.GetCompanyOpsOutcomes)
+				r.Get("/outcomes/{commandId}", h.GetCompanyOpsOutcome)
 				r.Post("/assignments", h.CreateCompanyOpsAssignment)
 				r.Post("/artifact-reviews", h.CreateCompanyOpsArtifactReview)
 				r.Post("/formal-artifact-promotions", h.CreateCompanyOpsFormalArtifactPromotion)

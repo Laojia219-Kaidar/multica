@@ -172,6 +172,9 @@ type Handler struct {
 	// CompanyOpsArtifacts materializes completed canonical Runs into temporary
 	// artifact candidates and appends exact Owner review decisions.
 	CompanyOpsArtifacts *service.CompanyOpsArtifactService
+	// CompanyOpsOutcomeCenter is the read-only projection over assignment
+	// receipts, artifact candidates, artifact events, and execution receipts.
+	CompanyOpsOutcomeCenter *service.CompanyOpsOutcomeCenterService
 	// CompanyOpsEnsureWorkOrderIssue projects an authoritative WorkOrder into
 	// one local Issue and provenance link. The concrete implementation lives in
 	// the service layer so HTTP handlers cannot bypass IssueService.
