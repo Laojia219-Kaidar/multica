@@ -186,7 +186,7 @@ export interface CompanyOpsOutcomeIssueRef {
   identifier: string;
   title: string;
   status: string;
-  project_id: string | null;
+  project_id?: string;
 }
 
 export interface CompanyOpsOutcomeWorkOrderRef {
@@ -214,7 +214,7 @@ export interface CompanyOpsOutcomeExecutionTarget {
 
 export interface CompanyOpsOutcomeAgentDisplay {
   name: string;
-  model: string;
+  model?: string;
   status: string;
 }
 
@@ -243,30 +243,33 @@ export interface CompanyOpsOutcomeSummary {
   execution_state: string;
   active_artifact?: CompanyOpsOutcomeActiveArtifact;
   version_count: number;
-  latest_event_at: string;
+  latest_event_at?: string;
 }
 
 export interface CompanyOpsOutcomeVersion {
   id: string;
   revision: number;
-  status: string;
+  supersedes_id?: string;
   durable_object_ref: string;
   digest: string;
-  created_at: string;
+  content_type?: string;
 }
 
 export interface CompanyOpsOutcomeEvent {
   id: string;
   sequence: number;
   type: string;
-  actor: string;
-  created_at: string;
+  candidate_id: string;
+  candidate_revision: number;
+  formal_artifact_ref?: string;
 }
 
 export interface CompanyOpsOutcomeRun {
-  id: string;
+  task_id: string;
   status: string;
-  created_at: string;
+  completed_at?: string;
+  output_digest?: string;
+  terminal_error?: string;
 }
 
 export interface CompanyOpsOutcomeDetail {

@@ -77,26 +77,25 @@ const detail = {
     {
       id: "77777777-7777-4777-8777-777777777777",
       revision: 1,
-      status: "submitted",
       durable_object_ref: "hive://hivecosm/artifacts/77777777-7777-4777-8777-777777777777",
       digest: "sha256:first",
-      created_at: "2026-08-11T09:00:00Z",
+      content_type: "text/markdown",
     },
   ],
   events: [
     {
       id: "88888888-8888-4888-8888-888888888888",
       sequence: 1,
-      type: "candidate.submitted",
-      actor: "Atlas",
-      created_at: "2026-08-11T09:00:00Z",
+      type: "submitted",
+      candidate_id: "77777777-7777-4777-8777-777777777777",
+      candidate_revision: 1,
     },
   ],
   runs: [
     {
-      id: "99999999-9999-4999-8999-999999999999",
+      task_id: "99999999-9999-4999-8999-999999999999",
       status: "completed",
-      created_at: "2026-08-11T10:00:00Z",
+      completed_at: "2026-08-11T10:00:00Z",
     },
   ],
 };

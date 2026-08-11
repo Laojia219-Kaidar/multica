@@ -215,6 +215,7 @@ export function OutcomeDetail({
                     size="sm"
                     variant="outline"
                     className="ml-auto gap-1.5"
+                    nativeButton={false}
                     render={
                       <a href={wsPaths.issueDetail(summary.issue.id)} />
                     }
@@ -289,9 +290,11 @@ export function OutcomeDetail({
                     <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
                       {v.digest.slice(0, 16)}
                     </span>
-                    <Badge variant="outline" className="text-[10px]">
-                      {statusLabel(v.status)}
-                    </Badge>
+                    {v.content_type && (
+                      <Badge variant="outline" className="text-[10px]">
+                        {v.content_type}
+                      </Badge>
+                    )}
                   </li>
                 ))}
               </ul>
@@ -315,7 +318,8 @@ export function OutcomeDetail({
                     <span className="absolute -left-[17px] top-1.5 size-2 rounded-full bg-border" />
                     <div className="text-sm">{e.type}</div>
                     <div className="text-xs text-muted-foreground">
-                      {e.actor} · <time>{e.created_at}</time>
+                      {t(($) => $.detail.revision, { revision: e.candidate_revision })}
+                      {e.formal_artifact_ref ? ` · ${e.formal_artifact_ref}` : ""}
                     </div>
                   </li>
                 ))}
@@ -337,11 +341,11 @@ export function OutcomeDetail({
               <ul className="mt-2 space-y-1.5">
                 {detail.runs.map((r) => (
                   <li
-                    key={r.id}
+                    key={r.task_id}
                     className="flex items-center gap-2 rounded-md border px-2.5 py-1.5 text-xs"
                   >
                     <span className="min-w-0 flex-1 truncate tabular-nums text-muted-foreground">
-                      {r.id}
+                      {r.task_id}
                     </span>
                     <Badge variant="outline" className="text-[10px]">
                       {r.status}

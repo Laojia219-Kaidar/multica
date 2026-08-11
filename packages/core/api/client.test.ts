@@ -512,6 +512,40 @@ describe("ApiClient CompanyOps outcome center", () => {
     ).rejects.toThrow("Invalid CompanyOps outcome center list response.");
   });
 
+  it("accepts the exact backend wire when optional display hints are omitted", async () => {
+    const backendSummary = {
+      ...summary,
+      issue: Object.fromEntries(
+        Object.entries(summary.issue).filter(([key]) => key !== "project_id"),
+      ),
+      current_agent_display: {
+        name: summary.current_agent_display.name,
+        status: summary.current_agent_display.status,
+      },
+    };
+    delete (backendSummary as { latest_event_at?: string }).latest_event_at;
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            schema_version: "hivecrew.outcome-center.v1",
+            items: [backendSummary],
+            total: 1,
+            limit: 50,
+            offset: 0,
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      ),
+    );
+
+    await expect(
+      new ApiClient("https://api.example.test").listCompanyOpsOutcomes(),
+    ).resolves.toMatchObject({ items: [backendSummary] });
+  });
+
   it("GETs the exact outcome detail and parses summary/versions/events/runs", async () => {
     const detail = {
       schema_version: "hivecrew.outcome-center.v1",
@@ -520,26 +554,25 @@ describe("ApiClient CompanyOps outcome center", () => {
         {
           id: "77777777-7777-4777-8777-777777777777",
           revision: 1,
-          status: "submitted",
           durable_object_ref: "hive://hivecosm/artifacts/77777777-7777-4777-8777-777777777777",
           digest: "sha256:first",
-          created_at: "2026-08-11T09:00:00Z",
+          content_type: "text/markdown",
         },
       ],
       events: [
         {
           id: "88888888-8888-4888-8888-888888888888",
           sequence: 1,
-          type: "candidate.submitted",
-          actor: "Atlas",
-          created_at: "2026-08-11T09:00:00Z",
+          type: "submitted",
+          candidate_id: "77777777-7777-4777-8777-777777777777",
+          candidate_revision: 1,
         },
       ],
       runs: [
         {
-          id: "99999999-9999-4999-8999-999999999999",
+          task_id: "99999999-9999-4999-8999-999999999999",
           status: "completed",
-          created_at: "2026-08-11T10:00:00Z",
+          completed_at: "2026-08-11T10:00:00Z",
         },
       ],
     };

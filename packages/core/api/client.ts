@@ -338,7 +338,7 @@ const CompanyOpsOutcomeIssueRefSchema = z.object({
   identifier: z.string().min(1),
   title: z.string(),
   status: z.string().min(1),
-  project_id: z.string().uuid().nullable(),
+  project_id: z.string().uuid().optional(),
 });
 
 const CompanyOpsOutcomeWorkOrderRefSchema = z.object({
@@ -366,7 +366,7 @@ const CompanyOpsOutcomeExecutionTargetSchema = z.object({
 
 const CompanyOpsOutcomeAgentDisplaySchema = z.object({
   name: z.string().min(1),
-  model: z.string().min(1),
+  model: z.string().min(1).optional(),
   status: z.string().min(1),
 });
 
@@ -404,30 +404,33 @@ const CompanyOpsOutcomeSummarySchema = z.object({
   execution_state: z.string().min(1),
   active_artifact: CompanyOpsOutcomeActiveArtifactSchema,
   version_count: z.number().int().nonnegative(),
-  latest_event_at: z.string().min(1),
+  latest_event_at: z.string().min(1).optional(),
 });
 
 const CompanyOpsOutcomeVersionSchema = z.object({
   id: z.string().uuid(),
   revision: z.number().int().positive(),
-  status: z.string().min(1),
+  supersedes_id: z.string().uuid().optional(),
   durable_object_ref: z.string().min(1),
   digest: z.string().min(1),
-  created_at: z.string().min(1),
+  content_type: z.string().min(1).optional(),
 });
 
 const CompanyOpsOutcomeEventSchema = z.object({
   id: z.string().uuid(),
   sequence: z.number().int().nonnegative(),
   type: z.string().min(1),
-  actor: z.string().min(1),
-  created_at: z.string().min(1),
+  candidate_id: z.string().uuid(),
+  candidate_revision: z.number().int().positive(),
+  formal_artifact_ref: z.string().min(1).optional(),
 });
 
 const CompanyOpsOutcomeRunSchema = z.object({
-  id: z.string().uuid(),
-  status: z.string().min(1),
-  created_at: z.string().min(1),
+  task_id: z.string().uuid(),
+  status: z.string(),
+  completed_at: z.string().min(1).optional(),
+  output_digest: z.string().min(1).optional(),
+  terminal_error: z.string().min(1).optional(),
 });
 
 const CompanyOpsOutcomeListResponseSchema = z.object({
