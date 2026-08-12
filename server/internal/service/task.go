@@ -2466,6 +2466,29 @@ func (s *TaskService) ClaimTask(ctx context.Context, agentID pgtype.UUID) (*db.A
 			return fmt.Errorf("agent not found: %w", err)
 		}
 
+		// Operational-mode claim gate (HIV-332). Fail-closed: only 'active'
+		// and 'training' may proceed; resting, disabled, and any unknown or
+		// missing value short-circuit before the capacity check. The mode
+		// gate and the max_concurrent_tasks capacity gate are independent
+		// but both evaluate inside this transaction, so the mode read (row
+		// lock from GetAgentForClaimUpdate) and the eventual claim commit
+		// atomically.
+		trainingEligibleOnly := false
+		switch agent.OperationalMode {
+		case "active":
+			// unrestricted claim
+		case "training":
+			// restricted to structurally-provable Owner direct-chat or
+			// quick-create task sources; enforced in ClaimAgentTask.
+			trainingEligibleOnly = true
+		default:
+			slog.Debug("task claim: operational mode denies claim",
+				"agent_id", util.UUIDToString(agentID),
+				"operational_mode", agent.OperationalMode)
+			outcome = "mode_denied"
+			return nil
+		}
+
 		t0 = time.Now()
 		running, err := qtx.CountRunningTasks(ctx, agentID)
 		countRunningMs = time.Since(t0).Milliseconds()
@@ -2481,8 +2504,9 @@ func (s *TaskService) ClaimTask(ctx context.Context, agentID pgtype.UUID) (*db.A
 
 		t0 = time.Now()
 		task, err := qtx.ClaimAgentTask(ctx, db.ClaimAgentTaskParams{
-			AgentID:          agentID,
-			PrepareLeaseSecs: prepareLeaseDuration.Seconds(),
+			AgentID:              agentID,
+			PrepareLeaseSecs:     prepareLeaseDuration.Seconds(),
+			TrainingEligibleOnly: trainingEligibleOnly,
 		})
 		claimAgentMs = time.Since(t0).Milliseconds()
 		if err != nil {

@@ -515,6 +515,11 @@ WHERE atq.id = $1 AND a.workspace_id = $2;
 -- "any other quick-create-shaped task" (all four FKs NULL) for the same agent —
 -- otherwise a user mashing the create button could fire concurrent quick-creates
 -- whose completion lookup would race over "most recent issue by this agent".
+--
+-- training_eligible_only restricts the candidate set to structurally-provable
+-- Owner direct-chat (chat_session_id IS NOT NULL) or quick-create (all four FK
+-- links NULL) tasks. Callers pass true only when the agent's operational_mode is
+-- 'training'; the normal path passes false and the predicate is a no-op.
 UPDATE agent_task_queue
 SET status = 'dispatched',
     dispatched_at = now(),
@@ -522,6 +527,11 @@ SET status = 'dispatched',
 WHERE id = (
     SELECT atq.id FROM agent_task_queue atq
     WHERE atq.agent_id = $1 AND atq.status = 'queued'
+      AND (@training_eligible_only::bool IS NOT TRUE
+           OR (atq.chat_session_id IS NOT NULL
+               OR (atq.issue_id IS NULL
+                   AND atq.chat_session_id IS NULL
+                   AND atq.autopilot_run_id IS NULL)))
       AND NOT EXISTS (
           SELECT 1 FROM agent_task_queue active
           WHERE active.agent_id = atq.agent_id
