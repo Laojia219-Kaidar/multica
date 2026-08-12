@@ -99,7 +99,7 @@ func newChildDoneArchivalFixture(t *testing.T, states []struct {
 		if err := testPool.QueryRow(ctx, `
 			INSERT INTO issue (workspace_id, title, status, creator_type, creator_id,
 			                   parent_issue_id, review_state, number)
-			VALUES ($1, 'archival child', $2, 'member', $3, $4, NULLIF($5, ''), 
+			VALUES ($1, 'archival child', $2, 'member', $3, $4, NULLIF($5, ''),
 			        (SELECT COALESCE(MAX(number), 0) + 1 FROM issue WHERE workspace_id = $1))
 			RETURNING id::text
 		`, testWorkspaceID, s.status, testUserID, parentID, s.reviewState).Scan(&childID); err != nil {
