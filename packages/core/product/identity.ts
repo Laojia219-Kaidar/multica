@@ -1,4 +1,8 @@
 export const HIVE_CREW_PRODUCT_NAME = "HiveCrew" as const;
+export const HIVE_CREW_BROWSER_TITLE =
+  "HiveCrew · HiveCosm 数字员工协同工作台" as const;
+export const HIVE_CREW_BROWSER_DESCRIPTION =
+  "HiveCosm 的数字员工协同、项目派工与成果执行工作台。" as const;
 
 export const HIVE_CREW_PRODUCT = Object.freeze({
   name: HIVE_CREW_PRODUCT_NAME,

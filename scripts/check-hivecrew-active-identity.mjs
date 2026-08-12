@@ -24,6 +24,7 @@ const loader = await text("apps/desktop/src/main/runtime-config-loader.ts");
 const bootstrap = await text("apps/desktop/src/main/cli-bootstrap.ts");
 const desktopMain = await text("apps/desktop/src/main/index.ts");
 const webLayout = await text("apps/web/app/layout.tsx");
+const webFavicon = await text("apps/web/public/favicon.svg");
 const webLogin = await text("apps/web/app/(auth)/login/page.tsx");
 const webAuthCallback = await text("apps/web/app/auth/callback/page.tsx");
 const webPublicHost = await text("apps/web/lib/public-host.ts");
@@ -99,7 +100,49 @@ requireMatch(desktopMain, /HIVE_CREW_DESKTOP_PROTOCOL/, "HiveCrew protocol regis
 forbidMatch(desktopMain, /const PROTOCOL = "multica"/, "legacy primary protocol", failures);
 
 requireMatch(webLayout, /HIVE_CREW_PRODUCT_NAME/, "HiveCrew web metadata", failures);
+requireMatch(
+  webLayout,
+  /HIVE_CREW_BROWSER_TITLE/,
+  "HiveCrew and HiveCosm browser title",
+  failures,
+);
+requireMatch(
+  webLayout,
+  /HIVE_CREW_BROWSER_DESCRIPTION/,
+  "HiveCosm browser description",
+  failures,
+);
 forbidMatch(webLayout, /www\.multica\.ai|@multica_hq/, "legacy web ownership metadata", failures);
+forbidMatch(
+  webLayout,
+  /Digital Employee Operations/,
+  "legacy generic browser title",
+  failures,
+);
+requireMatch(
+  webFavicon,
+  /<title>蜂巢创科品牌组合标志<\/title>/,
+  "canonical HiveCosm favicon title",
+  failures,
+);
+requireMatch(
+  webFavicon,
+  /viewBox="0 0 201\.333569 229\.900028"/,
+  "canonical HiveCosm favicon geometry",
+  failures,
+);
+requireMatch(
+  webFavicon,
+  /color="#004070"/,
+  "canonical HiveCosm favicon color",
+  failures,
+);
+forbidMatch(
+  webFavicon,
+  /45,62\.1|<polygon/,
+  "legacy Multica asterisk favicon",
+  failures,
+);
 requireMatch(webLogin, /HIVE_CREW_DESKTOP_PROTOCOL/, "HiveCrew login deep link", failures);
 requireMatch(
   webAuthCallback,

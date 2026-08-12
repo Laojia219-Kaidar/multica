@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  HIVE_CREW_BROWSER_DESCRIPTION,
+  HIVE_CREW_BROWSER_TITLE,
   HIVE_CREW_DESKTOP_APP_ID,
   HIVE_CREW_DESKTOP_PROTOCOL,
   HIVE_CREW_LEGACY_DESKTOP_PROTOCOLS,
@@ -18,6 +20,12 @@ describe("HiveCrew product identity", () => {
       tagline: "Digital employee collaboration and execution system",
     });
     expect(HIVE_CREW_PRODUCT_NAME).toBe("HiveCrew");
+    expect(HIVE_CREW_BROWSER_TITLE).toBe(
+      "HiveCrew · HiveCosm 数字员工协同工作台",
+    );
+    expect(HIVE_CREW_BROWSER_DESCRIPTION).toBe(
+      "HiveCosm 的数字员工协同、项目派工与成果执行工作台。",
+    );
     expect(HIVE_CREW_DESKTOP_APP_ID).toBe("com.hivecosm.hivecrew");
     expect(HIVE_CREW_DESKTOP_PROTOCOL).toBe("hivecrew");
     expect(HIVE_CREW_WORKSPACE_FALLBACK_HOST).toBe("hivecrew.local");

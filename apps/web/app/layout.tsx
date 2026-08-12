@@ -7,8 +7,9 @@ import { cn } from "@multica/ui/lib/utils";
 import { WebProviders } from "@/components/web-providers";
 import type { SupportedLocale } from "@multica/core/i18n";
 import {
+  HIVE_CREW_BROWSER_DESCRIPTION,
+  HIVE_CREW_BROWSER_TITLE,
   HIVE_CREW_LOCAL_ENDPOINTS,
-  HIVE_CREW_PRODUCT,
   HIVE_CREW_PRODUCT_NAME,
 } from "@multica/core/product";
 import { RESOURCES } from "@multica/views/locales";
@@ -81,10 +82,10 @@ export const metadata: Metadata = {
     process.env.HIVECREW_PUBLIC_APP_URL ?? HIVE_CREW_LOCAL_ENDPOINTS.appUrl,
   ),
   title: {
-    default: `${HIVE_CREW_PRODUCT_NAME} — Digital Employee Operations`,
+    default: HIVE_CREW_BROWSER_TITLE,
     template: `%s | ${HIVE_CREW_PRODUCT_NAME}`,
   },
-  description: HIVE_CREW_PRODUCT.tagline,
+  description: HIVE_CREW_BROWSER_DESCRIPTION,
   icons: {
     icon: [{ url: "/favicon.svg", type: "image/svg+xml" }],
     shortcut: ["/favicon.svg"],
