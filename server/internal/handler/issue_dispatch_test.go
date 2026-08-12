@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +11,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/multica-ai/multica/server/internal/service"
 )
 
@@ -716,7 +718,6 @@ func TestDispatch_CacheControl_On403(t *testing.T) {
 	agentID := createHandlerTestAgent(t, "dispatch-cc-403", nil)
 	issueID := createDispatchTestIssue(t, agentID, "todo")
 
-	// Create a non-owner member in the workspace.
 	ctx := context.Background()
 	var nonOwnerUserID string
 	if err := testPool.QueryRow(ctx, `
@@ -727,24 +728,33 @@ func TestDispatch_CacheControl_On403(t *testing.T) {
 		t.Fatalf("create non-owner user: %v", err)
 	}
 	t.Cleanup(func() {
-		testPool.Exec(ctx, `DELETE FROM "user" WHERE email = 'nonowner-dispatch-test@multica.ai'`)
+		if _, err := testPool.Exec(ctx, `DELETE FROM "user" WHERE email = 'nonowner-dispatch-test@multica.ai'`); err != nil {
+			t.Logf("cleanup user: %v", err)
+		}
 	})
 
-	// Ensure the user is a workspace member but NOT owner/admin.
-	testPool.Exec(ctx, `
-		INSERT INTO workspace_member (workspace_id, user_id, role)
+	// Insert into the real member table (not workspace_member) so that
+	// GetMemberByUserAndWorkspace finds the row and requireWorkspaceRole
+	// can evaluate the role → 'member' is not in ['owner','admin'] → 403.
+	var memberID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO member (workspace_id, user_id, role)
 		VALUES ($1, $2, 'member')
 		ON CONFLICT (workspace_id, user_id) DO UPDATE SET role = 'member'
-	`, testWorkspaceID, nonOwnerUserID)
+		RETURNING id
+	`, testWorkspaceID, nonOwnerUserID).Scan(&memberID); err != nil {
+		t.Fatalf("insert member: %v", err)
+	}
 	t.Cleanup(func() {
-		testPool.Exec(ctx, `DELETE FROM workspace_member WHERE workspace_id = $1 AND user_id = $2`, testWorkspaceID, nonOwnerUserID)
+		if _, err := testPool.Exec(ctx, `DELETE FROM member WHERE id = $1`, memberID); err != nil {
+			t.Logf("cleanup member: %v", err)
+		}
 	})
 
 	w := httptest.NewRecorder()
 	req := newRequest("POST", "/api/issues/"+issueID+"/dispatch", map[string]any{
 		"idempotency_key": "cc-403-test",
 	})
-	// Override the user to be the non-owner.
 	req.Header.Set("X-User-ID", nonOwnerUserID)
 	req = withURLParam(req, "id", issueID)
 	testHandler.Dispatch(w, req)
@@ -771,4 +781,244 @@ func TestDispatchPreview_CacheControl_On401(t *testing.T) {
 		t.Fatalf("expected 401, got %d: %s", w.Code, w.Body.String())
 	}
 	assertCacheControl(t, w, "preview 401")
+}
+
+// dispatchFailingTxStarter is a test double for service.TxStarter.
+type dispatchFailingTxStarter struct {
+	beginErr  error
+	commitErr error
+}
+
+func (f *dispatchFailingTxStarter) Begin(ctx context.Context) (pgx.Tx, error) {
+	if f.beginErr != nil {
+		return nil, f.beginErr
+	}
+	return &dispatchFailingTxWithCommit{commitErr: f.commitErr}, nil
+}
+
+type dispatchFailingTxWithCommit struct {
+	pgx.Tx
+	commitErr error
+}
+
+func (t *dispatchFailingTxWithCommit) Commit(ctx context.Context) error {
+	return t.commitErr
+}
+
+func (t *dispatchFailingTxWithCommit) Rollback(ctx context.Context) error {
+	return nil
+}
+
+// withFailingTxStarter swaps the handler's OwnerDispatchService.TxStarter
+// with a failing one and restores it on cleanup.
+func withFailingTxStarter(t *testing.T, beginErr, commitErr error) {
+	t.Helper()
+	orig := testHandler.OwnerDispatchService
+	svc := &service.OwnerDispatchService{
+		Queries:     orig.Queries,
+		TxStarter:   &dispatchFailingTxStarter{beginErr: beginErr, commitErr: commitErr},
+		TaskService: orig.TaskService,
+	}
+	testHandler.OwnerDispatchService = svc
+	t.Cleanup(func() { testHandler.OwnerDispatchService = orig })
+}
+
+// TestDispatch_BeginFailure_HTTP500 injects a failing TxStarter (Begin error)
+// and verifies: HTTP 500, zero writes to agent_task_queue and
+// dispatch_idempotency, Cache-Control: private, no-store.
+func TestDispatch_BeginFailure_HTTP500(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("test handler not initialized")
+	}
+	agentID := createHandlerTestAgent(t, "dispatch-begin-fail", nil)
+	issueID := createDispatchTestIssue(t, agentID, "todo")
+
+	withFailingTxStarter(t, errors.New("connection pool exhausted"), nil)
+
+	idemKey := "begin-fail-key"
+	w := httptest.NewRecorder()
+	req := newRequest("POST", "/api/issues/"+issueID+"/dispatch", map[string]any{
+		"idempotency_key": idemKey,
+		"expected_status": "todo",
+	})
+	req = withURLParam(req, "id", issueID)
+	testHandler.Dispatch(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d: %s", w.Code, w.Body.String())
+	}
+	assertCacheControl(t, w, "dispatch 500 begin failure")
+
+	ctx := context.Background()
+	var queueCount int
+	if err := testPool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM agent_task_queue WHERE issue_id = $1`, issueID,
+	).Scan(&queueCount); err != nil {
+		t.Fatalf("count agent_task_queue: %v", err)
+	}
+	if queueCount != 0 {
+		t.Fatalf("expected 0 agent_task_queue rows, got %d", queueCount)
+	}
+
+	var idemCount int
+	if err := testPool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM dispatch_idempotency WHERE workspace_id = $1 AND idempotency_key = $2`,
+		testWorkspaceID, idemKey,
+	).Scan(&idemCount); err != nil {
+		t.Fatalf("count dispatch_idempotency: %v", err)
+	}
+	if idemCount != 0 {
+		t.Fatalf("expected 0 dispatch_idempotency rows, got %d", idemCount)
+	}
+}
+
+// TestDispatch_CommitFailure_HTTP500 injects a TxStarter that succeeds on
+// Begin but fails on Commit. Verifies: HTTP 500, zero durable writes to
+// agent_task_queue and dispatch_idempotency (rollback holds), Cache-Control.
+func TestDispatch_CommitFailure_HTTP500(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("test handler not initialized")
+	}
+	agentID := createHandlerTestAgent(t, "dispatch-commit-fail", nil)
+	issueID := createDispatchTestIssue(t, agentID, "todo")
+
+	withFailingTxStarter(t, nil, errors.New("commit failed: disk full"))
+
+	idemKey := "commit-fail-key"
+	w := httptest.NewRecorder()
+	req := newRequest("POST", "/api/issues/"+issueID+"/dispatch", map[string]any{
+		"idempotency_key": idemKey,
+		"expected_status": "todo",
+	})
+	req = withURLParam(req, "id", issueID)
+	testHandler.Dispatch(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d: %s", w.Code, w.Body.String())
+	}
+	assertCacheControl(t, w, "dispatch 500 commit failure")
+
+	ctx := context.Background()
+	var queueCount int
+	if err := testPool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM agent_task_queue WHERE issue_id = $1`, issueID,
+	).Scan(&queueCount); err != nil {
+		t.Fatalf("count agent_task_queue: %v", err)
+	}
+	if queueCount != 0 {
+		t.Fatalf("expected 0 agent_task_queue rows after rollback, got %d", queueCount)
+	}
+
+	var idemCount int
+	if err := testPool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM dispatch_idempotency WHERE workspace_id = $1 AND idempotency_key = $2`,
+		testWorkspaceID, idemKey,
+	).Scan(&idemCount); err != nil {
+		t.Fatalf("count dispatch_idempotency: %v", err)
+	}
+	if idemCount != 0 {
+		t.Fatalf("expected 0 dispatch_idempotency rows after rollback, got %d", idemCount)
+	}
+}
+
+// TestDispatch_CacheControl_On503 verifies the F3 contract: when the dispatch
+// service is nil (misconfigured server), the 503 response carries
+// Cache-Control: private, no-store.
+func TestDispatch_CacheControl_On503(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("test handler not initialized")
+	}
+	agentID := createHandlerTestAgent(t, "dispatch-cc-503", nil)
+	issueID := createDispatchTestIssue(t, agentID, "todo")
+
+	orig := testHandler.OwnerDispatchService
+	testHandler.OwnerDispatchService = nil
+	t.Cleanup(func() { testHandler.OwnerDispatchService = orig })
+
+	w := httptest.NewRecorder()
+	req := newRequest("POST", "/api/issues/"+issueID+"/dispatch", map[string]any{
+		"idempotency_key": "cc-503-test",
+	})
+	req = withURLParam(req, "id", issueID)
+	testHandler.Dispatch(w, req)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d: %s", w.Code, w.Body.String())
+	}
+	assertCacheControl(t, w, "dispatch 503")
+}
+
+// TestDispatchPreview_CacheControl_On403 verifies the F3 contract on the
+// preview endpoint: a non-owner/admin member gets 403 with no-store.
+func TestDispatchPreview_CacheControl_On403(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("test handler not initialized")
+	}
+	agentID := createHandlerTestAgent(t, "preview-cc-403", nil)
+	issueID := createDispatchTestIssue(t, agentID, "todo")
+
+	ctx := context.Background()
+	var nonOwnerUserID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO "user" (name, email) VALUES ('Preview-403 Test', 'preview-403-test@multica.ai')
+		ON CONFLICT (email) DO UPDATE SET name = EXCLUDED.name
+		RETURNING id
+	`).Scan(&nonOwnerUserID); err != nil {
+		t.Fatalf("create non-owner user: %v", err)
+	}
+	t.Cleanup(func() {
+		if _, err := testPool.Exec(ctx, `DELETE FROM "user" WHERE email = 'preview-403-test@multica.ai'`); err != nil {
+			t.Logf("cleanup user: %v", err)
+		}
+	})
+
+	var memberID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO member (workspace_id, user_id, role)
+		VALUES ($1, $2, 'member')
+		ON CONFLICT (workspace_id, user_id) DO UPDATE SET role = 'member'
+		RETURNING id
+	`, testWorkspaceID, nonOwnerUserID).Scan(&memberID); err != nil {
+		t.Fatalf("insert member: %v", err)
+	}
+	t.Cleanup(func() {
+		if _, err := testPool.Exec(ctx, `DELETE FROM member WHERE id = $1`, memberID); err != nil {
+			t.Logf("cleanup member: %v", err)
+		}
+	})
+
+	w := httptest.NewRecorder()
+	req := newRequest("POST", "/api/issues/"+issueID+"/dispatch-preview", nil)
+	req.Header.Set("X-User-ID", nonOwnerUserID)
+	req = withURLParam(req, "id", issueID)
+	testHandler.DispatchPreview(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d: %s", w.Code, w.Body.String())
+	}
+	assertCacheControl(t, w, "preview 403")
+}
+
+// TestDispatchPreview_CacheControl_On503 verifies F3 when the dispatch
+// service is nil → 503.
+func TestDispatchPreview_CacheControl_On503(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("test handler not initialized")
+	}
+	agentID := createHandlerTestAgent(t, "preview-cc-503", nil)
+	issueID := createDispatchTestIssue(t, agentID, "todo")
+
+	orig := testHandler.OwnerDispatchService
+	testHandler.OwnerDispatchService = nil
+	t.Cleanup(func() { testHandler.OwnerDispatchService = orig })
+
+	w := httptest.NewRecorder()
+	req := newRequest("POST", "/api/issues/"+issueID+"/dispatch-preview", nil)
+	req = withURLParam(req, "id", issueID)
+	testHandler.DispatchPreview(w, req)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d: %s", w.Code, w.Body.String())
+	}
+	assertCacheControl(t, w, "preview 503")
 }

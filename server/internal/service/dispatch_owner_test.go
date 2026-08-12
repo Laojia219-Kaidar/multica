@@ -1,12 +1,10 @@
 package service
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"testing"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
@@ -97,49 +95,4 @@ func TestDuplicatePendingTaskSentinelDetectedByDispatchCondition(t *testing.T) {
 	if isDuplicatePendingTaskConstraint(other) || errors.Is(other, ErrDuplicatePendingTask) {
 		t.Fatal("unrelated error must not be detected as duplicate pending task")
 	}
-}
-
-// failingTxStarter is a test double that returns errors on Begin or on Commit.
-type failingTxStarter struct {
-	beginErr  error
-	commitErr error
-}
-
-func (f *failingTxStarter) Begin(ctx context.Context) (pgx.Tx, error) {
-	if f.beginErr != nil {
-		return nil, f.beginErr
-	}
-	return &failingTxWithCommit{commitErr: f.commitErr}, nil
-}
-
-type failingTxWithCommit struct {
-	pgx.Tx
-	commitErr error
-}
-
-func (t *failingTxWithCommit) Commit(ctx context.Context) error {
-	return t.commitErr
-}
-
-func (t *failingTxWithCommit) Rollback(ctx context.Context) error {
-	return nil
-}
-
-// TestDispatch_BeginTransactionFailure verifies that a Begin() failure
-// returns a non-nil error (mapped to 500 by the handler) without panicking.
-func TestDispatch_BeginTransactionFailure(t *testing.T) {
-	svc := &OwnerDispatchService{
-		TxStarter: &failingTxStarter{beginErr: errors.New("connection pool exhausted")},
-	}
-	_ = svc // The full Dispatch path requires a real DB; this test locks the contract
-	// that Begin errors propagate as Go errors, not panics.
-	// The actual HTTP-level test is in issue_dispatch_test.go.
-}
-
-// TestDispatch_CommitTransactionFailure verifies that a Commit() failure
-// returns a non-nil error (mapped to 500 by the handler) without panicking.
-func TestDispatch_CommitTransactionFailure(t *testing.T) {
-	_ = &failingTxStarter{commitErr: errors.New("commit failed: disk full")}
-	// Same as above — locks the contract at the unit level; the HTTP-level
-	// failure injection is in issue_dispatch_test.go.
 }
