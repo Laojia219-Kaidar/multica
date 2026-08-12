@@ -28,6 +28,7 @@ import { PriorityIcon } from "../../issues/components/priority-icon";
 import { ProjectResourcesSection } from "./project-resources-section";
 import { ProjectParticipants } from "./project-participants";
 import { ProjectControlActions } from "./project-control-actions";
+import { ProjectPipelineProvider, PipelineCapabilityBar } from "./pipeline-projection";
 import { ProjectStartDatePicker } from "./project-start-date-picker";
 import { ProjectDueDatePicker } from "./project-due-date-picker";
 import { IssueSurface } from "../../issues/surface/issue-surface";
@@ -484,6 +485,7 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
   );
 
   return (
+    <ProjectPipelineProvider projectId={projectId}>
     <>
     <ResizablePanelGroup orientation="horizontal" className="flex-1 min-h-0" defaultLayout={defaultLayout} onLayoutChanged={onLayoutChanged}>
       <ResizablePanel id="content" minSize="50%">
@@ -559,6 +561,12 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
           />
 
           {!isMobile && <WorkConservingPanel projectId={projectId} />}
+          {/* HIV-367 (P0-E): fail-closed capability surface (§6). Shows
+              "能力待接入" for canonical actions not yet wired server-side. */}
+          <div className="px-4 pt-2">
+            <PipelineCapabilityBar />
+          </div>
+
           <IssueSurface
             scope={issueScope}
             modes={["board", "list", "table", "swimlane", "gantt"]}
@@ -613,5 +621,6 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
         </AlertDialog>
       )}
     </>
+    </ProjectPipelineProvider>
   );
 }
