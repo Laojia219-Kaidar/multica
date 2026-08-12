@@ -313,7 +313,7 @@ func (s *OwnerDispatchService) Dispatch(ctx context.Context, p DispatchParams) (
 	case "agent":
 		task, err = s.TaskService.prepareIssueTaskWithCommentPlan(ctx, qtx, issue, pgtype.UUID{}, nil, false, "", p.ActorUserID, pgtype.UUID{}, nil)
 		if err != nil {
-			if isDuplicatePendingTaskConstraint(err) {
+			if isDuplicatePendingTaskConstraint(err) || errors.Is(err, ErrDuplicatePendingTask) {
 				return s.resolveDuplicatePendingTask(ctx, issue)
 			}
 			return nil, fmt.Errorf("enqueue agent task: %w", err)
@@ -325,7 +325,7 @@ func (s *OwnerDispatchService) Dispatch(ctx context.Context, p DispatchParams) (
 		}
 		task, err = s.TaskService.prepareMentionTaskWithCommentPlan(ctx, qtx, issue, squad.LeaderID, pgtype.UUID{}, nil, true, issue.AssigneeID, false, "", p.ActorUserID, pgtype.UUID{})
 		if err != nil {
-			if isDuplicatePendingTaskConstraint(err) {
+			if isDuplicatePendingTaskConstraint(err) || errors.Is(err, ErrDuplicatePendingTask) {
 				return s.resolveDuplicatePendingTask(ctx, issue)
 			}
 			return nil, fmt.Errorf("enqueue squad leader task: %w", err)

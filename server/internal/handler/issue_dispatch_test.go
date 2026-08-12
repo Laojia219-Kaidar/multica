@@ -13,6 +13,42 @@ import (
 	"github.com/multica-ai/multica/server/internal/service"
 )
 
+// createDispatchTestSquadIssue creates an issue assigned to the given squad.
+func createDispatchTestSquadIssue(t *testing.T, squadID string, status string) string {
+	t.Helper()
+	ctx := context.Background()
+	var issueID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO issue (workspace_id, title, status, priority, creator_type, creator_id, number, assignee_type, assignee_id)
+		VALUES ($1, $2, $3, 'medium', 'member', $4, COALESCE((SELECT MAX(number) FROM issue WHERE workspace_id = $1), 0) + 1, 'squad', $5)
+		RETURNING id
+	`, testWorkspaceID, "Squad dispatch test issue", status, testUserID, squadID).Scan(&issueID); err != nil {
+		t.Fatalf("create squad dispatch test issue: %v", err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(ctx, `DELETE FROM issue WHERE id = $1`, issueID)
+	})
+	return issueID
+}
+
+// createTestSquad creates a squad with the given agent as leader.
+func createTestSquad(t *testing.T, leaderAgentID string, name string) string {
+	t.Helper()
+	ctx := context.Background()
+	var squadID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO squad (workspace_id, name, description, leader_id, creator_id)
+		VALUES ($1, $2, '', $3, $4)
+		RETURNING id
+	`, testWorkspaceID, name, leaderAgentID, testUserID).Scan(&squadID); err != nil {
+		t.Fatalf("create test squad: %v", err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(ctx, `DELETE FROM squad WHERE id = $1`, squadID)
+	})
+	return squadID
+}
+
 // createDispatchTestIssue creates an issue assigned to the given agent.
 func createDispatchTestIssue(t *testing.T, agentID string, status string) string {
 	t.Helper()
@@ -570,4 +606,169 @@ func TestDispatch_RaceConcurrentDifferentKeys(t *testing.T) {
 		testPool.Exec(ctx, `DELETE FROM dispatch_idempotency WHERE idempotency_key = $1`,
 			fmt.Sprintf("race-key-%d", i))
 	}
+}
+
+// TestDispatch_SquadRaceConcurrentDifferentKeys is the F2 squad-assignee
+// regression (HIV-375): concurrent dispatches with different idempotency keys
+// against a squad-assigned issue must never return 500. The loser(s) must see
+// already_active (via ErrDuplicatePendingTask sentinel or pg constraint), not
+// a raw error. Run with -race -count=3.
+func TestDispatch_SquadRaceConcurrentDifferentKeys(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("test handler not initialized")
+	}
+	leaderAgentID := createHandlerTestAgent(t, "squad-dispatch-race-leader", nil)
+	squadID := createTestSquad(t, leaderAgentID, "Squad Race Test")
+	issueID := createDispatchTestSquadIssue(t, squadID, "todo")
+
+	const goroutines = 5
+	var wg sync.WaitGroup
+	results := make([]int, goroutines)
+	statuses := make([]int, goroutines)
+
+	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			w := httptest.NewRecorder()
+			body := map[string]any{
+				"idempotency_key": fmt.Sprintf("squad-race-key-%d", idx),
+				"expected_status": "todo",
+			}
+			req := newRequest("POST", "/api/issues/"+issueID+"/dispatch", body)
+			req = withURLParam(req, "id", issueID)
+			testHandler.Dispatch(w, req)
+			statuses[idx] = w.Code
+
+			var res service.DispatchResult
+			json.Unmarshal(w.Body.Bytes(), &res)
+			switch res.Decision {
+			case service.DecisionWouldEnqueue:
+				results[idx] = 1
+			case service.DecisionAlreadyActive:
+				results[idx] = 2
+			default:
+				results[idx] = 0
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	for i, code := range statuses {
+		if code == http.StatusInternalServerError {
+			t.Fatalf("goroutine %d returned 500 — F2 squad contract violated (HIV-375)", i)
+		}
+	}
+
+	enqueueCount := 0
+	alreadyActiveCount := 0
+	for _, r := range results {
+		switch r {
+		case 1:
+			enqueueCount++
+		case 2:
+			alreadyActiveCount++
+		}
+	}
+	if enqueueCount == 0 {
+		t.Fatal("expected at least one squad enqueue winner")
+	}
+	if enqueueCount+alreadyActiveCount != goroutines {
+		t.Fatalf("squad race: enqueue=%d already_active=%d total=%d (expected %d)",
+			enqueueCount, alreadyActiveCount, enqueueCount+alreadyActiveCount, goroutines)
+	}
+
+	// Clean up tasks and idempotency rows.
+	ctx := context.Background()
+	testPool.Exec(ctx, `DELETE FROM agent_task_queue WHERE issue_id = $1`, issueID)
+	for i := 0; i < goroutines; i++ {
+		testPool.Exec(ctx, `DELETE FROM dispatch_idempotency WHERE idempotency_key = $1`,
+			fmt.Sprintf("squad-race-key-%d", i))
+	}
+}
+
+// TestDispatch_CacheControl_On401 verifies the F3 contract: a 401 response
+// (missing auth) still carries Cache-Control: private, no-store.
+func TestDispatch_CacheControl_On401(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("test handler not initialized")
+	}
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/api/issues/00000000-0000-0000-0000-000000000099/dispatch", nil)
+	req.Header.Set("Content-Type", "application/json")
+	// No X-User-ID → 401.
+	req = withURLParam(req, "id", "00000000-0000-0000-0000-000000000099")
+	testHandler.Dispatch(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d: %s", w.Code, w.Body.String())
+	}
+	assertCacheControl(t, w, "dispatch 401")
+}
+
+// TestDispatch_CacheControl_On403 verifies the F3 contract: a 403 response
+// (non-owner/admin) still carries Cache-Control: private, no-store.
+func TestDispatch_CacheControl_On403(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("test handler not initialized")
+	}
+	agentID := createHandlerTestAgent(t, "dispatch-cc-403", nil)
+	issueID := createDispatchTestIssue(t, agentID, "todo")
+
+	// Create a non-owner member in the workspace.
+	ctx := context.Background()
+	var nonOwnerUserID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO "user" (name, email) VALUES ('Non-Owner Dispatch Test', 'nonowner-dispatch-test@multica.ai')
+		ON CONFLICT (email) DO UPDATE SET name = EXCLUDED.name
+		RETURNING id
+	`).Scan(&nonOwnerUserID); err != nil {
+		t.Fatalf("create non-owner user: %v", err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(ctx, `DELETE FROM "user" WHERE email = 'nonowner-dispatch-test@multica.ai'`)
+	})
+
+	// Ensure the user is a workspace member but NOT owner/admin.
+	testPool.Exec(ctx, `
+		INSERT INTO workspace_member (workspace_id, user_id, role)
+		VALUES ($1, $2, 'member')
+		ON CONFLICT (workspace_id, user_id) DO UPDATE SET role = 'member'
+	`, testWorkspaceID, nonOwnerUserID)
+	t.Cleanup(func() {
+		testPool.Exec(ctx, `DELETE FROM workspace_member WHERE workspace_id = $1 AND user_id = $2`, testWorkspaceID, nonOwnerUserID)
+	})
+
+	w := httptest.NewRecorder()
+	req := newRequest("POST", "/api/issues/"+issueID+"/dispatch", map[string]any{
+		"idempotency_key": "cc-403-test",
+	})
+	// Override the user to be the non-owner.
+	req.Header.Set("X-User-ID", nonOwnerUserID)
+	req = withURLParam(req, "id", issueID)
+	testHandler.Dispatch(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d: %s", w.Code, w.Body.String())
+	}
+	assertCacheControl(t, w, "dispatch 403")
+}
+
+// TestDispatchPreview_CacheControl_On401 verifies F3 on the preview endpoint.
+func TestDispatchPreview_CacheControl_On401(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("test handler not initialized")
+	}
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/api/issues/00000000-0000-0000-0000-000000000099/dispatch-preview", nil)
+	req.Header.Set("Content-Type", "application/json")
+	req = withURLParam(req, "id", "00000000-0000-0000-0000-000000000099")
+	testHandler.DispatchPreview(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d: %s", w.Code, w.Body.String())
+	}
+	assertCacheControl(t, w, "preview 401")
 }
