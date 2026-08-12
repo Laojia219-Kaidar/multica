@@ -899,12 +899,20 @@ SET status = 'dispatched',
     prepare_lease_expires_at = now() + make_interval(secs => $2::double precision)
 WHERE id = (
     SELECT atq.id FROM agent_task_queue atq
+    JOIN agent ag ON ag.id = atq.agent_id
     WHERE atq.agent_id = $1 AND atq.status = 'queued'
       AND ($3::bool IS NOT TRUE
-           OR (atq.chat_session_id IS NOT NULL
-               OR (atq.issue_id IS NULL
-                   AND atq.chat_session_id IS NULL
-                   AND atq.autopilot_run_id IS NULL)))
+           OR (atq.originator_user_id IS NOT NULL
+               AND EXISTS (
+                   SELECT 1 FROM member m
+                   WHERE m.workspace_id = ag.workspace_id
+                     AND m.user_id = atq.originator_user_id
+                     AND m.role = 'owner'
+               )
+               AND (atq.chat_session_id IS NOT NULL
+                    OR (atq.issue_id IS NULL
+                        AND atq.chat_session_id IS NULL
+                        AND atq.autopilot_run_id IS NULL))))
       AND NOT EXISTS (
           SELECT 1 FROM agent_task_queue active
           WHERE active.agent_id = atq.agent_id
@@ -945,10 +953,19 @@ type ClaimAgentTaskParams struct {
 // otherwise a user mashing the create button could fire concurrent quick-creates
 // whose completion lookup would race over "most recent issue by this agent".
 //
-// training_eligible_only restricts the candidate set to structurally-provable
-// Owner direct-chat (chat_session_id IS NOT NULL) or quick-create (all four FK
-// links NULL) tasks. Callers pass true only when the agent's operational_mode is
-// 'training'; the normal path passes false and the predicate is a no-op.
+// training_eligible_only restricts the candidate set to Owner initiated
+// direct-chat (chat_session_id IS NOT NULL) or quick-create (all four FK
+// links NULL) tasks. "Owner initiated" means the task's originator_user_id
+// is non-NULL AND resolves to an exact member.role='owner' row in the
+// agent's workspace. originator_source is NOT consulted: it is audit
+// metadata only and cannot substitute for the owner-membership truth
+// (MUL-4302 §1.3). A non-owner member, an admin, a task token / cloud PAT
+// / Lark installer attribution, a NULL initiator, or an owner of another
+// workspace all fail the EXISTS check. Every eligibility read happens
+// inside this single UPDATE predicate, so the claim cannot race a separate
+// membership query. Callers pass true only when the agent's
+// operational_mode is 'training'; the normal path passes false and the
+// predicate is a no-op.
 func (q *Queries) ClaimAgentTask(ctx context.Context, arg ClaimAgentTaskParams) (AgentTaskQueue, error) {
 	row := q.db.QueryRow(ctx, claimAgentTask, arg.AgentID, arg.PrepareLeaseSecs, arg.TrainingEligibleOnly)
 	var i AgentTaskQueue

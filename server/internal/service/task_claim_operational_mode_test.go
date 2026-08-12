@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/util"
@@ -133,6 +134,25 @@ func modeClaimEnqueueIssueTask(t *testing.T, ctx context.Context, pool *pgxpool.
 
 func modeClaimEnqueueQuickCreateTask(t *testing.T, ctx context.Context, pool *pgxpool.Pool, agentID, runtimeID string) {
 	t.Helper()
+	modeClaimEnqueueQuickCreateTaskWithInitiator(t, ctx, pool, agentID, runtimeID, "", "")
+}
+
+// modeClaimEnqueueQuickCreateTaskWithInitiator enqueues a quick-create task
+// (all FK link columns NULL) with an explicit originator attribution. An
+// empty originatorUserID leaves originator_user_id NULL (the pre-184 shape
+// that predates attribution).
+func modeClaimEnqueueQuickCreateTaskWithInitiator(t *testing.T, ctx context.Context, pool *pgxpool.Pool, agentID, runtimeID, originatorUserID, originatorSource string) {
+	t.Helper()
+	if originatorUserID != "" {
+		var originator pgtype.UUID
+		originator.Scan(originatorUserID)
+		if _, err := pool.Exec(ctx, `
+			INSERT INTO agent_task_queue (agent_id, status, priority, context, runtime_id, originator_user_id, accountable_user_id, originator_source)
+			VALUES ($1, 'queued', 0, '{}'::jsonb, $2, $3, $3, $4)`, agentID, runtimeID, originator, nullIfEmpty(originatorSource)); err != nil {
+			t.Fatalf("create quick-create task: %v", err)
+		}
+		return
+	}
 	if _, err := pool.Exec(ctx, `
 		INSERT INTO agent_task_queue (agent_id, status, priority, context, runtime_id)
 		VALUES ($1, 'queued', 0, '{}'::jsonb, $2)`, agentID, runtimeID); err != nil {
@@ -142,6 +162,14 @@ func modeClaimEnqueueQuickCreateTask(t *testing.T, ctx context.Context, pool *pg
 
 func modeClaimEnqueueChatTask(t *testing.T, ctx context.Context, pool *pgxpool.Pool, agentID, runtimeID, workspaceID, userID string) {
 	t.Helper()
+	modeClaimEnqueueChatTaskWithInitiator(t, ctx, pool, agentID, runtimeID, workspaceID, userID, "", "")
+}
+
+// modeClaimEnqueueChatTaskWithInitiator enqueues a direct-chat task with an
+// explicit originator attribution. An empty originatorUserID leaves
+// originator_user_id NULL.
+func modeClaimEnqueueChatTaskWithInitiator(t *testing.T, ctx context.Context, pool *pgxpool.Pool, agentID, runtimeID, workspaceID, userID, originatorUserID, originatorSource string) {
+	t.Helper()
 	var chatSessionID string
 	if err := pool.QueryRow(ctx, `
 		INSERT INTO chat_session (workspace_id, agent_id, creator_id, title)
@@ -149,11 +177,78 @@ func modeClaimEnqueueChatTask(t *testing.T, ctx context.Context, pool *pgxpool.P
 		RETURNING id`, workspaceID, agentID, userID).Scan(&chatSessionID); err != nil {
 		t.Fatalf("create chat session: %v", err)
 	}
+	if originatorUserID != "" {
+		var originator pgtype.UUID
+		originator.Scan(originatorUserID)
+		if _, err := pool.Exec(ctx, `
+			INSERT INTO agent_task_queue (agent_id, chat_session_id, status, priority, context, runtime_id, originator_user_id, accountable_user_id, originator_source)
+			VALUES ($1, $2, 'queued', 0, '{}'::jsonb, $3, $4, $4, $5)`, agentID, chatSessionID, runtimeID, originator, nullIfEmpty(originatorSource)); err != nil {
+			t.Fatalf("create chat task: %v", err)
+		}
+		return
+	}
 	if _, err := pool.Exec(ctx, `
 		INSERT INTO agent_task_queue (agent_id, chat_session_id, status, priority, context, runtime_id)
 		VALUES ($1, $2, 'queued', 0, '{}'::jsonb, $3)`, agentID, chatSessionID, runtimeID); err != nil {
 		t.Fatalf("create chat task: %v", err)
 	}
+}
+
+// nullIfEmpty converts an empty string to a NULL pgtype.Text.
+func nullIfEmpty(s string) pgtype.Text {
+	var t pgtype.Text
+	if s != "" {
+		t.Scan(s)
+	}
+	return t
+}
+
+// modeClaimAddMember creates an additional user and adds them to the given
+// workspace with the exact role. Returns the new user id.
+func modeClaimAddMember(t *testing.T, ctx context.Context, pool *pgxpool.Pool, workspaceID, role string) string {
+	t.Helper()
+	suffix := time.Now().UnixNano()
+	var userID string
+	if err := pool.QueryRow(ctx, `INSERT INTO "user" (name, email) VALUES ($1,$2) RETURNING id`,
+		"Mode Claim "+role, fmt.Sprintf("mode-claim-%s-%d@multica.ai", role, suffix)).Scan(&userID); err != nil {
+		t.Fatalf("create %s user: %v", role, err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO member (workspace_id, user_id, role) VALUES ($1,$2,$3)`, workspaceID, userID, role); err != nil {
+		t.Fatalf("create %s member: %v", role, err)
+	}
+	t.Cleanup(func() {
+		c := context.Background()
+		pool.Exec(c, `DELETE FROM member WHERE workspace_id = $1 AND user_id = $2`, workspaceID, userID)
+		pool.Exec(c, `DELETE FROM "user" WHERE id = $1`, userID)
+	})
+	return userID
+}
+
+// modeClaimForeignOwner creates a second workspace whose owner is a
+// different user than the fixture owner. Returns the foreign owner user id.
+func modeClaimForeignOwner(t *testing.T, ctx context.Context, pool *pgxpool.Pool) string {
+	t.Helper()
+	suffix := time.Now().UnixNano()
+	var ownerID string
+	if err := pool.QueryRow(ctx, `INSERT INTO "user" (name, email) VALUES ($1,$2) RETURNING id`,
+		"Mode Claim Foreign Owner", fmt.Sprintf("mode-claim-foreign-%d@multica.ai", suffix)).Scan(&ownerID); err != nil {
+		t.Fatalf("create foreign owner user: %v", err)
+	}
+	var foreignWorkspaceID string
+	if err := pool.QueryRow(ctx, `INSERT INTO workspace (name, slug, description, issue_prefix) VALUES ($1,$2,$3,$4) RETURNING id`,
+		"Mode Claim Foreign", fmt.Sprintf("mode-claim-foreign-%d", suffix), "temp foreign workspace", "MCF").Scan(&foreignWorkspaceID); err != nil {
+		t.Fatalf("create foreign workspace: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO member (workspace_id, user_id, role) VALUES ($1,$2,'owner')`, foreignWorkspaceID, ownerID); err != nil {
+		t.Fatalf("create foreign owner member: %v", err)
+	}
+	t.Cleanup(func() {
+		c := context.Background()
+		pool.Exec(c, `DELETE FROM member WHERE workspace_id = $1`, foreignWorkspaceID)
+		pool.Exec(c, `DELETE FROM workspace WHERE id = $1`, foreignWorkspaceID)
+		pool.Exec(c, `DELETE FROM "user" WHERE id = $1`, ownerID)
+	})
+	return ownerID
 }
 
 // modeClaimEnqueueAutopilotTask creates an autopilot-shaped task: an issue
@@ -283,9 +378,218 @@ func TestClaimTask_OperationalMode_TrainingDeniesIssueTask(t *testing.T) {
 	}
 }
 
-// TestClaimTask_OperationalMode_TrainingClaimsQuickCreate verifies that a
-// training agent claims a quick-create task (all FK link columns NULL).
-func TestClaimTask_OperationalMode_TrainingClaimsQuickCreate(t *testing.T) {
+// TestClaimTask_OperationalMode_TrainingClaimsOwnerQuickCreate verifies that
+// a training agent claims a quick-create task (all FK link columns NULL) when
+// the task's originator is an exact owner member of the agent's workspace.
+func TestClaimTask_OperationalMode_TrainingClaimsOwnerQuickCreate(t *testing.T) {
+	ctx := context.Background()
+	pool := newOperationalModePool(t)
+	svc := operationalModeClaimService(pool)
+
+	agentID, runtimeID, _, ownerID := modeClaimFixture(t, ctx, pool, "training")
+	modeClaimEnqueueQuickCreateTaskWithInitiator(t, ctx, pool, agentID, runtimeID, ownerID, "direct_human")
+
+	task, err := svc.ClaimTask(ctx, util.MustParseUUID(agentID))
+	if err != nil {
+		t.Fatalf("ClaimTask: %v", err)
+	}
+	if task == nil {
+		t.Fatal("expected training agent to claim the owner quick-create task, got nil")
+	}
+}
+
+// TestClaimTask_OperationalMode_TrainingDeniesMemberQuickCreate verifies that
+// a training agent does NOT claim a quick-create task whose originator is a
+// plain member of the workspace (not an owner).
+func TestClaimTask_OperationalMode_TrainingDeniesMemberQuickCreate(t *testing.T) {
+	ctx := context.Background()
+	pool := newOperationalModePool(t)
+	svc := operationalModeClaimService(pool)
+
+	agentID, runtimeID, workspaceID, _ := modeClaimFixture(t, ctx, pool, "training")
+	memberID := modeClaimAddMember(t, ctx, pool, workspaceID, "member")
+	modeClaimEnqueueQuickCreateTaskWithInitiator(t, ctx, pool, agentID, runtimeID, memberID, "direct_human")
+
+	task, err := svc.ClaimTask(ctx, util.MustParseUUID(agentID))
+	if err != nil {
+		t.Fatalf("ClaimTask: %v", err)
+	}
+	if task != nil {
+		t.Fatalf("training agent must not claim member quick-create task, got task %s", util.UUIDToString(task.ID))
+	}
+	if status := modeClaimQueuedStatus(t, ctx, pool, agentID); status != "queued" {
+		t.Fatalf("task status = %q, want 'queued' (non-owner denial must not consume)", status)
+	}
+}
+
+// TestClaimTask_OperationalMode_TrainingClaimsOwnerChatTask verifies that a
+// training agent claims a direct-chat task (chat_session_id IS NOT NULL) when
+// the task's originator is an exact owner member of the agent's workspace.
+func TestClaimTask_OperationalMode_TrainingClaimsOwnerChatTask(t *testing.T) {
+	ctx := context.Background()
+	pool := newOperationalModePool(t)
+	svc := operationalModeClaimService(pool)
+
+	agentID, runtimeID, workspaceID, ownerID := modeClaimFixture(t, ctx, pool, "training")
+	modeClaimEnqueueChatTaskWithInitiator(t, ctx, pool, agentID, runtimeID, workspaceID, ownerID, ownerID, "direct_human")
+
+	task, err := svc.ClaimTask(ctx, util.MustParseUUID(agentID))
+	if err != nil {
+		t.Fatalf("ClaimTask: %v", err)
+	}
+	if task == nil {
+		t.Fatal("expected training agent to claim the owner chat task, got nil")
+	}
+}
+
+// TestClaimTask_OperationalMode_TrainingDeniesMemberChatTask verifies that a
+// training agent does NOT claim a direct-chat task whose originator is a
+// plain member of the workspace. The chat shape alone must not grant
+// training eligibility.
+func TestClaimTask_OperationalMode_TrainingDeniesMemberChatTask(t *testing.T) {
+	ctx := context.Background()
+	pool := newOperationalModePool(t)
+	svc := operationalModeClaimService(pool)
+
+	agentID, runtimeID, workspaceID, ownerID := modeClaimFixture(t, ctx, pool, "training")
+	memberID := modeClaimAddMember(t, ctx, pool, workspaceID, "member")
+	modeClaimEnqueueChatTaskWithInitiator(t, ctx, pool, agentID, runtimeID, workspaceID, ownerID, memberID, "direct_human")
+
+	task, err := svc.ClaimTask(ctx, util.MustParseUUID(agentID))
+	if err != nil {
+		t.Fatalf("ClaimTask: %v", err)
+	}
+	if task != nil {
+		t.Fatalf("training agent must not claim member chat task, got task %s", util.UUIDToString(task.ID))
+	}
+	if status := modeClaimQueuedStatus(t, ctx, pool, agentID); status != "queued" {
+		t.Fatalf("task status = %q, want 'queued' (non-owner denial must not consume)", status)
+	}
+}
+
+// TestClaimTask_OperationalMode_TrainingDeniesAdminChatTask verifies that a
+// training agent does NOT claim a direct-chat task whose originator is an
+// admin member of the workspace. Only exact role='owner' counts.
+func TestClaimTask_OperationalMode_TrainingDeniesAdminChatTask(t *testing.T) {
+	ctx := context.Background()
+	pool := newOperationalModePool(t)
+	svc := operationalModeClaimService(pool)
+
+	agentID, runtimeID, workspaceID, ownerID := modeClaimFixture(t, ctx, pool, "training")
+	adminID := modeClaimAddMember(t, ctx, pool, workspaceID, "admin")
+	modeClaimEnqueueChatTaskWithInitiator(t, ctx, pool, agentID, runtimeID, workspaceID, ownerID, adminID, "direct_human")
+
+	task, err := svc.ClaimTask(ctx, util.MustParseUUID(agentID))
+	if err != nil {
+		t.Fatalf("ClaimTask: %v", err)
+	}
+	if task != nil {
+		t.Fatalf("training agent must not claim admin chat task, got task %s", util.UUIDToString(task.ID))
+	}
+}
+
+// TestClaimTask_OperationalMode_TrainingDeniesNullInitiatorChatTask verifies
+// that a training agent does NOT claim a direct-chat task whose originator
+// is NULL (no human attribution).
+func TestClaimTask_OperationalMode_TrainingDeniesNullInitiatorChatTask(t *testing.T) {
+	ctx := context.Background()
+	pool := newOperationalModePool(t)
+	svc := operationalModeClaimService(pool)
+
+	agentID, runtimeID, workspaceID, ownerID := modeClaimFixture(t, ctx, pool, "training")
+	modeClaimEnqueueChatTaskWithInitiator(t, ctx, pool, agentID, runtimeID, workspaceID, ownerID, "", "")
+
+	task, err := svc.ClaimTask(ctx, util.MustParseUUID(agentID))
+	if err != nil {
+		t.Fatalf("ClaimTask: %v", err)
+	}
+	if task != nil {
+		t.Fatalf("training agent must not claim null-initiator chat task, got task %s", util.UUIDToString(task.ID))
+	}
+}
+
+// TestClaimTask_OperationalMode_TrainingDeniesCrossWorkspaceOwner verifies
+// that a training agent does NOT claim a direct-chat task whose originator is
+// an owner of a DIFFERENT workspace. Owner membership is workspace-scoped.
+func TestClaimTask_OperationalMode_TrainingDeniesCrossWorkspaceOwner(t *testing.T) {
+	ctx := context.Background()
+	pool := newOperationalModePool(t)
+	svc := operationalModeClaimService(pool)
+
+	agentID, runtimeID, workspaceID, ownerID := modeClaimFixture(t, ctx, pool, "training")
+	foreignOwnerID := modeClaimForeignOwner(t, ctx, pool)
+	modeClaimEnqueueChatTaskWithInitiator(t, ctx, pool, agentID, runtimeID, workspaceID, ownerID, foreignOwnerID, "direct_human")
+
+	task, err := svc.ClaimTask(ctx, util.MustParseUUID(agentID))
+	if err != nil {
+		t.Fatalf("ClaimTask: %v", err)
+	}
+	if task != nil {
+		t.Fatalf("training agent must not claim cross-workspace-owner chat task, got task %s", util.UUIDToString(task.ID))
+	}
+}
+
+// TestClaimTask_OperationalMode_TrainingDeniesDelegationSource verifies that
+// originator_source audit labels never substitute for owner membership: a
+// task whose originator_source claims 'delegation' (task-token shaped) or
+// 'owner_fallback' (cloud shaped) but whose originator is not an owner is
+// still denied.
+func TestClaimTask_OperationalMode_TrainingDeniesDelegationSource(t *testing.T) {
+	ctx := context.Background()
+	pool := newOperationalModePool(t)
+	svc := operationalModeClaimService(pool)
+
+	agentID, runtimeID, workspaceID, ownerID := modeClaimFixture(t, ctx, pool, "training")
+	memberID := modeClaimAddMember(t, ctx, pool, workspaceID, "member")
+	modeClaimEnqueueChatTaskWithInitiator(t, ctx, pool, agentID, runtimeID, workspaceID, ownerID, memberID, "delegation")
+
+	task, err := svc.ClaimTask(ctx, util.MustParseUUID(agentID))
+	if err != nil {
+		t.Fatalf("ClaimTask: %v", err)
+	}
+	if task != nil {
+		t.Fatalf("training agent must not claim delegation-labelled task from a non-owner, got task %s", util.UUIDToString(task.ID))
+	}
+	// Consume the first task so the second claim actually evaluates the
+	// second queued label instead of re-picking the first.
+	if _, err := pool.Exec(ctx, `UPDATE agent_task_queue SET status = 'failed' WHERE agent_id = $1 AND status = 'queued'`, agentID); err != nil {
+		t.Fatalf("consume first task: %v", err)
+	}
+	modeClaimEnqueueChatTaskWithInitiator(t, ctx, pool, agentID, runtimeID, workspaceID, ownerID, memberID, "owner_fallback")
+	task, err = svc.ClaimTask(ctx, util.MustParseUUID(agentID))
+	if err != nil {
+		t.Fatalf("ClaimTask: %v", err)
+	}
+	if task != nil {
+		t.Fatalf("training agent must not claim owner_fallback-labelled task from a non-owner, got task %s", util.UUIDToString(task.ID))
+	}
+}
+
+// TestClaimTask_OperationalMode_TrainingDeniesOwnerQuickCreateInForeignWorkspace
+// verifies that an owner of a DIFFERENT workspace cannot launch a quick-create
+// task into the training agent's queue.
+func TestClaimTask_OperationalMode_TrainingDeniesOwnerQuickCreateInForeignWorkspace(t *testing.T) {
+	ctx := context.Background()
+	pool := newOperationalModePool(t)
+	svc := operationalModeClaimService(pool)
+
+	agentID, runtimeID, _, _ := modeClaimFixture(t, ctx, pool, "training")
+	foreignOwnerID := modeClaimForeignOwner(t, ctx, pool)
+	modeClaimEnqueueQuickCreateTaskWithInitiator(t, ctx, pool, agentID, runtimeID, foreignOwnerID, "direct_human")
+
+	task, err := svc.ClaimTask(ctx, util.MustParseUUID(agentID))
+	if err != nil {
+		t.Fatalf("ClaimTask: %v", err)
+	}
+	if task != nil {
+		t.Fatalf("training agent must not claim foreign-owner quick-create task, got task %s", util.UUIDToString(task.ID))
+	}
+}
+
+// TestClaimTask_OperationalMode_TrainingDeniesNullInitiatorQuickCreate
+// verifies that a training agent does NOT claim a quick-create task whose
+// originator is NULL (no human attribution).
+func TestClaimTask_OperationalMode_TrainingDeniesNullInitiatorQuickCreate(t *testing.T) {
 	ctx := context.Background()
 	pool := newOperationalModePool(t)
 	svc := operationalModeClaimService(pool)
@@ -297,27 +601,32 @@ func TestClaimTask_OperationalMode_TrainingClaimsQuickCreate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ClaimTask: %v", err)
 	}
-	if task == nil {
-		t.Fatal("expected training agent to claim the quick-create task, got nil")
+	if task != nil {
+		t.Fatalf("training agent must not claim null-initiator quick-create task, got task %s", util.UUIDToString(task.ID))
+	}
+	if status := modeClaimQueuedStatus(t, ctx, pool, agentID); status != "queued" {
+		t.Fatalf("task status = %q, want 'queued' (null-initiator denial must not consume)", status)
 	}
 }
 
-// TestClaimTask_OperationalMode_TrainingClaimsChatTask verifies that a
-// training agent claims a direct-chat task (chat_session_id IS NOT NULL).
-func TestClaimTask_OperationalMode_TrainingClaimsChatTask(t *testing.T) {
+// TestClaimTask_OperationalMode_ActiveClaimsNonOwnerChat verifies that the
+// active path is unaffected by owner membership: an active agent claims a
+// chat task initiated by a plain member.
+func TestClaimTask_OperationalMode_ActiveClaimsNonOwnerChat(t *testing.T) {
 	ctx := context.Background()
 	pool := newOperationalModePool(t)
 	svc := operationalModeClaimService(pool)
 
-	agentID, runtimeID, workspaceID, userID := modeClaimFixture(t, ctx, pool, "training")
-	modeClaimEnqueueChatTask(t, ctx, pool, agentID, runtimeID, workspaceID, userID)
+	agentID, runtimeID, workspaceID, ownerID := modeClaimFixture(t, ctx, pool, "active")
+	memberID := modeClaimAddMember(t, ctx, pool, workspaceID, "member")
+	modeClaimEnqueueChatTaskWithInitiator(t, ctx, pool, agentID, runtimeID, workspaceID, ownerID, memberID, "direct_human")
 
 	task, err := svc.ClaimTask(ctx, util.MustParseUUID(agentID))
 	if err != nil {
 		t.Fatalf("ClaimTask: %v", err)
 	}
 	if task == nil {
-		t.Fatal("expected training agent to claim the chat task, got nil")
+		t.Fatal("expected active agent to claim the member chat task, got nil")
 	}
 }
 
