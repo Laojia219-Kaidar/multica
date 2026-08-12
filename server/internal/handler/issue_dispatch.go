@@ -32,6 +32,8 @@ type DispatchRequest struct {
 
 // DispatchPreview runs the read-only dispatch preview. Owner/admin only.
 func (h *Handler) DispatchPreview(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "private, no-store")
+
 	id := chi.URLParam(r, "id")
 	issue, ok := h.loadIssueForUser(w, r, id)
 	if !ok {
@@ -89,12 +91,13 @@ func (h *Handler) DispatchPreview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set("Cache-Control", "private, no-store")
 	writeJSON(w, http.StatusOK, result)
 }
 
 // Dispatch runs the idempotent dispatch write. Owner/admin only.
 func (h *Handler) Dispatch(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "private, no-store")
+
 	id := chi.URLParam(r, "id")
 	issue, ok := h.loadIssueForUser(w, r, id)
 	if !ok {
@@ -170,12 +173,10 @@ func (h *Handler) Dispatch(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		if errors.Is(err, service.ErrIdempotencyConflict) {
-			w.Header().Set("Cache-Control", "private, no-store")
 			writeJSON(w, http.StatusConflict, result)
 			return
 		}
 		if errors.Is(err, service.ErrExpectedStateMismatch) {
-			w.Header().Set("Cache-Control", "private, no-store")
 			writeJSON(w, http.StatusPreconditionFailed, result)
 			return
 		}
@@ -184,6 +185,5 @@ func (h *Handler) Dispatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set("Cache-Control", "private, no-store")
 	writeJSON(w, http.StatusAccepted, result)
 }

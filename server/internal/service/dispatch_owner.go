@@ -9,9 +9,11 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
 // OwnerDispatchService implements the two Owner explicit-dispatch commands
@@ -293,21 +295,39 @@ func (s *OwnerDispatchService) Dispatch(ctx context.Context, p DispatchParams) (
 		return &DispatchResult{Decision: DecisionBlocked, Reason: BlockReasonRuntimeOffline}, nil
 	}
 
-	// 7. Enqueue the task via existing TaskService.
+	// 7. Enqueue the task and record idempotency in a single transaction (F1).
+	// Both the task insert and the idempotency row must commit or roll back
+	// together — otherwise a crash between them leaves a task with no
+	// idempotency record (fail-open) or an idempotency row pointing at a
+	// task that was never created.
+	tx, txErr := s.TxStarter.Begin(ctx)
+	if txErr != nil {
+		return nil, fmt.Errorf("begin dispatch tx: %w", txErr)
+	}
+	defer tx.Rollback(ctx)
+
+	qtx := s.Queries.WithTx(tx)
+
 	var task db.AgentTaskQueue
 	switch issue.AssigneeType.String {
 	case "agent":
-		task, err = s.TaskService.EnqueueTaskForIssueWithHandoff(ctx, issue, "", p.ActorUserID)
+		task, err = s.TaskService.prepareIssueTaskWithCommentPlan(ctx, qtx, issue, pgtype.UUID{}, nil, false, "", p.ActorUserID, pgtype.UUID{}, nil)
 		if err != nil {
+			if isDuplicatePendingTaskConstraint(err) {
+				return s.resolveDuplicatePendingTask(ctx, issue)
+			}
 			return nil, fmt.Errorf("enqueue agent task: %w", err)
 		}
 	case "squad":
-		squad, sqErr := s.Queries.GetSquad(ctx, issue.AssigneeID)
+		squad, sqErr := qtx.GetSquad(ctx, issue.AssigneeID)
 		if sqErr != nil {
 			return nil, fmt.Errorf("load squad: %w", sqErr)
 		}
-		task, err = s.TaskService.EnqueueTaskForSquadLeaderWithHandoff(ctx, issue, squad.LeaderID, issue.AssigneeID, "", p.ActorUserID)
+		task, err = s.TaskService.prepareMentionTaskWithCommentPlan(ctx, qtx, issue, squad.LeaderID, pgtype.UUID{}, nil, true, issue.AssigneeID, false, "", p.ActorUserID, pgtype.UUID{})
 		if err != nil {
+			if isDuplicatePendingTaskConstraint(err) {
+				return s.resolveDuplicatePendingTask(ctx, issue)
+			}
 			return nil, fmt.Errorf("enqueue squad leader task: %w", err)
 		}
 	default:
@@ -316,22 +336,20 @@ func (s *OwnerDispatchService) Dispatch(ctx context.Context, p DispatchParams) (
 
 	taskIDs := []string{util.UUIDToString(task.ID)}
 
-	// 8. Record idempotency.
+	// 8. Record idempotency inside the same transaction.
 	taskUUIDs := make([]pgtype.UUID, 0, len(taskIDs))
 	for _, tid := range taskIDs {
 		taskUUIDs = append(taskUUIDs, util.MustParseUUID(tid))
 	}
-	_, idemErr := s.Queries.InsertDispatchIdempotency(ctx, db.InsertDispatchIdempotencyParams{
+	_, idemErr := qtx.InsertDispatchIdempotency(ctx, db.InsertDispatchIdempotencyParams{
 		WorkspaceID:    p.WorkspaceID,
 		IdempotencyKey: p.IdempotencyKey,
 		RequestDigest:  p.RequestDigest,
 		TaskIds:        taskUUIDs,
 	})
 	if idemErr != nil {
-		// Unique violation → another request with same key won the race.
-		// Look up the winner and replay if digests match.
 		if isUniqueViolation(idemErr) {
-			winner, lookupErr := s.Queries.GetDispatchIdempotency(ctx, db.GetDispatchIdempotencyParams{
+			winner, lookupErr := qtx.GetDispatchIdempotency(ctx, db.GetDispatchIdempotencyParams{
 				WorkspaceID:    p.WorkspaceID,
 				IdempotencyKey: p.IdempotencyKey,
 			})
@@ -344,11 +362,48 @@ func (s *OwnerDispatchService) Dispatch(ctx context.Context, p DispatchParams) (
 			}
 			return &DispatchResult{Decision: DecisionBlocked, Reason: BlockReasonIdempotencyConflict}, ErrIdempotencyConflict
 		}
-		// Non-unique errors: the task was already enqueued, log and continue.
-		// The task is valid even without the idempotency record.
+		return nil, fmt.Errorf("insert dispatch idempotency: %w", idemErr)
 	}
 
+	if commitErr := tx.Commit(ctx); commitErr != nil {
+		return nil, fmt.Errorf("commit dispatch tx: %w", commitErr)
+	}
+
+	// Broadcast and notify only after successful commit — the task is now
+	// durable and the idempotency row is committed alongside it.
+	s.TaskService.broadcastTaskEvent(ctx, protocol.EventTaskQueued, task)
+	s.TaskService.NotifyTaskEnqueued(ctx, task)
+
 	return &DispatchResult{Decision: DecisionWouldEnqueue, TaskIDs: taskIDs}, nil
+}
+
+// isDuplicatePendingTaskConstraint reports whether err is the unique-index
+// violation on idx_one_pending_task_per_issue_agent (a concurrent enqueue won
+// the race). Mirrors the check in task.go so the dispatch path can detect the
+// same benign outcome without leaking the constraint name.
+func isDuplicatePendingTaskConstraint(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505" &&
+		pgErr.ConstraintName == "idx_one_pending_task_per_issue_agent"
+}
+
+// resolveDuplicatePendingTask looks up the existing active task for the issue
+// and returns already_active with its IDs. This is the F2 graceful handling:
+// a concurrent dispatch won the race to enqueue, so we report the winner
+// instead of returning 500.
+func (s *OwnerDispatchService) resolveDuplicatePendingTask(ctx context.Context, issue db.Issue) (*DispatchResult, error) {
+	activeTasks, err := s.Queries.ListActiveTasksByIssue(ctx, issue.ID)
+	if err != nil {
+		return nil, fmt.Errorf("lookup active tasks after duplicate: %w", err)
+	}
+	ids := make([]string, 0, len(activeTasks))
+	for _, t := range activeTasks {
+		ids = append(ids, util.UUIDToString(t.ID))
+	}
+	if len(ids) > 0 {
+		return &DispatchResult{Decision: DecisionAlreadyActive, TaskIDs: ids}, nil
+	}
+	return &DispatchResult{Decision: DecisionAlreadyActive}, nil
 }
 
 // resolveTargetAgent finds the runnable agent for an issue.

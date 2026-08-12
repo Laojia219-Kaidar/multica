@@ -2,6 +2,8 @@ package service
 
 import (
 	"testing"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 func TestComputeDigest(t *testing.T) {
@@ -35,6 +37,27 @@ func TestIsUniqueViolation(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := isUniqueViolation(tc.err); got != tc.want {
 				t.Fatalf("isUniqueViolation(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestIsDuplicatePendingTaskConstraint(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"other pg error", &pgconn.PgError{Code: "23505", ConstraintName: "other_constraint"}, false},
+		{"wrong code", &pgconn.PgError{Code: "42P01", ConstraintName: "idx_one_pending_task_per_issue_agent"}, false},
+		{"exact match", &pgconn.PgError{Code: "23505", ConstraintName: "idx_one_pending_task_per_issue_agent"}, true},
+		{"string error", errString("some random error"), false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isDuplicatePendingTaskConstraint(tc.err); got != tc.want {
+				t.Fatalf("isDuplicatePendingTaskConstraint(%v) = %v, want %v", tc.err, got, tc.want)
 			}
 		})
 	}
