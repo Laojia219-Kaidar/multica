@@ -49,15 +49,15 @@ describe("organization query contract", () => {
 
   it("forwards the slug to the workspace-bound API calls", () => {
     const opts = organizationTreeOptions("ws-1", "acme");
-    opts.queryFn!();
+    (opts.queryFn as () => unknown)();
     expect(api.getCompanyOpsOrganization).toHaveBeenCalledWith("acme");
 
-    rosterListOptions("ws-1", "acme", { q: "coco" }).queryFn!();
+    (rosterListOptions("ws-1", "acme", { q: "coco" }).queryFn as () => unknown)();
     expect(api.listCompanyOpsEmployees).toHaveBeenCalledWith("acme", {
       q: "coco",
     });
 
-    employeeDossierOptions("ws-1", "acme", "DE-CEO-001").queryFn!();
+    (employeeDossierOptions("ws-1", "acme", "DE-CEO-001").queryFn as () => unknown)();
     expect(api.getCompanyOpsEmployee).toHaveBeenCalledWith("acme", "DE-CEO-001");
   });
 
