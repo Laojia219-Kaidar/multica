@@ -961,51 +961,101 @@ describe("ApiClient CompanyOps outcome center", () => {
 });
 
 describe("ApiClient CompanyOps organization & employees", () => {
+  const workspaceId = "1b2a1f07-3050-4d47-aca5-6e6fdbd393d9";
   const agentUuid = "d34db33f-4ef7-4fe1-a32d-8f24c57b07b1";
+  const runtimeUuid = "c9a4bb1e-6cdd-4ad4-907f-d4d86f54e4c2";
   const DIGEST = `sha256:${"a".repeat(64)}`;
+  const now = new Date().toISOString();
   const authority = {
-    kind: "Employee",
-    source_ref: "hivecosm://employees/DE-CEO-001",
-    revision: "rev-1",
+    source_ref: "/api/sovereign-workbench/snapshot#company_workforce",
+    source_version: "CompanyWorkforceReadModelV1",
+    source_revision: DIGEST,
     content_digest: DIGEST,
-    freshness: "current",
+    observed_at: now,
+    source_generated_at: now,
+    freshness: "observed",
+    read_model_only: true,
   };
 
   const organization = {
     schema_version: "hivecrew.organization.v1",
+    workspace_id: workspaceId,
+    authority,
     departments: [
       {
         department_id: "DE-DEPT-ENG",
-        name: "Engineering",
+        department_name: "Engineering",
+        mission: "Build the governed product",
+        employee_count: 1,
         positions: [
           {
             position_id: "POS-ENG-LEAD",
-            title: "Engineering Lead",
+            position_title: "Engineering Lead",
+            employee_count: 1,
+            employee_ids: ["DE-CEO-001"],
             appointments: [
               {
                 appointment_id: "APP-ENG-1",
                 employee_id: "DE-CEO-001",
-                authority,
+                workforce_agent_id: "KT-002",
+                availability: "available",
               },
             ],
-            authority,
           },
         ],
-        authority,
       },
     ],
-    observed_at: "2026-08-12T00:00:00Z",
+  };
+
+  const localAgent = {
+    id: agentUuid,
+    name: "Coco",
+    kind: "user",
+    status: "idle",
+    runtime_id: runtimeUuid,
+    runtime_mode: "local",
+    runtime_status: "online",
+    model: "deepseek-v4-flash",
   };
 
   const rosterItem = {
     employee_id: "DE-CEO-001",
+    workforce_agent_id: "KT-002",
     display_name: "Coco",
-    department_ref: "hivecosm://departments/DE-DEPT-ENG",
-    position_ref: "hivecosm://positions/POS-ENG-LEAD",
+    employee_contract_state: "active",
+    department_id: "DE-DEPT-ENG",
+    department_name: "Engineering",
+    position_id: "POS-ENG-LEAD",
+    position_title: "Engineering Lead",
+    binding_state: "unique_active_candidate",
+    binding: {
+      state: "unique_active_candidate",
+      candidate_only: true,
+      executability_verified: true,
+      hivecrew_agent_id: agentUuid,
+    },
+    availability: "available",
+    hivecrew_agent_id: agentUuid,
+    local_agent: localAgent,
+  };
+
+  const normalizedAuthority = {
+    kind: "CompanyWorkforceReadModelV1",
+    source_ref: authority.source_ref,
+    revision: DIGEST,
+    content_digest: DIGEST,
+    freshness: "current",
+  };
+
+  const normalizedRosterItem = {
+    employee_id: "DE-CEO-001",
+    display_name: "Coco",
+    department_ref: "DE-DEPT-ENG",
+    position_ref: "POS-ENG-LEAD",
     workforce_agent_id: "KT-002",
     hivecrew_agent_id: agentUuid,
     binding_state: "available",
-    authority,
+    authority: normalizedAuthority,
   };
 
   it("GETs the organization projection with the exact workspace slug header", async () => {
@@ -1021,7 +1071,31 @@ describe("ApiClient CompanyOps organization & employees", () => {
       new ApiClient("https://api.example.test").getCompanyOpsOrganization(
         "acme",
       ),
-    ).resolves.toEqual(organization);
+    ).resolves.toEqual({
+      schema_version: "hivecrew.organization.v1",
+      observed_at: now,
+      departments: [
+        {
+          department_id: "DE-DEPT-ENG",
+          name: "Engineering",
+          authority: normalizedAuthority,
+          positions: [
+            {
+              position_id: "POS-ENG-LEAD",
+              title: "Engineering Lead",
+              authority: normalizedAuthority,
+              appointments: [
+                {
+                  appointment_id: "APP-ENG-1",
+                  employee_id: "DE-CEO-001",
+                  authority: normalizedAuthority,
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    });
     const [url, init] = fetchMock.mock.calls[0]!;
     expect(url).toBe("https://api.example.test/api/company-ops/organization");
     expect(init?.headers).toMatchObject({ "X-Workspace-Slug": "acme" });
@@ -1033,9 +1107,10 @@ describe("ApiClient CompanyOps organization & employees", () => {
       vi.fn().mockResolvedValue(
         new Response(
           JSON.stringify({
-            schema_version: "hivecrew.organization.v1",
-            departments: [{ ...organization.departments[0], name: "" }],
-            observed_at: "2026-08-12T00:00:00Z",
+            ...organization,
+            departments: [
+              { ...organization.departments[0], department_name: "" },
+            ],
           }),
           { status: 200, headers: { "Content-Type": "application/json" } },
         ),
@@ -1055,11 +1130,10 @@ describe("ApiClient CompanyOps organization & employees", () => {
       vi.fn().mockResolvedValue(
         new Response(
           JSON.stringify({
-            schema_version: "hivecrew.organization.v1",
+            ...organization,
             departments: [
               { ...organization.departments[0], extra_field: "sneaky" },
             ],
-            observed_at: "2026-08-12T00:00:00Z",
           }),
           { status: 200, headers: { "Content-Type": "application/json" } },
         ),
@@ -1073,15 +1147,18 @@ describe("ApiClient CompanyOps organization & employees", () => {
     ).rejects.toThrow("Invalid CompanyOps organization projection response.");
   });
 
-  it("rejects a non-RFC3339 observed_at", async () => {
+  it("rejects a stale authority observation", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn().mockResolvedValue(
         new Response(
           JSON.stringify({
-            schema_version: "hivecrew.organization.v1",
-            departments: [organization.departments[0]],
-            observed_at: "not-a-timestamp",
+            ...organization,
+            authority: {
+              ...authority,
+              observed_at: "2000-01-01T00:00:00.000Z",
+              source_generated_at: "2000-01-01T00:00:00.000Z",
+            },
           }),
           { status: 200, headers: { "Content-Type": "application/json" } },
         ),
@@ -1099,7 +1176,9 @@ describe("ApiClient CompanyOps organization & employees", () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(
         JSON.stringify({
-          schema_version: "hivecrew.organization.v1",
+          schema_version: "hivecrew.employees.v1",
+          workspace_id: workspaceId,
+          authority,
           items: [rosterItem],
           total: 1,
           limit: 50,
@@ -1117,7 +1196,7 @@ describe("ApiClient CompanyOps organization & employees", () => {
       ),
     ).resolves.toEqual({
       schema_version: "hivecrew.organization.v1",
-      items: [rosterItem],
+      items: [normalizedRosterItem],
       total: 1,
       limit: 50,
       offset: 0,
@@ -1143,7 +1222,9 @@ describe("ApiClient CompanyOps organization & employees", () => {
       vi.fn().mockResolvedValue(
         new Response(
           JSON.stringify({
-            schema_version: "hivecrew.organization.v1",
+            schema_version: "hivecrew.employees.v1",
+            workspace_id: workspaceId,
+            authority,
             items: [{ ...rosterItem, hivecrew_agent_id: "not-a-uuid" }],
             total: 1,
             limit: 50,
@@ -1165,7 +1246,9 @@ describe("ApiClient CompanyOps organization & employees", () => {
       vi.fn().mockResolvedValue(
         new Response(
           JSON.stringify({
-            schema_version: "hivecrew.organization.v1",
+            schema_version: "hivecrew.employees.v1",
+            workspace_id: workspaceId,
+            authority,
             items: [{ ...rosterItem, employee_id: "KT-OTHER" }],
             total: 1,
             limit: 50,
@@ -1181,14 +1264,30 @@ describe("ApiClient CompanyOps organization & employees", () => {
     ).rejects.toThrow("Invalid CompanyOps employees roster response.");
   });
 
-  it("rejects a workforce_agent_id outside the KT-/EXT- namespace", async () => {
+  it("keeps a legacy workforce identity visible but fail-closed", async () => {
+    const legacy = {
+      ...rosterItem,
+      employee_id: "DE-PROJECTION-NEW-01",
+      workforce_agent_id: "NEW-01",
+      binding_state: "source_gap",
+      binding: {
+        state: "source_gap",
+        candidate_only: true,
+        executability_verified: false,
+      },
+      availability: "source_gap",
+      hivecrew_agent_id: undefined,
+      local_agent: undefined,
+    };
     vi.stubGlobal(
       "fetch",
       vi.fn().mockResolvedValue(
         new Response(
           JSON.stringify({
-            schema_version: "hivecrew.organization.v1",
-            items: [{ ...rosterItem, workforce_agent_id: "DE-CEO-001" }],
+            schema_version: "hivecrew.employees.v1",
+            workspace_id: workspaceId,
+            authority,
+            items: [legacy],
             total: 1,
             limit: 50,
             offset: 0,
@@ -1200,7 +1299,16 @@ describe("ApiClient CompanyOps organization & employees", () => {
 
     await expect(
       new ApiClient("https://api.example.test").listCompanyOpsEmployees("acme"),
-    ).rejects.toThrow("Invalid CompanyOps employees roster response.");
+    ).resolves.toMatchObject({
+      items: [
+        {
+          employee_id: "DE-PROJECTION-NEW-01",
+          workforce_agent_id: "NEW-01",
+          binding_state: "source_gap",
+          hivecrew_agent_id: null,
+        },
+      ],
+    });
   });
 
   it("rejects available rows without a hivecrew_agent_id (cross-field invariant)", async () => {
@@ -1209,8 +1317,10 @@ describe("ApiClient CompanyOps organization & employees", () => {
       vi.fn().mockResolvedValue(
         new Response(
           JSON.stringify({
-            schema_version: "hivecrew.organization.v1",
-            items: [{ ...rosterItem, hivecrew_agent_id: null }],
+            schema_version: "hivecrew.employees.v1",
+            workspace_id: workspaceId,
+            authority,
+            items: [{ ...rosterItem, hivecrew_agent_id: undefined }],
             total: 1,
             limit: 50,
             offset: 0,
@@ -1231,8 +1341,10 @@ describe("ApiClient CompanyOps organization & employees", () => {
       vi.fn().mockResolvedValue(
         new Response(
           JSON.stringify({
-            schema_version: "hivecrew.organization.v1",
-            items: [{ ...rosterItem, binding_state: "invented" }],
+            schema_version: "hivecrew.employees.v1",
+            workspace_id: workspaceId,
+            authority,
+            items: [{ ...rosterItem, availability: "invented" }],
             total: 1,
             limit: 50,
             offset: 0,
@@ -1247,36 +1359,69 @@ describe("ApiClient CompanyOps organization & employees", () => {
     ).rejects.toThrow("Invalid CompanyOps employees roster response.");
   });
 
-  it("GETs the exact employee dossier and parses bindings + local agent", async () => {
-    const dossier = {
-      schema_version: "hivecrew.organization.v1",
-      employee_id: "DE-CEO-001",
-      display_name: "Coco",
-      department_ref: "hivecosm://departments/DE-DEPT-ENG",
-      position_ref: "hivecosm://positions/POS-ENG-LEAD",
-      workforce_agent_id: "KT-002",
-      hivecrew_agent_id: agentUuid,
-      bindings: [
-        {
-          identity_binding_id: "BIND-001",
-          employee_ref: "hivecosm://employees/DE-CEO-001",
-          workforce_agent_id: "KT-002",
-          agent_ref: `/api/agents/${agentUuid}`,
-          active: true,
-          authority,
-        },
-      ],
-      binding_state: "available",
-      local_agent: {
-        id: agentUuid,
-        name: "Coco",
-        status: "idle",
-        runtime_mode: "local",
-        model: "deepseek-v4-flash",
-        authority,
+  const bindingAuthority = {
+    source_ref: "hivecosm://identity-bindings/IB-AAAAAAAAAAAAAAAAAAAAAAAA",
+    revision: DIGEST,
+    content_digest: DIGEST,
+    candidate_only: true,
+  };
+  const dossier = {
+    schema_version: "hivecrew.employee.v1",
+    workspace_id: workspaceId,
+    authority,
+    employee: rosterItem,
+    bindings: [
+      {
+        identity_binding_id: "IB-AAAAAAAAAAAAAAAAAAAAAAAA",
+        workforce_agent_id: "KT-002",
+        hivecrew_agent_id: agentUuid,
+        agent_ref: `/api/agents/${agentUuid}`,
+        active: true,
+        effective_from: now,
+        effective_to: null,
+        authority: bindingAuthority,
       },
-      authority,
-    };
+    ],
+    dossier_enrichment: {
+      state: "available",
+      source_version: "EmployeeOperatingViewV2",
+      generated_at: now,
+      work_context: {
+        requested_work_order_id: null,
+        work_order_count: 0,
+        assignment_count: 0,
+        conversation_thread_count: 0,
+        source_gap: true,
+      },
+      model_driver: {
+        assignment_present: false,
+        proposal_count: 0,
+        proposal_write_available: false,
+        model_call_performed: false,
+        secret_values_exposed: false,
+      },
+      execution_bridge: {
+        source: "HQ-06",
+        state: "hq06_not_configured",
+        configured: false,
+        reachable: false,
+        project_id: "PRJ-HCW-V2",
+        goal_run_id: null,
+        task_ids: [],
+        source_gap_reason: "not configured",
+        write_performed: false,
+      },
+      boundaries: {
+        read_model_only: true,
+        browser_identity_trusted: false,
+        production_mutation_allowed: false,
+        provider_call_performed: false,
+        parallel_employee_registry_created: false,
+      },
+    },
+  };
+
+  it("GETs the exact employee dossier and parses bindings + local agent", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(JSON.stringify(dossier), {
         status: 200,
@@ -1290,7 +1435,35 @@ describe("ApiClient CompanyOps organization & employees", () => {
         "acme",
         "DE-CEO-001",
       ),
-    ).resolves.toEqual(dossier);
+    ).resolves.toEqual({
+      schema_version: "hivecrew.organization.v1",
+      ...normalizedRosterItem,
+      bindings: [
+        {
+          identity_binding_id: "IB-AAAAAAAAAAAAAAAAAAAAAAAA",
+          employee_ref: "hivecosm://employees/DE-CEO-001",
+          workforce_agent_id: "KT-002",
+          agent_ref: `/api/agents/${agentUuid}`,
+          active: true,
+          authority: {
+            kind: "IdentityBinding",
+            source_ref: bindingAuthority.source_ref,
+            revision: DIGEST,
+            content_digest: DIGEST,
+            freshness: "current",
+          },
+        },
+      ],
+      local_agent: {
+        id: agentUuid,
+        name: "Coco",
+        status: "idle",
+        runtime_mode: "local",
+        model: "deepseek-v4-flash",
+        authority: normalizedAuthority,
+      },
+      authority: normalizedAuthority,
+    });
     const [url, init] = fetchMock.mock.calls[0]!;
     expect(url).toBe(
       "https://api.example.test/api/company-ops/employees/DE-CEO-001",
@@ -1304,14 +1477,8 @@ describe("ApiClient CompanyOps organization & employees", () => {
       vi.fn().mockResolvedValue(
         new Response(
           JSON.stringify({
-            schema_version: "hivecrew.organization.v1",
-            employee_id: "DE-CEO-001",
-            workforce_agent_id: "KT-002",
-            hivecrew_agent_id: agentUuid,
-            bindings: [],
-            binding_state: "available",
-            local_agent: null,
-            authority,
+            ...dossier,
+            employee: { ...rosterItem, local_agent: undefined },
           }),
           { status: 200, headers: { "Content-Type": "application/json" } },
         ),
@@ -1326,29 +1493,14 @@ describe("ApiClient CompanyOps organization & employees", () => {
     ).rejects.toThrow("Invalid CompanyOps employee dossier response.");
   });
 
-  it("rejects a binding whose agent_ref is not /api/agents/{uuid}", async () => {
+  it("rejects a binding whose agent_ref does not match the UUID", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn().mockResolvedValue(
         new Response(
           JSON.stringify({
-            schema_version: "hivecrew.organization.v1",
-            employee_id: "DE-CEO-001",
-            workforce_agent_id: "KT-002",
-            hivecrew_agent_id: null,
-            bindings: [
-              {
-                identity_binding_id: "BIND-001",
-                employee_ref: "hivecosm://employees/DE-CEO-001",
-                workforce_agent_id: "KT-002",
-                agent_ref: "hivecosm://agents/wrong",
-                active: true,
-                authority,
-              },
-            ],
-            binding_state: "inactive_only",
-            local_agent: null,
-            authority,
+            ...dossier,
+            bindings: [{ ...dossier.bindings[0], agent_ref: `/api/agents/${runtimeUuid}` }],
           }),
           { status: 200, headers: { "Content-Type": "application/json" } },
         ),
@@ -1369,11 +1521,14 @@ describe("ApiClient CompanyOps organization & employees", () => {
       vi.fn().mockResolvedValue(
         new Response(
           JSON.stringify({
-            schema_version: "hivecrew.organization.v1",
-            employee_id: "DE-CEO-001",
-            bindings: [],
-            binding_state: "available",
-            authority,
+            ...dossier,
+            dossier_enrichment: {
+              ...dossier.dossier_enrichment,
+              boundaries: {
+                ...dossier.dossier_enrichment.boundaries,
+                provider_call_performed: true,
+              },
+            },
           }),
           { status: 200, headers: { "Content-Type": "application/json" } },
         ),
