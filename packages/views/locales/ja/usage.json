@@ -1,6 +1,45 @@
 {
   "title": "使用量",
   "subtitle": "このワークスペース全体のトークン消費とエージェントの活動です。",
+  "quota": {
+    "title": "モデル上限と使用量の集計",
+    "subtitle": "選択した {{days}} 日間の Token をプロバイダー → プラン/請求アカウント → モデル → デジタル社員で網羅的に集計します。上限期間と総量は Owner 確認後に入力します。",
+    "inventory_summary": "{{employees}} 名 · {{plans}} プラン/アカウント",
+    "plan_confirmation": "プラン/アカウント対応は確認待ち",
+    "runtime_unbound": "Runtime 未紐付け",
+    "observed_usage_hint": "この {{days}} 日間表示で実測",
+    "pending_input": "未入力",
+    "pending_metric": "集計基準は要確認",
+    "employee_count": "{{count}} 名",
+    "model_totals_title": "全モデルの使用量合計",
+    "model_totals_hint": "同じモデルを請求アカウントと社員を跨いで集計した {{days}} 日間の Token と割合です。",
+    "provider_summary": "{{plans}} プラン/アカウント · {{employees}} 名",
+    "provider_aggregate_note": "プロバイダー合計。上限は下位プランから集計",
+    "summary": {
+      "all_usage": "全社員 Token",
+      "providers": "モデルプロバイダー",
+      "accounts": "プラン/アカウント",
+      "models": "モデル",
+      "employees": "デジタル社員"
+    },
+    "table": {
+      "provider": "モデルプロバイダー",
+      "plan": "プラン / 請求アカウント",
+      "plan_account": "プラン / 請求アカウント",
+      "models": "モデル",
+      "employees": "社員別使用量",
+      "observed_usage": "選択期間 Token",
+      "usage_share": "全使用量に占める割合",
+      "window": "上限期間",
+      "total": "総上限",
+      "quota_used": "上限期間の使用済み",
+      "remaining": "残量",
+      "usage_ratio": "使用率",
+      "reset": "リセット時刻"
+    },
+    "empty_title": "表示できるデジタル社員がいません",
+    "empty_body": "現在の社員または Runtime ソースが利用できず、プラン候補を生成できません。"
+  },
   "filter": {
     "project_label": "プロジェクト",
     "all_projects": "すべてのプロジェクト",

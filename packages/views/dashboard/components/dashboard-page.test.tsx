@@ -66,6 +66,24 @@ vi.mock("@tanstack/react-query", async () => {
     useQuery: (opts: { queryKey: unknown[] }) => {
       queryKeys.push(opts.queryKey);
       if (dashboardDataRef.current) {
+        if (opts.queryKey[0] === "runtimes") {
+          return {
+            data: [
+              {
+                id: "runtime-glm",
+                name: "HiveCosm Secure zhipu",
+                provider: "qwen",
+              },
+              {
+                id: "runtime-claude",
+                name: "Claude",
+                provider: "claude",
+              },
+            ],
+            isLoading: false,
+            isSuccess: true,
+          };
+        }
         // ["workspaces", wsId, "agents"] — needed so the Errors breakdown can
         // resolve agent-1 to a name and render its drill-down link.
         if (opts.queryKey[0] === "workspaces" && opts.queryKey[2] === "agents") {
@@ -74,8 +92,17 @@ vi.mock("@tanstack/react-query", async () => {
               ? Array.from({ length: 12 }, (_, i) => ({
                   id: `bulk-${i}`,
                   name: `Bulk Agent ${i}`,
+                  model: "claude-sonnet-4-6",
+                  runtime_id: "runtime-claude",
                 }))
-              : [{ id: "agent-1", name: "Agent One" }],
+              : [
+                  {
+                    id: "agent-1",
+                    name: "Agent One",
+                    model: "glm-5.2",
+                    runtime_id: "runtime-glm",
+                  },
+                ],
             isLoading: false,
             isSuccess: true,
           };
@@ -138,6 +165,19 @@ vi.mock("@tanstack/react-query", async () => {
                   task_count: 2,
                 },
               ]
+            : kind === "by-agent"
+              ? [
+                  {
+                    agent_id: "agent-1",
+                    provider: "zhipu",
+                    model: "glm-5.2",
+                    input_tokens: 1_000,
+                    output_tokens: 2_000,
+                    cache_read_tokens: 0,
+                    cache_write_tokens: 0,
+                    task_count: 2,
+                  },
+                ]
             : kind === "agent-runtime"
               ? [
                   {
@@ -239,7 +279,7 @@ vi.mock("@multica/core/runtimes/custom-pricing-store", () => {
       sel ? sel(state()) : state(),
     { getState: state },
   );
-  return { useCustomPricingStore };
+  return { useCustomPricingStore, getCustomPricing: () => undefined };
 });
 
 import { DashboardPage } from "./dashboard-page";
@@ -350,6 +390,72 @@ describe("DashboardPage — viewing timezone drives the query key", () => {
             .respectMotionPreference === true,
       ),
     ).toBe(true);
+  });
+});
+
+describe("DashboardPage — provider and plan inventory", () => {
+  beforeEach(() => {
+    queryKeys.length = 0;
+    dashboardDataRef.current = true;
+    tzRef.current = "UTC";
+    cleanup();
+  });
+
+  it("lists observed bindings while leaving unconfirmed quota fields empty", () => {
+    renderDashboard();
+
+    expect(
+      screen.getByRole("heading", {
+        name: "Model quota and usage totals",
+      }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("1 employees · 1 plans/accounts"),
+    ).toBeInTheDocument();
+    for (const header of [
+      "Model provider",
+      "Plan / billing account",
+      "Models",
+      "Employee usage",
+      "Selected-period Tokens",
+      "Share of all usage",
+      "Quota window",
+      "Total quota",
+      "Quota-window used",
+      "Remaining",
+      "Used %",
+      "Resets",
+    ]) {
+      expect(
+        screen.getByRole("columnheader", { name: header }),
+      ).toBeInTheDocument();
+    }
+    expect(screen.getByText("智谱 · GLM")).toBeInTheDocument();
+    expect(screen.getByText("GLM API 账户 #1")).toBeInTheDocument();
+    expect(screen.getAllByText("glm-5.2").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Agent One").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("3K").length).toBeGreaterThan(0);
+    expect(
+      screen.getByText("Plan/account mapping awaits confirmation"),
+    ).toBeInTheDocument();
+    expect(screen.getAllByText("To enter")).toHaveLength(3);
+    expect(screen.getAllByText("Metric to confirm")).toHaveLength(3);
+
+    // The rejected employee-health and fixed hiring proposal belong on the
+    // employee/organization surfaces, not on Usage.
+    expect(
+      screen.queryByText("Digital employee health and expansion capacity"),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText("Employees online")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/First full-stack expansion batch/),
+    ).not.toBeInTheDocument();
+
+    // Original Usage truth remains in place below the honest empty state.
+    expect(screen.getByText("Cost · 30D")).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "Leaderboard" }),
+    ).toBeInTheDocument();
   });
 });
 

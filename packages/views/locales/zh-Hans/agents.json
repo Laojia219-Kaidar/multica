@@ -1,15 +1,35 @@
 {
   "page": {
-    "title": "智能体",
-    "tagline": "能领取 issue、留下评论、推进状态的 AI 队友。",
+    "title": "数字员工",
+    "tagline": "有明确岗位、模型与运行时绑定，能够领取议题并交付结果的 AI 员工。",
     "learn_more": "了解更多 →",
-    "new_agent": "新建智能体",
-    "search_placeholder": "搜索智能体...",
+    "new_agent": "新建数字员工",
+    "search_placeholder": "搜索数字员工...",
     "show_archived": "显示已归档（{{count}}）→",
     "of_total": "{{visible}} / {{total}}",
     "list_load_failed": "无法加载智能体列表",
     "list_load_failed_default": "获取智能体列表时出错。",
-    "try_again": "重试"
+    "try_again": "重试",
+    "view_list": "横条列表",
+    "view_cards": "组织员工卡"
+  },
+  "directory": {
+    "load_failed": "无法加载组织部门",
+    "load_failed_description": "员工数据仍可用，但当前无法核实组织归属。",
+    "retry": "重试",
+    "leader": "部门负责人",
+    "employees_other": "{{count}} 名员工",
+    "visible_of_total": "{{visible}} / {{total}} 名员工",
+    "unassigned": "组织关系待登记",
+    "unassigned_description": "这些员工尚未精确归属于一个组织部门。",
+    "conflict": "多部门归属待核对",
+    "conflict_description": "这些员工同时出现在多个部门中，本页不会重复展示或任意归组。",
+    "role_unassigned": "岗位待登记",
+    "runtime": "运行时",
+    "model": "模型",
+    "runs_other": "近 30 天运行 {{count}} 次",
+    "no_runtime": "未绑定运行时",
+    "no_model": "未配置模型"
   },
   "scope": {
     "mine": "我的",
@@ -40,7 +60,7 @@
   },
   "empty": {
     "title": "还没有智能体",
-    "description": "创建一个智能体，像分配给同事那样把 issue 交给它。本地智能体在你的机器上运行，云智能体在 Multica 运行时上运行。"
+    "description": "创建一个智能体，像分配给同事那样把 议题 交给它。本地智能体在你的机器上运行，云智能体在 Multica 运行时上运行。"
   },
   "no_matches": {
     "title": "无匹配项",
@@ -61,7 +81,7 @@
     "empty": "还没有机器"
   },
   "columns": {
-    "agent": "智能体",
+    "agent": "数字员工",
     "status": "状态",
     "workload": "工作负载",
     "runtime": "运行时",
@@ -661,18 +681,18 @@
       "avg_duration_label": "平均耗时",
       "failed_count": "{{count}} 次失败",
       "failed_label": "失败",
-      "source_issue": "Issue",
+      "source_issue": "议题",
       "source_chat": "聊天",
       "source_autopilot": "自动化",
       "source_untracked": "未追踪",
       "source_quick_create": "快速创建",
-      "source_creating_issue": "正在创建 issue",
+      "source_creating_issue": "正在创建 议题",
       "source_chat_session": "聊天会话",
       "source_autopilot_run": "自动化运行",
-      "issue_short_fallback": "Issue {{prefix}}...",
+      "issue_short_fallback": "议题 {{prefix}}...",
       "triggered_by": "触发来源",
-      "open_issue_aria": "打开 issue",
-      "open_issue_tooltip": "打开 issue",
+      "open_issue_aria": "打开 议题",
+      "open_issue_tooltip": "打开 议题",
       "transcript_tooltip": "查看记录",
       "cancel_task_aria": "取消 task",
       "cancel_task_tooltip": "取消 task",
@@ -824,7 +844,8 @@
     "direction_desc": "降序",
     "section_columns": "列",
     "section_owner": "Owner",
-    "section_model": "模型"
+    "section_model": "模型",
+    "view": "视图"
   },
   "actions": {
     "selected_other": "已选 {{count}} 项",

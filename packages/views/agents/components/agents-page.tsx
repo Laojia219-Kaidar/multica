@@ -28,6 +28,7 @@ import {
   useAgentsViewStore,
   AGENT_DEFAULT_HIDDEN_COLUMNS,
   AGENT_SCOPES,
+  AGENT_VIEW_MODES,
   type AgentColumnKey,
   type AgentsScope,
   type AgentSortField,
@@ -38,6 +39,7 @@ import { useWorkspacePaths } from "@multica/core/paths";
 import {
   agentListOptions,
   memberListOptions,
+  squadDirectoryOptions,
 } from "@multica/core/workspace/queries";
 import { runtimeDisplayLabel, runtimeListOptions } from "@multica/core/runtimes";
 import { Button } from "@multica/ui/components/ui/button";
@@ -67,6 +69,7 @@ import {
 } from "../../layout/collection-page";
 import { availabilityConfig } from "../presence";
 import { AgentRowActions } from "./agent-row-actions";
+import { AgentCardDirectory } from "./agent-card-directory";
 import {
   AgentListToolbar,
   countActiveFilterDimensions,
@@ -750,7 +753,7 @@ export function AgentsPage(_props: AgentsPageProps = {}) {
     error: listError,
     refetch: refetchList,
   } = useQuery(agentListOptions(wsId));
-  const { data: runtimes = [] } = useQuery(
+  const { data: runtimes = [], isLoading: runtimesLoading } = useQuery(
     runtimeListOptions(wsId),
   );
   const { data: members = [] } = useQuery(memberListOptions(wsId));
@@ -767,6 +770,11 @@ export function AgentsPage(_props: AgentsPageProps = {}) {
   );
   const [search, setSearch] = useState("");
 
+  const rawViewMode = useAgentsViewStore((s) => s.viewMode);
+  const viewMode = AGENT_VIEW_MODES.includes(rawViewMode)
+    ? rawViewMode
+    : "list";
+  const setViewMode = useAgentsViewStore((s) => s.setViewMode);
   const rawScope = useAgentsViewStore((s) => s.scope);
   const scope = AGENT_SCOPES.includes(rawScope) ? rawScope : "mine";
   const setScope = useAgentsViewStore((s) => s.setScope);
@@ -780,6 +788,16 @@ export function AgentsPage(_props: AgentsPageProps = {}) {
   const toggleColumn = useAgentsViewStore((s) => s.toggleColumn);
   const toggleFilter = useAgentsViewStore((s) => s.toggleFilter);
   const clearFilters = useAgentsViewStore((s) => s.clearFilters);
+
+  const {
+    data: squadDirectory = [],
+    isLoading: directoryLoading,
+    error: directoryError,
+    refetch: refetchDirectory,
+  } = useQuery({
+    ...squadDirectoryOptions(wsId),
+    enabled: viewMode === "cards" && !!wsId,
+  });
 
   const isColVisible = (key: AgentColumnKey) => !hiddenColumns.includes(key);
 
@@ -995,6 +1013,12 @@ export function AgentsPage(_props: AgentsPageProps = {}) {
     (!needsActivity || !activityLoading) &&
     (!needsRunCounts || !runCountsPending) &&
     (!needsPresence || !presenceLoading);
+  const cardsReady =
+    listReady &&
+    !directoryLoading &&
+    !runtimesLoading &&
+    !presenceLoading &&
+    !runCountsPending;
 
   return (
     // relative: positioning anchor for the batch toolbar (page-centered,
@@ -1005,7 +1029,8 @@ export function AgentsPage(_props: AgentsPageProps = {}) {
         onCreate={() => navigation.push(paths.newAgent())}
       />
 
-      {isLoading || (!showEmpty && !listReady) ? (
+      {isLoading ||
+      (!showEmpty && (viewMode === "cards" ? !cardsReady : !listReady)) ? (
         <div className="flex-1 overflow-y-auto @container">
           <LoadingSkeleton />
         </div>
@@ -1030,18 +1055,57 @@ export function AgentsPage(_props: AgentsPageProps = {}) {
             onSortDirectionChange={setSortDirection}
             hiddenColumns={hiddenColumns}
             onToggleColumn={toggleColumn}
+            viewMode={viewMode}
+            onViewModeChange={(mode) => {
+              setSelectedIds(new Set());
+              setViewMode(mode);
+            }}
             allRows={scopeRows}
             members={members}
             visibleCount={rows.length}
           />
-          <div
-            ref={listScrollRef}
-            className="min-h-0 flex-1 overflow-auto @container"
-          >
-            <ListGrid
-              className={`${GRID_COLS} @2xl:min-w-[var(--agc-minw)]`}
-              style={columnTrackVars(isColVisible)}
+          {viewMode === "cards" && directoryError ? (
+            <CollectionPageState
+              role="alert"
+              tone="destructive"
+              icon={AlertCircle}
+              title={t(($) => $.directory.load_failed)}
+              description={t(($) => $.directory.load_failed_description)}
+              actions={
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => refetchDirectory()}
+                >
+                  {t(($) => $.directory.retry)}
+                </Button>
+              }
+            />
+          ) : viewMode === "cards" ? (
+            <div className="min-h-0 flex-1 overflow-auto @container">
+              {rows.length === 0 ? (
+                <div className="py-16 text-center text-sm text-muted-foreground">
+                  {noMatchText}
+                </div>
+              ) : (
+                <AgentCardDirectory
+                  visibleRows={rows}
+                  allRows={scopeRows}
+                  directory={squadDirectory}
+                  onDuplicate={handleDuplicate}
+                />
+              )}
+            </div>
+          ) : (
+            <div
+              ref={listScrollRef}
+              className="min-h-0 flex-1 overflow-auto @container"
             >
+              <ListGrid
+                className={`${GRID_COLS} @2xl:min-w-[var(--agc-minw)]`}
+                style={columnTrackVars(isColVisible)}
+              >
               <AgentListHeader
                 sortField={sortField}
                 sortDirection={sortDirection}
@@ -1146,17 +1210,20 @@ export function AgentsPage(_props: AgentsPageProps = {}) {
                   );
                 })}
               </ListGridBody>
-            </ListGrid>
-          </div>
+              </ListGrid>
+            </div>
+          )}
         </>
       )}
 
-      <AgentBatchToolbar
-        rows={selectedRows}
-        members={members}
-        currentUserId={currentUser?.id ?? null}
-        onClear={() => setSelectedIds(new Set())}
-      />
+      {viewMode === "list" ? (
+        <AgentBatchToolbar
+          rows={selectedRows}
+          members={members}
+          currentUserId={currentUser?.id ?? null}
+          onClear={() => setSelectedIds(new Set())}
+        />
+      ) : null}
 
     </div>
   );

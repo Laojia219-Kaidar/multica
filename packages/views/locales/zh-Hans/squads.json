@@ -1,41 +1,52 @@
 {
   "page": {
-    "title": "小队",
-    "new_button": "新建小队",
-    "empty_no_squads": "还没有小队，创建一个开始吧。",
-    "empty_no_match": "没有匹配筛选条件的小队。",
+    "title": "组织部门",
+    "new_button": "新建组织部门",
+    "empty_no_squads": "还没有组织部门，创建一个开始吧。",
+    "empty_no_match": "没有匹配筛选条件的组织部门。",
     "table": {
-      "name": "小队",
-      "leader": "队长",
+      "name": "组织部门",
+      "leader": "部门负责人",
       "members": "成员",
       "creator": "创建者",
       "created": "创建时间"
     },
-    "no_matches": "没有匹配的小队",
-    "row_menu": "小队操作",
+    "no_matches": "没有匹配的组织部门",
+    "row_menu": "组织部门操作",
     "archive_action": "归档"
   },
   "inspector": {
     "details_section": "详情",
+    "leader": "部门负责人",
+    "members": "成员",
+    "created_by": "创建者",
+    "created": "创建时间",
+    "updated": "更新时间",
     "archive_button": "归档"
   },
   "archive_dialog": {
-    "title": "归档这个小队？",
-    "description": "“{{name}}” 将被归档，该小队当前承接的 issue 会转交给小队负责人。此操作无法撤销，如需恢复路由请新建小队。",
+    "title": "归档这个组织部门？",
+    "description": "“{{name}}” 将被归档，该组织部门当前承接的议题会转交给部门负责人。此操作无法撤销，如需恢复路由请新建组织部门。",
     "cancel": "取消",
     "confirm": "归档",
     "archiving": "归档中…",
-    "success": "已归档小队"
+    "success": "已归档组织部门"
   },
   "name_editor": {
     "cancel": "取消"
   },
   "add_member_dialog": {
     "title": "添加成员",
-    "description": "添加工作区成员或智能体到这个小队。",
+    "description": "把工作区成员或数字员工编入这个组织部门。",
     "label_member": "成员",
     "label_role": "角色",
     "label_optional": "（可选）",
+    "select_placeholder": "选择成员或数字员工",
+    "search_placeholder": "搜索成员或数字员工...",
+    "members_group": "成员",
+    "agents_group": "数字员工",
+    "type_member": "成员",
+    "type_agent": "数字员工",
     "placeholder_role_inline": "添加角色…",
     "cancel": "取消"
   },
@@ -52,13 +63,15 @@
   },
   "members_tab": {
     "section_title": "成员",
-    "section_count_other": "该小队有 {{count}} 名成员",
+    "type_member": "成员",
+    "type_agent": "数字员工",
+    "section_count_other": "该组织部门有 {{count}} 名成员",
     "add_member_button": "添加成员",
-    "create_agent_button": "创建智能体",
+    "create_agent_button": "创建数字员工",
     "leader_chip": "负责人",
-    "view_agent_tooltip": "打开智能体详情",
-    "make_leader_tooltip": "设为小队负责人",
-    "remove_member_tooltip": "从小队移除",
+    "view_agent_tooltip": "打开数字员工详情",
+    "make_leader_tooltip": "设为部门负责人",
+    "remove_member_tooltip": "从组织部门移除",
     "status_working": "工作中",
     "status_idle": "空闲",
     "status_offline": "离线",
@@ -69,7 +82,7 @@
     "last_active_label": "最近活动 {{time}}"
   },
   "profile_card": {
-    "unavailable": "小队不可用",
+    "unavailable": "组织部门不可用",
     "detail_link": "详情 →",
     "archived": "已归档",
     "member_count_other": "{{count}} 名成员",
@@ -77,7 +90,8 @@
     "more_members_other": "还有 {{count}} 人"
   },
   "instructions_tab": {
-    "description": "小队指引会在 Leader 智能体处理分配给该小队的 issue 时注入到它的 prompt 中。可用来给 Leader 提供贯穿全队的指导、协作规范，或每次任务都应遵循的上下文。",
+    "tab_label": "部门指引",
+    "description": "组织部门指引会在部门负责人数字员工处理分配给该部门的议题时注入到 prompt 中。可用于提供贯穿部门的工作指导、协作规范，或每次任务都应遵循的上下文。",
     "unsaved_changes": "有未保存的修改",
     "save_button": "保存"
   },
@@ -91,7 +105,7 @@
     "direction_asc": "升序",
     "direction_desc": "降序",
     "section_columns": "列",
-    "result_count_title": "当前结果 / 全部小队",
+    "result_count_title": "当前结果 / 全部组织部门",
     "filter_label": "筛选",
     "filter_active_count_other": "{{count}} 项筛选",
     "clear_filters": "清除筛选"

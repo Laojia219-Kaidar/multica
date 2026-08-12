@@ -5,6 +5,8 @@ import {
   ArrowUp,
   ChevronDown,
   Filter,
+  LayoutGrid,
+  Rows3,
   Search,
   X,
 } from "lucide-react";
@@ -23,6 +25,7 @@ import {
   type AgentsScope,
   type AgentSortDirection,
   type AgentSortField,
+  type AgentsViewMode,
 } from "@multica/core/agents/stores";
 import { Button } from "@multica/ui/components/ui/button";
 import { Input } from "@multica/ui/components/ui/input";
@@ -107,6 +110,8 @@ export function AgentListToolbar({
   onSortDirectionChange,
   hiddenColumns,
   onToggleColumn,
+  viewMode,
+  onViewModeChange,
   allRows,
   members,
   visibleCount,
@@ -126,6 +131,8 @@ export function AgentListToolbar({
   onSortDirectionChange: (direction: AgentSortDirection) => void;
   hiddenColumns: AgentColumnKey[];
   onToggleColumn: (key: AgentColumnKey) => void;
+  viewMode: AgentsViewMode;
+  onViewModeChange: (mode: AgentsViewMode) => void;
   /** Rows within the current scope, unfiltered — filter option lists and
    *  counts derive from this set. */
   allRows: AgentListRow[];
@@ -592,28 +599,79 @@ export function AgentListToolbar({
               </div>
             </div>
 
-            <div className="px-3 py-2.5">
-              <span className="text-xs font-medium text-muted-foreground">
-                {t(($) => $.toolbar.section_columns)}
-              </span>
-              <div className="mt-2 space-y-2">
-                {COLUMN_KEYS.map((key) => (
-                  <label
-                    key={key}
-                    className="flex cursor-pointer items-center justify-between"
-                  >
-                    <span className="text-sm">{COLUMN_LABELS[key]}</span>
-                    <Switch
-                      size="sm"
-                      checked={!hiddenColumns.includes(key)}
-                      onCheckedChange={() => onToggleColumn(key)}
-                    />
-                  </label>
-                ))}
+            {viewMode === "list" ? (
+              <div className="px-3 py-2.5">
+                <span className="text-xs font-medium text-muted-foreground">
+                  {t(($) => $.toolbar.section_columns)}
+                </span>
+                <div className="mt-2 space-y-2">
+                  {COLUMN_KEYS.map((key) => (
+                    <label
+                      key={key}
+                      className="flex cursor-pointer items-center justify-between"
+                    >
+                      <span className="text-sm">{COLUMN_LABELS[key]}</span>
+                      <Switch
+                        size="sm"
+                        checked={!hiddenColumns.includes(key)}
+                        onCheckedChange={() => onToggleColumn(key)}
+                      />
+                    </label>
+                  ))}
+                </div>
               </div>
-            </div>
+            ) : null}
           </PopoverContent>
         </Popover>
+
+        <DropdownMenu>
+          <Tooltip>
+            <DropdownMenuTrigger
+              render={
+                <TooltipTrigger
+                  render={
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-8 w-8 gap-1 px-0 text-muted-foreground md:w-auto md:px-2.5"
+                    >
+                      {viewMode === "list" ? (
+                        <Rows3 className="size-3.5" />
+                      ) : (
+                        <LayoutGrid className="size-3.5" />
+                      )}
+                      <span className="hidden md:inline">
+                        {viewMode === "list"
+                          ? t(($) => $.page.view_list)
+                          : t(($) => $.page.view_cards)}
+                      </span>
+                    </Button>
+                  }
+                />
+              }
+            />
+            <TooltipContent side="bottom">
+              {t(($) => $.toolbar.view)}
+            </TooltipContent>
+          </Tooltip>
+          <DropdownMenuContent align="end" className="w-auto">
+            <DropdownMenuRadioGroup
+              value={viewMode}
+              onValueChange={(value) =>
+                onViewModeChange(value as AgentsViewMode)
+              }
+            >
+              <DropdownMenuRadioItem value="list">
+                <Rows3 />
+                {t(($) => $.page.view_list)}
+              </DropdownMenuRadioItem>
+              <DropdownMenuRadioItem value="cards">
+                <LayoutGrid />
+                {t(($) => $.page.view_cards)}
+              </DropdownMenuRadioItem>
+            </DropdownMenuRadioGroup>
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
       </div>
     </div>

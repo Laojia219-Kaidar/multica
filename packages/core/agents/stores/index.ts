@@ -1,10 +1,12 @@
 export {
   useAgentsViewStore,
   AGENT_SCOPES,
+  AGENT_VIEW_MODES,
   AGENT_SORT_DEFAULT_DIRECTION,
   AGENT_DEFAULT_HIDDEN_COLUMNS,
   EMPTY_AGENT_FILTERS,
   type AgentsScope,
+  type AgentsViewMode,
   type AgentsViewState,
   type AgentSortField,
   type AgentSortDirection,

@@ -1,6 +1,45 @@
 {
   "title": "Usage",
   "subtitle": "Token spend and agent activity across this workspace.",
+  "quota": {
+    "title": "Model quota and usage totals",
+    "subtitle": "Exhaustively aggregates selected {{days}}-day Tokens by provider → plan/billing account → model → digital employee. The Owner confirms quota windows and totals before entry.",
+    "inventory_summary": "{{employees}} employees · {{plans}} plans/accounts",
+    "plan_confirmation": "Plan/account mapping awaits confirmation",
+    "runtime_unbound": "Runtime not bound",
+    "observed_usage_hint": "Observed in this {{days}}-day view",
+    "pending_input": "To enter",
+    "pending_metric": "Metric to confirm",
+    "employee_count": "{{count}} employees",
+    "model_totals_title": "All-model usage totals",
+    "model_totals_hint": "Selected {{days}}-day Tokens and share, aggregated for the same model across billing accounts and employees.",
+    "provider_summary": "{{plans}} plans/accounts · {{employees}} employees",
+    "provider_aggregate_note": "Provider total; quota will roll up from its plans",
+    "summary": {
+      "all_usage": "All employee Tokens",
+      "providers": "Model providers",
+      "accounts": "Plans/accounts",
+      "models": "Models",
+      "employees": "Digital employees"
+    },
+    "table": {
+      "provider": "Model provider",
+      "plan": "Plan",
+      "plan_account": "Plan / billing account",
+      "models": "Models",
+      "employees": "Employee usage",
+      "observed_usage": "Selected-period Tokens",
+      "usage_share": "Share of all usage",
+      "window": "Quota window",
+      "total": "Total quota",
+      "quota_used": "Quota-window used",
+      "remaining": "Remaining",
+      "usage_ratio": "Used %",
+      "reset": "Resets"
+    },
+    "empty_title": "No digital employees to list",
+    "empty_body": "The current employee or Runtime source is unavailable, so no candidate plan relationship was produced."
+  },
   "filter": {
     "project_label": "Project",
     "all_projects": "All projects",

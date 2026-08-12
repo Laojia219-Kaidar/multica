@@ -17,6 +17,11 @@
   },
   "inspector": {
     "details_section": "Details",
+    "leader": "Leader",
+    "members": "Members",
+    "created_by": "Created by",
+    "created": "Created",
+    "updated": "Updated",
     "archive_button": "Archive"
   },
   "archive_dialog": {
@@ -36,6 +41,12 @@
     "label_member": "Member",
     "label_role": "Role",
     "label_optional": "(optional)",
+    "select_placeholder": "Select a member or agent",
+    "search_placeholder": "Search members or agents...",
+    "members_group": "Members",
+    "agents_group": "Agents",
+    "type_member": "Member",
+    "type_agent": "Agent",
     "placeholder_role_inline": "Add role…",
     "cancel": "Cancel"
   },
@@ -52,6 +63,8 @@
   },
   "members_tab": {
     "section_title": "Members",
+    "type_member": "Member",
+    "type_agent": "Agent",
     "section_count_one": "{{count}} member in this squad",
     "section_count_other": "{{count}} members in this squad",
     "add_member_button": "Add Member",
@@ -80,6 +93,7 @@
     "more_members_other": "+{{count}} more"
   },
   "instructions_tab": {
+    "tab_label": "Instructions",
     "description": "Squad instructions are injected into the leader agent's prompt whenever it works on an issue assigned to this squad. Use them to give the leader squad-wide guidance, working agreements, or context the leader should follow on every task.",
     "unsaved_changes": "Unsaved changes",
     "save_button": "Save"

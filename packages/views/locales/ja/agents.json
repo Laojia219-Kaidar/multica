@@ -9,7 +9,27 @@
     "of_total": "{{total}} 件中 {{visible}} 件",
     "list_load_failed": "エージェントを読み込めませんでした",
     "list_load_failed_default": "エージェント一覧の取得中に問題が発生しました。",
-    "try_again": "再試行"
+    "try_again": "再試行",
+    "view_list": "横一覧",
+    "view_cards": "部門別社員カード"
+  },
+  "directory": {
+    "load_failed": "組織部門を読み込めませんでした",
+    "load_failed_description": "社員データは利用できますが、現在は部門所属を確認できません。",
+    "retry": "再試行",
+    "leader": "部門責任者",
+    "employees_other": "{{count}} 名",
+    "visible_of_total": "{{visible}} / {{total}} 名",
+    "unassigned": "組織関係の登録待ち",
+    "unassigned_description": "これらの社員はまだ 1 つの部門に正確に所属していません。",
+    "conflict": "複数部門への所属を要確認",
+    "conflict_description": "これらの社員は複数の部門に表示されています。重複表示や任意の割り当ては行いません。",
+    "role_unassigned": "役割未登録",
+    "runtime": "ランタイム",
+    "model": "モデル",
+    "runs_other": "過去 30 日間に {{count}} 回実行",
+    "no_runtime": "ランタイム未割り当て",
+    "no_model": "モデル未設定"
   },
   "scope": {
     "mine": "自分のもの",
@@ -725,7 +745,8 @@
     "direction_desc": "降順",
     "section_columns": "列",
     "section_owner": "オーナー",
-    "section_model": "モデル"
+    "section_model": "モデル",
+    "view": "表示形式"
   },
   "creation_studio": {
     "title": "エージェントを作成",

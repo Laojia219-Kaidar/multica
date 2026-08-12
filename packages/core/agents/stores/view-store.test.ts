@@ -26,7 +26,7 @@ beforeAll(() => {
 
 beforeEach(() => {
   localStorage.clear();
-  useAgentsViewStore.setState({ scope: "mine" });
+  useAgentsViewStore.setState({ scope: "mine", viewMode: "list" });
   setCurrentWorkspace(null, null);
 });
 
@@ -35,6 +35,15 @@ afterEach(() => {
 });
 
 describe("useAgentsViewStore", () => {
+  it("defaults to the dense list view", () => {
+    expect(useAgentsViewStore.getState().viewMode).toBe("list");
+  });
+
+  it("persists the employee-card view choice", () => {
+    useAgentsViewStore.getState().setViewMode("cards");
+    expect(useAgentsViewStore.getState().viewMode).toBe("cards");
+  });
+
   it("defaults to 'mine'", () => {
     expect(useAgentsViewStore.getState().scope).toBe("mine");
   });
@@ -58,6 +67,7 @@ describe("useAgentsViewStore", () => {
       "scope",
       "sortDirection",
       "sortField",
+      "viewMode",
     ]);
     expect(parsed.state.scope).toBe("all");
   });

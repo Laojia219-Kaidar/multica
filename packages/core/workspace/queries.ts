@@ -1,6 +1,6 @@
 import { queryOptions } from "@tanstack/react-query";
 import { api } from "../api";
-import type { Agent, Squad, Workspace } from "../types";
+import type { Agent, Squad, SquadMember, Workspace } from "../types";
 
 export const workspaceKeys = {
   all: (wsId: string) => ["workspaces", wsId] as const,
@@ -10,6 +10,8 @@ export const workspaceKeys = {
   myInvitations: () => ["invitations", "mine"] as const,
   agents: (wsId: string) => ["workspaces", wsId, "agents"] as const,
   squads: (wsId: string) => ["workspaces", wsId, "squads"] as const,
+  squadDirectory: (wsId: string) =>
+    ["workspaces", wsId, "squads", "directory"] as const,
   // Per-squad member status. Lives under the workspace key tree so
   // workspace switches naturally drop the cache, and so a broad
   // `["workspaces", wsId, "squads"]` invalidation covers it.
@@ -53,6 +55,33 @@ export function squadListOptions(wsId: string) {
   return queryOptions<Squad[]>({
     queryKey: workspaceKeys.squads(wsId),
     queryFn: () => api.listSquads(),
+    enabled: !!wsId,
+  });
+}
+
+export interface SquadDirectoryEntry {
+  squad: Squad;
+  members: SquadMember[];
+}
+
+/**
+ * Reads the exact Squad -> Agent membership projection used by the employee
+ * card directory. The query stays underneath the workspace squad key so the
+ * existing realtime invalidation refreshes both list and directory views.
+ */
+export function squadDirectoryOptions(wsId: string) {
+  return queryOptions<SquadDirectoryEntry[]>({
+    queryKey: workspaceKeys.squadDirectory(wsId),
+    queryFn: async () => {
+      const squads = await api.listSquads();
+      const memberLists = await Promise.all(
+        squads.map((squad) => api.listSquadMembers(squad.id)),
+      );
+      return squads.map((squad, index) => ({
+        squad,
+        members: memberLists[index] ?? [],
+      }));
+    },
     enabled: !!wsId,
   });
 }

@@ -1,7 +1,14 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { BarChart3, EyeOff, FolderKanban, Trash2 } from "lucide-react";
+import {
+  BarChart3,
+  CornerDownRight,
+  CreditCard,
+  EyeOff,
+  FolderKanban,
+  Trash2,
+} from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { Skeleton } from "@multica/ui/components/ui/skeleton";
 import {
@@ -18,9 +25,10 @@ import {
   SelectValue,
 } from "@multica/ui/components/ui/select";
 import { useWorkspaceId } from "@multica/core/hooks";
-import type { Agent } from "@multica/core/types";
+import type { Agent, AgentRuntime } from "@multica/core/types";
 import { agentListOptions } from "@multica/core/workspace/queries";
 import { projectListOptions } from "@multica/core/projects/queries";
+import { runtimeListOptions } from "@multica/core/runtimes/queries";
 import {
   dashboardUsageDailyOptions,
   dashboardUsageByAgentOptions,
@@ -93,6 +101,10 @@ import {
   type FailureTotals,
   type OffenderSort,
 } from "../utils";
+import {
+  buildModelQuotaUsageInventory,
+  type ModelQuotaUsageInventory,
+} from "../model-quota-inventory";
 
 // Period selector — mirrors the runtime detail page so users see the same
 // option set across both dashboards. `dims` declares which dimensions each
@@ -139,6 +151,7 @@ const EMPTY_FAILURE_DAILY: import("@multica/core/types").DashboardFailureDaily[]
 const EMPTY_FAILURE_BY_AGENT: import("@multica/core/types").DashboardFailureByAgent[] =
   [];
 const EMPTY_AGENTS: Agent[] = [];
+const EMPTY_RUNTIMES: AgentRuntime[] = [];
 
 // Local segmented control — same visual language the runtime usage section
 // uses for its period / tab toggles. shadcn's Tabs is wired for full tab
@@ -260,6 +273,8 @@ export function DashboardPage() {
   const { data: projects = [] } = useQuery(projectListOptions(wsId));
   const agentsQuery = useQuery(agentListOptions(wsId));
   const agents = agentsQuery.data ?? EMPTY_AGENTS;
+  const runtimesQuery = useQuery(runtimeListOptions(wsId));
+  const runtimes = runtimesQuery.data ?? EMPTY_RUNTIMES;
 
   // Validate the picked project against the current workspace's list. A
   // stale UUID — left over from a project that's been deleted, or from the
@@ -451,6 +466,10 @@ export function DashboardPage() {
     () => aggregateAgentTokens(byAgentUsage),
     [byAgentUsage],
   );
+  const modelQuotaUsageInventory = useMemo(
+    () => buildModelQuotaUsageInventory(agents, runtimes, agentTokenRows),
+    [agents, runtimes, agentTokenRows],
+  );
 
   // Run-time totals — taskCount + failedCount summed for the KPI row.
   const runTimeTotals = useMemo(() => {
@@ -605,6 +624,12 @@ export function DashboardPage() {
                 />
               </div>
 
+              <ProviderQuotaPanel
+                days={days}
+                inventory={modelQuotaUsageInventory}
+                isLoading={agentsQuery.isLoading || runtimesQuery.isLoading}
+              />
+
               {/* Trend chart — toggle picks Tokens / Cost / Time / Tasks /
                   Errors and the parent's dim selector decides whether the
                   bars are per-day or per-calendar-week. All five metrics
@@ -650,6 +675,310 @@ export function DashboardPage() {
         </div>
       </div>
     </div>
+  );
+}
+
+function ProviderQuotaPanel({
+  days,
+  inventory,
+  isLoading,
+}: {
+  days: TimeRange;
+  inventory: ModelQuotaUsageInventory;
+  isLoading: boolean;
+}) {
+  const { t, i18n } = useT("usage");
+  const locale = i18n.resolvedLanguage ?? i18n.language;
+
+  return (
+    <section className="space-y-3 rounded-lg border bg-card p-4">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div className="space-y-1">
+          <h2 className="text-sm font-semibold">{t(($) => $.quota.title)}</h2>
+          <p className="text-xs text-muted-foreground">
+            {t(($) => $.quota.subtitle, { days })}
+          </p>
+        </div>
+        <span className="rounded-full border px-2 py-1 text-[11px] text-muted-foreground">
+          {t(($) => $.quota.inventory_summary, {
+            employees: inventory.employeeCount,
+            plans: inventory.planCount,
+          })}
+        </span>
+      </div>
+
+      <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
+        <QuotaSummaryMetric
+          label={t(($) => $.quota.summary.all_usage)}
+          value={formatTokens(inventory.totalObservedTokens)}
+        />
+        <QuotaSummaryMetric
+          label={t(($) => $.quota.summary.providers)}
+          value={String(inventory.providers.length)}
+        />
+        <QuotaSummaryMetric
+          label={t(($) => $.quota.summary.accounts)}
+          value={String(inventory.planCount)}
+        />
+        <QuotaSummaryMetric
+          label={t(($) => $.quota.summary.models)}
+          value={String(inventory.models.length)}
+        />
+        <QuotaSummaryMetric
+          label={t(($) => $.quota.summary.employees)}
+          value={String(inventory.employeeCount)}
+        />
+      </div>
+
+      {!isLoading && inventory.models.length > 0 ? (
+        <div className="space-y-2 rounded-md border bg-muted/15 p-3">
+          <div>
+            <h3 className="text-xs font-semibold">
+              {t(($) => $.quota.model_totals_title)}
+            </h3>
+            <p className="text-[11px] text-muted-foreground">
+              {t(($) => $.quota.model_totals_hint, { days })}
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {inventory.models.map((model) => (
+              <div
+                key={model.model}
+                className="rounded-md border bg-background px-2.5 py-1.5 text-[11px]"
+              >
+                <span className="font-medium">{model.model}</span>
+                <span className="ml-2 text-muted-foreground">
+                  {formatTokens(model.observedTokens)} ·{" "}
+                  {formatUsageShare(
+                    model.observedTokens,
+                    inventory.totalObservedTokens,
+                    locale,
+                  )} ·{" "}
+                  {t(($) => $.quota.employee_count, {
+                    count: model.employeeCount,
+                  })}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
+
+      <div className="overflow-x-auto rounded-md border">
+        <table className="w-full min-w-[1840px] text-left text-xs">
+          <thead className="bg-muted/40 text-muted-foreground">
+            <tr>
+              <th className="px-3 py-2 font-medium">
+                {t(($) => $.quota.table.provider)}
+              </th>
+              <th className="px-3 py-2 font-medium">
+                {t(($) => $.quota.table.plan_account)}
+              </th>
+              <th className="px-3 py-2 font-medium">
+                {t(($) => $.quota.table.models)}
+              </th>
+              <th className="px-3 py-2 font-medium">
+                {t(($) => $.quota.table.employees)}
+              </th>
+              <th className="px-3 py-2 text-right font-medium">
+                {t(($) => $.quota.table.observed_usage)}
+              </th>
+              <th className="px-3 py-2 text-right font-medium">
+                {t(($) => $.quota.table.usage_share)}
+              </th>
+              <th className="px-3 py-2 font-medium">
+                {t(($) => $.quota.table.window)}
+              </th>
+              <th className="px-3 py-2 text-right font-medium">
+                {t(($) => $.quota.table.total)}
+              </th>
+              <th className="px-3 py-2 text-right font-medium">
+                {t(($) => $.quota.table.quota_used)}
+              </th>
+              <th className="px-3 py-2 text-right font-medium">
+                {t(($) => $.quota.table.remaining)}
+              </th>
+              <th className="px-3 py-2 text-right font-medium">
+                {t(($) => $.quota.table.usage_ratio)}
+              </th>
+              <th className="px-3 py-2 font-medium">
+                {t(($) => $.quota.table.reset)}
+              </th>
+            </tr>
+          </thead>
+          {isLoading ? (
+            <tbody>
+              <tr>
+                <td colSpan={12} className="px-4 py-6">
+                  <Skeleton className="h-8 w-full" />
+                </td>
+              </tr>
+            </tbody>
+          ) : inventory.providers.length === 0 ? (
+            <tbody>
+              <tr>
+                <td colSpan={12} className="px-4 py-6">
+                  <div className="flex flex-col items-center gap-2 text-center">
+                    <CreditCard className="h-5 w-5 text-muted-foreground" />
+                    <p className="text-xs font-medium">
+                      {t(($) => $.quota.empty_title)}
+                    </p>
+                    <p className="max-w-2xl text-[11px] text-muted-foreground">
+                      {t(($) => $.quota.empty_body)}
+                    </p>
+                  </div>
+                </td>
+              </tr>
+            </tbody>
+          ) : (
+            inventory.providers.map((provider) => (
+              <tbody key={provider.provider}>
+                <tr className="border-t bg-muted/25">
+                  <td colSpan={2} className="px-3 py-2.5 font-semibold">
+                    {provider.provider}
+                  </td>
+                  <td colSpan={2} className="px-3 py-2.5 text-muted-foreground">
+                    {t(($) => $.quota.provider_summary, {
+                      plans: provider.plans.length,
+                      employees: provider.employeeCount,
+                    })}
+                  </td>
+                  <td className="px-3 py-2.5 text-right font-semibold">
+                    {formatTokens(provider.observedTokens)}
+                  </td>
+                  <td className="px-3 py-2.5 text-right font-semibold">
+                    {formatUsageShare(
+                      provider.observedTokens,
+                      inventory.totalObservedTokens,
+                      locale,
+                    )}
+                  </td>
+                  <td colSpan={6} className="px-3 py-2.5 text-muted-foreground">
+                    {t(($) => $.quota.provider_aggregate_note)}
+                  </td>
+                </tr>
+                {provider.plans.map((plan) => (
+                  <tr key={plan.id} className="border-t align-top">
+                    <td className="px-3 py-3 text-muted-foreground">
+                      <CornerDownRight className="h-3.5 w-3.5" />
+                    </td>
+                  <td className="px-3 py-3">
+                      <div className="font-medium">{plan.plan}</div>
+                    <div className="mt-1 text-[10px] text-muted-foreground">
+                        {plan.account}
+                    </div>
+                    <span className="mt-1 inline-flex rounded-full border px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                      {t(($) => $.quota.plan_confirmation)}
+                    </span>
+                  </td>
+                    <td className="space-y-1 px-3 py-3">
+                      {plan.models.map((model) => (
+                        <div key={model.model}>
+                          <span className="font-medium">{model.model}</span>
+                          <span className="ml-1 text-[10px] text-muted-foreground">
+                            {formatTokens(model.observedTokens)} ·{" "}
+                            {formatUsageShare(
+                              model.observedTokens,
+                              inventory.totalObservedTokens,
+                              locale,
+                            )}
+                          </span>
+                        </div>
+                      ))}
+                  </td>
+                    <td className="space-y-1 px-3 py-3">
+                      {plan.employees.map((employee) => (
+                        <div key={employee.id} className="flex justify-between gap-3">
+                          <span className="font-medium">{employee.name}</span>
+                          <span className="whitespace-nowrap text-[10px] text-muted-foreground">
+                            {formatTokens(employee.observedTokens)} ·{" "}
+                            {formatUsageShare(
+                              employee.observedTokens,
+                              plan.observedTokens,
+                              locale,
+                            )}
+                          </span>
+                        </div>
+                      ))}
+                    </td>
+                  <td className="px-3 py-3 text-right">
+                    <div className="font-medium">
+                        {formatTokens(plan.observedTokens)}
+                    </div>
+                    <div className="text-[10px] text-muted-foreground">
+                      {t(($) => $.quota.observed_usage_hint, { days })}
+                    </div>
+                  </td>
+                    <td className="px-3 py-3 text-right font-medium">
+                      {formatUsageShare(
+                        plan.observedTokens,
+                        inventory.totalObservedTokens,
+                        locale,
+                      )}
+                    </td>
+                  <PendingQuotaCell label={t(($) => $.quota.pending_input)} />
+                  <PendingQuotaCell
+                    label={t(($) => $.quota.pending_input)}
+                    align="right"
+                  />
+                  <PendingQuotaCell
+                    label={t(($) => $.quota.pending_metric)}
+                    align="right"
+                  />
+                  <PendingQuotaCell
+                    label={t(($) => $.quota.pending_metric)}
+                    align="right"
+                  />
+                  <PendingQuotaCell
+                    label={t(($) => $.quota.pending_metric)}
+                    align="right"
+                  />
+                  <PendingQuotaCell label={t(($) => $.quota.pending_input)} />
+                </tr>
+                ))}
+              </tbody>
+            ))
+          )}
+        </table>
+      </div>
+    </section>
+  );
+}
+
+function QuotaSummaryMetric({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-md border bg-muted/15 px-3 py-2">
+      <div className="text-[10px] text-muted-foreground">{label}</div>
+      <div className="mt-0.5 text-base font-semibold">{value}</div>
+    </div>
+  );
+}
+
+function formatUsageShare(value: number, total: number, locale: string) {
+  if (total <= 0) return "0%";
+  return new Intl.NumberFormat(locale, {
+    style: "percent",
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 1,
+  }).format(value / total);
+}
+
+function PendingQuotaCell({
+  label,
+  align = "left",
+}: {
+  label: string;
+  align?: "left" | "right";
+}) {
+  return (
+    <td
+      className={`px-3 py-3 text-muted-foreground ${
+        align === "right" ? "text-right" : ""
+      }`}
+    >
+      <div>—</div>
+      <div className="text-[10px]">{label}</div>
+    </td>
   );
 }
 

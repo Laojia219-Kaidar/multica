@@ -9,7 +9,27 @@
     "of_total": "{{total}}개 중 {{visible}}개",
     "list_load_failed": "에이전트 목록을 불러오지 못했습니다",
     "list_load_failed_default": "에이전트 목록을 가져오는 중 문제가 발생했습니다.",
-    "try_again": "다시 시도"
+    "try_again": "다시 시도",
+    "view_list": "가로 목록",
+    "view_cards": "부서별 직원 카드"
+  },
+  "directory": {
+    "load_failed": "조직 부서를 불러오지 못했습니다",
+    "load_failed_description": "직원 데이터는 사용할 수 있지만 현재 부서 소속을 확인할 수 없습니다.",
+    "retry": "다시 시도",
+    "leader": "부서 책임자",
+    "employees_other": "직원 {{count}}명",
+    "visible_of_total": "직원 {{visible}} / {{total}}명",
+    "unassigned": "조직 관계 등록 대기",
+    "unassigned_description": "이 직원들은 아직 하나의 부서에 정확히 배정되지 않았습니다.",
+    "conflict": "복수 부서 소속 확인 필요",
+    "conflict_description": "이 직원들은 여러 부서에 동시에 표시됩니다. 중복 표시하거나 임의로 배정하지 않습니다.",
+    "role_unassigned": "직무 등록 대기",
+    "runtime": "런타임",
+    "model": "모델",
+    "runs_other": "최근 30일 실행 {{count}}회",
+    "no_runtime": "런타임 미할당",
+    "no_model": "모델 미설정"
   },
   "scope": {
     "mine": "내 것",
@@ -725,7 +745,8 @@
     "direction_desc": "내림차순",
     "section_columns": "열",
     "section_owner": "소유자",
-    "section_model": "모델"
+    "section_model": "모델",
+    "view": "보기"
   },
   "creation_studio": {
     "title": "에이전트 만들기",

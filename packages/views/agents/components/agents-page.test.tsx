@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { screen } from "@testing-library/react";
 import type { Agent } from "@multica/core/types";
 import type { AgentActivity } from "@multica/core/agents";
+import type { SquadDirectoryEntry } from "@multica/core/workspace/queries";
 import { renderWithI18n } from "../../test/i18n";
 import { NavigationProvider, type NavigationAdapter } from "../../navigation";
 import { AgentsPage } from "./agents-page";
@@ -29,7 +30,9 @@ const mocks = vi.hoisted(() => ({
     byAgent: new Map<string, unknown>(),
     loading: false,
   },
+  directory: [] as SquadDirectoryEntry[],
   viewState: {
+    viewMode: "list" as string,
     scope: "all",
     sortField: "lastActive" as string,
     sortDirection: "desc" as string,
@@ -42,6 +45,7 @@ const mocks = vi.hoisted(() => ({
       access: [] as string[],
     },
     setScope: vi.fn(),
+    setViewMode: vi.fn(),
     toggleSort: vi.fn(),
     setSortField: vi.fn(),
     setSortDirection: vi.fn(),
@@ -64,6 +68,14 @@ vi.mock("@tanstack/react-query", () => ({
     }
     if (key === "agent-run-counts") {
       return { data: mocks.runCounts, isPending: mocks.runCountsPending };
+    }
+    if (key === "squad-directory") {
+      return {
+        data: mocks.directory,
+        isLoading: false,
+        error: null,
+        refetch: vi.fn(),
+      };
     }
     return { data: [], isLoading: false, isPending: false };
   },
@@ -107,6 +119,7 @@ vi.mock("@multica/core/agents/stores", () => ({
     selector(mocks.viewState),
   AGENT_DEFAULT_HIDDEN_COLUMNS: ["model", "created"],
   AGENT_SCOPES: ["mine", "all", "archived"],
+  AGENT_VIEW_MODES: ["list", "cards"],
 }));
 
 vi.mock("@multica/core/api", () => ({
@@ -132,11 +145,13 @@ vi.mock("@multica/core/paths", () => ({
 vi.mock("@multica/core/workspace/queries", () => ({
   agentListOptions: () => ({ queryKey: ["agents"] }),
   memberListOptions: () => ({ queryKey: ["members"] }),
+  squadDirectoryOptions: () => ({ queryKey: ["squad-directory"] }),
   workspaceKeys: { agents: (wsId: string) => ["agents", wsId] },
 }));
 
 vi.mock("@multica/core/runtimes", () => ({
   runtimeListOptions: () => ({ queryKey: ["runtimes"] }),
+  runtimeDisplayLabel: () => "Test runtime",
 }));
 
 // View-layer children with heavy / portal deps — stub to keep the test focused
@@ -239,6 +254,8 @@ beforeEach(() => {
   mocks.runCountsPending = false;
   mocks.activity = { byAgent: new Map(), loading: false };
   mocks.presence = { byAgent: new Map(), loading: false };
+  mocks.directory = [];
+  mocks.viewState.viewMode = "list";
   mocks.viewState.scope = "all";
   mocks.viewState.sortField = "lastActive";
   mocks.viewState.sortDirection = "desc";
@@ -330,5 +347,48 @@ describe("AgentsPage listReady gate", () => {
 
     expect(screen.getByText("No agents yet")).toBeInTheDocument();
     expect(screen.queryByTestId("skeleton")).not.toBeInTheDocument();
+  });
+});
+
+describe("AgentsPage department-card view", () => {
+  it("renders each employee under the exact department membership", () => {
+    mocks.viewState.viewMode = "cards";
+    mocks.viewState.sortField = "name";
+    mocks.directory = [
+      {
+        squad: {
+          id: "department-engineering",
+          workspace_id: "workspace-1",
+          name: "Product Engineering",
+          description: "Builds the product",
+          instructions: "",
+          avatar_url: null,
+          leader_id: ALPHA.id,
+          creator_id: "user-1",
+          created_at: "2026-08-01T00:00:00Z",
+          updated_at: "2026-08-01T00:00:00Z",
+          archived_at: null,
+          archived_by: null,
+        },
+        members: [
+          {
+            id: "membership-alpha",
+            squad_id: "department-engineering",
+            member_type: "agent",
+            member_id: ALPHA.id,
+            role: "Full-stack engineer",
+            created_at: "2026-08-01T00:00:00Z",
+          },
+        ],
+      },
+    ];
+
+    renderPage();
+
+    expect(screen.getByText("Product Engineering")).toBeInTheDocument();
+    expect(screen.getByText("Full-stack engineer")).toBeInTheDocument();
+    expect(screen.getAllByText("Alpha Agent")).toHaveLength(2);
+    expect(screen.getByText("Organization relationship pending")).toBeInTheDocument();
+    expect(document.querySelectorAll("[data-agent-card]")).toHaveLength(2);
   });
 });

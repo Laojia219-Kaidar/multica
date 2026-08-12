@@ -1,6 +1,45 @@
 {
   "title": "用量",
-  "subtitle": "查看当前 Workspace 的 token 消耗和智能体运行情况。",
+  "subtitle": "查看当前 Workspace 的 Token 消耗和数字员工运行情况。",
+  "quota": {
+    "title": "模型额度与用量汇总",
+    "subtitle": "按模型提供商 → 套餐/计费账户 → 模型 → 数字员工穷尽汇总所选 {{days}} 天 Token；额度周期和总额度由 Owner 确认后录入。",
+    "inventory_summary": "{{employees}} 名员工 · {{plans}} 个套餐/计费账户",
+    "plan_confirmation": "套餐/账户映射待你确认",
+    "runtime_unbound": "未绑定 Runtime",
+    "observed_usage_hint": "本页 {{days}} 天实测",
+    "pending_input": "待录入",
+    "pending_metric": "待确认口径",
+    "employee_count": "{{count}} 名员工",
+    "model_totals_title": "所有模型用量合计",
+    "model_totals_hint": "同一模型跨计费账户、跨员工汇总的 {{days}} 天 Token 及占比。",
+    "provider_summary": "{{plans}} 个套餐/账户 · {{employees}} 名员工",
+    "provider_aggregate_note": "提供商合计；额度将由下属套餐汇总",
+    "summary": {
+      "all_usage": "全部员工 Token",
+      "providers": "模型提供商",
+      "accounts": "套餐/计费账户",
+      "models": "模型",
+      "employees": "数字员工"
+    },
+    "table": {
+      "provider": "模型提供商",
+      "plan": "套餐/计费账户",
+      "plan_account": "套餐/计费账户",
+      "models": "模型",
+      "employees": "员工明细",
+      "observed_usage": "所选周期 Token",
+      "usage_share": "占全部用量",
+      "window": "额度周期",
+      "total": "总额度",
+      "quota_used": "套餐口径已用",
+      "remaining": "剩余额度",
+      "usage_ratio": "已使用比例",
+      "reset": "重置时间"
+    },
+    "empty_title": "没有可列示的数字员工",
+    "empty_body": "当前员工或 Runtime 真源不可用，未生成任何套餐关系。"
+  },
   "filter": {
     "project_label": "项目",
     "all_projects": "全部项目",
@@ -50,7 +89,7 @@
       "timeout": "超时",
       "provider": "模型服务",
       "runtime": "运行时",
-      "agent": "智能体",
+      "agent": "数字员工",
       "other": "其他"
     },
     "title": "错误",
@@ -58,15 +97,15 @@
     "mix_title": "失败构成 · {{failed}}",
     "mix_label": "失败构成",
     "codes_label": "错误码",
-    "by_agent": "问题最多的智能体",
+    "by_agent": "问题最多的数字员工",
     "sort_label": "错误榜排序依据",
     "sort_failed": "失败数",
     "sort_rate": "失败率",
-    "header_agent": "智能体",
+    "header_agent": "数字员工",
     "header_failed": "失败数",
     "header_runs": "运行数",
     "header_rate": "失败率",
-    "other_agents": "其他智能体",
+    "other_agents": "其他数字员工",
     "low_sample": "所选时间范围内运行不足 {{count}} 次，失败率参考价值有限。",
     "no_data": "所选时间范围内没有失败的运行。",
     "show_reasons": "展开错误码",
@@ -76,23 +115,23 @@
   },
   "leaderboard": {
     "title": "排行榜",
-    "caption": "{{count}} 个智能体",
-    "caption_with_deleted": "{{count}} 个智能体 · {{deleted}} 个已删除",
-    "sort_label": "智能体排序依据",
-    "deleted_agents": "已删除的智能体",
-    "other_agents": "其他智能体",
-    "header_agent": "智能体",
+    "caption": "{{count}} 名数字员工",
+    "caption_with_deleted": "{{count}} 名数字员工 · {{deleted}} 名已删除",
+    "sort_label": "数字员工排序依据",
+    "deleted_agents": "已删除的数字员工",
+    "other_agents": "其他数字员工",
+    "header_agent": "数字员工",
     "header_tokens": "Token",
     "header_cost": "费用",
     "header_time": "运行时长",
     "header_tasks": "任务数",
     "show_all": "展开全部",
     "show_less": "只看前 {{count}} 个",
-    "no_data": "所选时间范围内暂无智能体活动。"
+    "no_data": "所选时间范围内暂无数字员工活动。"
   },
   "empty": {
     "title": "暂无消耗数据",
-    "body": "当智能体在这里开始执行任务后，它们的 token 消耗和运行时长将出现在此处。"
+    "body": "当数字员工在这里开始执行任务后，它们的 Token 消耗和运行时长将出现在此处。"
   },
   "duration": {
     "less_than_minute": "<1分钟"

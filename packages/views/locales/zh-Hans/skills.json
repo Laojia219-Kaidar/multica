@@ -1,10 +1,10 @@
 {
   "page": {
-    "title": "Skills",
-    "tagline": "工作区里任何智能体都能使用的指令。",
+    "title": "技能",
+    "tagline": "工作区里的数字员工可以复用的专业能力与操作指令。",
     "learn_more": "了解更多 →",
-    "new_skill": "新建 skill",
-    "search_placeholder": "搜索 skill...",
+    "new_skill": "新建技能",
+    "search_placeholder": "搜索技能...",
     "scopes": {
       "all": {
         "label": "全部",
