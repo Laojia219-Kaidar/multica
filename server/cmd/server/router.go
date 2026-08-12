@@ -1342,6 +1342,10 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Get("/", h.GetProject)
 					r.Put("/", h.UpdateProject)
 					r.Delete("/", h.DeleteProject)
+					// HIV-367 (P0-E): read-only pipeline projection. Composes
+					// issue + agent_task_queue + comment under exact workspace
+					// scoping; no new writer.
+					r.Get("/pipeline", h.GetProjectPipeline)
 					r.Get("/resources", h.ListProjectResources)
 					r.Post("/resources", h.CreateProjectResource)
 					r.Put("/resources/{resourceId}", h.UpdateProjectResource)

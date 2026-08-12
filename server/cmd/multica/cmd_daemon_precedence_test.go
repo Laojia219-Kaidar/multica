@@ -128,6 +128,50 @@ func TestResolveDaemonIntOverridePrecedence(t *testing.T) {
 	}
 }
 
+// TestResolveDaemonMaxConcurrentTasksFlag pins the HIV-361 fail-closed
+// contract: an explicit --max-concurrent-tasks flag may only match the
+// persisted config (its single source of truth) or bootstrap a fresh config;
+// any divergence is refused with a config-set hint so background scripts can
+// no longer silently override daemon capacity.
+func TestResolveDaemonMaxConcurrentTasksFlag(t *testing.T) {
+	cases := []struct {
+		name    string
+		flag    int
+		cfg     int
+		want    int
+		wantErr string // substring of expected error, "" = no error
+	}{
+		{"flag unset returns zero", 0, 8, 0, ""},
+		{"matching flag accepted", 8, 8, 8, ""},
+		{"bootstrap flag accepted when config unset", 8, 0, 8, ""},
+		{"divergent flag refused", 20, 8, 0, "--max-concurrent-tasks 20 refused"},
+		{"refusal names the config source of truth", 20, 8, 0, "single source of truth"},
+		{"refusal hints config set", 20, 8, 0, "multica config set max_concurrent_tasks 20"},
+		{"downward divergence also refused", 4, 8, 0, "--max-concurrent-tasks 4 refused"},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := resolveDaemonMaxConcurrentTasksFlag(tc.flag, tc.cfg)
+			if tc.wantErr != "" {
+				if err == nil {
+					t.Fatalf("expected error containing %q, got nil (value=%d)", tc.wantErr, got)
+				}
+				if !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("error = %q; want to contain %q", err.Error(), tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("got %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestResolveDaemonAgentTimeoutOverridePrecedence pins the pointer-based
 // tri-state for --agent-timeout: an explicit flag (even `--agent-timeout 0`)
 // wins over env and cfg; env set means "let LoadConfig read the raw env"

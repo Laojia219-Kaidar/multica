@@ -3355,6 +3355,16 @@ export class ApiClient {
     return this.fetch(`/api/projects/${id}`);
   }
 
+  /**
+   * HIV-367 (P0-E): read-only pipeline projection. Returns the per-status
+   * column breakdown + per-issue task/receipt payload the project board needs
+   * to render real processing state. Composes Project + Issue +
+   * agent_task_queue + comment server-side; no new writers.
+   */
+  async getProjectPipeline(id: string): Promise<import("../projects/pipeline-types").ProjectPipelineResponse> {
+    return this.fetch(`/api/projects/${id}/pipeline`);
+  }
+
   async createProject(data: CreateProjectRequest): Promise<Project> {
     return this.fetch("/api/projects", {
       method: "POST",

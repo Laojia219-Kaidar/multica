@@ -96,7 +96,7 @@ func init() {
 	f.Duration("agent-timeout", 0, "Absolute per-task wall-clock cap; 0 = no cap, rely on the watchdogs (env: MULTICA_AGENT_TIMEOUT)")
 	f.Duration("codex-semantic-inactivity-timeout", 0, "Codex semantic inactivity timeout (env: MULTICA_CODEX_SEMANTIC_INACTIVITY_TIMEOUT)")
 	f.Duration("codex-handshake-timeout", 0, "Codex app-server startup RPC timeout (env: MULTICA_CODEX_HANDSHAKE_TIMEOUT)")
-	f.Int("max-concurrent-tasks", 0, "Max tasks running in parallel (env: MULTICA_DAEMON_MAX_CONCURRENT_TASKS)")
+	f.Int("max-concurrent-tasks", 0, "Max tasks running in parallel (env: MULTICA_DAEMON_MAX_CONCURRENT_TASKS); an explicit value must match the persisted config max_concurrent_tasks (its single source of truth) — use 'multica config set max_concurrent_tasks N' to change it")
 	f.Bool("no-auto-update", false, "Disable periodic CLI self-update (env: MULTICA_DAEMON_AUTO_UPDATE=false)")
 	f.Duration("auto-update-interval", 0, "How often to poll GitHub for a newer release (env: MULTICA_DAEMON_AUTO_UPDATE_INTERVAL)")
 
@@ -116,7 +116,7 @@ func init() {
 	rf.Duration("agent-timeout", 0, "Absolute per-task wall-clock cap; 0 = no cap, rely on the watchdogs (env: MULTICA_AGENT_TIMEOUT)")
 	rf.Duration("codex-semantic-inactivity-timeout", 0, "Codex semantic inactivity timeout (env: MULTICA_CODEX_SEMANTIC_INACTIVITY_TIMEOUT)")
 	rf.Duration("codex-handshake-timeout", 0, "Codex app-server startup RPC timeout (env: MULTICA_CODEX_HANDSHAKE_TIMEOUT)")
-	rf.Int("max-concurrent-tasks", 0, "Max tasks running in parallel (env: MULTICA_DAEMON_MAX_CONCURRENT_TASKS)")
+	rf.Int("max-concurrent-tasks", 0, "Max tasks running in parallel (env: MULTICA_DAEMON_MAX_CONCURRENT_TASKS); an explicit value must match the persisted config max_concurrent_tasks (its single source of truth) — use 'multica config set max_concurrent_tasks N' to change it")
 	rf.Bool("no-auto-update", false, "Disable periodic CLI self-update (env: MULTICA_DAEMON_AUTO_UPDATE=false)")
 	rf.Duration("auto-update-interval", 0, "How often to poll GitHub for a newer release (env: MULTICA_DAEMON_AUTO_UPDATE_INTERVAL)")
 
@@ -327,6 +327,13 @@ func runDaemonBackground(cmd *cobra.Command) error {
 	}
 
 	if err := requireDaemonAuth(profile); err != nil {
+		return err
+	}
+
+	// Fail closed before spawning: an explicit --max-concurrent-tasks flag
+	// that diverges from the persisted config must never silently override
+	// the daemon (HIV-361).
+	if err := checkDaemonCapacityFlag(cmd, profile); err != nil {
 		return err
 	}
 
@@ -766,6 +773,13 @@ func runDaemonForeground(cmd *cobra.Command) error {
 		overrides.CodexHandshakeTimeout = handshakeOverride
 	}
 	maxFlag, _ := cmd.Flags().GetInt("max-concurrent-tasks")
+	// HIV-361: persisted config is the single source of truth for capacity.
+	// An explicit flag that diverges from the persisted value fails closed
+	// here (before the daemon starts) instead of silently overriding it.
+	maxFlag, err = resolveDaemonMaxConcurrentTasksFlag(maxFlag, fileCfg.MaxConcurrentTasks)
+	if err != nil {
+		return err
+	}
 	if n := resolveDaemonIntOverride(maxFlag, "MULTICA_DAEMON_MAX_CONCURRENT_TASKS", fileCfg.MaxConcurrentTasks); n > 0 {
 		overrides.MaxConcurrentTasks = n
 	}
@@ -932,6 +946,12 @@ func requireDaemonRestartPreflight(cmd *cobra.Command, profile string) error {
 func runDaemonRestart(cmd *cobra.Command, args []string) error {
 	profile := resolveProfile(cmd)
 	healthPort := healthPortForProfile(profile)
+
+	// Fail closed before the stop phase: a divergent --max-concurrent-tasks
+	// flag must not stop a healthy daemon only to fail the restart (HIV-361).
+	if err := checkDaemonCapacityFlag(cmd, profile); err != nil {
+		return err
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -1249,6 +1269,45 @@ func resolveDaemonIntOverride(flagValue int, envName string, cfgValue int) int {
 		return cfgValue
 	}
 	return 0
+}
+
+// resolveDaemonMaxConcurrentTasksFlag enforces the persisted config as the
+// single source of truth for daemon capacity (HIV-361). An explicit
+// --max-concurrent-tasks flag is accepted only when it matches a persisted
+// max_concurrent_tasks value, or when no value is persisted yet (first-time
+// bootstrap); any divergence fails closed and directs the operator to
+// `multica config set max_concurrent_tasks N` instead. This keeps background
+// scripts or ad-hoc restart commands from silently overriding capacity — the
+// motivating incident was a 22:04:18 restart with `--max-concurrent-tasks 20`
+// that cancelled 4 in-flight tasks including the prior run on this issue.
+//
+// The env var (MULTICA_DAEMON_MAX_CONCURRENT_TASKS) is deliberately left
+// untouched: it is the documented operator channel for systemd-style units,
+// while the flag is the channel ad-hoc/background launchers use. Returns the
+// flag value to apply, or an error when the flag diverges from the persisted
+// config.
+func resolveDaemonMaxConcurrentTasksFlag(flagValue int, cfgValue int) (int, error) {
+	if flagValue <= 0 {
+		return 0, nil
+	}
+	if cfgValue > 0 && flagValue != cfgValue {
+		return 0, fmt.Errorf(
+			"--max-concurrent-tasks %d refused: persisted config max_concurrent_tasks=%d is the single source of truth; run 'multica config set max_concurrent_tasks %d' and restart the daemon without the flag",
+			flagValue, cfgValue, flagValue)
+	}
+	return flagValue, nil
+}
+
+// checkDaemonCapacityFlag loads the profile's persisted config and runs the
+// fail-closed --max-concurrent-tasks divergence guard (HIV-361). It must run
+// BEFORE any daemon lifecycle side effect — the background spawn and the
+// restart stop-phase — so a refused flag never leaves the machine with no
+// daemon (or silently mutated capacity).
+func checkDaemonCapacityFlag(cmd *cobra.Command, profile string) error {
+	fileCfg, _ := cli.LoadCLIConfigForProfile(profile)
+	maxFlag, _ := cmd.Flags().GetInt("max-concurrent-tasks")
+	_, err := resolveDaemonMaxConcurrentTasksFlag(maxFlag, fileCfg.MaxConcurrentTasks)
+	return err
 }
 
 // resolveDaemonAgentTimeoutOverride resolves --agent-timeout across the

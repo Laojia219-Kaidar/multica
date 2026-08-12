@@ -26,6 +26,10 @@ import type { ChildProgress } from "./list-row";
 import { IssueActionsContextMenu } from "../actions";
 import { LabelChip } from "../../labels/label-chip";
 import { IssueAgentActivityIndicator } from "./issue-agent-activity-indicator";
+// HIV-367 (P0-E): pipeline projection badge — the per-card latest-task /
+// processing-state marker. Lives behind usePipelineIssueRow, which returns
+// undefined on non-project surfaces, so the import cost is zero there.
+import { PipelineCardBadge, usePipelineIssueRow } from "../../projects/components/pipeline-projection";
 import { useIssueSurfaceActionsOptional } from "../surface/actions-context";
 import { useT } from "../../i18n";
 
@@ -176,6 +180,11 @@ export const BoardCardContent = memo(function BoardCardContent({
   const showMetaRow = showAssigneeSection || showStartDate || showDueDate || showChildProgress;
   const showRightMeta = !!showStartDate || !!showDueDate || !!showChildProgress || showUpdatedHint;
 
+  // HIV-367 (P0-E): look up this card's pipeline row. Returns undefined when
+  // no projection is available (non-project surfaces, loading state) — the
+  // badge component itself no-ops on undefined.
+  const pipelineRow = usePipelineIssueRow(issue.id);
+
   return (
     <div className="rounded-lg border-[0.5px] border-surface-border bg-surface py-3 px-2.5 shadow-[var(--surface-shadow)] transition-colors group-hover/card:border-foreground/15 group-hover/card:bg-surface-hover group-data-[popup-open]/card:border-foreground/15 group-data-[popup-open]/card:bg-surface-hover">
       {/* Row 1: priority + identifier (left), agent activity + assignee (right) */}
@@ -184,7 +193,11 @@ export const BoardCardContent = memo(function BoardCardContent({
           {priorityIconNode}
           <p className="text-xs text-muted-foreground truncate">{issue.identifier}</p>
         </div>
-        <IssueAgentActivityIndicator issueId={issue.id} />
+        <div className="flex items-center gap-1.5">
+          {/* HIV-367 (P0-E): explicit processing-state marker (§3, §4). */}
+          <PipelineCardBadge row={pipelineRow} />
+          <IssueAgentActivityIndicator issueId={issue.id} />
+        </div>
       </div>
 
       {/* Row 2: Title */}
