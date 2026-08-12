@@ -785,3 +785,198 @@ func TestAcquireLocalDirectoryLock_EarlyFailureReportsWithCancelledParent(t *tes
 		t.Fatalf("fail callback calls = %d, want %d", got, len(tests))
 	}
 }
+
+// post-R2 contract fixtures: read_only Review tasks must never acquire the
+// canonical write lease (unique LocalPathLocker), so multiple read-only
+// reviews of the same candidate run concurrently; bounded_write Repair keeps
+// the exclusive lease.
+
+func readOnlyReviewTask(id, daemonID, path string) Task {
+	ref, err := json.Marshal(localDirectoryRef{LocalPath: path, DaemonID: daemonID})
+	if err != nil {
+		panic(err)
+	}
+	return Task{
+		ID:            id,
+		TaskKind:      "review",
+		ExecutionMode: "read_only",
+		ProjectResources: []ProjectResourceData{
+			{ID: "r1", ResourceType: localDirectoryResourceType, ResourceRef: ref},
+		},
+	}
+}
+
+func repairTask(id, daemonID, path string) Task {
+	ref, err := json.Marshal(localDirectoryRef{LocalPath: path, DaemonID: daemonID})
+	if err != nil {
+		panic(err)
+	}
+	return Task{
+		ID:            id,
+		TaskKind:      "repair",
+		ExecutionMode: "bounded_write",
+		ProjectResources: []ProjectResourceData{
+			{ID: "r1", ResourceType: localDirectoryResourceType, ResourceRef: ref},
+		},
+	}
+}
+
+// TestReadOnlyReviewsDoNotParkOnSameCandidate proves two concurrent read_only
+// Review tasks on the same candidate path both proceed WITHOUT waiting: the
+// daemon skips the canonical write lease for read_only, so neither parks on
+// the other (they do not serialize through LocalPathLocker at all).
+func TestReadOnlyReviewsDoNotParkOnSameCandidate(t *testing.T) {
+	t.Parallel()
+
+	const daemonID = "d-ro"
+	tmp := t.TempDir()
+	d := &Daemon{
+		cfg:            Config{DaemonID: daemonID},
+		localPathLocks: NewLocalPathLocker(),
+		logger:         slog.Default(),
+	}
+
+	taskA := readOnlyReviewTask("review-a", daemonID, tmp)
+	taskB := readOnlyReviewTask("review-b", daemonID, tmp)
+
+	releaseA, abortA := d.acquireLocalDirectoryLockIfNeeded(context.Background(), taskA, slog.Default())
+	if abortA {
+		t.Fatal("read_only review A aborted unexpectedly")
+	}
+	if releaseA != nil {
+		t.Fatal("read_only review A acquired a write lease — it must be nil (no parking)")
+	}
+	releaseB, abortB := d.acquireLocalDirectoryLockIfNeeded(context.Background(), taskB, slog.Default())
+	if abortB {
+		t.Fatal("read_only review B aborted unexpectedly")
+	}
+	if releaseB != nil {
+		t.Fatal("read_only review B acquired a write lease — reviews must not serialize")
+	}
+	if got := d.localPathLocks.Holder(filepath.Clean(tmp)); got != "" {
+		t.Fatalf("path holder after two read_only reviews = %q, want empty (no write lease taken)", got)
+	}
+}
+
+// TestReadOnlyReviewCannotBeTreatedAsBoundedWrite proves a read_only review
+// does NOT wait on (or displace) a bounded_write holder: it returns a nil
+// release immediately while the repair task still holds the unique
+// LocalPathLocker lease, and the repair lease remains exclusively held.
+func TestReadOnlyReviewCannotBeTreatedAsBoundedWrite(t *testing.T) {
+	t.Parallel()
+
+	const daemonID = "d-ro-bw"
+	tmp := t.TempDir()
+	realDir, err := filepath.EvalSymlinks(tmp)
+	if err != nil {
+		t.Fatalf("evalsymlinks: %v", err)
+	}
+
+	locker := NewLocalPathLocker()
+	// bounded_write Repair claims the unique lease first.
+	repairHold, err := locker.Acquire(context.Background(), realDir, "repair-1", nil)
+	if err != nil {
+		t.Fatalf("repair acquire: %v", err)
+	}
+	defer repairHold()
+
+	d := &Daemon{
+		cfg:            Config{DaemonID: daemonID},
+		localPathLocks: locker,
+		logger:         slog.Default(),
+	}
+
+	// A read_only review arriving while the repair holds the lease must not
+	// block — it is read-only and takes no write lease.
+	task := readOnlyReviewTask("review-while-repair", daemonID, tmp)
+	release, abort := d.acquireLocalDirectoryLockIfNeeded(context.Background(), task, slog.Default())
+	if abort {
+		t.Fatal("read_only review aborted while repair holds lease")
+	}
+	if release != nil {
+		t.Fatal("read_only review returned a release — it must not take the write lease")
+	}
+	if got := locker.Holder(realDir); got != "repair-1" {
+		t.Fatalf("repair holder = %q, want repair-1 (read_only must not displace bounded_write)", got)
+	}
+}
+
+// TestBoundedWriteRepairRemainsExclusive proves two bounded_write Repair tasks
+// on the same candidate path still serialize through the unique
+// LocalPathLocker lease: the second parks (abort=false, wait parked) until the
+// first releases — the write lease is never widened for the pipeline.
+func TestBoundedWriteRepairRemainsExclusive(t *testing.T) {
+	t.Parallel()
+
+	const daemonID = "d-bw"
+	tmp := t.TempDir()
+	realDir, err := filepath.EvalSymlinks(tmp)
+	if err != nil {
+		t.Fatalf("evalsymlinks: %v", err)
+	}
+
+	var parked atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		switch {
+		case strings.HasSuffix(req.URL.Path, "/wait-local-directory"):
+			parked.Add(1)
+			w.WriteHeader(http.StatusOK)
+		case strings.HasSuffix(req.URL.Path, "/status"):
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"status":"running"}`))
+		default:
+			t.Errorf("unexpected daemon call: %s %s", req.Method, req.URL.Path)
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	d := &Daemon{
+		client:             NewClient(srv.URL),
+		cfg:                Config{DaemonID: daemonID},
+		localPathLocks:     NewLocalPathLocker(),
+		logger:             slog.Default(),
+		cancelPollInterval: time.Hour,
+	}
+
+	taskOne := repairTask("repair-1", daemonID, tmp)
+	releaseOne, abortOne := d.acquireLocalDirectoryLockIfNeeded(context.Background(), taskOne, slog.Default())
+	if abortOne || releaseOne == nil {
+		t.Fatalf("first repair: abort=%v release-nil=%v, want acquire", abortOne, releaseOne == nil)
+	}
+
+	var waitStarted atomic.Int32
+	done := make(chan struct {
+		release func()
+		abort   bool
+	}, 1)
+	taskTwo := repairTask("repair-2", daemonID, tmp)
+	go func() {
+		rel, abort := d.acquireLocalDirectoryLockIfNeeded(context.Background(), taskTwo, slog.Default())
+		waitStarted.Add(1) // arrived (may have been waiting; release below unblocks)
+		done <- struct {
+			release func()
+			abort   bool
+		}{rel, abort}
+	}()
+
+	// Give the second repair a moment to reach the wait queue.
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) && waitStarted.Load() == 0 {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if got := d.localPathLocks.Holder(realDir); got != "repair-1" {
+		t.Fatalf("holder while second repair waits = %q, want repair-1", got)
+	}
+
+	releaseOne()
+	select {
+	case got := <-done:
+		if got.abort || got.release == nil {
+			t.Fatalf("second repair after release: abort=%v release-nil=%v, want acquire", got.abort, got.release == nil)
+		}
+		got.release()
+	case <-time.After(2 * time.Second):
+		t.Fatal("second bounded_write repair never acquired after first release — exclusivity broken")
+	}
+}

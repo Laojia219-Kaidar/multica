@@ -87,10 +87,10 @@ func seedReviewHandlerFixture(t *testing.T) reviewHandlerFixture {
 	var candidateTaskID string
 	if err := testPool.QueryRow(ctx, `
 		INSERT INTO agent_task_queue (
-			agent_id, runtime_id, issue_id, status, priority, completed_at
-		) VALUES ($1, $2, $3, 'completed', 0, now())
+			agent_id, runtime_id, issue_id, status, priority, completed_at, context
+		) VALUES ($1, $2, $3, 'completed', 0, now(), $4)
 		RETURNING id::text
-	`, fx.implementerAgentID, runtimeID, issueID).Scan(&candidateTaskID); err != nil {
+	`, fx.implementerAgentID, runtimeID, issueID, []byte(`{"head_sha":"abc123def4567890abcdef1234567890abcdef12","artifact_digest":"sha256:aaaaaaaaaaaaaaaa0000000000000000"}`)).Scan(&candidateTaskID); err != nil {
 		t.Fatalf("seed candidate task: %v", err)
 	}
 	t.Cleanup(func() {

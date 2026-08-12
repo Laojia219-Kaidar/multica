@@ -15,7 +15,7 @@ import (
 )
 
 // TestReviewPipelineV2MigrationsUpDownUp rehearses the ReviewPipelineV2 schema
-// change (255-258 + 260, HIV-326 / HIV-350) in an isolated schema: up →
+// change (255-258 + 261, HIV-326 / HIV-350) in an isolated schema: up →
 // constraint/index assertions → down → removal assertions → up again. It
 // requires the isolated test database at 127.0.0.1:55432 and refuses any other
 // target, so it can never touch a default/localhost:5432 instance.
@@ -81,7 +81,7 @@ func TestReviewPipelineV2MigrationsUpDownUp(t *testing.T) {
 		"256_issue_review_state_open_index.up.sql",
 		"257_agent_task_review_kind.up.sql",
 		"258_agent_task_review_open_unique.up.sql",
-		"260_agent_task_review_open_unique_waiting.up.sql",
+		"261_agent_task_review_open_unique_waiting.up.sql",
 	} {
 		applyReviewMigration(t, ctx, conn, file)
 	}
@@ -89,7 +89,7 @@ func TestReviewPipelineV2MigrationsUpDownUp(t *testing.T) {
 	assertReviewSchemaUp(t, ctx, conn)
 
 	for _, file := range []string{
-		"260_agent_task_review_open_unique_waiting.down.sql",
+		"261_agent_task_review_open_unique_waiting.down.sql",
 		"258_agent_task_review_open_unique.down.sql",
 		"257_agent_task_review_kind.down.sql",
 		"256_issue_review_state_open_index.down.sql",
@@ -105,7 +105,7 @@ func TestReviewPipelineV2MigrationsUpDownUp(t *testing.T) {
 		"256_issue_review_state_open_index.up.sql",
 		"257_agent_task_review_kind.up.sql",
 		"258_agent_task_review_open_unique.up.sql",
-		"260_agent_task_review_open_unique_waiting.up.sql",
+		"261_agent_task_review_open_unique_waiting.up.sql",
 	} {
 		applyReviewMigration(t, ctx, conn, file)
 	}
@@ -198,7 +198,7 @@ func assertReviewSchemaUp(t *testing.T, ctx context.Context, conn *pgx.Conn) {
 		t.Fatalf("second completed review task must not collide: %v", err)
 	}
 
-	// 260 (HIV-350): the open-review unique index must also cover
+	// 261 (HIV-350): the open-review unique index must also cover
 	// waiting_local_directory — the daemon parks a claimed review task there
 	// while its workdir is prepared. 258's index alone lets a second open
 	// review task for the same (issue, candidate) slip through once the first

@@ -3878,6 +3878,21 @@ func taskRunFailureReason(err error) string {
 	return taskfailure.Classify(err.Error()).String()
 }
 
+// isReadOnlyExecutionMode reports whether a claimed task's execution mode is a
+// read-only review (post-R2 contract). Both accepted spellings (read_only and
+// worktree-read-mode) map to the same behavior: the daemon must NOT acquire
+// the canonical write lease so multiple read-only reviews of the same
+// candidate never park on each other. Empty/unknown modes are NOT read-only —
+// the default write path (unique LocalPathLocker lease) stays untouched.
+func isReadOnlyExecutionMode(mode string) bool {
+	switch mode {
+	case "read_only", "worktree-read-mode":
+		return true
+	default:
+		return false
+	}
+}
+
 // acquireLocalDirectoryLockIfNeeded inspects the task's project resources for
 // a local_directory pinned to this daemon, validates the path, and takes the
 // path mutex. Returns a release callback (nil when no local_directory
@@ -3916,6 +3931,20 @@ func (d *Daemon) acquireLocalDirectoryLockIfNeeded(ctx context.Context, task Tas
 		return nil, false
 	}
 	taskLog = taskLog.With("local_directory", assignment.AbsPath)
+
+	// Post-R2 contract: a read_only Review task must NOT acquire the
+	// canonical write lease (the unique LocalPathLocker on the candidate
+	// path). The reviewer only inspects the locked candidate revision —
+	// taking the write lease would make concurrent read-only reviews park on
+	// the same candidate and serialize what is a pure read. The daemon
+	// recognizes both spellings carried by the server payload
+	// (read_only / worktree-read-mode). Every other mode (bounded_write
+	// repair, plain work) still takes the unique lease.
+	if isReadOnlyExecutionMode(task.ExecutionMode) {
+		taskLog.Info("local_directory: read_only review skips canonical write lease")
+		return nil, false
+	}
+
 	if err := validateLocalPath(assignment.AbsPath); err != nil {
 		taskLog.Error("local_directory: path validation failed", "error", err)
 		if failErr := d.reportTerminalTask(ctx, terminalTaskReport{

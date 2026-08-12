@@ -381,6 +381,8 @@ type AgentTaskResponse struct {
 	InitiatorName  string `json:"initiator_name,omitempty"`  // display name of the initiator
 	InitiatorEmail string `json:"initiator_email,omitempty"` // member email; empty for agent initiators
 	Kind           string `json:"kind"`                      // discriminator: "comment" | "autopilot" | "chat" | "quick_create" | "direct" — used by the activity row to label tasks that have no linked issue
+	TaskKind       string `json:"task_kind,omitempty"`       // review/repair/work on agent_task_queue (post-R2 lease routing)
+	ExecutionMode  string `json:"execution_mode,omitempty"`  // read_only / worktree-read-mode / bounded_write (post-R2 contract)
 	// Attribution is the resolved accountable-human provenance for this run
 	// (MUL-4302 §9): the source label + precise flag, the initiator (accountable)
 	// and originator refs, the evidence pointer, and lineage. Always present (the
@@ -643,6 +645,8 @@ func taskToResponse(t db.AgentTaskQueue, workspaceID string) AgentTaskResponse {
 		ChatSessionID:  uuidToString(t.ChatSessionID),
 		AutopilotRunID: uuidToString(t.AutopilotRunID),
 		Kind:           computeTaskKind(t),
+		TaskKind:       t.TaskKind,
+		ExecutionMode:  executionModeFromTaskContext(t.Context, t.TaskKind),
 		// Attribution labels + evidence + lineage + raw user ids (pure). Names are
 		// hydrated separately on user-facing surfaces (MUL-4302 §9).
 		Attribution: taskAttributionBase(t),
@@ -737,6 +741,26 @@ func stripHomePrefix(p string) (string, bool) {
 // recognise the path: a single segment can never expose the home prefix,
 // and the leaf is almost always the most useful piece of context anyway
 // (typically the repo directory name for local_directory tasks).
+// executionModeFromTaskContext extracts the review/repair execution mode
+// (post-R2 contract) from the task context JSONB. Only review/repair task
+// kinds carry a mode; every other task kind returns "" (the daemon's default
+// write behavior applies). Unknown/malformed JSON fails open to "" so a
+// payload bug can never accidentally turn a write task read-only.
+func executionModeFromTaskContext(ctx []byte, taskKind string) string {
+	if taskKind != "review" && taskKind != "repair" {
+		return ""
+	}
+	if len(ctx) == 0 {
+		return ""
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(ctx, &parsed); err != nil {
+		return ""
+	}
+	mode, _ := parsed["execution_mode"].(string)
+	return mode
+}
+
 func basename(p string) string {
 	p = strings.TrimRight(p, "/")
 	if p == "" {

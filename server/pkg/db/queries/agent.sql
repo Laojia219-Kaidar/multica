@@ -613,6 +613,24 @@ ON CONFLICT (issue_id, review_target_task_id)
 DO NOTHING
 RETURNING *;
 
+-- name: CreateRepairTask :one
+-- Creates the repair task that carries a REVISE verdict back to the
+-- implementer (post-R2 contract). task_kind='repair' with an explicit
+-- execution_mode=bounded_write payload so the daemon takes the unique
+-- LocalPathLocker lease while the implementer reworks the candidate. The
+-- repair row is a first-class agent_task_queue row (single truth), and the
+-- review_target_task_id references the same candidate under repair so the
+-- re-review lineage is preserved.
+INSERT INTO agent_task_queue (
+    agent_id, runtime_id, issue_id, status, priority, task_kind, review_target_task_id,
+    trigger_summary, context, originator_source, trigger_evidence_kind, trigger_evidence_ref_id
+)
+VALUES (
+    @agent_id, @runtime_id, @issue_id, 'queued', @priority, 'repair', @review_target_task_id,
+    sqlc.narg(trigger_summary), @context, 'unattributed'::text, 'review_verdict'::text, @review_target_task_id
+)
+RETURNING *;
+
 -- name: GetOpenReviewTaskForIssue :one
 -- The current open review task for an issue (the task whose agent_id is the
 -- reviewer). C9 keeps at most one open review task per issue by cancelling

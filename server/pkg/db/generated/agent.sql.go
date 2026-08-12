@@ -2158,6 +2158,102 @@ func (q *Queries) CreateQuickCreateTask(ctx context.Context, arg CreateQuickCrea
 	return i, err
 }
 
+const createRepairTask = `-- name: CreateRepairTask :one
+INSERT INTO agent_task_queue (
+    agent_id, runtime_id, issue_id, status, priority, task_kind, review_target_task_id,
+    trigger_summary, context, originator_source, trigger_evidence_kind, trigger_evidence_ref_id
+)
+VALUES (
+    $1, $2, $3, 'queued', $4, 'repair', $5,
+    $6, $7, 'unattributed'::text, 'review_verdict'::text, $5
+)
+RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, task_kind, review_target_task_id
+`
+
+type CreateRepairTaskParams struct {
+	AgentID            pgtype.UUID `json:"agent_id"`
+	RuntimeID          pgtype.UUID `json:"runtime_id"`
+	IssueID            pgtype.UUID `json:"issue_id"`
+	Priority           int32       `json:"priority"`
+	ReviewTargetTaskID pgtype.UUID `json:"review_target_task_id"`
+	TriggerSummary     pgtype.Text `json:"trigger_summary"`
+	Context            []byte      `json:"context"`
+}
+
+// Creates the repair task that carries a REVISE verdict back to the
+// implementer (post-R2 contract). task_kind='repair' with an explicit
+// execution_mode=bounded_write payload so the daemon takes the unique
+// LocalPathLocker lease while the implementer reworks the candidate. The
+// repair row is a first-class agent_task_queue row (single truth), and the
+// review_target_task_id references the same candidate under repair so the
+// re-review lineage is preserved.
+func (q *Queries) CreateRepairTask(ctx context.Context, arg CreateRepairTaskParams) (AgentTaskQueue, error) {
+	row := q.db.QueryRow(ctx, createRepairTask,
+		arg.AgentID,
+		arg.RuntimeID,
+		arg.IssueID,
+		arg.Priority,
+		arg.ReviewTargetTaskID,
+		arg.TriggerSummary,
+		arg.Context,
+	)
+	var i AgentTaskQueue
+	err := row.Scan(
+		&i.ID,
+		&i.AgentID,
+		&i.IssueID,
+		&i.Status,
+		&i.Priority,
+		&i.DispatchedAt,
+		&i.StartedAt,
+		&i.CompletedAt,
+		&i.Result,
+		&i.Error,
+		&i.CreatedAt,
+		&i.Context,
+		&i.RuntimeID,
+		&i.SessionID,
+		&i.WorkDir,
+		&i.TriggerCommentID,
+		&i.ChatSessionID,
+		&i.AutopilotRunID,
+		&i.Attempt,
+		&i.MaxAttempts,
+		&i.ParentTaskID,
+		&i.FailureReason,
+		&i.TriggerSummary,
+		&i.ForceFreshSession,
+		&i.IsLeaderTask,
+		&i.WaitReason,
+		&i.InitiatorUserID,
+		&i.HandoffNote,
+		&i.PrepareLeaseExpiresAt,
+		&i.SquadID,
+		&i.RuntimeMcpOverlay,
+		&i.EscalationForTaskID,
+		&i.FireAt,
+		&i.OriginatorUserID,
+		&i.RuntimeConnectedApps,
+		&i.CoalescedCommentIds,
+		&i.DeliveredCommentIds,
+		&i.ChatInputTaskID,
+		&i.ChatFinalizeDeferredAt,
+		&i.OriginatorSource,
+		&i.DelegatedFromTaskID,
+		&i.RetryOfTaskID,
+		&i.RerunOfTaskID,
+		&i.RuleVersionID,
+		&i.TriggerEvidenceKind,
+		&i.TriggerEvidenceRefID,
+		&i.AccountableUserID,
+		&i.SessionRolloutMissing,
+		&i.RetiredSessionID,
+		&i.TaskKind,
+		&i.ReviewTargetTaskID,
+	)
+	return i, err
+}
+
 const createRetryTask = `-- name: CreateRetryTask :one
 INSERT INTO agent_task_queue (
     agent_id, runtime_id, issue_id, chat_session_id, autopilot_run_id,

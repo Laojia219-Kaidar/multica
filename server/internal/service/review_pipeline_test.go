@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/url"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -166,8 +167,39 @@ func seedReviewPipelineFixture(t *testing.T, pool *pgxpool.Pool) reviewPipelineF
 }
 
 // seedCompletedCandidateTask inserts the implementer's completed delivery task
-// plus the Task-linked delivery comment that pins it (C4-L).
+// plus the Task-linked delivery comment that pins it (C4-L). Per the post-R2
+// contract the candidate is LOCKED: its context carries an exact head_sha (and
+// an artifact digest), so the review task can freeze the read-only revision.
 func (f reviewPipelineFixture) seedCompletedCandidateTask(t *testing.T, ctx context.Context) string {
+	t.Helper()
+	var taskID string
+	if err := f.pool.QueryRow(ctx, `
+		INSERT INTO agent_task_queue (
+			agent_id, runtime_id, issue_id, status, priority, completed_at,
+			originator_user_id, accountable_user_id, context
+		)
+		VALUES ($1, $2, $3, 'completed', 0, now(), $4, $4, $5)
+		RETURNING id::text
+	`, f.implementerAgentID, f.runtimeID, f.issueID, f.userID, []byte(`{"head_sha":"abc123def4567890abcdef1234567890abcdef12","artifact_digest":"sha256:aaaaaaaaaaaaaaaa0000000000000000"}`)).Scan(&taskID); err != nil {
+		t.Fatalf("seed candidate task: %v", err)
+	}
+	t.Cleanup(func() { _, _ = f.pool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE id = $1`, taskID) })
+
+	if _, err := f.pool.Exec(ctx, `
+		INSERT INTO comment (issue_id, workspace_id, author_type, author_id, content, source_task_id)
+		VALUES ($1, $2, 'agent', $3, 'delivery receipt', $4)
+	`, f.issueID, f.workspaceID, f.implementerAgentID, taskID); err != nil {
+		t.Fatalf("seed delivery comment: %v", err)
+	}
+	return taskID
+}
+
+// seedCompletedUnlockedCandidateTask is the B01 negative variant: the
+// implementer's delivery task completed WITHOUT ever pinning a locked
+// revision (no head_sha in context). A read-only review has nothing safe to
+// inspect, so the pipeline must fail closed as candidate_unlocked →
+// owner_decision (post-R2 contract).
+func (f reviewPipelineFixture) seedCompletedUnlockedCandidateTask(t *testing.T, ctx context.Context) string {
 	t.Helper()
 	var taskID string
 	if err := f.pool.QueryRow(ctx, `
@@ -178,15 +210,15 @@ func (f reviewPipelineFixture) seedCompletedCandidateTask(t *testing.T, ctx cont
 		VALUES ($1, $2, $3, 'completed', 0, now(), $4, $4)
 		RETURNING id::text
 	`, f.implementerAgentID, f.runtimeID, f.issueID, f.userID).Scan(&taskID); err != nil {
-		t.Fatalf("seed candidate task: %v", err)
+		t.Fatalf("seed unlocked candidate task: %v", err)
 	}
 	t.Cleanup(func() { _, _ = f.pool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE id = $1`, taskID) })
 
 	if _, err := f.pool.Exec(ctx, `
 		INSERT INTO comment (issue_id, workspace_id, author_type, author_id, content, source_task_id)
-		VALUES ($1, $2, 'agent', $3, 'delivery receipt', $4)
+		VALUES ($1, $2, 'agent', $3, 'delivery receipt (unlocked)', $4)
 	`, f.issueID, f.workspaceID, f.implementerAgentID, taskID); err != nil {
-		t.Fatalf("seed delivery comment: %v", err)
+		t.Fatalf("seed unlocked delivery comment: %v", err)
 	}
 	return taskID
 }
@@ -673,6 +705,41 @@ func TestReviewVerdict_Revise_FlowsToRepair(t *testing.T) {
 	}
 	if commentCount != 1 {
 		t.Fatalf("verdict comments = %d, want exactly 1 Task-linked verdict comment", commentCount)
+	}
+
+	// Post-R2 contract: the REVISE verdict must route a bounded_write repair
+	// task back to the implementer, carrying the locked candidate revision
+	// and the repair requirements (C7 send-back).
+	var repairRows int
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*) FROM agent_task_queue
+		WHERE issue_id = $1 AND task_kind = 'repair' AND status = 'queued'
+	`, fixture.issueID).Scan(&repairRows); err != nil {
+		t.Fatalf("count repair tasks: %v", err)
+	}
+	if repairRows != 1 {
+		t.Fatalf("repair tasks after REVISE = %d, want exactly 1", repairRows)
+	}
+	var repairContext []byte
+	if err := pool.QueryRow(ctx, `
+		SELECT context FROM agent_task_queue
+		WHERE issue_id = $1 AND task_kind = 'repair' ORDER BY created_at DESC LIMIT 1
+	`, fixture.issueID).Scan(&repairContext); err != nil {
+		t.Fatalf("load repair task context: %v", err)
+	}
+	var repairPayload map[string]any
+	if err := json.Unmarshal(repairContext, &repairPayload); err != nil {
+		t.Fatalf("parse repair payload: %v", err)
+	}
+	if repairPayload["execution_mode"] != "bounded_write" {
+		t.Fatalf("repair execution_mode = %v, want bounded_write", repairPayload["execution_mode"])
+	}
+	if repairPayload["candidate_revision"] != "abc123def4567890abcdef1234567890abcdef12" {
+		t.Fatalf("repair candidate_revision = %v, want locked head_sha", repairPayload["candidate_revision"])
+	}
+	reqs, _ := repairPayload["repair_requirements"].([]any)
+	if len(reqs) != 2 {
+		t.Fatalf("repair requirements = %v, want the 2 seeded requirements", repairPayload["repair_requirements"])
 	}
 
 	// REVISE → repair → re-review: implementer reworks, leaves in_review
@@ -1331,6 +1398,218 @@ func TestReviewPipelineAutopilotGate(t *testing.T) {
 	}
 	if run.Status != "completed" {
 		t.Fatalf("flag-off in_review must stay terminal: status = %q, want completed", run.Status)
+	}
+}
+
+// TestReviewTaskPayload_CarriesReadOnlyExecutionModeAndLockedIdentity pins the
+// post-R2 contract on the review task context: execution_mode is explicitly
+// read_only (worktree-read-mode) and the payload freezes the locked candidate
+// revision/artifact from the candidate's context.
+func TestReviewTaskPayload_CarriesReadOnlyExecutionModeAndLockedIdentity(t *testing.T) {
+	pool := newReviewPipelineTestPool(t)
+	fixture := seedReviewPipelineFixture(t, pool)
+	ctx := context.Background()
+	fixture.seedCompletedCandidateTask(t, ctx)
+	svc := fixture.reviewService(nil)
+	if err := svc.OnIssueEnteredReview(ctx, util.MustParseUUID(fixture.issueID)); err != nil {
+		t.Fatalf("OnIssueEnteredReview: %v", err)
+	}
+	task := fixture.currentReviewTask(t, ctx)
+	var raw []byte
+	if err := pool.QueryRow(ctx, `
+		SELECT context FROM agent_task_queue WHERE id = $1
+	`, task.ID).Scan(&raw); err != nil {
+		t.Fatalf("load review task context: %v", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("parse review task payload: %v", err)
+	}
+	if payload["kind"] != "review" {
+		t.Fatalf("payload kind = %v, want review", payload["kind"])
+	}
+	if payload["execution_mode"] != "read_only" {
+		t.Fatalf("payload execution_mode = %v, want read_only", payload["execution_mode"])
+	}
+	if payload["candidate_revision"] != "abc123def4567890abcdef1234567890abcdef12" {
+		t.Fatalf("payload candidate_revision = %v, want locked head_sha", payload["candidate_revision"])
+	}
+	if payload["candidate_artifact"] != "sha256:aaaaaaaaaaaaaaaa0000000000000000" {
+		t.Fatalf("payload candidate_artifact = %v, want locked artifact digest", payload["candidate_artifact"])
+	}
+}
+
+// TestReviewB01_UnlockedCandidateFailsClosed pins the fail-closed contract: a
+// completed candidate that never locked a revision (no head_sha in context)
+// must escalate to owner_decision with candidate_unlocked and MUST NOT create
+// a review task — a read-only reviewer has nothing safe to inspect.
+func TestReviewB01_UnlockedCandidateFailsClosed(t *testing.T) {
+	pool := newReviewPipelineTestPool(t)
+	fixture := seedReviewPipelineFixture(t, pool)
+	ctx := context.Background()
+	fixture.seedCompletedUnlockedCandidateTask(t, ctx)
+	svc := fixture.reviewService(nil)
+	if err := svc.OnIssueEnteredReview(ctx, util.MustParseUUID(fixture.issueID)); err != nil {
+		t.Fatalf("OnIssueEnteredReview: %v", err)
+	}
+	state, reason := fixture.issueReviewState(t, ctx)
+	if !state.Valid || state.String != ReviewStateOwnerDecision {
+		t.Fatalf("review_state = %v, want owner_decision", state)
+	}
+	if !strings.Contains(reason.String, LineageFailureCandidateUnlocked) {
+		t.Fatalf("review_state_reason = %q, want it to contain candidate_unlocked", reason.String)
+	}
+	if n := fixture.openReviewTaskCount(t, ctx); n != 0 {
+		t.Fatalf("open review tasks = %d, want 0 for an unlocked candidate", n)
+	}
+	// Requeue with still-unlocked lineage stays owner_decision.
+	if _, err := svc.Requeue(ctx, util.MustParseUUID(fixture.issueID),
+		ReviewActor{ActorType: "agent", ActorID: util.MustParseUUID(fixture.coordinatorAgentID)}); err != nil {
+		t.Fatalf("Requeue: %v", err)
+	}
+	state, reason = fixture.issueReviewState(t, ctx)
+	if !state.Valid || state.String != ReviewStateOwnerDecision {
+		t.Fatalf("review_state after requeue = %v, want owner_decision", state)
+	}
+	if !strings.Contains(reason.String, LineageFailureCandidateUnlocked) {
+		t.Fatalf("review_state_reason after requeue = %q, want candidate_unlocked", reason.String)
+	}
+}
+
+// TestReviewB01_PassCompletesWithoutRepair pins that PASS → accepted completes
+// the review task, records the receipt lineage, and creates NO repair task
+// (repair routing is REVISE-only).
+func TestReviewB01_PassCompletesWithoutRepair(t *testing.T) {
+	pool := newReviewPipelineTestPool(t)
+	fixture := seedReviewPipelineFixture(t, pool)
+	ctx := context.Background()
+	fixture.seedCompletedCandidateTask(t, ctx)
+	svc := fixture.reviewService(nil)
+	if err := svc.OnIssueEnteredReview(ctx, util.MustParseUUID(fixture.issueID)); err != nil {
+		t.Fatalf("OnIssueEnteredReview: %v", err)
+	}
+	reviewTask := fixture.currentReviewTask(t, ctx)
+	if _, err := svc.WriteVerdict(ctx, util.MustParseUUID(fixture.issueID),
+		ReviewActor{ActorType: "agent", ActorID: util.MustParseUUID(fixture.coordinatorAgentID)},
+		VerdictInput{Verdict: "pass", Notes: "accepted on evidence"}); err != nil {
+		t.Fatalf("WriteVerdict(pass): %v", err)
+	}
+	state, _ := fixture.issueReviewState(t, ctx)
+	if !state.Valid || state.String != ReviewStateAccepted {
+		t.Fatalf("review_state = %v, want accepted", state)
+	}
+	var status string
+	var resultJSON []byte
+	if err := pool.QueryRow(ctx, `
+		SELECT status, result FROM agent_task_queue WHERE id = $1
+	`, reviewTask.ID).Scan(&status, &resultJSON); err != nil {
+		t.Fatalf("load completed review task: %v", err)
+	}
+	if status != "completed" {
+		t.Fatalf("review task status = %q, want completed", status)
+	}
+	var receipt map[string]any
+	if err := json.Unmarshal(resultJSON, &receipt); err != nil {
+		t.Fatalf("parse receipt: %v", err)
+	}
+	if receipt["verdict"] != "pass" {
+		t.Fatalf("receipt verdict = %v, want pass", receipt["verdict"])
+	}
+	if receipt["review_state"] != ReviewStateAccepted {
+		t.Fatalf("receipt review_state = %v, want accepted", receipt["review_state"])
+	}
+	var repairRows int
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*) FROM agent_task_queue
+		WHERE issue_id = $1 AND task_kind = 'repair'
+	`, fixture.issueID).Scan(&repairRows); err != nil {
+		t.Fatalf("count repair tasks: %v", err)
+	}
+	if repairRows != 0 {
+		t.Fatalf("repair tasks after PASS = %d, want 0", repairRows)
+	}
+}
+
+// TestReviewB01_FailedReviewTaskIsNotOpen pins that a FAILED review task is
+// terminal — it is not "open", does not satisfy GetOpenReviewTaskForIssue, and
+// a fresh delivery round can create a new open review task for the same
+// candidate without tripping the open-uniqueness index.
+func TestReviewB01_FailedReviewTaskIsNotOpen(t *testing.T) {
+	pool := newReviewPipelineTestPool(t)
+	fixture := seedReviewPipelineFixture(t, pool)
+	ctx := context.Background()
+	candidateID := fixture.seedCompletedCandidateTask(t, ctx)
+	svc := fixture.reviewService(nil)
+	if err := svc.OnIssueEnteredReview(ctx, util.MustParseUUID(fixture.issueID)); err != nil {
+		t.Fatalf("OnIssueEnteredReview: %v", err)
+	}
+	reviewTask := fixture.currentReviewTask(t, ctx)
+	if _, err := pool.Exec(ctx, `
+		UPDATE agent_task_queue SET status = 'failed', error = 'provider outage'
+		WHERE id = $1
+	`, reviewTask.ID); err != nil {
+		t.Fatalf("fail review task: %v", err)
+	}
+	if n := fixture.openReviewTaskCount(t, ctx); n != 0 {
+		t.Fatalf("open review tasks after failure = %d, want 0", n)
+	}
+	// A verdict against a failed (terminal) task is rejected — no receipt.
+	if _, err := svc.WriteVerdict(ctx, util.MustParseUUID(fixture.issueID),
+		ReviewActor{ActorType: "agent", ActorID: util.MustParseUUID(fixture.reviewerAgentID)},
+		VerdictInput{Verdict: "revise"}); !errors.Is(err, ErrNoOpenReviewTask) {
+		t.Fatalf("verdict after failure: got %v, want ErrNoOpenReviewTask", err)
+	}
+	// A fresh round on the same candidate is allowed: failed is not in the
+	// open set, so the 261 unique index does not block a new review task.
+	if err := svc.OnIssueEnteredReview(ctx, util.MustParseUUID(fixture.issueID)); err != nil {
+		t.Fatalf("re-delivery after failed review: %v", err)
+	}
+	state, _ := fixture.issueReviewState(t, ctx)
+	if !state.Valid || state.String != ReviewStateQueued {
+		t.Fatalf("review_state after re-delivery = %v, want queued", state)
+	}
+	if n := fixture.openReviewTaskCount(t, ctx); n != 1 {
+		t.Fatalf("open review tasks after re-delivery = %d, want 1", n)
+	}
+	newTask := fixture.currentReviewTask(t, ctx)
+	if !uuidEqual(newTask.ReviewTargetTaskID, util.MustParseUUID(candidateID)) {
+		t.Fatalf("fresh review task targets %s, want candidate %s",
+			util.UUIDToString(newTask.ReviewTargetTaskID), candidateID)
+	}
+}
+
+// TestReviewB01_QueuePageActionWithNoOpenTask pins the page-level negative: a
+// review-queue render/verdict action targeting an issue whose open review task
+// no longer exists (cancelled by supersede, terminal) fails closed with
+// ErrNoOpenReviewTask instead of silently writing a verdict with no receipt
+// lineage.
+func TestReviewB01_QueuePageActionWithNoOpenTask(t *testing.T) {
+	pool := newReviewPipelineTestPool(t)
+	fixture := seedReviewPipelineFixture(t, pool)
+	ctx := context.Background()
+	fixture.seedCompletedCandidateTask(t, ctx)
+	svc := fixture.reviewService(nil)
+	if err := svc.OnIssueEnteredReview(ctx, util.MustParseUUID(fixture.issueID)); err != nil {
+		t.Fatalf("OnIssueEnteredReview: %v", err)
+	}
+	reviewTask := fixture.currentReviewTask(t, ctx)
+	if _, err := pool.Exec(ctx, `
+		UPDATE agent_task_queue SET status = 'cancelled'
+		WHERE id = $1
+	`, reviewTask.ID); err != nil {
+		t.Fatalf("cancel review task: %v", err)
+	}
+	if _, err := svc.WriteVerdict(ctx, util.MustParseUUID(fixture.issueID),
+		ReviewActor{ActorType: "agent", ActorID: util.MustParseUUID(fixture.reviewerAgentID)},
+		VerdictInput{Verdict: "revise"}); !errors.Is(err, ErrNoOpenReviewTask) {
+		t.Fatalf("verdict with no open task: got %v, want ErrNoOpenReviewTask", err)
+	}
+	state, reason := fixture.issueReviewState(t, ctx)
+	if !state.Valid || state.String != ReviewStateQueued {
+		t.Fatalf("review_state after failed verdict action = %v, want queued untouched", state)
+	}
+	if reason.Valid {
+		t.Fatalf("review_state_reason changed to %q, want untouched", reason.String)
 	}
 }
 

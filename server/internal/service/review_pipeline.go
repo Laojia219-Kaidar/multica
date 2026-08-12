@@ -39,12 +39,35 @@ const (
 	TaskKindRepair = "repair"
 )
 
+// Execution modes on review/repair task payloads (post-R2 contract). The
+// daemon reads execution_mode to decide whether a task may take the canonical
+// write lease (unique LocalPathLocker on the candidate's local_directory):
+// read_only Review runs never acquire a write lease — multiple reviewers can
+// inspect the same candidate concurrently without parking on each other —
+// while a REVISE Repair round is bounded_write and requires the unique lease.
+const (
+	// ExecutionModeReadOnly marks a Review task: inspect the locked candidate
+	// revision / artifact, never write to the candidate path.
+	ExecutionModeReadOnly = "read_only"
+	// ExecutionModeWorktreeReadMode is the worktree-read-mode alias accepted
+	// by the daemon for the same read-only contract.
+	ExecutionModeWorktreeReadMode = "worktree-read-mode"
+	// ExecutionModeBoundedWrite marks a Repair task: the implementer may
+	// rework the candidate and needs the unique LocalPathLocker lease.
+	ExecutionModeBoundedWrite = "bounded_write"
+)
+
 // Stable escalation reasons (HIV-326 C4-L-3 / §5-11..14). The issue-level
 // review_state_reason column stores "reason/sub_reason" so the review queue can
 // render a reason badge without reading issue.metadata (which must never become
 // a second review truth source).
 const (
 	ReviewEscalationReasonMissingLineage = "missing_candidate_lineage"
+	// ReviewEscalationReasonCandidateUnlocked: the delivered candidate carries
+	// no locked revision/artifact (head_sha never pinned), so a read-only
+	// review has nothing it can safely inspect. Fail-closed to
+	// owner_decision; no review task is created (post-R2 contract).
+	ReviewEscalationReasonCandidateUnlocked = "candidate_unlocked"
 
 	LineageFailureNoSourceTaskID        = "no_source_task_id"
 	LineageFailureTaskNotFound          = "task_not_found"
@@ -53,6 +76,7 @@ const (
 	LineageFailureReviewerIsImplementer = "reviewer_is_implementer"
 	LineageFailureReviewerUnconfigured  = "reviewer_unconfigured"
 	LineageFailureReviewerUnavailable   = "reviewer_unavailable"
+	LineageFailureCandidateUnlocked     = "candidate_unlocked"
 )
 
 var (
@@ -79,6 +103,10 @@ var (
 	// ErrReviewerUnavailable: the configured reviewer agent has no runtime and
 	// can never claim a review task (fail-closed).
 	ErrReviewerUnavailable = errors.New("review pipeline: reviewer agent has no claimable runtime")
+	// ErrCandidateUnlocked: the delivered candidate has no locked revision or
+	// artifact, so it cannot be reviewed read-only. Fail-closed to
+	// owner_decision via candidate_unlocked (post-R2 contract).
+	ErrCandidateUnlocked = errors.New("review pipeline: candidate has no locked revision/artifact")
 )
 
 // ReviewPipelineConfig is the server-side wiring for the review pipeline. It
@@ -360,12 +388,22 @@ func (s *ReviewPipelineService) failClosedFromOpen(ctx context.Context, qtx *db.
 // Returns (created=true) when this call inserted the task, (false) when the
 // open-task unique index already covered this (issue, candidate) pair, or an
 // error for reviewer-routing failures (C3 / fail-closed).
+//
+// Post-R2 contract: the review task explicitly carries execution_mode
+// read_only (worktree-read-mode) and the locked candidate revision/artifact.
+// A candidate with no locked revision (head_sha never pinned) fails closed as
+// ErrCandidateUnlocked — the caller escalates to owner_decision and no review
+// task is created.
 func (s *ReviewPipelineService) createReviewTask(ctx context.Context, qtx *db.Queries, issue db.Issue, candidate db.AgentTaskQueue) (bool, *db.AgentTaskQueue, error) {
 	if !s.Config.ReviewerAgentIDSet {
 		return false, nil, ErrReviewerUnconfigured
 	}
 	if uuidEqual(s.Config.ReviewerAgentID, candidate.AgentID) {
 		return false, nil, ErrReviewerIsImplementer
+	}
+	lockedRevision, lockedArtifact := candidateLockedIdentity(candidate.Context)
+	if lockedRevision == "" {
+		return false, nil, ErrCandidateUnlocked
 	}
 	reviewer, err := qtx.GetAgent(ctx, s.Config.ReviewerAgentID)
 	if err != nil {
@@ -377,8 +415,10 @@ func (s *ReviewPipelineService) createReviewTask(ctx context.Context, qtx *db.Qu
 
 	payload, err := json.Marshal(reviewTaskPayload{
 		Kind:              TaskKindReview,
+		ExecutionMode:     ExecutionModeReadOnly,
 		CandidateTaskID:   util.UUIDToString(candidate.ID),
-		CandidateRevision: candidateRevisionFromContext(candidate.Context),
+		CandidateRevision: lockedRevision,
+		CandidateArtifact: lockedArtifact,
 	})
 	if err != nil {
 		return false, nil, fmt.Errorf("encode review task payload: %w", err)
@@ -407,6 +447,49 @@ func (s *ReviewPipelineService) createReviewTask(ctx context.Context, qtx *db.Qu
 		return false, nil, fmt.Errorf("create review task: %w", err)
 	}
 	return true, &task, nil
+}
+
+// createRepairTask enqueues the send-back repair round for a REVISE verdict
+// (post-R2 contract, C7): the implementer (candidate agent) receives a
+// task_kind='repair' row whose context explicitly carries
+// execution_mode=bounded_write plus the locked candidate revision and the
+// repair requirements, so the daemon takes the unique LocalPathLocker lease
+// while reworking. The repair task is a first-class agent_task_queue row —
+// single truth, no second pipeline authority.
+func (s *ReviewPipelineService) createRepairTask(ctx context.Context, qtx *db.Queries, issue db.Issue, candidate db.AgentTaskQueue, reviewTask db.AgentTaskQueue, in VerdictInput) (*db.AgentTaskQueue, error) {
+	lockedRevision, lockedArtifact := candidateLockedIdentity(candidate.Context)
+	payload, err := json.Marshal(repairTaskPayload{
+		Kind:               TaskKindRepair,
+		ExecutionMode:      ExecutionModeBoundedWrite,
+		CandidateTaskID:    util.UUIDToString(candidate.ID),
+		CandidateRevision:  lockedRevision,
+		CandidateArtifact:  lockedArtifact,
+		ReviewTaskID:       util.UUIDToString(reviewTask.ID),
+		RepairRequirements: in.RepairRequirements,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("encode repair task payload: %w", err)
+	}
+	priority := s.Config.ReviewPriority
+	if priority <= 0 {
+		priority = 5
+	}
+	task, err := qtx.CreateRepairTask(ctx, db.CreateRepairTaskParams{
+		AgentID:            candidate.AgentID,
+		RuntimeID:          candidate.RuntimeID,
+		IssueID:            issue.ID,
+		Priority:           priority,
+		ReviewTargetTaskID: candidate.ID,
+		TriggerSummary: pgtype.Text{
+			String: fmt.Sprintf("Repair candidate: REVISE verdict on issue %q", issue.Title),
+			Valid:  true,
+		},
+		Context: payload,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create repair task: %w", err)
+	}
+	return &task, nil
 }
 
 // OnIssueLeftReview resets the acceptance axis when the issue leaves in_review:
@@ -515,6 +598,16 @@ func (s *ReviewPipelineService) WriteVerdict(ctx context.Context, issueID pgtype
 		}
 		if _, err := qtx.CompleteReviewTask(ctx, db.CompleteReviewTaskParams{ID: task.ID, Result: receipt}); err != nil {
 			return fmt.Errorf("review verdict: complete review task: %w", err)
+		}
+
+		// Post-R2 contract: a REVISE verdict routes a bounded_write repair
+		// task back to the implementer (the candidate's agent) so the
+		// rework round carries execution_mode=bounded_write and the daemon
+		// takes the unique LocalPathLocker lease on the candidate path.
+		if in.Verdict == "revise" {
+			if _, err := s.createRepairTask(ctx, qtx, issue, candidate, task, in); err != nil {
+				return fmt.Errorf("review verdict: create repair task: %w", err)
+			}
 		}
 
 		commentType := "comment"
@@ -688,11 +781,29 @@ func (s *ReviewPipelineService) BackfillDryRun(ctx context.Context, workspaceID 
 	return items, summary, nil
 }
 
-// reviewTaskPayload is the context JSONB stamped on a review task at creation.
+// reviewTaskPayload is the context JSONB stamped on a review task at creation
+// (post-R2 contract): execution_mode explicitly read_only (worktree-read-mode)
+// and the locked candidate revision/artifact the reviewer may inspect but not
+// write.
 type reviewTaskPayload struct {
 	Kind              string `json:"kind"`
+	ExecutionMode     string `json:"execution_mode"`
 	CandidateTaskID   string `json:"candidate_task_id"`
 	CandidateRevision string `json:"candidate_revision,omitempty"`
+	CandidateArtifact string `json:"candidate_artifact,omitempty"`
+}
+
+// repairTaskPayload is the context JSONB stamped on a REVISE repair task
+// (post-R2 contract): execution_mode explicitly bounded_write plus the
+// candidate identity and repair requirements.
+type repairTaskPayload struct {
+	Kind               string   `json:"kind"`
+	ExecutionMode      string   `json:"execution_mode"`
+	CandidateTaskID    string   `json:"candidate_task_id"`
+	CandidateRevision  string   `json:"candidate_revision,omitempty"`
+	CandidateArtifact  string   `json:"candidate_artifact,omitempty"`
+	ReviewTaskID       string   `json:"review_task_id,omitempty"`
+	RepairRequirements []string `json:"repair_requirements,omitempty"`
 }
 
 // verdictReceipt is the structured receipt stored on a completed review task.
@@ -777,21 +888,32 @@ func verdictCommentContent(in VerdictInput, task db.AgentTaskQueue, candidate db
 	return b.String()
 }
 
-// candidateRevisionFromContext extracts the exact candidate revision (head_sha)
-// from the candidate task context JSONB when present, so the review payload
-// freezes a precise commit identity instead of a drifting branch head (C5).
-func candidateRevisionFromContext(ctx []byte) string {
+// candidateLockedIdentity extracts the exact locked candidate revision
+// (head_sha) and, when present, the artifact digest from the candidate task
+// context JSONB, so the review payload freezes a precise commit identity
+// instead of a drifting branch head (C5 / post-R2 contract). A missing
+// revision means the candidate was never locked — callers fail closed with
+// candidate_unlocked.
+func candidateLockedIdentity(ctx []byte) (revision, artifact string) {
 	if len(ctx) == 0 {
-		return ""
+		return "", ""
 	}
 	var parsed map[string]any
 	if err := json.Unmarshal(ctx, &parsed); err != nil {
-		return ""
+		return "", ""
 	}
 	if head, ok := parsed["head_sha"].(string); ok {
-		return head
+		revision = head
 	}
-	return ""
+	if digest, ok := parsed["artifact_digest"].(string); ok {
+		artifact = digest
+	}
+	if revision == "" {
+		if head, ok := parsed["revision"].(string); ok {
+			revision = head
+		}
+	}
+	return revision, artifact
 }
 
 // legacyMetadataReviewState reads the one-time migration input from
@@ -826,6 +948,8 @@ func lineageFailureForErr(err error) string {
 		return LineageFailureReviewerUnconfigured
 	case errors.Is(err, ErrReviewerUnavailable):
 		return LineageFailureReviewerUnavailable
+	case errors.Is(err, ErrCandidateUnlocked):
+		return LineageFailureCandidateUnlocked
 	default:
 		return "review_task_creation_failed"
 	}
