@@ -268,6 +268,7 @@ func TestDispatch_EnqueueAndReplay(t *testing.T) {
 	if w.Code != http.StatusAccepted {
 		t.Fatalf("first dispatch: expected 202, got %d: %s", w.Code, w.Body.String())
 	}
+	assertCacheControl(t, w, "dispatch 202 enqueue")
 
 	var result service.DispatchResult
 	json.Unmarshal(w.Body.Bytes(), &result)
@@ -378,6 +379,7 @@ func TestDispatchPreview_RejectsUnknownFields(t *testing.T) {
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
 	}
+	assertCacheControl(t, w, "preview 400 unknown field")
 }
 
 // assertCacheControl verifies the F3 contract: every dispatch response
@@ -784,6 +786,10 @@ func TestDispatchPreview_CacheControl_On401(t *testing.T) {
 }
 
 // dispatchFailingTxStarter is a test double for service.TxStarter.
+// When beginErr is nil, Begin calls testPool.Begin to obtain a real pgx.Tx
+// from the isolated PostgreSQL; the returned wrapper only overrides Commit
+// to return commitErr, letting all other methods (including Rollback)
+// delegate to the real transaction.
 type dispatchFailingTxStarter struct {
 	beginErr  error
 	commitErr error
@@ -793,9 +799,15 @@ func (f *dispatchFailingTxStarter) Begin(ctx context.Context) (pgx.Tx, error) {
 	if f.beginErr != nil {
 		return nil, f.beginErr
 	}
-	return &dispatchFailingTxWithCommit{commitErr: f.commitErr}, nil
+	realTx, err := testPool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &dispatchFailingTxWithCommit{Tx: realTx, commitErr: f.commitErr}, nil
 }
 
+// dispatchFailingTxWithCommit wraps a real pgx.Tx, overriding only Commit.
+// Rollback and all other methods delegate to the embedded real transaction.
 type dispatchFailingTxWithCommit struct {
 	pgx.Tx
 	commitErr error
@@ -803,10 +815,6 @@ type dispatchFailingTxWithCommit struct {
 
 func (t *dispatchFailingTxWithCommit) Commit(ctx context.Context) error {
 	return t.commitErr
-}
-
-func (t *dispatchFailingTxWithCommit) Rollback(ctx context.Context) error {
-	return nil
 }
 
 // withFailingTxStarter swaps the handler's OwnerDispatchService.TxStarter
