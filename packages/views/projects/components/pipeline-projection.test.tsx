@@ -38,6 +38,23 @@ const queuedColumn: ProjectPipelineColumn = {
   unknown: 0,
 };
 
+// Regression fixture: a healthy column whose ONLY non-zero counter is queued.
+// Every other verbose trigger (waiting / failed / terminal_no_writeback /
+// no_task / unknown) and running are zero — the exact queued-only case that
+// must still expose the queued marker in the DOM.
+const queuedOnlyColumn: ProjectPipelineColumn = {
+  status: "todo",
+  total: 4,
+  running: 0,
+  queued: 4,
+  waiting: 0,
+  failed: 0,
+  terminal: 0,
+  terminal_no_writeback: 0,
+  no_task: 0,
+  unknown: 0,
+};
+
 function wrapWithProjection(
   ui: React.ReactElement,
   data: ProjectPipelineResponse | null,
@@ -62,6 +79,22 @@ describe("PipelineColumnBreakdown", () => {
     // The running counter is also present — both must render independently.
     const runningSpan = chip!.querySelector(".text-blue-500");
     expect(runningSpan).toBeTruthy();
+  });
+
+  it("exposes a healthy queued-only column as verbose with a queued marker", () => {
+    const { container } = renderWithI18n(
+      <PipelineColumnBreakdown column={queuedOnlyColumn} />,
+    );
+    // The queued-only column must enter the verbose branch, so the chip is
+    // annotated with the column identity and the queued count is rendered.
+    const chip = container.querySelector("[data-pipeline-column]");
+    expect(chip).toBeTruthy();
+    expect(chip!.getAttribute("data-pipeline-column")).toBe("todo");
+    const queuedSpan = chip!.querySelector('[data-task-class="queued"]');
+    expect(queuedSpan).toBeTruthy();
+    expect(queuedSpan!.textContent).toContain("4");
+    // No running task in this fixture — the running counter must stay hidden.
+    expect(chip!.querySelector(".text-blue-500")).toBeNull();
   });
 
   it("hides queued counter when queued is 0 on a healthy column", () => {

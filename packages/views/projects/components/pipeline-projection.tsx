@@ -222,8 +222,8 @@ export const PipelineCardBadge = memo(function PipelineCardBadge({
  * by §2: total / running / queued / waiting / failed / terminal-no-writeback /
  * no-task. It collapses into a single "total" when the column is healthy
  * (everything is either running or no issues) so a quiet project stays quiet;
- * the moment any unhealthy counter rises, the chip expands to show the
- * breakdown.
+ * the moment any unhealthy counter rises — or any task is queued — the chip
+ * expands to show the breakdown.
  *
  * Pass the column payload + a boolean indicating whether the owner wants the
  * verbose breakdown always (e.g. a "diagnostics" view toggle later).
@@ -242,7 +242,7 @@ export const PipelineColumnBreakdown = memo(function PipelineColumnBreakdown({
     column.terminal_no_writeback +
     column.no_task +
     column.unknown;
-  const verbose = forceVerbose || unhealthy > 0 || column.waiting > 0;
+  const verbose = forceVerbose || unhealthy > 0 || column.waiting > 0 || column.queued > 0;
 
   if (!verbose) {
     // Healthy column — show total + running only.
