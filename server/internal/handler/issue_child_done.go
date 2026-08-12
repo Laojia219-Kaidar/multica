@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
@@ -77,6 +78,13 @@ func (h *Handler) notifyParentOfChildDone(ctx context.Context, prev, issue db.Is
 	// makes a later cancelled -> done edit a no-op (terminal -> terminal), which
 	// avoids a lagging duplicate wake.
 	if isTerminalChildStatus(prev.Status) || !isTerminalChildStatus(issue.Status) {
+		return
+	}
+	// ReviewPipelineV2 historical-dequeue gate (HIV-349/HIV-350): an archived /
+	// superseded child being moved into done/cancelled is an archival
+	// transition, not a real completion — it must not wake the parent (no
+	// system comment, no parent-assignee trigger, no Task/Run).
+	if h.suppressParentNotificationForArchivedChild(issue) {
 		return
 	}
 	parent, err := h.Queries.GetIssue(ctx, issue.ParentIssueID)
@@ -151,6 +159,21 @@ func (h *Handler) notifyParentOfChildDone(ctx context.Context, prev, issue db.Is
 // Best-effort, mirroring notifyParentOfChildDone: a failure on one parent is
 // logged and skipped; it never rolls back the committed batch.
 func (h *Handler) notifyParentsOfBatchChildDone(ctx context.Context, completed []db.Issue) {
+	if len(completed) == 0 {
+		return
+	}
+	// ReviewPipelineV2 historical-dequeue gate (HIV-349/HIV-350): drop archived
+	// / superseded children from the batch entirely. They must neither wake any
+	// parent nor participate in stage-barrier evaluation — an archival dequeue
+	// batch (e.g. a whole historical stage being cancelled at once) must not
+	// resurrect the closed parent. Flag off ⇒ the filter is a no-op.
+	filtered := make([]db.Issue, 0, len(completed))
+	for _, c := range completed {
+		if !h.suppressParentNotificationForArchivedChild(c) {
+			filtered = append(filtered, c)
+		}
+	}
+	completed = filtered
 	if len(completed) == 0 {
 		return
 	}
@@ -243,6 +266,31 @@ func (h *Handler) notifyParentsOfBatchChildDone(ctx context.Context, completed [
 		}
 		h.postChildDoneComment(ctx, parent, rep, children, true, bestStage, batch)
 	}
+}
+
+// suppressParentNotificationForArchivedChild reports whether a child's
+// terminal transition must stay silent to the parent under ReviewPipelineV2
+// (HIV-349/HIV-350). Historical archive/supersede dequeues reuse the ordinary
+// done/cancelled status path: a child whose canonical issue.review_state is a
+// structured historical terminal state (archived_history / superseded) being
+// moved to done/cancelled is an archival transition, not a real completion —
+// waking the parent would resurrect an already-closed parent/squad, mint a
+// system comment + parent-assignee Task/Run, and reverse the review-backlog
+// reduction. The gate keys ONLY on the canonical review_state column (never
+// title, metadata temp keys, or author strings) and is fully gated on the
+// REVIEW_PIPELINE_V2 feature switch: flag off ⇒ legacy behavior unchanged.
+func (h *Handler) suppressParentNotificationForArchivedChild(child db.Issue) bool {
+	if h.ReviewPipelineService == nil || !h.ReviewPipelineService.Config.Enabled {
+		return false
+	}
+	if !child.ReviewState.Valid {
+		return false
+	}
+	switch child.ReviewState.String {
+	case service.ReviewStateArchivedHistory, service.ReviewStateSuperseded:
+		return isTerminalChildStatus(child.Status)
+	}
+	return false
 }
 
 // postChildDoneComment builds and posts the parent's child-done system comment

@@ -2327,7 +2327,7 @@ VALUES (
     $6, $7, 'unattributed'::text, 'issue_delivery'::text, $5
 )
 ON CONFLICT (issue_id, review_target_task_id)
-    WHERE task_kind = 'review' AND status IN ('queued', 'dispatched', 'running')
+    WHERE task_kind = 'review' AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory')
 DO NOTHING
 RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, task_kind, review_target_task_id
 `
@@ -2344,12 +2344,14 @@ type CreateReviewTaskParams struct {
 
 // Creates the idempotent review task for a delivered candidate (HIV-326 C4).
 // The ON CONFLICT arbiter targets the partial unique index
-// idx_agent_task_review_open_unique ((issue_id, review_target_task_id) over
-// open review tasks), so concurrent EventIssueUpdated deliveries, at-least-once
-// bus redelivery, and double consumers all collapse into a single open review
-// task; the losing insert returns no rows (pgx.ErrNoRows) and the caller treats
-// it as a no-op. The 257 CHECK guarantees review_target_task_id is never NULL
-// for a review row, so the arbiter can never be bypassed by NULL semantics.
+// idx_agent_task_review_open_unique_v2 ((issue_id, review_target_task_id)
+// over open review tasks, waiting_local_directory included — HIV-350), so
+// concurrent EventIssueUpdated deliveries, at-least-once bus redelivery,
+// double consumers, and a first task parked in waiting_local_directory by the
+// daemon all collapse into a single open review task; the losing insert
+// returns no rows (pgx.ErrNoRows) and the caller treats it as a no-op. The
+// 257 CHECK guarantees review_target_task_id is never NULL for a review row,
+// so the arbiter can never be bypassed by NULL semantics.
 func (q *Queries) CreateReviewTask(ctx context.Context, arg CreateReviewTaskParams) (AgentTaskQueue, error) {
 	row := q.db.QueryRow(ctx, createReviewTask,
 		arg.AgentID,

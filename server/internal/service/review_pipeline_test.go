@@ -349,6 +349,108 @@ func TestReviewOnEnteredReview_DuplicateEvent_Idempotent(t *testing.T) {
 	}
 }
 
+// TestReviewOnEnteredReview_DuplicateWhileWaitingLocalDirectory guards the
+// HIV-350 gap: the daemon parks a claimed review task in
+// waiting_local_directory while its workdir is prepared, and 258's unique
+// index (queued/dispatched/running only) let a duplicate EventIssueUpdated
+// delivery mint a SECOND open review task for the same (issue, candidate) at
+// that moment. Migration 260 extends the unique key (and the CreateReviewTask
+// arbiter) over waiting_local_directory, so the duplicate delivery must still
+// collapse into a single open review task.
+func TestReviewOnEnteredReview_DuplicateWhileWaitingLocalDirectory(t *testing.T) {
+	pool := newReviewPipelineTestPool(t)
+	fixture := seedReviewPipelineFixture(t, pool)
+	ctx := context.Background()
+	fixture.seedCompletedCandidateTask(t, ctx)
+	svc := fixture.reviewService(nil)
+
+	if err := svc.OnIssueEnteredReview(ctx, util.MustParseUUID(fixture.issueID)); err != nil {
+		t.Fatalf("first OnIssueEnteredReview: %v", err)
+	}
+	if n := fixture.openReviewTaskCount(t, ctx); n != 1 {
+		t.Fatalf("open review tasks after first event = %d, want 1", n)
+	}
+
+	// Park the review task the way the daemon does while preparing the workdir.
+	if _, err := pool.Exec(ctx, `
+		UPDATE agent_task_queue SET status = 'waiting_local_directory'
+		WHERE id = $1
+	`, fixture.currentReviewTask(t, ctx).ID); err != nil {
+		t.Fatalf("park review task in waiting_local_directory: %v", err)
+	}
+
+	// A duplicate delivery arriving while the first task is parked must not
+	// create a second open review task.
+	if err := svc.OnIssueEnteredReview(ctx, util.MustParseUUID(fixture.issueID)); err != nil {
+		t.Fatalf("duplicate OnIssueEnteredReview while waiting_local_directory: %v", err)
+	}
+	if err := svc.OnIssueEnteredReview(ctx, util.MustParseUUID(fixture.issueID)); err != nil {
+		t.Fatalf("second duplicate OnIssueEnteredReview while waiting_local_directory: %v", err)
+	}
+
+	state, _ := fixture.issueReviewState(t, ctx)
+	if !state.Valid || state.String != ReviewStateQueued {
+		t.Fatalf("review_state = %v, want queued", state)
+	}
+	if n := fixture.openReviewTaskCount(t, ctx); n != 1 {
+		t.Fatalf("open review tasks = %d, want exactly 1 after duplicate events while waiting_local_directory", n)
+	}
+	task := fixture.currentReviewTask(t, ctx)
+	if task.Status != "waiting_local_directory" {
+		t.Fatalf("review task status = %q, want waiting_local_directory preserved", task.Status)
+	}
+}
+
+// TestReviewCreateReviewTask_IdempotentAcrossWaitingLocalDirectory drives the
+// generated CreateReviewTask query directly (the ON CONFLICT arbiter path) to
+// prove the unique key itself — not just the service guard — rejects a second
+// open review task once the first is parked in waiting_local_directory. This
+// is the regression the migration 260 index predicate exists for.
+func TestReviewCreateReviewTask_IdempotentAcrossWaitingLocalDirectory(t *testing.T) {
+	pool := newReviewPipelineTestPool(t)
+	fixture := seedReviewPipelineFixture(t, pool)
+	ctx := context.Background()
+	candidateID := fixture.seedCompletedCandidateTask(t, ctx)
+	svc := fixture.reviewService(nil)
+
+	if err := svc.OnIssueEnteredReview(ctx, util.MustParseUUID(fixture.issueID)); err != nil {
+		t.Fatalf("OnIssueEnteredReview: %v", err)
+	}
+	task := fixture.currentReviewTask(t, ctx)
+	if !uuidEqual(task.ReviewTargetTaskID, util.MustParseUUID(candidateID)) {
+		t.Fatalf("review task targets %s, want candidate %s",
+			util.UUIDToString(task.ReviewTargetTaskID), candidateID)
+	}
+	if _, err := pool.Exec(ctx, `
+		UPDATE agent_task_queue SET status = 'waiting_local_directory'
+		WHERE id = $1
+	`, task.ID); err != nil {
+		t.Fatalf("park review task in waiting_local_directory: %v", err)
+	}
+
+	// Re-run createReviewTask with the exact same (issue, candidate): the
+	// arbiter must resolve to idx_agent_task_review_open_unique_v2 and return
+	// "not created" (no rows) instead of inserting a duplicate.
+	issue, err := db.New(pool).GetIssue(ctx, util.MustParseUUID(fixture.issueID))
+	if err != nil {
+		t.Fatalf("load issue: %v", err)
+	}
+	candidate, err := db.New(pool).GetAgentTask(ctx, util.MustParseUUID(candidateID))
+	if err != nil {
+		t.Fatalf("load candidate task: %v", err)
+	}
+	created, _, err := svc.createReviewTask(ctx, db.New(pool), issue, candidate)
+	if err != nil {
+		t.Fatalf("createReviewTask while waiting_local_directory: %v", err)
+	}
+	if created {
+		t.Fatal("createReviewTask reported a new insert while the first task is waiting_local_directory — duplicate open review task created")
+	}
+	if n := fixture.openReviewTaskCount(t, ctx); n != 1 {
+		t.Fatalf("open review tasks = %d, want exactly 1", n)
+	}
+}
+
 func TestReviewOnEnteredReview_ConcurrentDuplicateEvents(t *testing.T) {
 	pool := newReviewPipelineTestPool(t)
 	fixture := seedReviewPipelineFixture(t, pool)

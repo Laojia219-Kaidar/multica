@@ -15,10 +15,10 @@ import (
 )
 
 // TestReviewPipelineV2MigrationsUpDownUp rehearses the ReviewPipelineV2 schema
-// change (255-258, HIV-326) in an isolated schema: up → constraint/index
-// assertions → down → removal assertions → up again. It requires the isolated
-// test database at 127.0.0.1:55432 and refuses any other target, so it can
-// never touch a default/localhost:5432 instance.
+// change (255-258 + 260, HIV-326 / HIV-350) in an isolated schema: up →
+// constraint/index assertions → down → removal assertions → up again. It
+// requires the isolated test database at 127.0.0.1:55432 and refuses any other
+// target, so it can never touch a default/localhost:5432 instance.
 func TestReviewPipelineV2MigrationsUpDownUp(t *testing.T) {
 	databaseURL := os.Getenv("DATABASE_URL")
 	if databaseURL == "" {
@@ -81,6 +81,7 @@ func TestReviewPipelineV2MigrationsUpDownUp(t *testing.T) {
 		"256_issue_review_state_open_index.up.sql",
 		"257_agent_task_review_kind.up.sql",
 		"258_agent_task_review_open_unique.up.sql",
+		"260_agent_task_review_open_unique_waiting.up.sql",
 	} {
 		applyReviewMigration(t, ctx, conn, file)
 	}
@@ -88,6 +89,7 @@ func TestReviewPipelineV2MigrationsUpDownUp(t *testing.T) {
 	assertReviewSchemaUp(t, ctx, conn)
 
 	for _, file := range []string{
+		"260_agent_task_review_open_unique_waiting.down.sql",
 		"258_agent_task_review_open_unique.down.sql",
 		"257_agent_task_review_kind.down.sql",
 		"256_issue_review_state_open_index.down.sql",
@@ -103,6 +105,7 @@ func TestReviewPipelineV2MigrationsUpDownUp(t *testing.T) {
 		"256_issue_review_state_open_index.up.sql",
 		"257_agent_task_review_kind.up.sql",
 		"258_agent_task_review_open_unique.up.sql",
+		"260_agent_task_review_open_unique_waiting.up.sql",
 	} {
 		applyReviewMigration(t, ctx, conn, file)
 	}
@@ -181,18 +184,51 @@ func assertReviewSchemaUp(t *testing.T, ctx context.Context, conn *pgx.Conn) {
 
 	// Open-task unique index: a second open review task on the same
 	// (issue, candidate) must conflict; a completed one must not.
-	secondReview := func(status string) error {
+	secondReview := func(status string, candidate uuid.UUID) error {
 		_, err := conn.Exec(ctx, `
 			INSERT INTO agent_task_queue (id, agent_id, issue_id, status, task_kind, review_target_task_id)
 			VALUES ($1, $2, $3, $4, 'review', $5)
-		`, uuid.New(), agentID, issueID, status, candidateID)
+		`, uuid.New(), agentID, issueID, status, candidate)
 		return err
 	}
-	if err := secondReview("queued"); !isUniqueViolation(err) {
+	if err := secondReview("queued", candidateID); !isUniqueViolation(err) {
 		t.Fatalf("duplicate open review task: got %v, want unique violation", err)
 	}
-	if err := secondReview("completed"); err != nil {
+	if err := secondReview("completed", candidateID); err != nil {
 		t.Fatalf("second completed review task must not collide: %v", err)
+	}
+
+	// 260 (HIV-350): the open-review unique index must also cover
+	// waiting_local_directory — the daemon parks a claimed review task there
+	// while its workdir is prepared. 258's index alone lets a second open
+	// review task for the same (issue, candidate) slip through once the first
+	// has left 'queued'; the v2 index must reject it.
+	for _, indexName := range []string{"idx_agent_task_review_open_unique", "idx_agent_task_review_open_unique_v2"} {
+		var def string
+		if err := conn.QueryRow(ctx, `
+			SELECT indexdef FROM pg_indexes WHERE schemaname = current_schema() AND indexname = $1
+		`, indexName).Scan(&def); err != nil {
+			t.Fatalf("inspect index %s: %v", indexName, err)
+		}
+		if indexName == "idx_agent_task_review_open_unique_v2" && !strings.Contains(def, "waiting_local_directory") {
+			t.Fatalf("index %s must cover waiting_local_directory, got: %s", indexName, def)
+		}
+	}
+	wldCandidateID := uuid.New()
+	if _, err := conn.Exec(ctx, `
+		INSERT INTO agent_task_queue (id, agent_id, issue_id, status, task_kind, review_target_task_id)
+		VALUES ($1, $2, $3, 'queued', 'review', $4)
+	`, uuid.New(), agentID, issueID, wldCandidateID); err != nil {
+		t.Fatalf("insert base review task for waiting_local_directory scenario: %v", err)
+	}
+	if _, err := conn.Exec(ctx, `
+		UPDATE agent_task_queue SET status = 'waiting_local_directory'
+		WHERE review_target_task_id = $1
+	`, wldCandidateID); err != nil {
+		t.Fatalf("move review task into waiting_local_directory: %v", err)
+	}
+	if err := secondReview("queued", wldCandidateID); !isUniqueViolation(err) {
+		t.Fatalf("duplicate review task while first is waiting_local_directory: got %v, want unique violation", err)
 	}
 }
 
@@ -221,7 +257,11 @@ func assertReviewSchemaDown(t *testing.T, ctx context.Context, conn *pgx.Conn, s
 		t.Fatalf("task_kind columns after down = %d, want 0", taskKindColumns)
 	}
 
-	for _, indexName := range []string{"idx_issue_review_state_open", "idx_agent_task_review_open_unique"} {
+	for _, indexName := range []string{
+		"idx_issue_review_state_open",
+		"idx_agent_task_review_open_unique",
+		"idx_agent_task_review_open_unique_v2",
+	} {
 		var n int
 		if err := conn.QueryRow(ctx, `
 			SELECT count(*) FROM pg_indexes WHERE schemaname = $1 AND indexname = $2
