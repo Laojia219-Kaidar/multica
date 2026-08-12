@@ -35,6 +35,11 @@ type AutopilotService struct {
 	TxStarter TxStarter
 	Bus       *events.Bus
 	TaskSvc   *TaskService
+	// ReviewPipelineEnabled narrows the terminal-status interpretation of
+	// issue.status='in_review' under ReviewPipelineV2: an autopilot run only
+	// completes when the acceptance axis says accepted (HIV-326 §3 row 7).
+	// Default false keeps the legacy "in_review is terminal" behavior.
+	ReviewPipelineEnabled bool
 }
 
 // DefaultAutopilotTriggerTimezone is the timezone used to render Autopilot
@@ -971,6 +976,16 @@ func (s *AutopilotService) SyncRunFromIssue(ctx context.Context, issue db.Issue)
 	}
 
 	wsID := util.UUIDToString(issue.WorkspaceID)
+
+	// ReviewPipelineV2 (HIV-326 §3 row 7): in_review no longer means
+	// "accepted". While the pipeline is enabled, an autopilot run only
+	// completes once the acceptance axis says accepted; a pending review does
+	// not finalize the run.
+	if s.ReviewPipelineEnabled && issue.Status == "in_review" {
+		if !issue.ReviewState.Valid || issue.ReviewState.String != ReviewStateAccepted {
+			return
+		}
+	}
 
 	switch issue.Status {
 	case "done", "in_review":

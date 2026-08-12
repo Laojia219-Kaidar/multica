@@ -125,6 +125,14 @@ const (
 	EventSquadUpdated = "squad:updated"
 	EventSquadDeleted = "squad:deleted"
 
+	// ReviewPipelineV2 events (HIV-326 contract §3 row 6). The acceptance axis
+	// is server-side state; these events carry the outcome to inbox/notification
+	// consumers. review:escalated payload includes the stable reason code
+	// (e.g. missing_candidate_lineage/no_source_task_id) for Owner/coordinator
+	// routing.
+	EventReviewVerdict   = "review:verdict"
+	EventReviewEscalated = "review:escalated"
+
 	// Daemon events
 	EventDaemonHeartbeat              = "daemon:heartbeat"
 	EventDaemonHeartbeatAck           = "daemon:heartbeat_ack"

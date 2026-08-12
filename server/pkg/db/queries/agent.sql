@@ -529,6 +529,13 @@ WHERE atq.id = $1 AND a.workspace_id = $2;
 -- membership query. Callers pass true only when the agent's
 -- operational_mode is 'training'; the normal path passes false and the
 -- predicate is a no-op.
+--
+-- ReviewPipelineV2 WIP gate (HIV-326 C10): a task_kind='review' candidate is
+-- claimable only while the reviewer's open review-task count (excluding the
+-- candidate row itself) is below @review_wip_limit. Count and dispatch happen
+-- in the SAME statement, so two concurrent claims cannot both pass the gate and
+-- overshoot the limit. Non-review tasks are unaffected (the predicate is
+-- short-circuited by `task_kind IS DISTINCT FROM 'review'`).
 UPDATE agent_task_queue
 SET status = 'dispatched',
     dispatched_at = now(),
@@ -566,11 +573,83 @@ WHERE id = (
               )
             )
       )
+      AND (
+          atq.task_kind IS DISTINCT FROM 'review'
+          OR (
+              SELECT count(*) FROM agent_task_queue open_review
+              WHERE open_review.agent_id = atq.agent_id
+                AND open_review.task_kind = 'review'
+                AND open_review.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory')
+                AND open_review.id <> atq.id
+          ) < @review_wip_limit::int
+      )
     ORDER BY atq.priority DESC, atq.created_at ASC
     LIMIT 1
     FOR UPDATE SKIP LOCKED
 )
 RETURNING *;
+
+-- name: CreateReviewTask :one
+-- Creates the idempotent review task for a delivered candidate (HIV-326 C4).
+-- The ON CONFLICT arbiter targets the partial unique index
+-- idx_agent_task_review_open_unique ((issue_id, review_target_task_id) over
+-- open review tasks), so concurrent EventIssueUpdated deliveries, at-least-once
+-- bus redelivery, and double consumers all collapse into a single open review
+-- task; the losing insert returns no rows (pgx.ErrNoRows) and the caller treats
+-- it as a no-op. The 257 CHECK guarantees review_target_task_id is never NULL
+-- for a review row, so the arbiter can never be bypassed by NULL semantics.
+INSERT INTO agent_task_queue (
+    agent_id, runtime_id, issue_id, status, priority, task_kind, review_target_task_id,
+    trigger_summary, context, originator_source, trigger_evidence_kind, trigger_evidence_ref_id
+)
+VALUES (
+    @agent_id, @runtime_id, @issue_id, 'queued', @priority, 'review', @review_target_task_id,
+    sqlc.narg(trigger_summary), @context, 'unattributed'::text, 'issue_delivery'::text, @review_target_task_id
+)
+ON CONFLICT (issue_id, review_target_task_id)
+    WHERE task_kind = 'review' AND status IN ('queued', 'dispatched', 'running')
+DO NOTHING
+RETURNING *;
+
+-- name: GetOpenReviewTaskForIssue :one
+-- The current open review task for an issue (the task whose agent_id is the
+-- reviewer). C9 keeps at most one open review task per issue by cancelling
+-- superseded candidates, so the latest-by-created_at row is authoritative.
+SELECT * FROM agent_task_queue
+WHERE issue_id = $1
+  AND task_kind = 'review'
+  AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory')
+ORDER BY created_at DESC
+LIMIT 1;
+
+-- name: CompleteReviewTask :one
+-- Completes a review task with the structured verdict receipt. Only an open
+-- task can be completed: a verdict that arrives after the task was cancelled
+-- (superseded, status rollback) matches zero rows and is rejected (HIV-326
+-- §5-5 "取消后写入").
+UPDATE agent_task_queue
+SET status = 'completed', completed_at = now(), result = @result::jsonb
+WHERE id = @id
+  AND task_kind = 'review'
+  AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory')
+RETURNING *;
+
+-- name: CancelOpenReviewTasksForIssue :many
+-- Cancels every open review task for an issue. Used when the issue leaves
+-- in_review (repair rework, status rollback) and by C9 supersede when a newer
+-- candidate replaces an in-flight review round.
+UPDATE agent_task_queue
+SET status = 'cancelled', completed_at = now()
+WHERE issue_id = $1
+  AND task_kind = 'review'
+  AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory')
+RETURNING *;
+
+-- name: CountOpenReviewTasks :one
+SELECT count(*) FROM agent_task_queue
+WHERE agent_id = $1
+  AND task_kind = 'review'
+  AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory');
 
 -- name: SetTaskDeliveredCommentIDs :one
 -- Replace (rather than append to) the delivery receipt for this claim. A stale

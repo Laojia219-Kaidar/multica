@@ -329,6 +329,14 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	h.TaskService.FeatureFlags = opts.FeatureFlags
 	h.TaskService.Metrics = opts.BusinessMetrics
 	h.IssueService.Metrics = opts.BusinessMetrics
+	// ReviewPipelineV2 (HIV-326): construct the acceptance-axis service only
+	// when the feature switch is on. When off, h.ReviewPipelineService stays
+	// nil, no review routes are registered, and every terminal-status
+	// interpretation keeps its legacy behavior.
+	if cfg := reviewPipelineConfigFromEnv(); cfg.Enabled {
+		h.ReviewPipelineService = service.NewReviewPipelineService(queries, pool, bus, cfg)
+		h.TaskService.ReviewWIPLimit = cfg.ReviewWIPLimit
+	}
 	if opts.BusinessMetrics != nil {
 		// Wire the BusinessMetrics receiver into the cloud runtime client
 		// so every outbound Fleet/Gateway request feeds the
@@ -1245,6 +1253,13 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Post("/preview-trigger", h.PreviewIssueTrigger)
 				r.Post("/batch-update", h.BatchUpdateIssues)
 				r.Post("/batch-delete", h.BatchDeleteIssues)
+				// ReviewPipelineV2 (HIV-326 §3 API): review-queue is a static path
+				// and must register before the /{id} route (chi static-first, same
+				// as /grouped). verdict/requeue live under /{id}. Registered only
+				// when the feature switch is on — flag-off behavior is unchanged.
+				if h.ReviewPipelineService != nil {
+					r.Get("/review-queue", h.ListReviewQueue)
+				}
 				r.Route("/{id}", func(r chi.Router) {
 					r.Get("/", h.GetIssue)
 					r.Put("/", h.UpdateIssue)
@@ -1277,11 +1292,25 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Put("/properties/{propertyId}", h.SetIssueProperty)
 					r.Delete("/properties/{propertyId}", h.DeleteIssueProperty)
 					r.Get("/pull-requests", h.ListPullRequestsForIssue)
+					if h.ReviewPipelineService != nil {
+						r.Post("/review-verdict", h.WriteReviewVerdict)
+						r.Post("/review-requeue", h.RequeueReview)
+					}
 				})
 			})
 
 			// Task messages (user-facing, not daemon auth)
 			r.Get("/api/tasks/{taskId}/messages", h.ListTaskMessagesByUser)
+
+			// Review backfill (HIV-326 C12 / §3 API): dry-run only in this
+			// stage, human-only, strictly read-only. Registered only when the
+			// feature switch is on.
+			if h.ReviewPipelineService != nil {
+				r.Route("/api/review-backfill", func(r chi.Router) {
+					r.Use(handler.RequireHumanActor)
+					r.Post("/dry-run", h.ReviewBackfillDryRun)
+				})
+			}
 
 			// Custom issue properties (definitions; values live under /api/issues/{id}/properties)
 			r.Route("/api/properties", func(r chi.Router) {

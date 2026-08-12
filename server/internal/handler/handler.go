@@ -160,6 +160,11 @@ type Handler struct {
 	Bus                    *events.Bus
 	TaskService            *service.TaskService
 	IssueService           *service.IssueService
+	// ReviewPipelineService is the ReviewPipelineV2 acceptance axis
+	// (HIV-326). Nil when the REVIEW_PIPELINE_V2 feature flag is off; review
+	// routes return 503 in that state so the flag-off product behavior is
+	// unchanged.
+	ReviewPipelineService *service.ReviewPipelineService
 	// CompanyOpsAuthority resolves the exact HiveCosm WorkOrder, Employee and
 	// IdentityBinding together with one HiveCrew-local executable Agent.
 	// Nil means the cross-system authority adapter is not configured; the

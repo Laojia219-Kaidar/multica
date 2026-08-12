@@ -19,7 +19,6 @@ type mention struct {
 	ID   string // user_id, agent_id, issue_id, or "all"
 }
 
-
 // statusLabels maps DB status values to human-readable labels for notifications.
 var statusLabels = map[string]string{
 	"backlog":     "Backlog",
@@ -78,19 +77,19 @@ var parentBubbleNotifTypes = map[string]bool{
 // notifTypeToGroup maps each InboxItemType to a user-configurable preference
 // group. Types not in this map are always delivered (not configurable).
 var notifTypeToGroup = map[string]string{
-	"issue_assigned":  "assignments",
-	"unassigned":      "assignments",
-	"assignee_changed": "assignments",
-	"status_changed":  "status_changes",
-	"new_comment":     "comments",
-	"mentioned":       "comments",
-	"priority_changed": "updates",
+	"issue_assigned":     "assignments",
+	"unassigned":         "assignments",
+	"assignee_changed":   "assignments",
+	"status_changed":     "status_changes",
+	"new_comment":        "comments",
+	"mentioned":          "comments",
+	"priority_changed":   "updates",
 	"start_date_changed": "updates",
-	"due_date_changed": "updates",
-	"task_completed":  "agent_activity",
-	"task_failed":     "agent_activity",
-	"agent_blocked":   "agent_activity",
-	"agent_completed": "agent_activity",
+	"due_date_changed":   "updates",
+	"task_completed":     "agent_activity",
+	"task_failed":        "agent_activity",
+	"agent_blocked":      "agent_activity",
+	"agent_completed":    "agent_activity",
 }
 
 // isNotifMuted returns true if the given notification type is muted for a user
@@ -151,6 +150,17 @@ var terminalStatusForTaskFailedDismiss = map[string]bool{
 	"in_review": true,
 	"done":      true,
 	"cancelled": true,
+}
+
+// isTerminalStatusForTaskFailedDismiss narrows the dismiss set under
+// ReviewPipelineV2 (HIV-326 §3 row 7): while the pipeline is on, in_review is
+// "under review", not "delivered-complete", so stale task_failed rows must not
+// be archived on the way in.
+func isTerminalStatusForTaskFailedDismiss(status string) bool {
+	if reviewPipelineV2Enabled && status == "in_review" {
+		return false
+	}
+	return terminalStatusForTaskFailedDismiss[status]
 }
 
 // archiveStaleTaskFailedInbox archives all task_failed inbox rows for the
@@ -667,7 +677,7 @@ func registerNotificationListeners(bus *events.Bus, queries *db.Queries) {
 			// cancelled), retire any stale task_failed inbox rows so the
 			// inbox reflects the current state of the work, not its history.
 			// The activity log keeps the full failure history for audit.
-			if terminalStatusForTaskFailedDismiss[issue.Status] {
+			if isTerminalStatusForTaskFailedDismiss(issue.Status) {
 				archiveStaleTaskFailedInbox(ctx, queries, bus, e.WorkspaceID, issue.ID)
 			}
 		}

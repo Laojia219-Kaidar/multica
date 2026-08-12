@@ -48,6 +48,12 @@ type TaskService struct {
 	// FeatureFlags is the server-side toggle router. Nil is valid and returns
 	// each call site's default.
 	FeatureFlags *featureflag.Service
+	// ReviewWIPLimit caps how many open review tasks (task_kind='review',
+	// queued/dispatched/running/waiting_local_directory) a single reviewer can
+	// hold at claim time (HIV-326 C10). Count and dispatch happen in the same
+	// ClaimAgentTask statement so concurrent claims cannot overshoot. <=0 means
+	// unlimited and is inert for every non-review task.
+	ReviewWIPLimit int32
 	// EmptyClaim caches "this runtime has no queued task" so the daemon
 	// poll path can skip a Postgres scan on the steady-state empty case.
 	// Optional — a nil cache disables the fast path and every claim
@@ -2507,6 +2513,7 @@ func (s *TaskService) ClaimTask(ctx context.Context, agentID pgtype.UUID) (*db.A
 			AgentID:              agentID,
 			PrepareLeaseSecs:     prepareLeaseDuration.Seconds(),
 			TrainingEligibleOnly: trainingEligibleOnly,
+			ReviewWipLimit:       effectiveReviewWIPLimit(s.ReviewWIPLimit),
 		})
 		claimAgentMs = time.Since(t0).Milliseconds()
 		if err != nil {
@@ -2959,6 +2966,16 @@ func (s *TaskService) maybeLogClaimSlow(agentID pgtype.UUID, outcome string, sta
 		"update_status_ms", updateStatusMs,
 		"dispatch_ms", dispatchMs,
 	)
+}
+
+// effectiveReviewWIPLimit maps the TaskService review WIP configuration onto
+// the ClaimAgentTask gate parameter: <=0 means "no review WIP gate" (flag off
+// or unset), which must behave exactly like the pre-V2 claim path.
+func effectiveReviewWIPLimit(configured int32) int32 {
+	if configured <= 0 {
+		return 1 << 30
+	}
+	return configured
 }
 
 // StartTask transitions a dispatched task to running.

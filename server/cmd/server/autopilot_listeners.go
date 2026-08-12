@@ -12,7 +12,12 @@ import (
 
 // registerAutopilotListeners hooks into issue and task events to keep
 // autopilot runs in sync with their linked issues and tasks.
-func registerAutopilotListeners(bus *events.Bus, svc *service.AutopilotService) {
+//
+// reviewPipelineEnabled narrows the terminal-status interpretation of
+// in_review under ReviewPipelineV2 (HIV-326 §3 row 7): while the pipeline is
+// on, an in_review issue only finalizes an autopilot run once the acceptance
+// axis says accepted.
+func registerAutopilotListeners(bus *events.Bus, svc *service.AutopilotService, reviewPipelineEnabled bool) {
 	ctx := context.Background()
 
 	// When an issue with origin_type='autopilot' reaches a terminal status,
@@ -39,6 +44,13 @@ func registerAutopilotListeners(bus *events.Bus, svc *service.AutopilotService) 
 		if err != nil {
 			slog.Debug("autopilot listener: failed to load issue", "issue_id", issue.ID, "error", err)
 			return
+		}
+		// ReviewPipelineV2: in_review is no longer terminal on its own — the
+		// review axis must have accepted the delivery.
+		if reviewPipelineEnabled && dbIssue.Status == "in_review" {
+			if !dbIssue.ReviewState.Valid || dbIssue.ReviewState.String != service.ReviewStateAccepted {
+				return
+			}
 		}
 		svc.SyncRunFromIssue(ctx, dbIssue)
 	})

@@ -411,7 +411,15 @@ func main() {
 	taskSvc.Analytics = analyticsClient
 	taskSvc.Metrics = businessMetrics
 	autopilotSvc := service.NewAutopilotService(queries, pool, bus, taskSvc)
-	registerAutopilotListeners(bus, autopilotSvc)
+	autopilotSvc.ReviewPipelineEnabled = reviewPipelineV2Enabled
+	registerAutopilotListeners(bus, autopilotSvc, reviewPipelineV2Enabled)
+
+	// ReviewPipelineV2 acceptance-axis listener (HIV-326 C4/C4-L/C9). The
+	// service instance is shared with the HTTP handlers (wired in router.go);
+	// when the feature switch is off the service is nil and nothing here runs.
+	if h.ReviewPipelineService != nil {
+		registerReviewListeners(bus, h.ReviewPipelineService)
+	}
 
 	// Construct a LivenessStore that mirrors the one wired into the HTTP
 	// handler. Both the heartbeat write path (handler) and the sweeper read

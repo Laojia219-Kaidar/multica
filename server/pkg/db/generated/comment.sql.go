@@ -432,6 +432,40 @@ func (q *Queries) HasAgentRepliedInThread(ctx context.Context, arg HasAgentRepli
 	return has_replied, err
 }
 
+const latestLineageComment = `-- name: LatestLineageComment :one
+SELECT id, issue_id, author_type, author_id, content, type, created_at, updated_at, parent_id, workspace_id, resolved_at, resolved_by_type, resolved_by_id, source_task_id FROM comment
+WHERE issue_id = $1 AND source_task_id IS NOT NULL
+ORDER BY created_at DESC, id DESC
+LIMIT 1
+`
+
+// The newest delivery comment for an issue: the most recent comment carrying a
+// machine-readable source_task_id (HIV-326 C4-L-1). The listener resolves the
+// review candidate from this exact row and independently re-validates the
+// referenced task (exists / same issue / terminal) — the pinning logic in
+// handler/comment.go is trusted as a first gate, never as the final authority.
+func (q *Queries) LatestLineageComment(ctx context.Context, issueID pgtype.UUID) (Comment, error) {
+	row := q.db.QueryRow(ctx, latestLineageComment, issueID)
+	var i Comment
+	err := row.Scan(
+		&i.ID,
+		&i.IssueID,
+		&i.AuthorType,
+		&i.AuthorID,
+		&i.Content,
+		&i.Type,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.ParentID,
+		&i.WorkspaceID,
+		&i.ResolvedAt,
+		&i.ResolvedByType,
+		&i.ResolvedByID,
+		&i.SourceTaskID,
+	)
+	return i, err
+}
+
 const listCommentsForIssue = `-- name: ListCommentsForIssue :many
 SELECT id, issue_id, author_type, author_id, content, type, created_at, updated_at, parent_id, workspace_id, resolved_at, resolved_by_type, resolved_by_id, source_task_id FROM comment
 WHERE issue_id = $1 AND workspace_id = $2

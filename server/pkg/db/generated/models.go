@@ -153,6 +153,8 @@ type AgentTaskQueue struct {
 	AccountableUserID     pgtype.UUID `json:"accountable_user_id"`
 	SessionRolloutMissing bool        `json:"session_rollout_missing"`
 	RetiredSessionID      pgtype.Text `json:"retired_session_id"`
+	TaskKind              string      `json:"task_kind"`
+	ReviewTargetTaskID    pgtype.UUID `json:"review_target_task_id"`
 }
 
 type AgentToLabel struct {
@@ -771,6 +773,8 @@ type Issue struct {
 	Metadata           []byte             `json:"metadata"`
 	Stage              pgtype.Int4        `json:"stage"`
 	Properties         []byte             `json:"properties"`
+	ReviewState        pgtype.Text        `json:"review_state"`
+	ReviewStateReason  pgtype.Text        `json:"review_state_reason"`
 }
 
 type IssueDependency struct {

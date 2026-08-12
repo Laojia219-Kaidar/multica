@@ -17,7 +17,7 @@ func TestAutopilotRunOnlyTaskTerminalEventsUpdateRun(t *testing.T) {
 	bus := events.New()
 	taskSvc := service.NewTaskService(queries, testPool, nil, bus)
 	autopilotSvc := service.NewAutopilotService(queries, testPool, bus, taskSvc)
-	registerAutopilotListeners(bus, autopilotSvc)
+	registerAutopilotListeners(bus, autopilotSvc, false)
 
 	var agentID string
 	if err := testPool.QueryRow(ctx,
@@ -143,7 +143,7 @@ func dispatchCreateIssueAutopilot(t *testing.T, title string) linkedIssueAutopil
 	bus := events.New()
 	taskSvc := service.NewTaskService(queries, testPool, nil, bus)
 	autopilotSvc := service.NewAutopilotService(queries, testPool, bus, taskSvc)
-	registerAutopilotListeners(bus, autopilotSvc)
+	registerAutopilotListeners(bus, autopilotSvc, false)
 
 	var agentID string
 	if err := testPool.QueryRow(ctx,
