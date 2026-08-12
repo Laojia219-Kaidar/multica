@@ -579,6 +579,15 @@ type DaemonToken struct {
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 }
 
+type DispatchIdempotency struct {
+	ID             pgtype.UUID        `json:"id"`
+	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
+	IdempotencyKey string             `json:"idempotency_key"`
+	RequestDigest  string             `json:"request_digest"`
+	TaskIds        []pgtype.UUID      `json:"task_ids"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+}
+
 type ExecutionReceipt struct {
 	TaskID              pgtype.UUID        `json:"task_id"`
 	WorkspaceID         pgtype.UUID        `json:"workspace_id"`
