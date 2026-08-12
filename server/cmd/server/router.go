@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"crypto/sha256"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/netip"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -118,7 +120,17 @@ func configureCompanyOps(h *handler.Handler, queries *db.Queries, pool *pgxpool.
 		return
 	}
 
-	transport := companyOpsBearerTransport{base: http.DefaultTransport, token: token}
+	authorityURL, err := url.Parse(baseURL)
+	if err != nil || authorityURL.Scheme == "" || authorityURL.Host == "" || authorityURL.User != nil {
+		slog.Warn("companyops authority adapter disabled", "error", "HIVECOSM_AUTHORITY_BASE_URL is invalid")
+		return
+	}
+	transport := companyOpsBearerTransport{
+		base:            http.DefaultTransport,
+		token:           token,
+		authorityScheme: authorityURL.Scheme,
+		authorityHost:   authorityURL.Host,
+	}
 	authorityClient, err := companyopsapi.NewHiveCosmAuthorityClient(baseURL, &http.Client{
 		Transport: transport,
 		Timeout:   10 * time.Second,
@@ -126,6 +138,17 @@ func configureCompanyOps(h *handler.Handler, queries *db.Queries, pool *pgxpool.
 	if err != nil {
 		slog.Warn("companyops authority adapter disabled", "error", err)
 		return
+	}
+	tenantID := strings.TrimSpace(os.Getenv("HIVECOSM_TENANT_ID"))
+	directoryClient, directoryErr := companyopsapi.NewHiveCrewDirectoryClient(
+		baseURL,
+		&http.Client{Transport: transport, Timeout: 10 * time.Second},
+		tenantID,
+	)
+	if directoryErr != nil {
+		slog.Warn("companyops directory service disabled", "error", directoryErr)
+	} else {
+		h.CompanyOpsDirectory = service.NewCompanyOpsDirectoryService(directoryClient, queries)
 	}
 	h.CompanyOpsAuthority = service.NewCompanyOpsAuthorityResolver(authorityClient, queries)
 
@@ -233,11 +256,17 @@ type RouterOptions struct {
 }
 
 type companyOpsBearerTransport struct {
-	base  http.RoundTripper
-	token string
+	base            http.RoundTripper
+	token           string
+	authorityScheme string
+	authorityHost   string
 }
 
 func (t companyOpsBearerTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	if request.URL.Scheme != t.authorityScheme ||
+		!strings.EqualFold(request.URL.Host, t.authorityHost) {
+		return nil, fmt.Errorf("companyops authority request escaped configured origin")
+	}
 	clone := request.Clone(request.Context())
 	clone.Header = request.Header.Clone()
 	clone.Header.Set("Authorization", "Bearer "+t.token)
@@ -772,6 +801,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	}
 	r.Use(chimw.Recoverer)
 	r.Use(middleware.ContentSecurityPolicy)
+	r.Use(handler.CompanyOpsSecurityHeaders)
 
 	// Share allowed origins with WebSocket origin checker.
 	realtime.SetAllowedOrigins(origins)
@@ -1173,19 +1203,26 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			r.Post("/portal-sessions", h.CreateCloudBillingPortalSession)
 		})
 
+		// CompanyOps applies fail-closed cache and content-sniffing headers before
+		// membership and human-actor guards so early 4xx responses cannot be
+		// cached as organization or employee authority.
+		r.Route("/api/company-ops", func(r chi.Router) {
+			r.Use(middleware.RequireWorkspaceMember(queries))
+			r.Use(handler.RequireHumanActor)
+			r.Get("/work-context", h.GetCompanyOpsWorkContext)
+			r.Get("/outcomes", h.GetCompanyOpsOutcomes)
+			r.Get("/outcomes/{commandId}", h.GetCompanyOpsOutcome)
+			r.Get("/organization", h.GetCompanyOpsOrganization)
+			r.Get("/employees", h.GetCompanyOpsEmployees)
+			r.Get("/employees/{employeeId}", h.GetCompanyOpsEmployee)
+			r.Post("/assignments", h.CreateCompanyOpsAssignment)
+			r.Post("/artifact-reviews", h.CreateCompanyOpsArtifactReview)
+			r.Post("/formal-artifact-promotions", h.CreateCompanyOpsFormalArtifactPromotion)
+		})
+
 		// --- Workspace-scoped routes (all require workspace membership) ---
 		r.Group(func(r chi.Router) {
 			r.Use(middleware.RequireWorkspaceMember(queries))
-
-			r.Route("/api/company-ops", func(r chi.Router) {
-				r.Use(handler.RequireHumanActor)
-				r.Get("/work-context", h.GetCompanyOpsWorkContext)
-				r.Get("/outcomes", h.GetCompanyOpsOutcomes)
-				r.Get("/outcomes/{commandId}", h.GetCompanyOpsOutcome)
-				r.Post("/assignments", h.CreateCompanyOpsAssignment)
-				r.Post("/artifact-reviews", h.CreateCompanyOpsArtifactReview)
-				r.Post("/formal-artifact-promotions", h.CreateCompanyOpsFormalArtifactPromotion)
-			})
 
 			// Assignee frequency
 			r.Get("/api/assignee-frequency", h.GetAssigneeFrequency)

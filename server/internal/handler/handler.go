@@ -175,6 +175,10 @@ type Handler struct {
 	// CompanyOpsOutcomeCenter is the read-only projection over assignment
 	// receipts, artifact candidates, artifact events, and execution receipts.
 	CompanyOpsOutcomeCenter *service.CompanyOpsOutcomeCenterService
+	// CompanyOpsDirectory consumes the governed HiveCosm organization and
+	// employee read model, then resolves executable HiveCrew-local Agents
+	// without becoming a second employee or organization authority.
+	CompanyOpsDirectory *service.CompanyOpsDirectoryService
 	// CompanyOpsEnsureWorkOrderIssue projects an authoritative WorkOrder into
 	// one local Issue and provenance link. The concrete implementation lives in
 	// the service layer so HTTP handlers cannot bypass IssueService.
