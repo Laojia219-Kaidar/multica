@@ -121,7 +121,10 @@ slices:
       Quinn: PASS
       Pixel: PASS
   slice_2_continue_resume_pause:
-    status: not_started
+    status: contract_frozen_red_matrix_authored
+    contract: contracts/SLICE-2-CONTROL-CONTRACT.md
+    red_tests: contracts/SLICE-2-RED-TEST-MATRIX.md
+    source_impl: BLOCKED_ON_W3_LANE
   slice_3_review_repair_routing:
     status: not_started
   slice_4_outcome_center_closure_package:
@@ -168,6 +171,7 @@ victory_conditions:
     status: partial_accepted
     evidence:
     - EV-S1-05 (2 owner_decision, 2 source_gap, 1 duplicate surfaced)
+    - reports/W2-portfolio-disposition-preprocessing.md (11-project dry-run disposition)
   VC-09:
     title: Active/history UX
     status: not_started
@@ -186,11 +190,20 @@ victory_conditions:
     evidence: []
 frontier:
   controller: Prime Agent
-  phase: Slice 1 accepted -> INTEGRATION-HANDOFF-V1 -> WAVE-2 Slice 2
+  phase: WAVE-1 (Slice 2 contract + red matrix + VC-08 disposition preprocessing)
+    -> source impl gated on W3 lane
   ready:
-  - HiveCrew independent acceptance (Gauss/Quinn/Pixel) for Slice 1
+  - Slice 2 source implementation (continue/pause/resume/close-preview/closure-package)
+    once W3 lane releases shared paths
   running: []
-  blocked: []
+  blocked:
+  - 'Slice 2 source implementation: shared path server/cmd/server/router.go + project_lifecycle*
+    area held by W3 lifecycle lane'
+  receiver: W3 (lifecycle/integration lane)
+  wake_condition: W3 confirms it has released/merged the shared project_lifecycle*
+    + router.go paths, OR explicitly delegates Slice 2 source writes back to Prime;
+    then Prime implements Slice 2 per contracts/SLICE-2-CONTROL-CONTRACT.md + red
+    matrix, and re-dispatches independent acceptance.
 evidence_index: []
 subagent_roster:
   arch-code-data-contract:
