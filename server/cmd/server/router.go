@@ -1310,6 +1310,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Get("/lifecycle", h.ListProjectLifecycle)
 				// Self-operation diagnosis (VC-12 four broken-chain detectors).
 				r.Get("/reconciler", h.ListProjectLifecycleReconciler)
+				r.Post("/reconciler/dispatch", h.DispatchProjectLifecycleReconcileAction)
 				r.Get("/", h.ListProjects)
 				r.Post("/", h.CreateProject)
 				r.Route("/{id}", func(r chi.Router) {
