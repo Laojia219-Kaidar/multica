@@ -14,7 +14,8 @@
     "skills": "技能",
     "settings": "设置",
     "organization": "组织",
-    "bases": "基地"
+    "bases": "基地",
+    "workrooms": "协作空间"
   },
   "tab": {
     "issue": "议题",

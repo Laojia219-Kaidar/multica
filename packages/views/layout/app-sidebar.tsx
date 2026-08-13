@@ -115,6 +115,7 @@ type NavKey =
   | "agents"
   | "squads"
   | "bases"
+  | "workrooms"
   | "usage"
   | "runtimes"
   | "skills"
@@ -134,6 +135,7 @@ type NavLabelKey =
   | "agents"
   | "squads"
   | "bases"
+  | "workrooms"
   | "usage"
   | "runtimes"
   | "skills"
@@ -179,7 +181,9 @@ const navGroups: { key: string; labelKey: NavGroupLabelKey; items: { key: NavKey
     { key: "skills", labelKey: "skills" },
     { key: "squads", labelKey: "squads" },
   ]},
-  { key: "workroom", labelKey: "group_workroom", items: [] },
+  { key: "workroom", labelKey: "group_workroom", items: [
+    { key: "workrooms", labelKey: "workrooms" },
+  ]},
   { key: "dataKnowledge", labelKey: "group_data_knowledge", items: [] },
   { key: "modelIntelligence", labelKey: "group_model_intelligence", items: [
     { key: "usage", labelKey: "usage" },
