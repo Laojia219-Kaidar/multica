@@ -121,10 +121,11 @@ slices:
       Quinn: PASS
       Pixel: PASS
   slice_2_continue_resume_pause:
-    status: contract_frozen_red_matrix_authored
+    status: implemented_under_acceptance
     contract: contracts/SLICE-2-CONTROL-CONTRACT.md
     red_tests: contracts/SLICE-2-RED-TEST-MATRIX.md
     source_impl: BLOCKED_ON_W3_LANE
+    commit: 977e3e8b5
   slice_3_review_repair_routing:
     status: not_started
   slice_4_outcome_center_closure_package:
@@ -190,20 +191,13 @@ victory_conditions:
     evidence: []
 frontier:
   controller: Prime Agent
-  phase: WAVE-1 (Slice 2 contract + red matrix + VC-08 disposition preprocessing)
-    -> source impl gated on W3 lane
+  phase: WAVE-2 Slice 2 implemented -> WAVE-3 independent acceptance
   ready:
   - Slice 2 source implementation (continue/pause/resume/close-preview/closure-package)
     once W3 lane releases shared paths
-  running: []
-  blocked:
-  - 'Slice 2 source implementation: shared path server/cmd/server/router.go + project_lifecycle*
-    area held by W3 lifecycle lane'
-  receiver: W3 (lifecycle/integration lane)
-  wake_condition: W3 confirms it has released/merged the shared project_lifecycle*
-    + router.go paths, OR explicitly delegates Slice 2 source writes back to Prime;
-    then Prime implements Slice 2 per contracts/SLICE-2-CONTROL-CONTRACT.md + red
-    matrix, and re-dispatches independent acceptance.
+  running:
+  - Slice 2 acceptance (Gauss/Quinn/Pixel) HIV-557/558/559
+  blocked: []
 evidence_index: []
 subagent_roster:
   arch-code-data-contract:
@@ -253,3 +247,19 @@ subagent_roster:
       issue: 770a9e87-bad1-4837-a6a0-2aee00c00ec5
       scope: frontend/browser
       status: PASS
+  slice2_acceptance:
+    HIV-557:
+      assignee: Gauss
+      issue: 31102a00-a5e4-4483-b234-f45cbdf14a95
+      scope: backend/API/control
+      status: running
+    HIV-558:
+      assignee: Quinn
+      issue: f1dd0041-f819-4d63-986a-ad91c60a9981
+      scope: quality/invariants
+      status: running
+    HIV-559:
+      assignee: Pixel
+      issue: 6771d512-1456-424b-acc5-b7dab146959e
+      scope: frontend
+      status: running
