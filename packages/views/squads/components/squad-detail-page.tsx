@@ -9,13 +9,14 @@ import { useWorkspaceId } from "@multica/core/hooks";
 import { resolvePublicFileUrl } from "@multica/core/workspace/avatar-url";
 import { isImeComposing } from "@multica/core/utils";
 import { getShortcut, shortcutMatchesEvent } from "@multica/core/shortcuts";
+import { runtimeListOptions } from "@multica/core/runtimes/queries";
 import { useTimeAgo } from "../../i18n";
 import { agentListOptions, memberListOptions, squadMemberStatusOptions, workspaceKeys } from "@multica/core/workspace/queries";
 import { useNavigation } from "../../navigation";
 import { AppLink } from "../../navigation";
 import { BreadcrumbHeader } from "../../layout/breadcrumb-header";
 import { PageHeader } from "../../layout/page-header";
-import { Users, Plus, Trash2, ArrowUpRight, Crown, Loader2, Pencil, FileText, Save } from "lucide-react";
+import { Users, Plus, Trash2, ArrowUpRight, Crown, Loader2, Pencil, FileText, Save, Server, MapPin, Activity, CircleAlert, Cpu } from "lucide-react";
 import { Button } from "@multica/ui/components/ui/button";
 import { Input } from "@multica/ui/components/ui/input";
 import { Label } from "@multica/ui/components/ui/label";
@@ -59,9 +60,14 @@ import {
 } from "../../issues/components/pickers/property-picker";
 import { ChevronDown, UserPlus } from "lucide-react";
 import { toast } from "sonner";
-import type { Squad, SquadMember, SquadMemberStatus, SquadMemberStatusValue, Agent, MemberWithUser } from "@multica/core/types";
+import type { Squad, SquadMember, SquadMemberStatus, SquadMemberStatusValue, Agent, AgentRuntime, MemberWithUser } from "@multica/core/types";
 import { useT } from "../../i18n";
 import { matchesPinyin } from "../../editor/extensions/pinyin-match";
+import {
+  buildSquadBaseProjection,
+  type SquadBaseAgentProjection,
+  type SquadBaseProjection,
+} from "./squad-base-projection";
 
 export function SquadDetailPage() {
   const { t } = useT("squads");
@@ -100,6 +106,11 @@ export function SquadDetailPage() {
 
   const { data: agents = [] } = useQuery(agentListOptions(wsId));
   const { data: wsMembers = [] } = useQuery(memberListOptions(wsId));
+  const runtimeQuery = useQuery({
+    ...runtimeListOptions(wsId),
+    enabled: !!workspace?.id,
+  });
+  const runtimes = runtimeQuery.data ?? [];
 
   const currentUser = useAuthStore((s) => s.user);
   const myRole = useMemo(() => {
@@ -220,7 +231,7 @@ export function SquadDetailPage() {
       />
 
       {/* Two-column grid mirrors agent-detail-page: left inspector (identity +
-          properties + leader), right pane with tabs (Members | Instructions).
+          properties + leader), right pane with tabs (Members | Bases | Instructions).
           Mobile collapses to stacked single column. */}
       <div className="flex flex-1 min-h-0 flex-col gap-3 overflow-y-auto p-3 md:grid md:grid-cols-[280px_minmax(0,1fr)] md:gap-4 md:overflow-hidden md:p-6 lg:grid-cols-[320px_minmax(0,1fr)]">
         <SquadDetailInspector
@@ -238,6 +249,10 @@ export function SquadDetailPage() {
           squad={squad}
           members={members}
           memberStatusById={memberStatusById}
+          agents={agents}
+          runtimes={runtimes}
+          runtimesLoading={runtimeQuery.isLoading}
+          runtimesError={runtimeQuery.isError}
           canManage={canManage}
           isLeader={isLeader}
           isArchived={isArchived}
@@ -931,14 +946,15 @@ function SquadDescriptionEditorBody({
 }
 
 // ---------------------------------------------------------------------------
-// SquadOverviewPane — right column with two tabs (Members | Instructions).
+// SquadOverviewPane — right column with three tabs (Members | Bases | Instructions).
 // Mirrors AgentOverviewPane: dirty-guard via AlertDialog when switching tabs
 // with unsaved Instructions.
 // ---------------------------------------------------------------------------
-type SquadDetailTab = "members" | "instructions";
+type SquadDetailTab = "members" | "bases" | "instructions";
 
 const squadDetailTabs: { id: SquadDetailTab; icon: typeof FileText }[] = [
   { id: "members", icon: Users },
+  { id: "bases", icon: Server },
   { id: "instructions", icon: FileText },
 ];
 
@@ -946,6 +962,10 @@ function SquadOverviewPane({
   squad,
   members,
   memberStatusById,
+  agents,
+  runtimes,
+  runtimesLoading,
+  runtimesError,
   canManage,
   isLeader,
   isArchived,
@@ -961,6 +981,10 @@ function SquadOverviewPane({
   squad: Squad;
   members: SquadMember[];
   memberStatusById: Map<string, SquadMemberStatus>;
+  agents: Agent[];
+  runtimes: AgentRuntime[];
+  runtimesLoading: boolean;
+  runtimesError: boolean;
   // Gates every mutating control in the Members and Instructions tabs. When
   // false the tabs render read-only (no add/remove/leader/role edits, no
   // Save). See canManageSquad in server/internal/handler/squad.go.
@@ -983,6 +1007,23 @@ function SquadOverviewPane({
   const [activeTab, setActiveTab] = useState<SquadDetailTab>("members");
   const [activeDirty, setActiveDirty] = useState(false);
   const [pendingTab, setPendingTab] = useState<SquadDetailTab | null>(null);
+  const baseProjection = useMemo(
+    () =>
+      buildSquadBaseProjection({
+        members,
+        agents,
+        runtimes,
+        memberStatusById,
+      }),
+    [agents, memberStatusById, members, runtimes],
+  );
+  const baseProjectionByAgentId = useMemo(
+    () =>
+      new Map(
+        baseProjection.agents.map((projection) => [projection.agent.id, projection]),
+      ),
+    [baseProjection.agents],
+  );
 
   const requestTabChange = (next: SquadDetailTab) => {
     if (next === activeTab) return;
@@ -1015,7 +1056,9 @@ function SquadOverviewPane({
             <tab.icon className="h-3.5 w-3.5" />
             {tab.id === "members"
               ? t(($) => $.members_tab.section_title)
-              : t(($) => $.instructions_tab.tab_label)}
+              : tab.id === "bases"
+                ? t(($) => $.base_tab.tab_label)
+                : t(($) => $.instructions_tab.tab_label)}
           </button>
         ))}
       </div>
@@ -1026,6 +1069,9 @@ function SquadOverviewPane({
             <SquadMembersTab
               members={members}
               memberStatusById={memberStatusById}
+              baseProjectionByAgentId={baseProjectionByAgentId}
+              runtimesLoading={runtimesLoading}
+              runtimesError={runtimesError}
               canManage={canManage}
               isLeader={isLeader}
               isArchived={isArchived}
@@ -1036,6 +1082,15 @@ function SquadOverviewPane({
               onRemoveMember={onRemoveMember}
               onUpdateRole={onUpdateRole}
               setLeaderPending={setLeaderPending}
+            />
+          </div>
+        )}
+        {activeTab === "bases" && (
+          <div className="flex h-full flex-col p-4 md:p-6">
+            <SquadBaseDistributionTab
+              projection={baseProjection}
+              loading={runtimesLoading}
+              error={runtimesError}
             />
           </div>
         )}
@@ -1091,6 +1146,9 @@ const SQUAD_STATUS_DOT_CLASS: Record<SquadMemberStatusValue, string> = {
 function SquadMembersTab({
   members,
   memberStatusById,
+  baseProjectionByAgentId,
+  runtimesLoading,
+  runtimesError,
   canManage,
   isLeader,
   isArchived,
@@ -1104,6 +1162,9 @@ function SquadMembersTab({
 }: {
   members: SquadMember[];
   memberStatusById: Map<string, SquadMemberStatus>;
+  baseProjectionByAgentId: Map<string, SquadBaseAgentProjection>;
+  runtimesLoading: boolean;
+  runtimesError: boolean;
   // When false, add/create/leader/remove controls and role editing are hidden;
   // the roster stays visible and read-only.
   canManage: boolean;
@@ -1162,6 +1223,10 @@ function SquadMembersTab({
               : statusValue === "archived" ? t(($) => $.members_tab.status_archived)
               : null;
           const activeIssues = status?.active_issues ?? [];
+          const baseProjection =
+            m.member_type === "agent"
+              ? baseProjectionByAgentId.get(m.member_id)
+              : null;
           const primaryIssue = activeIssues[0];
           const extraIssueCount = Math.max(0, activeIssues.length - 1);
           // Show last_active only when the agent isn't currently working —
@@ -1208,6 +1273,30 @@ function SquadMembersTab({
                 ) : m.role ? (
                   <div className="mt-0.5 text-xs text-muted-foreground">{m.role}</div>
                 ) : null}
+                {m.member_type === "agent" && (
+                  <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-muted-foreground">
+                    {runtimesLoading ? (
+                      <span>{t(($) => $.base_tab.loading)}</span>
+                    ) : runtimesError ? (
+                      <span className="text-warning">{t(($) => $.base_tab.load_error)}</span>
+                    ) : (
+                      <>
+                        <span className="inline-flex items-center gap-1">
+                          <MapPin className="size-3" />
+                          {baseProjection?.baseLabel ?? t(($) => $.base_tab.unregistered_base)}
+                        </span>
+                        <span className="inline-flex items-center gap-1">
+                          <Server className="size-3" />
+                          {baseProjection?.runtimeLabel ?? t(($) => $.base_tab.runtime_unavailable)}
+                        </span>
+                        <span className="inline-flex items-center gap-1">
+                          <Cpu className="size-3" />
+                          {baseProjection?.agent.model?.trim() || t(($) => $.base_tab.managed_model)}
+                        </span>
+                      </>
+                    )}
+                  </div>
+                )}
                 {primaryIssue && (
                   <div className="mt-1 flex items-center gap-1 text-xs text-muted-foreground min-w-0">
                     <AppLink
@@ -1301,6 +1390,190 @@ function SquadMembersTab({
           </div>
           );
         })}
+      </div>
+    </div>
+  );
+}
+
+export function SquadBaseDistributionTab({
+  projection,
+  loading,
+  error,
+}: {
+  projection: SquadBaseProjection;
+  loading: boolean;
+  error: boolean;
+}) {
+  const { t } = useT("squads");
+  const p = useWorkspacePaths();
+
+  if (loading) {
+    return (
+      <div className="space-y-3" aria-label={t(($) => $.base_tab.loading)}>
+        <Skeleton className="h-20 w-full" />
+        <Skeleton className="h-32 w-full" />
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="rounded-lg border border-warning/30 bg-warning/5 p-4 text-sm text-warning">
+        <div className="flex items-center gap-2 font-medium">
+          <CircleAlert className="size-4" />
+          {t(($) => $.base_tab.load_error)}
+        </div>
+        <p className="mt-1 text-xs text-muted-foreground">
+          {t(($) => $.base_tab.load_error_description)}
+        </p>
+      </div>
+    );
+  }
+
+  if (projection.agents.length === 0) {
+    return (
+      <div className="flex min-h-52 flex-col items-center justify-center rounded-lg border border-dashed px-6 text-center">
+        <Server className="mb-3 size-8 text-muted-foreground/50" />
+        <h3 className="text-sm font-medium">{t(($) => $.base_tab.empty_title)}</h3>
+        <p className="mt-1 max-w-md text-xs text-muted-foreground">
+          {t(($) => $.base_tab.empty_description)}
+        </p>
+      </div>
+    );
+  }
+
+  const summaryCards = [
+    {
+      label: t(($) => $.base_tab.summary_agents),
+      value: projection.agents.length,
+      icon: Users,
+    },
+    {
+      label: t(($) => $.base_tab.summary_bases),
+      value: projection.groups.filter((group) => group.label !== null).length,
+      icon: Server,
+    },
+    {
+      label: t(($) => $.base_tab.summary_working),
+      value: projection.workingCount,
+      icon: Activity,
+    },
+    {
+      label: t(($) => $.base_tab.summary_attention),
+      value: projection.attentionCount,
+      icon: CircleAlert,
+    },
+  ];
+
+  return (
+    <div className="flex flex-col gap-4">
+      <div>
+        <h3 className="text-sm font-medium">{t(($) => $.base_tab.title)}</h3>
+        <p className="mt-0.5 text-xs text-muted-foreground">
+          {t(($) => $.base_tab.description)}
+        </p>
+      </div>
+
+      <div className="rounded-lg border border-dashed bg-muted/20 px-3 py-2.5 text-xs text-muted-foreground">
+        {t(($) => $.base_tab.projection_notice)}
+      </div>
+
+      <div className="grid grid-cols-2 gap-2 xl:grid-cols-4">
+        {summaryCards.map((card) => (
+          <div key={card.label} className="rounded-lg border bg-card p-3">
+            <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+              <card.icon className="size-3.5" />
+              {card.label}
+            </div>
+            <div className="mt-1 text-xl font-semibold tabular-nums">{card.value}</div>
+          </div>
+        ))}
+      </div>
+
+      <div className="space-y-3">
+        {projection.groups.map((group) => (
+          <section key={group.key} className="overflow-hidden rounded-lg border">
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b bg-muted/30 px-3 py-2.5">
+              <div className="flex min-w-0 items-center gap-2">
+                <MapPin className="size-4 shrink-0 text-muted-foreground" />
+                <span className="truncate text-sm font-medium">
+                  {group.label ?? t(($) => $.base_tab.unregistered_base)}
+                </span>
+              </div>
+              <div className="flex items-center gap-3 text-[11px] text-muted-foreground">
+                <span>
+                  {t(($) => $.base_tab.member_count, { count: group.agents.length })}
+                </span>
+                <span>
+                  {t(($) => $.base_tab.online_count, { count: group.onlineCount })}
+                </span>
+                {group.attentionCount > 0 && (
+                  <span className="text-warning">
+                    {t(($) => $.base_tab.attention_count, { count: group.attentionCount })}
+                  </span>
+                )}
+              </div>
+            </div>
+            <div className="divide-y">
+              {group.agents.map((entry) => {
+                const statusValue = entry.status?.status ?? null;
+                const statusLabel =
+                  statusValue === "working" ? t(($) => $.members_tab.status_working)
+                    : statusValue === "idle" ? t(($) => $.members_tab.status_idle)
+                    : statusValue === "offline" ? t(($) => $.members_tab.status_offline)
+                    : statusValue === "unstable" ? t(($) => $.members_tab.status_unstable)
+                    : statusValue === "archived" ? t(($) => $.members_tab.status_archived)
+                    : t(($) => $.base_tab.status_unknown);
+                const dotClass =
+                  statusValue && statusValue in SQUAD_STATUS_DOT_CLASS
+                    ? SQUAD_STATUS_DOT_CLASS[statusValue as keyof typeof SQUAD_STATUS_DOT_CLASS]
+                    : "bg-muted-foreground/40";
+                return (
+                  <div key={entry.agent.id} className="flex items-start gap-3 px-3 py-3">
+                    <ActorAvatar
+                      actorType="agent"
+                      actorId={entry.agent.id}
+                      size="md"
+                      showStatusDot
+                      enableHoverCard
+                      hoverCardVariant="live"
+                    />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                        <AppLink
+                          href={p.agentDetail(entry.agent.id)}
+                          className="truncate text-sm font-medium hover:underline"
+                        >
+                          {entry.agent.name}
+                        </AppLink>
+                        {entry.member.role && (
+                          <span className="text-xs text-muted-foreground">{entry.member.role}</span>
+                        )}
+                        <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+                          <span className={`size-1.5 rounded-full ${dotClass}`} />
+                          {statusLabel}
+                        </span>
+                      </div>
+                      <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-muted-foreground">
+                        <span>
+                          {t(($) => $.base_tab.runtime_label)}: {entry.runtimeLabel ?? t(($) => $.base_tab.runtime_unavailable)}
+                        </span>
+                        <span>
+                          {t(($) => $.base_tab.model_label)}: {entry.agent.model?.trim() || t(($) => $.base_tab.managed_model)}
+                        </span>
+                        <span className={entry.runtime?.status === "online" ? "text-success" : "text-warning"}>
+                          {entry.runtime?.status === "online"
+                            ? t(($) => $.base_tab.runtime_online)
+                            : t(($) => $.base_tab.runtime_offline)}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </section>
+        ))}
       </div>
     </div>
   );

@@ -146,5 +146,22 @@
     "direction_desc": "降序",
     "section_columns": "列",
     "view": "视图"
+  },
+  "health": {
+    "active_with_frontier": "推进中",
+    "stalled_no_open_task": "已停滞",
+    "review_or_repair_blocked": "待审核/返修",
+    "ready_for_closure": "待关闭",
+    "duplicate_or_superseded": "重复/待归并",
+    "source_gap": "成果缺口",
+    "owner_decision": "需 Owner 决策",
+    "bucket_active": "正在推进",
+    "bucket_review": "待审核/返修",
+    "bucket_blocked": "已阻塞",
+    "bucket_stalled": "已停滞",
+    "bucket_ready": "待关闭",
+    "next_action": "下一步",
+    "outcome_coverage": "成果覆盖",
+    "terminal_issues": "已终结议题"
   }
 }

@@ -11,6 +11,9 @@ export const projectKeys = {
   pipelineAll: (wsId: string) => [...projectKeys.all(wsId), "pipeline"] as const,
   pipeline: (wsId: string, projectId: string) =>
     [...projectKeys.pipelineAll(wsId), projectId] as const,
+  lifecycle: (wsId: string) => [...projectKeys.all(wsId), "lifecycle"] as const,
+  lifecycleDetail: (wsId: string, id: string) =>
+    [...projectKeys.all(wsId), "lifecycle", "detail", id] as const,
 };
 
 export function projectListOptions(wsId: string) {
@@ -39,5 +42,20 @@ export function projectPipelineOptions(wsId: string, projectId: string) {
     queryFn: () => api.getProjectPipeline(projectId),
     refetchInterval: 5_000,
     placeholderData: (prev) => prev,
+  });
+}
+
+export function projectLifecycleListOptions(wsId: string) {
+  return queryOptions({
+    queryKey: projectKeys.lifecycle(wsId),
+    queryFn: () => api.listProjectLifecycle(),
+    select: (data) => data.projects,
+  });
+}
+
+export function projectLifecycleDetailOptions(wsId: string, id: string) {
+  return queryOptions({
+    queryKey: projectKeys.lifecycleDetail(wsId, id),
+    queryFn: () => api.getProjectLifecycle(id),
   });
 }

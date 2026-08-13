@@ -1,0 +1,234 @@
+goal_id: HIVECREW-PROJECT-LIFECYCLE-CLOSURE-V1
+goal_version: '1.0'
+owner: William
+accountable_orchestrator: Prime Agent
+source_goal_file: /Users/jiawei/Desktop/HiveCrew-项目持续经营闭环-PrimeGoal/prime-goal.md
+source_goal_sha256: 0452c877794512bc9c2f0dc7acde72fb9a32642c9f481921d0b62753bcb05aaf
+execution_projection:
+  hivecrew_project_id: 3b0330e7-a2da-4f41-94ab-61c911af2820
+  hivecrew_project_title: HIVECREW-OWNER-OPERATING-WORKBENCH-V1 · HiveCrew 自我开发项目
+  parent_issue: HIV-548 / 10b279d3-5cc2-4a76-8d2c-329e39d270fb
+  contract_issue: HIV-553 / f6fcfff0-dfa3-4519-a44b-e153bd8a7e8b
+  contract_file: hiv-553-project-lifecycle-contract.md (HIV-553 Task-linked attachment,
+    17839 bytes)
+  contract_recovered_from: /Users/jiawei/multica_workspaces/1b2a1f07-3050-4d47-aca5-6e6fdbd393d9/5a1ab257/workdir/hiv-553-project-lifecycle-contract.md
+truth_anchors:
+  calibrated_at: '2026-08-13T12:54:09.760740+00:00'
+  ui_url: http://127.0.0.1:3000
+  api_url: http://127.0.0.1:8080
+  api_health: /health -> {"status":"ok"}
+  api_projects_auth: /api/projects -> 401 (JWT auth required)
+  runtime: docker compose project "multica" (selfhost build)
+  containers:
+    frontend: multica-frontend-1 (multica-web:dev) 127.0.0.1:3000
+    backend: multica-backend-1 (multica-backend:dev) 127.0.0.1:8080
+    postgres: multica-postgres-1 (pgvector/pgvector:pg17) internal 5432
+  source_root: /Volumes/HiveData/hivecosm/HQ-50-代码仓库/01-源码下载/multica
+  source_git:
+    branch: main
+    head: f7667c8d7c540217c345d98beac33794e1f3e6d0
+    head_short: f7667c8d
+    last_commit_subject: 'feat(bases): add drain/resume control (operational_mode
+      gate + UI)'
+    dirty_files: []
+    remote_origin: https://github.com/Laojia219-Kaidar/multica.git (do not add upstream-sync)
+  integration_worktree: /Users/jiawei/hivecosm-worktrees/hivecrew-project-lifecycle-closure
+  integration_branch: work/hivecrew-project-lifecycle-closure
+  db:
+    container: multica-postgres-1
+    db_name: multica
+    workspace: HiveCosm / hivecosm / 1b2a1f07-3050-4d47-aca5-6e6fdbd393d9
+    issue_prefix: HIV
+    issue_counter: 553
+  portfolio_snapshot:
+    projects_total: 11
+    projects_all_in_progress: true
+    projects_no_lead:
+    - PRJ-HCW-V2 · Founder Sovereign Company Workbench V2
+    - Mac Native Digital Employees Canary · 2026-08-10
+    issues_total: 553
+    issue_status_counts:
+      backlog: 23
+      blocked: 23
+      cancelled: 23
+      done: 98
+      in_progress: 43
+      in_review: 304
+      todo: 39
+    nonterminal_tasks_live: 1
+    live_task: 5f488de3-77b7-4652-b696-b708007a52ab running -> HIV-550 [P0-F2]
+    agents: 33
+    runtimes: 105
+    users: 1
+    receipt_and_outcome_tables_empty: true
+    empty_ledger_tables:
+    - execution_receipt
+    - artifact_candidate
+    - artifact_promotion_claim
+    - artifact_materialization_intent
+    - assignment_dispatch_receipt
+    - external_work_order_link
+  current_p0f_frontier:
+    HIV-548 [P0-F] 排水总控: in_review (task completed, awaiting verdict)
+    HIV-549 [P0-F1] Inbox cursor pagination: in_progress, task FAILED (needs repair)
+    HIV-550 [P0-F2] 议题活动工作流与历史视图: in_progress, task RUNNING (only live task)
+    HIV-553 [P0-F4] 项目持续经营合同: in_review (this goal contract, task completed)
+write_boundaries:
+  rule: one file = one writer; backend/frontend/migration/test areas must not overlap
+    across concurrently-running sub-agents
+  backend_service: server/internal/service/project_lifecycle*.go, server/internal/service/companyops_*
+    (extend, do not duplicate truth)
+  backend_handler: server/internal/handler/project_lifecycle*.go + router.go additions
+    in server/cmd/server/router.go
+  migrations: server/migrations/XXXX_project_lifecycle_*.{up,down}.sql (only if schema
+    change strictly required; contract forbids second truth tables)
+  frontend_projects: packages/views/projects/**
+  frontend_outcomes: packages/views/outcomes/** (extend only)
+  app_routes: apps/web/app/[workspaceSlug]/(dashboard)/projects/**
+  tests_backend: server/internal/service/*_test.go, server/internal/handler/*_test.go
+    (contract-first)
+  tests_frontend: packages/views/**/*.test.tsx
+  goal_bundle: docs/goals/HIVECREW-PROJECT-LIFECYCLE-CLOSURE-V1/** (Prime-only writer)
+  forbidden: no git add -A; no .env/secret commits; no second Project/Issue/Task/Outcome
+    truth tables
+phases:
+  WAVE-0 current truth:
+    status: done
+    note: calibration performed by Prime; portfolio snapshot recorded
+  WAVE-1 contracts + red tests:
+    status: in_progress
+    note: HIV-553 contract frozen; red tests to be authored test-first
+  WAVE-2 five slices:
+    status: in_progress
+    note: Slice 1 first
+  WAVE-3 independent rolling acceptance:
+    status: ready
+  WAVE-4 integration + candidate deploy:
+    status: not_started
+  WAVE-5 portfolio disposition + self-operation:
+    status: not_started
+slices:
+  slice_1_project_health_visibility:
+    status: implemented_and_verified_candidate
+    scope: Project health/portfolio read API + Projects page classification + project
+      cards (lead/frontier/worker/last receipt/next action/outcome coverage)
+    commits:
+    - 0eeb7a05b
+    - 74bb1fe31
+  slice_2_continue_resume_pause:
+    status: not_started
+  slice_3_review_repair_routing:
+    status: not_started
+  slice_4_outcome_center_closure_package:
+    status: not_started
+  slice_5_history_pagination_backfill:
+    status: not_started
+victory_conditions:
+  VC-01:
+    title: Current truth honest classification
+    status: candidate_evidence
+    evidence:
+    - EV-S1-03
+    - EV-S1-05
+    - EV-S1-09
+  VC-02:
+    title: Accountability per project
+    status: not_started
+    evidence: []
+  VC-03:
+    title: Owner controls
+    status: not_started
+    evidence: []
+  VC-04:
+    title: Continuous dispatch
+    status: not_started
+    evidence: []
+  VC-05:
+    title: Review/repair
+    status: not_started
+    evidence: []
+  VC-06:
+    title: Outcome lineage
+    status: not_started
+    evidence: []
+  VC-07:
+    title: Project closure
+    status: not_started
+    evidence: []
+  VC-08:
+    title: Existing portfolio disposition
+    status: partial_candidate_evidence
+    evidence:
+    - EV-S1-05 (2 owner_decision, 2 source_gap, 1 duplicate surfaced)
+  VC-09:
+    title: Active/history UX
+    status: not_started
+    evidence: []
+  VC-10:
+    title: Runtime acceptance
+    status: not_started
+    evidence: []
+  VC-11:
+    title: Provenance
+    status: not_started
+    evidence: []
+  VC-12:
+    title: Self-operation
+    status: not_started
+    evidence: []
+frontier:
+  controller: Prime Agent
+  phase: WAVE-2 Slice 1 -> WAVE-3 independent acceptance
+  ready:
+  - HiveCrew independent acceptance (Gauss/Quinn/Pixel) for Slice 1
+  running: []
+  blocked: []
+evidence_index: []
+subagent_roster:
+  arch-code-data-contract:
+    rlm_child_id: sub-791302b3
+    scope: read-only code/data archaeology
+    output: reports/W0-code-data-contract-archaeology.md
+    status: done
+    summary: Project.status enum @project.go:204 (no closed/superseded); Issue.status
+      enum @issue.go:78 (no superseded/waived/migrated); no ReviewPipeline (in_review=status
+      only); companyops artifact lifecycle approved=changes_requested (PASS/REVISE);
+      6 ledger tables empty; natural home=service+handler project_lifecycle*.go +
+      router /api/projects; reuse ListCompanyOpsOutcomeRows
+  arch-project-owner-journey:
+    rlm_child_id: sub-52d2440d
+    scope: read-only frontend/owner-journey archaeology
+    output: reports/W0-project-owner-journey.md
+    status: done
+    summary: frontend skeleton complete; Slice 1 is net-new (no health/portfolio consumer,
+      no 5-bucket classification, cards missing frontier/worker/last-receipt/next-action/outcome-coverage);
+      reuse ProjectLeadPicker/IssueSurface/outcome-actions/previewIssueTrigger; project
+      status dropdown is bare write to fix
+  arch-test-concurrency-matrix:
+    rlm_child_id: sub-5de06c62
+    scope: read-only test/migration matrix archaeology
+    output: reports/W0-test-concurrency-migration-matrix.md
+    status: done
+    summary: '15 contract negative tests mapped; Slice 1 red tests #1-8; migration
+      next=260 (prefer zero-migration derived read model); commands verified'
+  slice1_acceptance:
+    HIV-554:
+      assignee: Gauss
+      issue: 6c263eac-7e34-48d4-97be-c6e2d119627e
+      scope: backend/API/concurrency
+      status: repair3_applied
+      repair_commits:
+      - b954e7e5c
+      - 90d7b50af
+      - (pending commit 3)
+    HIV-555:
+      assignee: Quinn
+      issue: e3741103-9e97-442c-88fa-b6e33d727858
+      scope: quality/state-machine
+      status: revise_repair_applied
+      repair_commit: b954e7e5c
+    HIV-556:
+      assignee: Pixel
+      issue: 770a9e87-bad1-4837-a6a0-2aee00c00ec5
+      scope: frontend/browser
+      status: running

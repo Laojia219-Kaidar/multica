@@ -21,6 +21,7 @@ import { useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
   projectListOptions,
+  projectLifecycleListOptions,
   useUpdateProject,
   useDeleteProject,
   useProjectViewStore,
@@ -38,6 +39,9 @@ import { useWorkspaceId } from "@multica/core/hooks";
 import { useWorkspacePaths } from "@multica/core/paths";
 import { useAuthStore } from "@multica/core/auth";
 import { useActorName } from "@multica/core/workspace/hooks";
+import { ProjectHealthBadge, HealthBucketSummary } from "./project-health";
+import type { ProjectLifecycleSnapshot } from "@multica/core/types";
+
 import { memberListOptions } from "@multica/core/workspace/queries";
 import { useModalStore } from "@multica/core/modals";
 import { AppLink, useRowLink } from "../../navigation";
@@ -345,6 +349,7 @@ function CheckboxCell({
 
 function ProjectTableRow({
   project,
+  snapshot,
   pinned,
   canDelete,
   isColVisible,
@@ -354,6 +359,7 @@ function ProjectTableRow({
   rowLink,
 }: {
   project: Project;
+  snapshot: ProjectLifecycleSnapshot | undefined;
   pinned: boolean;
   canDelete: boolean;
   isColVisible: (key: ProjectColumnKey) => boolean;
@@ -384,7 +390,10 @@ function ProjectTableRow({
 
       {/* status — core column, always visible */}
       <ListGridCell onClick={stopRowNavigation} onAuxClick={stopRowNavigation}>
-        <ProjectStatusBadge project={project} handleUpdate={handleUpdate} align="start" />
+        <div className="flex items-center gap-1.5">
+          <ProjectStatusBadge project={project} handleUpdate={handleUpdate} align="start" />
+          {snapshot && <ProjectHealthBadge snapshot={snapshot} />}
+        </div>
       </ListGridCell>
 
       {isColVisible("priority") ? (
@@ -559,10 +568,12 @@ function ProjectTableHeader({
 
 function ProjectCard({
   project,
+  snapshot,
   pinned,
   canDelete,
 }: {
   project: Project;
+  snapshot: ProjectLifecycleSnapshot | undefined;
   pinned: boolean;
   canDelete: boolean;
 }) {
@@ -592,6 +603,7 @@ function ProjectCard({
           </AppLink>
           <ProjectRowActions project={project} pinned={pinned} canDelete={canDelete} />
           <ProjectStatusBadge project={project} handleUpdate={handleUpdate} triggerClassName="shrink-0" />
+          {snapshot && <ProjectHealthBadge snapshot={snapshot} />}
         </div>
 
         {project.issue_count > 0 ? (
@@ -647,6 +659,17 @@ function ProjectCard({
           </span>
         </div>
       </div>
+
+      {snapshot && (
+        <div className="border-t px-3 py-2">
+          <p className="truncate text-[10px] text-muted-foreground" title={snapshot.next_action}>
+            {snapshot.next_action}
+          </p>
+          <p className="mt-0.5 text-[10px] tabular-nums text-muted-foreground">
+            {t(($) => $.health.terminal_issues)}: {snapshot.terminal_issue_count}
+          </p>
+        </div>
+      )}
     </div>
   );
 }
@@ -799,6 +822,12 @@ export function ProjectsPage() {
   const isColVisible = (key: ProjectColumnKey) => !hiddenColumns.includes(key);
 
   const { data: projects = [], isLoading } = useQuery(projectListOptions(wsId));
+  const { data: lifecycle = [] } = useQuery(projectLifecycleListOptions(wsId));
+  const lifecycleById = useMemo(() => {
+    const m = new Map<string, ProjectLifecycleSnapshot>();
+    for (const s of lifecycle) m.set(s.project_id, s);
+    return m;
+  }, [lifecycle]);
   const { data: members = [] } = useQuery(memberListOptions(wsId));
   const { data: pins = [] } = useQuery({
     ...pinListOptions(wsId, currentUser?.id ?? ""),
@@ -1205,6 +1234,8 @@ export function ProjectsPage() {
             </div>
           </div>
 
+          <HealthBucketSummary items={lifecycle} />
+
           {/* Body */}
           {isLoading ? (
             <LoadingState isCompact={isCompact} />
@@ -1235,6 +1266,7 @@ export function ProjectsPage() {
                   <ProjectTableRow
                     key={project.id}
                     project={project}
+                    snapshot={lifecycleById.get(project.id)}
                     pinned={pinnedProjectIds.has(project.id)}
                     canDelete={isWorkspaceAdmin}
                     isColVisible={isColVisible}
@@ -1256,6 +1288,7 @@ export function ProjectsPage() {
                   <ProjectCard
                     key={project.id}
                     project={project}
+                    snapshot={lifecycleById.get(project.id)}
                     pinned={pinnedProjectIds.has(project.id)}
                     canDelete={isWorkspaceAdmin}
                   />

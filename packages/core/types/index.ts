@@ -125,6 +125,10 @@ export type {
   CreateProjectResourceRequest,
   UpdateProjectResourceRequest,
   ListProjectResourcesResponse,
+  ProjectHealth,
+  ProjectLifecycleSnapshot,
+  ProjectLifecycleFrontierTask,
+  ListProjectLifecycleResponse,
 } from "./project";
 export type { PinnedItem, PinnedItemType, CreatePinRequest, ReorderPinsRequest } from "./pin";
 export type {

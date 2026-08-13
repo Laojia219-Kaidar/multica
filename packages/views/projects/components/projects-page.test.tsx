@@ -48,12 +48,16 @@ vi.mock("@tanstack/react-query", () => ({
     if (key === "pins") {
       return { data: mocks.pins, isLoading: false };
     }
+    if (key === "projects-lifecycle") {
+      return { data: [], isLoading: false };
+    }
     return { data: [], isLoading: false };
   },
 }));
 
 vi.mock("@multica/core/projects", () => ({
   projectListOptions: () => ({ queryKey: ["projects"] }),
+  projectLifecycleListOptions: () => ({ queryKey: ["projects-lifecycle"] }),
   useUpdateProject: () => ({ mutate: mocks.updateProject }),
   useDeleteProject: () => ({ mutate: mocks.deleteProject }),
   useProjectViewStore: (selector: (state: unknown) => unknown) =>

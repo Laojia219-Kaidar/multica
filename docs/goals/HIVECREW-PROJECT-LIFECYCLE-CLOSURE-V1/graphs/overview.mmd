@@ -1,0 +1,31 @@
+%%{init: {"theme": "base", "themeVariables": {"primaryColor":"#0f766e","primaryTextColor":"#fff","primaryBorderColor":"#115e59"}}}%%
+flowchart LR
+    OUTCOME-PROJECT-CLOSURE((OUTCOME-PROJECT-CLOSURE))
+    W0[PHASE-W0 current truth] --> W1[PHASE-W1 contracts + red tests]
+    W1 --> W2[PHASE-W2 five slices]
+    W2 --> W3[PHASE-W3 independent acceptance]
+    W3 --> W4[PHASE-W4 integration + candidate deploy]
+    W4 --> W5[PHASE-W5 portfolio disposition + self-operation]
+
+    OUTCOME-PROJECT-CLOSURE -.decomposes_to.-> W0 & W1 & W2 & W3 & W4 & W5
+
+    subgraph WO[Work Orders]
+        WO-HEALTH[WO-HEALTH project health]
+        WO-CONTROL[WO-CONTROL control ops]
+        WO-REVIEW[WO-REVIEW review/repair]
+        WO-OUTCOME[WO-OUTCOME outcome/closure]
+        WO-UI[WO-UI projects UX]
+        WO-TEST[WO-TEST tests]
+    end
+    WO-HEALTH & WO-CONTROL & WO-REVIEW & WO-OUTCOME & WO-UI & WO-TEST -.parallel_with.- WO-HEALTH
+    WO-HEALTH & WO-CONTROL & WO-REVIEW & WO-OUTCOME & WO-UI & WO-TEST --> ART-CANDIDATE[ART-CANDIDATE]
+
+    ART-CANDIDATE --> EV-TEST[EV-TEST]
+    ART-CANDIDATE --> EV-BROWSER[EV-BROWSER]
+    EV-TEST & EV-BROWSER --> REVIEW-INDEPENDENT[REVIEW-INDEPENDENT]
+    REVIEW-INDEPENDENT --> VC-01 & VC-02 & VC-03 & VC-04 & VC-05 & VC-06
+    REVIEW-INDEPENDENT --> VC-07 & VC-08 & VC-09 & VC-10 & VC-11 & VC-12
+    REVISE[REVISE] -.corrects.-> ART-CANDIDATE
+
+    W0 --> JOURNAL-PHASE[JOURNAL-PHASE]
+    ART-CANDIDATE --> PROJECTION-MERMAID[PROJECTION-MERMAID]

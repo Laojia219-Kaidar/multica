@@ -3,6 +3,8 @@ export {
   projectListOptions,
   projectDetailOptions,
   projectPipelineOptions,
+  projectLifecycleListOptions,
+  projectLifecycleDetailOptions,
 } from "./queries";
 export type {
   ProjectPipelineResponse,

@@ -96,6 +96,8 @@ import type {
   CreateProjectRequest,
   UpdateProjectRequest,
   ListProjectsResponse,
+  ListProjectLifecycleResponse,
+  ProjectLifecycleSnapshot,
   ProjectResource,
   CreateProjectResourceRequest,
   UpdateProjectResourceRequest,
@@ -1917,6 +1919,22 @@ export class ApiClient {
     });
   }
 
+  async setBaseOperationalMode(
+    machineTitle: string,
+    mode: "resting" | "active",
+  ): Promise<{ machine_title: string; mode: string; agents_updated: number }> {
+    return this.fetch("/api/bases/operational-mode", {
+      method: "POST",
+      body: JSON.stringify({ machine_title: machineTitle, mode }),
+    });
+  }
+
+  listBases(): Promise<
+    { machine_title: string; runtime_online: number; runtime_registered: number; employees: number; drained: boolean }[]
+  > {
+    return this.fetch("/api/bases");
+  }
+
   async archiveAgent(id: string): Promise<Agent> {
     return this.fetch(`/api/agents/${id}/archive`, { method: "POST" });
   }
@@ -3366,6 +3384,16 @@ export class ApiClient {
    */
   async getProjectPipeline(id: string): Promise<import("../projects/pipeline-types").ProjectPipelineResponse> {
     return this.fetch(`/api/projects/${id}/pipeline`);
+  }
+
+  // Project lifecycle closure read model (derived health / frontier /
+  // outcome coverage projection).
+  async listProjectLifecycle(): Promise<ListProjectLifecycleResponse> {
+    return this.fetch(`/api/projects/lifecycle`);
+  }
+
+  async getProjectLifecycle(id: string): Promise<ProjectLifecycleSnapshot> {
+    return this.fetch(`/api/projects/${id}/lifecycle`);
   }
 
   async createProject(data: CreateProjectRequest): Promise<Project> {

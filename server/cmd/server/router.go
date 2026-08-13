@@ -1324,6 +1324,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			// Projects
 			r.Route("/api/projects", func(r chi.Router) {
 				r.Get("/search", h.SearchProjects)
+				// Project lifecycle closure read model (derived health /
+				// frontier / outcome coverage projection, HIV-553 contract).
+				r.Get("/lifecycle", h.ListProjectLifecycle)
 				r.Get("/", h.ListProjects)
 				r.Post("/", h.CreateProject)
 				r.Route("/{id}", func(r chi.Router) {
@@ -1334,6 +1337,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// issue + agent_task_queue + comment under exact workspace
 					// scoping; no new writer.
 					r.Get("/pipeline", h.GetProjectPipeline)
+					r.Get("/lifecycle", h.GetProjectLifecycle)
 					r.Get("/resources", h.ListProjectResources)
 					r.Post("/resources", h.CreateProjectResource)
 					r.Put("/resources/{resourceId}", h.UpdateProjectResource)
@@ -1494,6 +1498,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			})
 
 			// Runtimes
+			r.Get("/api/bases", h.ListBases)
+			r.Post("/api/bases/operational-mode", h.SetBaseOperationalMode)
 			r.Route("/api/runtimes", func(r chi.Router) {
 				r.Get("/", h.ListAgentRuntimes)
 				r.Route("/{runtimeId}", func(r chi.Router) {
