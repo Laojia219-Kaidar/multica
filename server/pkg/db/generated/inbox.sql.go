@@ -157,6 +157,25 @@ func (q *Queries) ArchiveInboxItem(ctx context.Context, id pgtype.UUID) (InboxIt
 	return i, err
 }
 
+const countInboxItems = `-- name: CountInboxItems :one
+SELECT count(*)
+FROM inbox_item i
+WHERE i.workspace_id = $1 AND i.recipient_type = $2 AND i.recipient_id = $3 AND i.archived = false
+`
+
+type CountInboxItemsParams struct {
+	WorkspaceID   pgtype.UUID `json:"workspace_id"`
+	RecipientType string      `json:"recipient_type"`
+	RecipientID   pgtype.UUID `json:"recipient_id"`
+}
+
+func (q *Queries) CountInboxItems(ctx context.Context, arg CountInboxItemsParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countInboxItems, arg.WorkspaceID, arg.RecipientType, arg.RecipientID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countUnreadInbox = `-- name: CountUnreadInbox :one
 SELECT count(*) FROM inbox_item
 WHERE workspace_id = $1 AND recipient_type = $2 AND recipient_id = $3 AND read = false AND archived = false
@@ -447,13 +466,16 @@ SELECT i.id, i.workspace_id, i.recipient_type, i.recipient_id, i.type, i.severit
 FROM inbox_item i
 LEFT JOIN issue iss ON iss.id = i.issue_id
 WHERE i.workspace_id = $1 AND i.recipient_type = $2 AND i.recipient_id = $3 AND i.archived = false
-ORDER BY i.created_at DESC
+ORDER BY i.created_at DESC, i.id DESC
+LIMIT $5 OFFSET $4
 `
 
 type ListInboxItemsParams struct {
 	WorkspaceID   pgtype.UUID `json:"workspace_id"`
 	RecipientType string      `json:"recipient_type"`
 	RecipientID   pgtype.UUID `json:"recipient_id"`
+	Offset        pgtype.Int4 `json:"offset"`
+	Limit         pgtype.Int4 `json:"limit"`
 }
 
 type ListInboxItemsRow struct {
@@ -476,7 +498,13 @@ type ListInboxItemsRow struct {
 }
 
 func (q *Queries) ListInboxItems(ctx context.Context, arg ListInboxItemsParams) ([]ListInboxItemsRow, error) {
-	rows, err := q.db.Query(ctx, listInboxItems, arg.WorkspaceID, arg.RecipientType, arg.RecipientID)
+	rows, err := q.db.Query(ctx, listInboxItems,
+		arg.WorkspaceID,
+		arg.RecipientType,
+		arg.RecipientID,
+		arg.Offset,
+		arg.Limit,
+	)
 	if err != nil {
 		return nil, err
 	}

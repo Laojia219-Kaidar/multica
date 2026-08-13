@@ -2599,7 +2599,7 @@ export class ApiClient {
   }
 
   // Inbox
-  async listInbox(): Promise<InboxItem[]> {
+  async listInbox(): Promise<{ items: InboxItem[]; total: number; limit: number; offset: number; has_more: boolean }> {
     return this.fetch("/api/inbox");
   }
 
