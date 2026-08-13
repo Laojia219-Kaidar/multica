@@ -93,13 +93,13 @@ write_boundaries:
     truth tables
 phases:
   WAVE-0 current truth:
-    status: in_progress
+    status: done
     note: calibration performed by Prime; portfolio snapshot recorded
   WAVE-1 contracts + red tests:
-    status: ready
+    status: in_progress
     note: HIV-553 contract frozen; red tests to be authored test-first
   WAVE-2 five slices:
-    status: ready
+    status: in_progress
     note: Slice 1 first
   WAVE-3 independent rolling acceptance:
     status: ready
@@ -109,9 +109,12 @@ phases:
     status: not_started
 slices:
   slice_1_project_health_visibility:
-    status: next
+    status: implemented_and_verified_candidate
     scope: Project health/portfolio read API + Projects page classification + project
       cards (lead/frontier/worker/last receipt/next action/outcome coverage)
+    commits:
+    - 0eeb7a05b
+    - 74bb1fe31
   slice_2_continue_resume_pause:
     status: not_started
   slice_3_review_repair_routing:
@@ -123,8 +126,11 @@ slices:
 victory_conditions:
   VC-01:
     title: Current truth honest classification
-    status: not_started
-    evidence: []
+    status: candidate_evidence
+    evidence:
+    - EV-S1-03
+    - EV-S1-05
+    - EV-S1-09
   VC-02:
     title: Accountability per project
     status: not_started
@@ -151,8 +157,9 @@ victory_conditions:
     evidence: []
   VC-08:
     title: Existing portfolio disposition
-    status: not_started
-    evidence: []
+    status: partial_candidate_evidence
+    evidence:
+    - EV-S1-05 (2 owner_decision, 2 source_gap, 1 duplicate surfaced)
   VC-09:
     title: Active/history UX
     status: not_started
@@ -171,15 +178,10 @@ victory_conditions:
     evidence: []
 frontier:
   controller: Prime Agent
-  phase: WAVE-0 -> WAVE-1 (archaeology running)
+  phase: WAVE-2 Slice 1 -> WAVE-3 independent acceptance
   ready:
-  - sub-agent archaeology x3 (read-only)
-  - contract freeze
-  - red tests authorship
-  running:
-  - arch-code-data-contract (sub-791302b3) -> reports/W0-code-data-contract-archaeology.md
-  - arch-project-owner-journey (sub-52d2440d) -> reports/W0-project-owner-journey.md
-  - arch-test-concurrency-matrix (sub-5de06c62) -> reports/W0-test-concurrency-migration-matrix.md
+  - HiveCrew independent acceptance (Gauss/Quinn/Pixel) for Slice 1
+  running: []
   blocked: []
 evidence_index: []
 subagent_roster:
@@ -187,14 +189,41 @@ subagent_roster:
     rlm_child_id: sub-791302b3
     scope: read-only code/data archaeology
     output: reports/W0-code-data-contract-archaeology.md
-    status: running
+    status: done
+    summary: Project.status enum @project.go:204 (no closed/superseded); Issue.status
+      enum @issue.go:78 (no superseded/waived/migrated); no ReviewPipeline (in_review=status
+      only); companyops artifact lifecycle approved=changes_requested (PASS/REVISE);
+      6 ledger tables empty; natural home=service+handler project_lifecycle*.go +
+      router /api/projects; reuse ListCompanyOpsOutcomeRows
   arch-project-owner-journey:
     rlm_child_id: sub-52d2440d
     scope: read-only frontend/owner-journey archaeology
     output: reports/W0-project-owner-journey.md
-    status: running
+    status: done
+    summary: frontend skeleton complete; Slice 1 is net-new (no health/portfolio consumer,
+      no 5-bucket classification, cards missing frontier/worker/last-receipt/next-action/outcome-coverage);
+      reuse ProjectLeadPicker/IssueSurface/outcome-actions/previewIssueTrigger; project
+      status dropdown is bare write to fix
   arch-test-concurrency-matrix:
     rlm_child_id: sub-5de06c62
     scope: read-only test/migration matrix archaeology
     output: reports/W0-test-concurrency-migration-matrix.md
-    status: running
+    status: done
+    summary: '15 contract negative tests mapped; Slice 1 red tests #1-8; migration
+      next=260 (prefer zero-migration derived read model); commands verified'
+  slice1_acceptance:
+    HIV-554:
+      assignee: Gauss
+      issue: 6c263eac-7e34-48d4-97be-c6e2d119627e
+      scope: backend/API/concurrency
+      status: running
+    HIV-555:
+      assignee: Quinn
+      issue: e3741103-9e97-442c-88fa-b6e33d727858
+      scope: quality/state-machine
+      status: running
+    HIV-556:
+      assignee: Pixel
+      issue: 770a9e87-bad1-4837-a6a0-2aee00c00ec5
+      scope: frontend/browser
+      status: running
