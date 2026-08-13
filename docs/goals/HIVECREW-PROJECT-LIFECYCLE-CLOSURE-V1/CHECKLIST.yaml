@@ -171,12 +171,30 @@ victory_conditions:
     evidence: []
 frontier:
   controller: Prime Agent
-  phase: WAVE-0 -> WAVE-1
+  phase: WAVE-0 -> WAVE-1 (archaeology running)
   ready:
   - sub-agent archaeology x3 (read-only)
   - contract freeze
   - red tests authorship
-  running: []
+  running:
+  - arch-code-data-contract (sub-791302b3) -> reports/W0-code-data-contract-archaeology.md
+  - arch-project-owner-journey (sub-52d2440d) -> reports/W0-project-owner-journey.md
+  - arch-test-concurrency-matrix (sub-5de06c62) -> reports/W0-test-concurrency-migration-matrix.md
   blocked: []
 evidence_index: []
-subagent_roster: {}
+subagent_roster:
+  arch-code-data-contract:
+    rlm_child_id: sub-791302b3
+    scope: read-only code/data archaeology
+    output: reports/W0-code-data-contract-archaeology.md
+    status: running
+  arch-project-owner-journey:
+    rlm_child_id: sub-52d2440d
+    scope: read-only frontend/owner-journey archaeology
+    output: reports/W0-project-owner-journey.md
+    status: running
+  arch-test-concurrency-matrix:
+    rlm_child_id: sub-5de06c62
+    scope: read-only test/migration matrix archaeology
+    output: reports/W0-test-concurrency-migration-matrix.md
+    status: running
