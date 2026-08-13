@@ -146,5 +146,21 @@
     "direction_desc": "降順",
     "section_columns": "列",
     "view": "ビュー"
+  },
+  "health": {
+    "active_with_frontier": "Active",
+    "stalled_no_open_task": "Stalled",
+    "review_or_repair_blocked": "Review/Repair",
+    "ready_for_closure": "Ready to close",
+    "duplicate_or_superseded": "Duplicate",
+    "source_gap": "Source gap",
+    "owner_decision": "Owner decision",
+    "bucket_active": "Active",
+    "bucket_review": "In review",
+    "bucket_blocked": "Blocked",
+    "bucket_stalled": "Stalled",
+    "bucket_ready": "Ready to close",
+    "next_action": "Next action",
+    "outcome_coverage": "Outcome coverage"
   }
 }

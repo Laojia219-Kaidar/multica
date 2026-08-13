@@ -115,3 +115,55 @@ export interface ListProjectResourcesResponse {
   resources: ProjectResource[];
   total: number;
 }
+
+// ---- Project lifecycle closure read model (HIV-553 contract) ----
+// A-G health is a DERIVED projection over project/issue/task truth; it never
+// writes project.status. `in_progress` with no live task must render as
+// stalled/review-blocked, never "executing".
+
+export type ProjectHealth =
+  | "active_with_frontier"
+  | "stalled_no_open_task"
+  | "review_or_repair_blocked"
+  | "ready_for_closure"
+  | "duplicate_or_superseded"
+  | "source_gap";
+
+export interface ProjectLifecycleFrontierTask {
+  task_id: string;
+  status: string;
+  agent_id: string | null;
+  issue_id: string | null;
+  issue_number: number;
+  issue_title: string;
+  started_at: string | null;
+}
+
+export interface ProjectLifecycleSnapshot {
+  project_id: string;
+  status: ProjectStatus;
+  health: ProjectHealth;
+  owner_decision_required: boolean;
+  flags: string[];
+  lead_type: "member" | "agent" | null;
+  lead_id: string | null;
+  frontier_issue_ids: string[];
+  frontier_tasks: ProjectLifecycleFrontierTask[];
+  active_task_count: number;
+  nonterminal_issue_count: number;
+  blocked_issue_count: number;
+  review_issue_count: number;
+  terminal_issue_count: number;
+  last_progress_at: string | null;
+  next_action: string;
+  outcome_confirmed: number;
+  outcome_total: number;
+  closure_ready: boolean;
+  closure_blockers: string[];
+  duplicate_of_project_id: string | null;
+}
+
+export interface ListProjectLifecycleResponse {
+  projects: ProjectLifecycleSnapshot[];
+  total: number;
+}

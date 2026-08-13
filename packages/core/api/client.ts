@@ -96,6 +96,8 @@ import type {
   CreateProjectRequest,
   UpdateProjectRequest,
   ListProjectsResponse,
+  ListProjectLifecycleResponse,
+  ProjectLifecycleSnapshot,
   ProjectResource,
   CreateProjectResourceRequest,
   UpdateProjectResourceRequest,
@@ -3369,6 +3371,16 @@ export class ApiClient {
 
   async getProject(id: string): Promise<Project> {
     return this.fetch(`/api/projects/${id}`);
+  }
+
+  // Project lifecycle closure read model (derived health / frontier /
+  // outcome coverage projection).
+  async listProjectLifecycle(): Promise<ListProjectLifecycleResponse> {
+    return this.fetch(`/api/projects/lifecycle`);
+  }
+
+  async getProjectLifecycle(id: string): Promise<ProjectLifecycleSnapshot> {
+    return this.fetch(`/api/projects/${id}/lifecycle`);
   }
 
   async createProject(data: CreateProjectRequest): Promise<Project> {
