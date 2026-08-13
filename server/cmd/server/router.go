@@ -1897,6 +1897,10 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Post("/subscribe", h.SubscribeToIssue)
 					r.Post("/unsubscribe", h.UnsubscribeFromIssue)
 					r.Get("/active-task", h.GetActiveTaskForIssue)
+					// HIV-404: read-only "ready frontier" queue sensor. Classifies
+					// the issue + its tasks ready/running/waiting/blocked/superseded
+					// from canonical data; no new writer, no schema change.
+					r.Get("/frontier", h.GetIssueFrontier)
 					r.Post("/tasks/{taskId}/cancel", h.CancelTask)
 					r.Post("/rerun", h.RerunIssue)
 					r.Post("/dispatch-preview", h.DispatchPreview)
