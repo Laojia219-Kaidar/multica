@@ -122,3 +122,45 @@ func TestPausedProjectGatesQuickCreate(t *testing.T) {
 		t.Fatalf("quick-create err = %v, want ErrProjectPausedDispatch", err)
 	}
 }
+
+// C1 (Gauss evidence_gap #1): continue dispatches exactly one ready-frontier
+// task and never duplicates it on a second continue.
+func TestContinueCreatesSingleTaskAndNoDuplicate(t *testing.T) {
+	pool, workspaceID, projectID, issueID := seedPausedProjectFixture(t, "in_progress")
+	q := db.New(pool)
+	svc := &TaskService{Queries: q, TxStarter: pool, Bus: events.New()}
+	ctrl := NewProjectLifecycleControlService(q, svc)
+	ctx := context.Background()
+	wsUUID, pidUUID := util.MustParseUUID(workspaceID), util.MustParseUUID(projectID)
+
+	r1, err := ctrl.Continue(ctx, wsUUID, pidUUID, "continue-k1")
+	if err != nil {
+		t.Fatalf("first continue: %v", err)
+	}
+	if !r1.Applied || r1.TaskID == nil {
+		t.Fatalf("first continue receipt = %+v, want applied + task id", r1)
+	}
+	if countTasks(t, pool, issueID) != 1 {
+		t.Fatalf("task count after first continue = %d, want 1", countTasks(t, pool, issueID))
+	}
+
+	r2, err := ctrl.Continue(ctx, wsUUID, pidUUID, "continue-k1")
+	if err != nil {
+		t.Fatalf("second continue: %v", err)
+	}
+	if r2.Applied {
+		t.Fatalf("second continue applied a duplicate, receipt = %+v", r2)
+	}
+	if countTasks(t, pool, issueID) != 1 {
+		t.Fatalf("task count after second continue = %d, want 1 (no duplicate)", countTasks(t, pool, issueID))
+	}
+}
+
+func countTasks(t *testing.T, pool *pgxpool.Pool, issueID string) int {
+	t.Helper()
+	var n int
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM agent_task_queue WHERE issue_id=$1`, issueID).Scan(&n); err != nil {
+		t.Fatalf("count tasks: %v", err)
+	}
+	return n
+}
