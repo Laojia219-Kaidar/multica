@@ -132,6 +132,7 @@ export type {
   ProjectControlAction,
   ProjectControlReceipt,
   ContinuePreview,
+  ProjectClosurePackage,
 } from "./project";
 export type { PinnedItem, PinnedItemType, CreatePinRequest, ReorderPinsRequest } from "./pin";
 export type {

@@ -2,7 +2,10 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
+	"fmt"
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/util"
@@ -29,6 +32,7 @@ const (
 	ActionContinue      ControlAction = "continue"
 	ActionPauseDispatch ControlAction = "pause_dispatch"
 	ActionResume        ControlAction = "resume"
+	ActionClose         ControlAction = "close"
 )
 
 // ControlReceipt is the structured, idempotent operation receipt. It records
@@ -63,7 +67,7 @@ func validateProjectControl(proj db.Project, action ControlAction) []string {
 	}
 	// Lead gate applies to continue/resume (and Slice 4 close), NOT pause:
 	// stopping new dispatch must not be blocked by a missing lead (Gauss #5).
-	if (action == ActionContinue || action == ActionResume) && (!proj.LeadID.Valid || !proj.LeadType.Valid) {
+	if (action == ActionContinue || action == ActionResume || action == ActionClose) && (!proj.LeadID.Valid || !proj.LeadType.Valid) {
 		blockers = append(blockers, "ACCOUNTABLE_LEAD_REQUIRED")
 	}
 	if dupOf := frozenSupersessions[util.UUIDToString(proj.ID)]; dupOf != "" {
@@ -387,3 +391,119 @@ func validateProjectControlAt(proj db.Project, action ControlAction, seed map[st
 }
 
 func parseTestUUID(s string) (pgtype.UUID, error) { return util.ParseUUID(s) }
+
+// ClosurePackage is a candidate project closure package (Slice 4). It is a
+// DERIVED snapshot, never a second truth table: the projector recomputes it
+// from the live project/issue/task/outcome state.
+type ClosurePackage struct {
+	PackageID             string   `json:"package_id"`
+	ProjectID             string   `json:"project_id"`
+	Status                string   `json:"status"`
+	LeadType              *string  `json:"lead_type"`
+	LeadID                *string  `json:"lead_id"`
+	TerminalIssueCount    int      `json:"terminal_issue_count"`
+	NonterminalIssueCount int      `json:"nonterminal_issue_count"`
+	ActiveTaskCount       int      `json:"active_task_count"`
+	OutcomeConfirmed      int      `json:"outcome_confirmed"`
+	OutcomeTotal          int      `json:"outcome_total"`
+	DuplicateOfProjectID  *string  `json:"duplicate_of_project_id"`
+	ReviewRequired        bool     `json:"review_required"`
+	ClosureReady          bool     `json:"closure_ready"`
+	Blockers              []string `json:"blockers"`
+	Digest                string   `json:"digest"`
+}
+
+// GenerateClosurePackage computes a candidate closure package without writing
+// anything. It never auto-accepts outcomes and never auto-closes the project.
+func (s *ProjectLifecycleControlService) GenerateClosurePackage(ctx context.Context, workspaceID, projectID pgtype.UUID, idempotencyKey string) (*ClosurePackage, error) {
+	proj, err := s.Queries.GetProjectInWorkspace(ctx, db.GetProjectInWorkspaceParams{ID: projectID, WorkspaceID: workspaceID})
+	if err != nil {
+		return nil, ErrProjectLifecycleNotFound
+	}
+	projector := NewProjectLifecycleProjector(s.Queries)
+	snap, err := projector.GetSnapshot(ctx, workspaceID, projectID)
+	if err != nil {
+		return nil, err
+	}
+	pkg := &ClosurePackage{
+		PackageID:             idempotencyKey,
+		ProjectID:             util.UUIDToString(proj.ID),
+		Status:                proj.Status,
+		LeadType:              textOrNil(proj.LeadType),
+		LeadID:                uuidOrNil(proj.LeadID),
+		TerminalIssueCount:    snap.TerminalIssueCount,
+		NonterminalIssueCount: snap.NonterminalIssueCount,
+		ActiveTaskCount:       snap.ActiveTaskCount,
+		OutcomeConfirmed:      snap.OutcomeConfirmed,
+		OutcomeTotal:          snap.OutcomeTotal,
+		DuplicateOfProjectID:  snap.DuplicateOfProjectID,
+		ReviewRequired:        true, // independent review is mandatory before close
+		ClosureReady:          snap.ClosureReady,
+		Blockers:              snap.ClosureBlockers,
+	}
+	pkg.Digest = closurePackageDigest(pkg)
+	return pkg, nil
+}
+
+// PreviewClose returns the closure gates and blockers with zero writes.
+func (s *ProjectLifecycleControlService) PreviewClose(ctx context.Context, workspaceID, projectID pgtype.UUID) (*ClosurePackage, error) {
+	proj, err := s.Queries.GetProjectInWorkspace(ctx, db.GetProjectInWorkspaceParams{ID: projectID, WorkspaceID: workspaceID})
+	if err != nil {
+		return nil, ErrProjectLifecycleNotFound
+	}
+	if blockers := validateProjectControl(proj, ActionClose); len(blockers) > 0 {
+		return &ClosurePackage{ProjectID: util.UUIDToString(proj.ID), Status: proj.Status, Blockers: blockers, ReviewRequired: true}, nil
+	}
+	return s.GenerateClosurePackage(ctx, workspaceID, projectID, "")
+}
+
+// Close performs the project closure commit only when every gate is green
+// (fail-closed). It writes project.status = completed and returns the receipt.
+func (s *ProjectLifecycleControlService) Close(ctx context.Context, workspaceID, projectID pgtype.UUID, idempotencyKey string) (ControlReceipt, error) {
+	proj, err := s.Queries.GetProjectInWorkspace(ctx, db.GetProjectInWorkspaceParams{ID: projectID, WorkspaceID: workspaceID})
+	if err != nil {
+		return ControlReceipt{}, ErrProjectLifecycleNotFound
+	}
+	receipt := ControlReceipt{
+		Action:         "close",
+		ProjectID:      util.UUIDToString(proj.ID),
+		IdempotencyKey: idempotencyKey,
+		BeforeStatus:   proj.Status,
+		AfterStatus:    proj.Status,
+	}
+	if blockers := validateProjectControl(proj, ActionClose); len(blockers) > 0 {
+		receipt.Blockers = blockers
+		return receipt, nil
+	}
+	pkg, err := s.GenerateClosurePackage(ctx, workspaceID, projectID, idempotencyKey)
+	if err != nil {
+		return ControlReceipt{}, err
+	}
+	if len(pkg.Blockers) > 0 {
+		receipt.Blockers = pkg.Blockers
+		return receipt, nil
+	}
+	if pkg.ReviewRequired {
+		receipt.Blockers = []string{"CLOSURE_PACKAGE_REVIEW_REQUIRED"}
+		return receipt, nil
+	}
+	if proj.Status == "completed" {
+		receipt.Replayed = true
+		return receipt, nil
+	}
+	if err := s.setProjectStatus(ctx, proj, "completed"); err != nil {
+		return ControlReceipt{}, err
+	}
+	receipt.Applied = true
+	receipt.AfterStatus = "completed"
+	return receipt, nil
+}
+
+// closurePackageDigest returns a deterministic sha256 over the package's
+// gate-relevant fields (provenance fingerprint, not a second truth).
+func closurePackageDigest(p *ClosurePackage) string {
+	sum := sha256.Sum256([]byte(fmt.Sprintf("%s|%d|%d|%d|%d|%d|%v",
+		p.ProjectID, p.TerminalIssueCount, p.NonterminalIssueCount, p.ActiveTaskCount,
+		p.OutcomeConfirmed, p.OutcomeTotal, p.ReviewRequired)))
+	return "sha256:" + hex.EncodeToString(sum[:])
+}

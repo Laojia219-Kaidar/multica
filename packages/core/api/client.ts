@@ -101,6 +101,7 @@ import type {
   ProjectControlAction,
   ProjectControlReceipt,
   ContinuePreview,
+  ProjectClosurePackage,
   ProjectResource,
   CreateProjectResourceRequest,
   UpdateProjectResourceRequest,
@@ -3389,12 +3390,19 @@ export class ApiClient {
   // Slice 2 owner control operations (preview-first).
   async projectLifecycleAction(
     id: string,
-    action: ProjectControlAction,
+    action: ProjectControlAction | "close",
     data: { preview?: boolean; idempotency_key?: string },
   ): Promise<ProjectControlReceipt | { preview: ContinuePreview }> {
     return this.fetch(`/api/projects/${id}/lifecycle/actions/${action}`, {
       method: "POST",
       body: JSON.stringify(data),
+    });
+  }
+
+  async generateClosurePackage(id: string): Promise<ProjectClosurePackage> {
+    return this.fetch(`/api/projects/${id}/closure-package`, {
+      method: "POST",
+      body: JSON.stringify({}),
     });
   }
 

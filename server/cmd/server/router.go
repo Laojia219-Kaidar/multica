@@ -1317,6 +1317,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Get("/lifecycle", h.GetProjectLifecycle)
 					// Slice 2 owner control operations (preview-first).
 					r.Post("/lifecycle/actions/{action}", h.ProjectLifecycleAction)
+					// Slice 4 project closure package (candidate, read-only).
+					r.Post("/closure-package", h.ProjectClosurePackage)
 					r.Get("/resources", h.ListProjectResources)
 					r.Post("/resources", h.CreateProjectResource)
 					r.Put("/resources/{resourceId}", h.UpdateProjectResource)

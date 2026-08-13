@@ -114,7 +114,63 @@ func (h *Handler) ProjectLifecycleAction(w http.ResponseWriter, r *http.Request)
 		}
 		writeJSON(w, http.StatusOK, receipt)
 
+	case service.ActionClose:
+		if req.Preview {
+			pkg, err := ctrl.PreviewClose(r.Context(), wsUUID, idUUID)
+			if err != nil {
+				writeError(w, http.StatusNotFound, "project not found")
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"preview": pkg})
+			return
+		}
+		receipt, err := ctrl.Close(r.Context(), wsUUID, idUUID, req.IdempotencyKey)
+		if err != nil {
+			writeError(w, http.StatusNotFound, "project not found")
+			return
+		}
+		writeJSON(w, http.StatusOK, receipt)
+
 	default:
-		writeError(w, http.StatusBadRequest, "unknown action; valid values: continue, pause_dispatch, resume")
+		writeError(w, http.StatusBadRequest, "unknown action; valid values: continue, pause_dispatch, resume, close")
 	}
+}
+
+// ProjectClosurePackage generates a candidate project closure package (read-only,
+// never auto-closes).
+//
+//	POST /api/projects/{id}/closure-package
+func (h *Handler) ProjectClosurePackage(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	workspaceID := h.resolveWorkspaceID(r)
+	idUUID, ok := parseUUIDOrBadRequest(w, id, "project id")
+	if !ok {
+		return
+	}
+	wsUUID, ok := parseUUIDOrBadRequest(w, workspaceID, "workspace id")
+	if !ok {
+		return
+	}
+	project, err := h.Queries.GetProjectInWorkspace(r.Context(), db.GetProjectInWorkspaceParams{ID: idUUID, WorkspaceID: wsUUID})
+	if err != nil {
+		writeError(w, http.StatusNotFound, "project not found")
+		return
+	}
+	if _, ok := h.requireWorkspaceRole(w, r, util.UUIDToString(project.WorkspaceID), "project not found", "owner", "admin"); !ok {
+		return
+	}
+	var req projectLifecycleActionRequest
+	if r.Body != nil {
+		body, _ := io.ReadAll(r.Body)
+		if len(body) > 0 {
+			_ = json.Unmarshal(body, &req)
+		}
+	}
+	ctrl := service.NewProjectLifecycleControlService(h.Queries, h.TaskService)
+	pkg, err := ctrl.GenerateClosurePackage(r.Context(), wsUUID, idUUID, req.IdempotencyKey)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "project not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, pkg)
 }

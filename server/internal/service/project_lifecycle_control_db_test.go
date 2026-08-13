@@ -221,3 +221,47 @@ func TestResumeDoesNotDuplicateRunningTask(t *testing.T) {
 		t.Fatalf("task count after resume = %d, want 1 (no duplicate)", countTasks(t, pool, issueID))
 	}
 }
+
+// Slice 4 contract: close fails closed (OUTCOME_COVERAGE_INCOMPLETE) when the
+// project has all-terminal issues but no confirmed outcomes; status unchanged.
+func TestCloseFailsClosedWithoutOutcomes(t *testing.T) {
+	pool, workspaceID, projectID, issueID := seedPausedProjectFixture(t, "in_progress")
+	q := db.New(pool)
+	svc := &TaskService{Queries: q, TxStarter: pool, Bus: events.New()}
+	ctrl := NewProjectLifecycleControlService(q, svc)
+	ctx := context.Background()
+	// make the only issue terminal (done) so "all terminal" holds but outcome=0.
+	if _, err := pool.Exec(ctx, `UPDATE issue SET status='done' WHERE id=$1`, issueID); err != nil {
+		t.Fatalf("mark issue done: %v", err)
+	}
+
+	pkg, err := ctrl.GenerateClosurePackage(ctx, util.MustParseUUID(workspaceID), util.MustParseUUID(projectID), "pkg-k1")
+	if err != nil {
+		t.Fatalf("generate package: %v", err)
+	}
+	if !pkg.ReviewRequired {
+		t.Fatalf("package review_required = false, want true")
+	}
+	if pkg.Digest == "" {
+		t.Fatalf("package digest empty")
+	}
+
+	r, err := ctrl.Close(ctx, util.MustParseUUID(workspaceID), util.MustParseUUID(projectID), "close-k1")
+	if err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	if len(r.Blockers) == 0 {
+		t.Fatalf("close receipt = %+v, want fail-closed blockers (no confirmed outcomes)", r)
+	}
+	if r.Applied {
+		t.Fatalf("close applied a terminal write despite unmet gates: %+v", r)
+	}
+	// status must be unchanged.
+	var status string
+	if err := pool.QueryRow(ctx, `SELECT status FROM project WHERE id=$1`, projectID).Scan(&status); err != nil {
+		t.Fatalf("read status: %v", err)
+	}
+	if status != "in_progress" {
+		t.Fatalf("close mutated status to %q, want in_progress", status)
+	}
+}
