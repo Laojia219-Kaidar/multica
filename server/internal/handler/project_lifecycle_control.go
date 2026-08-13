@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -14,8 +15,9 @@ import (
 // projectLifecycleActionRequest is the body for the Slice 2 control endpoints.
 // preview=true returns the planned effect with zero writes.
 type projectLifecycleActionRequest struct {
-	Preview        bool   `json:"preview"`
-	IdempotencyKey string `json:"idempotency_key"`
+	Preview         bool   `json:"preview"`
+	IdempotencyKey  string `json:"idempotency_key"`
+	TargetProjectID string `json:"target_project_id"`
 }
 
 // ProjectLifecycleAction handles continue / pause_dispatch / resume for a
@@ -114,7 +116,39 @@ func (h *Handler) ProjectLifecycleAction(w http.ResponseWriter, r *http.Request)
 		}
 		writeJSON(w, http.StatusOK, receipt)
 
+	case service.ActionClose:
+		receipt, err := ctrl.Close(r.Context(), wsUUID, idUUID, req.IdempotencyKey)
+		if err != nil {
+			writeError(w, http.StatusNotFound, "project not found")
+			return
+		}
+		writeJSON(w, http.StatusOK, receipt)
+
+	case service.ActionSupersede:
+		var targetUUID pgtype.UUID
+		if req.TargetProjectID != "" {
+			parsed, ok := parseUUIDOrBadRequest(w, req.TargetProjectID, "target_project_id")
+			if !ok {
+				return
+			}
+			targetUUID = parsed
+		}
+		receipt, err := ctrl.Supersede(r.Context(), wsUUID, idUUID, targetUUID, req.IdempotencyKey)
+		if err != nil {
+			writeError(w, http.StatusNotFound, "project not found")
+			return
+		}
+		writeJSON(w, http.StatusOK, receipt)
+
+	case service.ActionGenerateClosurePackage:
+		pkg, err := ctrl.GenerateClosurePackage(r.Context(), wsUUID, idUUID)
+		if err != nil {
+			writeError(w, http.StatusNotFound, "project not found")
+			return
+		}
+		writeJSON(w, http.StatusOK, pkg)
+
 	default:
-		writeError(w, http.StatusBadRequest, "unknown action; valid values: continue, pause_dispatch, resume")
+		writeError(w, http.StatusBadRequest, "unknown action; valid values: continue, pause_dispatch, resume, close, supersede, generate_closure_package")
 	}
 }

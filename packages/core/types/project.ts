@@ -170,7 +170,7 @@ export interface ListProjectLifecycleResponse {
 
 // ---- Slice 2 owner control operations (continue / pause_dispatch / resume) ----
 
-export type ProjectControlAction = "continue" | "pause_dispatch" | "resume";
+export type ProjectControlAction = "continue" | "pause_dispatch" | "resume" | "close" | "supersede" | "generate_closure_package";
 
 export interface ProjectControlReceipt {
   action: string;
