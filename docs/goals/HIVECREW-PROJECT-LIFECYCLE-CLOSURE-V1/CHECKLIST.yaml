@@ -132,11 +132,15 @@ slices:
       Quinn: PASS
       Pixel: PASS
   slice_3_review_repair_routing:
-    status: consume_w3_join4_laneB_review_cell
+    status: w3_provided_verified
+    w3_ref: review_cell/review_drain/review.go + migrations 280-285
   slice_4_outcome_center_closure_package:
-    status: consume_w3_join2_laneE_outcomes
+    status: w3_outcomes_provided_closure_package_gap
+    gap: Closure Package generation + close gate NOT implemented by W3 (remaining
+      Slice 4 work)
   slice_5_history_pagination_backfill:
-    status: consume_w3_join2_8_10_pagination
+    status: w3_provided_verified
+    w3_ref: JOIN-8 projects / JOIN-10 inbox / JOIN-2 outcomes cursor
 victory_conditions:
   VC-01:
     title: Current truth honest classification
@@ -165,15 +169,15 @@ victory_conditions:
     - Slice 2 pause dispatch gate + idempotent replay accepted (3x PASS)
   VC-05:
     title: Review/repair
-    status: not_started
+    status: w3_provided
     evidence: []
   VC-06:
     title: Outcome lineage
-    status: not_started
+    status: w3_outcomes_lineage_provided
     evidence: []
   VC-07:
     title: Project closure
-    status: not_started
+    status: gap_closure_package
     evidence: []
   VC-08:
     title: Existing portfolio disposition
@@ -183,7 +187,7 @@ victory_conditions:
     - reports/W2-portfolio-disposition-preprocessing.md (11-project dry-run disposition)
   VC-09:
     title: Active/history UX
-    status: not_started
+    status: w3_provided
     evidence: []
   VC-10:
     title: Runtime acceptance
@@ -199,10 +203,12 @@ victory_conditions:
     evidence: []
 frontier:
   controller: Prime Agent
-  phase: Slice 2 accepted -> handoff W3 -> consume Slices 3/4/5 (W3 integration @5aa447c65)
+  phase: Slice 1+2 accepted; Slices 3/4/5 consume W3; remaining = Closure Package
+    (VC-07) + WAVE-4/5
   ready:
-  - Slice 2 source implementation (continue/pause/resume/close-preview/closure-package)
-    once W3 lane releases shared paths
+  - Closure Package generation + close gate (Slice 4 gap)
+  - WAVE-4 candidate deploy + runtime acceptance
+  - WAVE-5 reconciler + portfolio disposition
   running:
   - Slice 2 acceptance (Gauss/Quinn/Pixel) HIV-557/558/559
   blocked: []
