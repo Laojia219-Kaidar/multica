@@ -81,6 +81,15 @@ func (h *Handler) ProjectLifecycleAction(w http.ResponseWriter, r *http.Request)
 		writeJSON(w, http.StatusOK, receipt)
 
 	case service.ActionPauseDispatch:
+		if req.Preview {
+			receipt, err := ctrl.PreviewPause(r.Context(), wsUUID, idUUID)
+			if err != nil {
+				writeError(w, http.StatusNotFound, "project not found")
+				return
+			}
+			writeJSON(w, http.StatusOK, receipt)
+			return
+		}
 		receipt, err := ctrl.PauseDispatch(r.Context(), wsUUID, idUUID, req.IdempotencyKey)
 		if err != nil {
 			writeError(w, http.StatusNotFound, "project not found")
@@ -89,6 +98,15 @@ func (h *Handler) ProjectLifecycleAction(w http.ResponseWriter, r *http.Request)
 		writeJSON(w, http.StatusOK, receipt)
 
 	case service.ActionResume:
+		if req.Preview {
+			receipt, err := ctrl.PreviewResume(r.Context(), wsUUID, idUUID)
+			if err != nil {
+				writeError(w, http.StatusNotFound, "project not found")
+				return
+			}
+			writeJSON(w, http.StatusOK, receipt)
+			return
+		}
 		receipt, err := ctrl.Resume(r.Context(), wsUUID, idUUID, req.IdempotencyKey)
 		if err != nil {
 			writeError(w, http.StatusNotFound, "project not found")

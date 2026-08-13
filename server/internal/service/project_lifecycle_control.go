@@ -3,7 +3,6 @@ package service
 import (
 	"context"
 	"errors"
-	"fmt"
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/util"
@@ -57,7 +56,14 @@ var (
 // validateProjectControl checks the fail-closed gates shared by every action.
 func validateProjectControl(proj db.Project, action ControlAction) []string {
 	var blockers []string
-	if !proj.LeadID.Valid || !proj.LeadType.Valid {
+	// Terminal projects must never be re-opened (Quinn invariant 3).
+	if proj.Status == "completed" || proj.Status == "cancelled" {
+		blockers = append(blockers, "PROJECT_TERMINAL")
+		return blockers
+	}
+	// Lead gate applies to continue/resume (and Slice 4 close), NOT pause:
+	// stopping new dispatch must not be blocked by a missing lead (Gauss #5).
+	if (action == ActionContinue || action == ActionResume) && (!proj.LeadID.Valid || !proj.LeadType.Valid) {
 		blockers = append(blockers, "ACCOUNTABLE_LEAD_REQUIRED")
 	}
 	if dupOf := frozenSupersessions[util.UUIDToString(proj.ID)]; dupOf != "" {
@@ -226,6 +232,10 @@ func (s *ProjectLifecycleControlService) Resume(ctx context.Context, workspaceID
 			receipt.IssueID = uuidOrNil(issue.ID)
 		} else if errors.Is(enqErr, ErrDuplicatePendingTask) {
 			receipt.Replayed = true
+		} else {
+			// Surface the real enqueue failure; never report a silent partial
+			// success (Gauss #4 / Quinn resume-吞错).
+			receipt.Blockers = append(receipt.Blockers, "ENQUEUE_FAILED: "+enqErr.Error())
 		}
 	}
 	return receipt, nil
@@ -278,6 +288,40 @@ func (s *ProjectLifecycleControlService) activeTaskForIssue(ctx context.Context,
 	return &tasks[0]
 }
 
+// PreviewPause returns the planned pause effect with zero writes.
+func (s *ProjectLifecycleControlService) PreviewPause(ctx context.Context, workspaceID, projectID pgtype.UUID) (ControlReceipt, error) {
+	proj, err := s.Queries.GetProjectInWorkspace(ctx, db.GetProjectInWorkspaceParams{ID: projectID, WorkspaceID: workspaceID})
+	if err != nil {
+		return ControlReceipt{}, ErrProjectLifecycleNotFound
+	}
+	receipt := ControlReceipt{
+		Action: string(ActionPauseDispatch), ProjectID: util.UUIDToString(proj.ID),
+		BeforeStatus: proj.Status, AfterStatus: proj.Status,
+	}
+	receipt.Blockers = validateProjectControl(proj, ActionPauseDispatch)
+	if len(receipt.Blockers) == 0 && proj.Status != "paused" {
+		receipt.AfterStatus = "paused"
+	}
+	return receipt, nil
+}
+
+// PreviewResume returns the planned resume effect with zero writes.
+func (s *ProjectLifecycleControlService) PreviewResume(ctx context.Context, workspaceID, projectID pgtype.UUID) (ControlReceipt, error) {
+	proj, err := s.Queries.GetProjectInWorkspace(ctx, db.GetProjectInWorkspaceParams{ID: projectID, WorkspaceID: workspaceID})
+	if err != nil {
+		return ControlReceipt{}, ErrProjectLifecycleNotFound
+	}
+	receipt := ControlReceipt{
+		Action: string(ActionResume), ProjectID: util.UUIDToString(proj.ID),
+		BeforeStatus: proj.Status, AfterStatus: proj.Status,
+	}
+	receipt.Blockers = validateProjectControl(proj, ActionResume)
+	if len(receipt.Blockers) == 0 {
+		receipt.AfterStatus = "in_progress"
+	}
+	return receipt, nil
+}
+
 // setProjectStatus writes a new project status, preserving all other fields.
 func (s *ProjectLifecycleControlService) setProjectStatus(ctx context.Context, proj db.Project, status string) error {
 	_, err := s.Queries.UpdateProject(ctx, db.UpdateProjectParams{
@@ -321,7 +365,10 @@ func textValue(s string) pgtype.Text {
 	return pgtype.Text{String: s, Valid: true}
 }
 
-var _ = fmt.Sprintf
+// ErrProjectPausedDispatch blocks new task enqueue for a paused project. It is
+// returned by the TaskService enqueue chokepoint so pause actually stops new
+// dispatch (Gauss phase_critical #1).
+var ErrProjectPausedDispatch = errors.New("project is paused: dispatch stopped")
 
 // validateProjectControlAt is validateProjectControl with an explicit seed map,
 // used only by tests to avoid mutating the frozen seed.

@@ -27,17 +27,8 @@ func TestValidateProjectControl_ContinueMissingLead(t *testing.T) {
 // C12: a frozen duplicate always blocks every control action.
 func TestValidateProjectControl_DuplicateBlocks(t *testing.T) {
 	p := projWithLead(true, "in_progress")
-	// frozenSupersessions seeds this project id as a duplicate.
-	p.ID = pgtype.UUID{Valid: true}
-	// (frozenSupersessions key is a string; we assert on the shared gate helper
-	// by temporarily overriding the seed in a clean way.)
-	orig := frozenSupersessions
-	frozenSupersessions = map[string]string{"seed-dup": "other"}
-	defer func() { frozenSupersessions = orig }()
-	p2 := projWithLead(true, "in_progress")
-	p2.ID = mustUUID(t, "00000000-0000-0000-0000-000000000001")
-	// use a project whose string id is in the seed:
-	blockers := validateProjectControlAt(p2, ActionContinue, map[string]string{"00000000-0000-0000-0000-000000000001": "x"})
+	p.ID = mustUUID(t, "00000000-0000-0000-0000-000000000001")
+	blockers := validateProjectControlAt(p, ActionContinue, map[string]string{"00000000-0000-0000-0000-000000000001": "x"})
 	if !containsStr(blockers, "DUPLICATE_AUTHORITY_OWNER_DECISION") {
 		t.Fatalf("blockers = %v, want DUPLICATE_AUTHORITY_OWNER_DECISION", blockers)
 	}
@@ -73,4 +64,22 @@ func mustUUID(t *testing.T, s string) pgtype.UUID {
 		t.Fatalf("parse uuid: %v", err)
 	}
 	return u
+}
+
+// Quinn invariant 3: terminal projects (completed/cancelled) reject every action.
+func TestValidateProjectControl_TerminalBlocks(t *testing.T) {
+	for _, status := range []string{"completed", "cancelled"} {
+		blockers := validateProjectControl(projWithLead(true, status), ActionContinue)
+		if !containsStr(blockers, "PROJECT_TERMINAL") {
+			t.Fatalf("status=%s blockers = %v, want PROJECT_TERMINAL", status, blockers)
+		}
+	}
+}
+
+// pause does not require a lead (lead gate is continue/resume/close only).
+func TestValidateProjectControl_PauseWithoutLeadOk(t *testing.T) {
+	blockers := validateProjectControl(projWithLead(false, "in_progress"), ActionPauseDispatch)
+	if containsStr(blockers, "ACCOUNTABLE_LEAD_REQUIRED") {
+		t.Fatalf("pause should not require lead, blockers = %v", blockers)
+	}
 }

@@ -1013,6 +1013,14 @@ type issueTaskTriggerEvidenceOverride struct {
 }
 
 func (s *TaskService) enqueueIssueTaskWithCommentPlan(ctx context.Context, issue db.Issue, triggerCommentID pgtype.UUID, coalescedCommentIDs []pgtype.UUID, forceFreshSession bool, handoffNote string, actorUserID pgtype.UUID, rerunOfTaskID pgtype.UUID) (db.AgentTaskQueue, error) {
+	// Project lifecycle pause gate: a paused project stops NEW dispatch. This
+	// is the single chokepoint every enqueue path funnels through, so the
+	// Slice 2 pause_dispatch flag has a real reader (Gauss phase_critical #1).
+	if issue.ProjectID.Valid {
+		if proj, err := s.Queries.GetProjectInWorkspace(ctx, db.GetProjectInWorkspaceParams{ID: issue.ProjectID, WorkspaceID: issue.WorkspaceID}); err == nil && proj.Status == "paused" {
+			return db.AgentTaskQueue{}, ErrProjectPausedDispatch
+		}
+	}
 	task, err := s.prepareIssueTaskWithCommentPlan(
 		ctx,
 		s.Queries,
