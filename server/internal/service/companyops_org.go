@@ -234,6 +234,68 @@ func (s *CompanyOpsDirectoryService) GetEmployee(
 	}, nil
 }
 
+// WorkforceBaseRuntimeRow is the strict one-to-one join of an Employee's
+// current executable identity: Employee -> Agent -> Runtime -> Base (physical
+// machine derived from runtime device_info). A row is emitted for every
+// employee; only `available` rows carry the resolved HiveCrew agent, runtime,
+// base machine, statuses and model. The identity binding is never invented:
+// employees without a verified executable binding leave the join empty.
+type WorkforceBaseRuntimeRow struct {
+	EmployeeID       string `json:"employee_id"`
+	WorkforceAgentID string `json:"workforce_agent_id"`
+	HiveCrewAgentID  string `json:"hivecrew_agent_id,omitempty"`
+	RuntimeID        string `json:"runtime_id,omitempty"`
+	BaseMachineTitle string `json:"base_machine_title,omitempty"`
+	AgentStatus      string `json:"agent_status,omitempty"`
+	RuntimeStatus    string `json:"runtime_status,omitempty"`
+	Model            string `json:"model,omitempty"`
+}
+
+// GetWorkforceBaseRuntimeJoin resolves the Employee/Agent/Runtime/Base join
+// across the directory authority and the local Agent registry. It is the
+// single read model used by the organization roster and the bases overview so
+// the two surfaces can never disagree about where an employee executes.
+func (s *CompanyOpsDirectoryService) GetWorkforceBaseRuntimeJoin(
+	ctx context.Context,
+	workspaceID pgtype.UUID,
+) (companyopsapi.PublicAuthorityRef, []WorkforceBaseRuntimeRow, error) {
+	response, err := s.adapter.GetEmployees(ctx, util.UUIDToString(workspaceID))
+	if err != nil {
+		return companyopsapi.PublicAuthorityRef{}, nil, err
+	}
+	if err := response.Validate(); err != nil {
+		return companyopsapi.PublicAuthorityRef{}, nil, fmt.Errorf("%w: %v", companyopsapi.ErrAdapterMalformed, err)
+	}
+	availabilityByEmployee, err := s.computeAvailabilityMap(ctx, workspaceID, response.Employees)
+	if err != nil {
+		return companyopsapi.PublicAuthorityRef{}, nil, err
+	}
+	rows := make([]WorkforceBaseRuntimeRow, 0, len(response.Employees))
+	for _, employee := range response.Employees {
+		availability := availabilityByEmployee[employee.EmployeeID]
+		row := WorkforceBaseRuntimeRow{
+			EmployeeID:       employee.EmployeeID,
+			WorkforceAgentID: employee.WorkforceAgentID,
+		}
+		if availability.status != companyopsapi.AvailabilityAvailable ||
+			availability.agent == nil ||
+			availability.runtime == nil {
+			rows = append(rows, row)
+			continue
+		}
+		row.HiveCrewAgentID = util.UUIDToString(availability.agent.ID)
+		row.RuntimeID = util.UUIDToString(availability.runtime.ID)
+		row.BaseMachineTitle = machineTitle(availability.runtime.DeviceInfo)
+		row.AgentStatus = availability.agent.Status
+		row.RuntimeStatus = availability.runtime.Status
+		if availability.agent.Model.Valid {
+			row.Model = availability.agent.Model.String
+		}
+		rows = append(rows, row)
+	}
+	return mapAuthority(response.Authority), rows, nil
+}
+
 func (s *CompanyOpsDirectoryService) computeAvailabilityMap(
 	ctx context.Context,
 	workspaceID pgtype.UUID,
@@ -399,6 +461,21 @@ func buildPublicSummary(
 
 func mapAuthority(authority companyopsapi.AdapterAuthorityRef) companyopsapi.PublicAuthorityRef {
 	return authority
+}
+
+// machineTitle extracts the physical machine title from a runtime's
+// device_info ("HiveCosm Mac mini · 2.1.221 (Claude Code)"). It is the
+// observed execution location — a read-model base key, not a company-owned
+// home/fallback base assignment.
+func machineTitle(deviceInfo string) string {
+	machine := strings.TrimSpace(deviceInfo)
+	if i := strings.Index(machine, " · "); i >= 0 {
+		machine = strings.TrimSpace(machine[:i])
+	}
+	if machine == "" {
+		return "unknown"
+	}
+	return machine
 }
 
 func matchesQuery(employee companyopsapi.AdapterEmployeeSummary, q string) bool {

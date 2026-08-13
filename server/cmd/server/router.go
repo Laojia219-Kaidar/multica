@@ -1222,6 +1222,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			r.Get("/organization", h.GetCompanyOpsOrganization)
 			r.Get("/employees", h.GetCompanyOpsEmployees)
 			r.Get("/employees/{employeeId}", h.GetCompanyOpsEmployee)
+			r.Get("/workforce-base-runtime", h.GetCompanyOpsWorkforceBaseRuntime)
 			r.Get("/usage", h.GetProviderPlanUsage)
 			r.Put("/usage/quota", h.PutProviderUsageQuota)
 			r.Post("/assignments", h.CreateCompanyOpsAssignment)
@@ -1502,8 +1503,10 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			r.Post("/api/bases/operational-mode", h.SetBaseOperationalMode)
 			r.Route("/api/runtimes", func(r chi.Router) {
 				r.Get("/", h.ListAgentRuntimes)
+				r.Get("/bases", h.ListRuntimeBases)
 				r.Route("/{runtimeId}", func(r chi.Router) {
 					r.Patch("/", h.UpdateAgentRuntime)
+					r.Post("/migrate", h.MigrateRuntimeAgents)
 					r.Get("/usage", h.GetRuntimeUsage)
 					r.Get("/usage/by-agent", h.GetRuntimeUsageByAgent)
 					r.Get("/usage/by-hour", h.GetRuntimeUsageByHour)

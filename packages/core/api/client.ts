@@ -38,6 +38,8 @@ import type {
   WorkspaceWorkingAgentType,
   AgentRuntime,
   RuntimeProfile,
+  BaseOverview,
+  MigrateRuntimeAgentsResponse,
   CreateRuntimeProfileRequest,
   UpdateRuntimeProfileRequest,
   InboxItem,
@@ -1933,6 +1935,26 @@ export class ApiClient {
     { machine_title: string; runtime_online: number; runtime_registered: number; employees: number; drained: boolean }[]
   > {
     return this.fetch("/api/bases");
+  }
+
+  // Observed execution bases (Lane C) — read-only grouping of workspace
+  // runtimes by physical machine plus resident agent counts (runtime-level
+  // view distinct from the /api/bases operational-mode view).
+  async listRuntimeBases(): Promise<BaseOverview[]> {
+    return this.fetch("/api/runtimes/bases");
+  }
+
+  // Fault migration: re-points every agent (and their queued/historic tasks)
+  // from a faulted source runtime onto a healthy target runtime without
+  // changing any agent identity.
+  async migrateRuntimeAgents(
+    runtimeId: string,
+    targetRuntimeId: string,
+  ): Promise<MigrateRuntimeAgentsResponse> {
+    return this.fetch(`/api/runtimes/${runtimeId}/migrate`, {
+      method: "POST",
+      body: JSON.stringify({ target_runtime_id: targetRuntimeId }),
+    });
   }
 
   async archiveAgent(id: string): Promise<Agent> {

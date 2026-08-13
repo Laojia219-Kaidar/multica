@@ -1,5 +1,10 @@
 export type { Issue, IssueStatus, IssuePriority, IssueAssigneeType, IssueMetadata, IssueMetadataValue, IssueReaction } from "./issue";
 export type {
+  BaseRuntimeInfo,
+  BaseOverview,
+  MigrateRuntimeAgentsResponse,
+} from "./bases";
+export type {
   Agent,
   AgentStatus,
   AgentRuntimeMode,

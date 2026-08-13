@@ -222,6 +222,39 @@ func (h *Handler) GetCompanyOpsEmployee(w http.ResponseWriter, r *http.Request) 
 	})
 }
 
+const publicWorkforceBaseRuntimeSchema = "hivecrew.workforce-base-runtime.v1"
+
+// GetCompanyOpsWorkforceBaseRuntime returns the strict Employee/Agent/Runtime/
+// Base join for every employee in the workspace. It shares the exact same read
+// model as the organization roster and the bases overview, so cross-API joins
+// can be verified without deriving identity from two sources.
+func (h *Handler) GetCompanyOpsWorkforceBaseRuntime(w http.ResponseWriter, r *http.Request) {
+	setCompanyOpsSecurityHeaders(w)
+	if len(r.URL.Query()) != 0 {
+		writeCompanyOpsDirectoryError(w, http.StatusBadRequest, "invalid_request", "query parameters are not allowed")
+		return
+	}
+	if h.CompanyOpsDirectory == nil {
+		writeCompanyOpsDirectoryError(w, http.StatusServiceUnavailable, "source_gap", "organization directory service is unavailable")
+		return
+	}
+	workspaceID, ok := resolveDirectoryWorkspace(w, r)
+	if !ok {
+		return
+	}
+	authority, items, err := h.CompanyOpsDirectory.GetWorkforceBaseRuntimeJoin(r.Context(), workspaceID)
+	if err != nil {
+		writeCompanyOpsDirectoryServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"schema_version": publicWorkforceBaseRuntimeSchema,
+		"workspace_id":   util.UUIDToString(workspaceID),
+		"authority":      authority,
+		"items":          items,
+	})
+}
+
 func resolveDirectoryWorkspace(w http.ResponseWriter, r *http.Request) (pgtype.UUID, bool) {
 	workspace := middleware.WorkspaceIDFromContext(r.Context())
 	if workspace == "" {

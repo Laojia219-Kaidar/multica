@@ -215,6 +215,7 @@ function PageHeaderBar({
   onOpenCloudRuntime: () => void;
 }) {
   const { t, i18n } = useT("runtimes");
+  const paths = useWorkspacePaths();
   return (
     <CollectionPageHeader
       icon={Server}
@@ -227,6 +228,14 @@ function PageHeaderBar({
       }}
       actions={
         <>
+          <AppLink
+            href={paths.runtimeBases()}
+            className="flex h-8 w-8 items-center justify-center rounded-md border text-sm outline-none transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:ring-2 focus-visible:ring-ring md:w-auto md:gap-1 md:px-2.5"
+            aria-label="Bases"
+          >
+            <Server className="size-3.5" aria-hidden="true" />
+            <span className="hidden md:inline">Bases</span>
+          </AppLink>
           {cloudRuntimeEnabled && (
             <CollectionPageHeaderAction
               icon={Cloud}
