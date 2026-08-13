@@ -98,6 +98,9 @@ import type {
   ListProjectsResponse,
   ListProjectLifecycleResponse,
   ProjectLifecycleSnapshot,
+  ProjectControlAction,
+  ProjectControlReceipt,
+  ContinuePreview,
   ProjectResource,
   CreateProjectResourceRequest,
   UpdateProjectResourceRequest,
@@ -3381,6 +3384,18 @@ export class ApiClient {
 
   async getProjectLifecycle(id: string): Promise<ProjectLifecycleSnapshot> {
     return this.fetch(`/api/projects/${id}/lifecycle`);
+  }
+
+  // Slice 2 owner control operations (preview-first).
+  async projectLifecycleAction(
+    id: string,
+    action: ProjectControlAction,
+    data: { preview?: boolean; idempotency_key?: string },
+  ): Promise<ProjectControlReceipt | { preview: ContinuePreview }> {
+    return this.fetch(`/api/projects/${id}/lifecycle/actions/${action}`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
   }
 
   async createProject(data: CreateProjectRequest): Promise<Project> {
