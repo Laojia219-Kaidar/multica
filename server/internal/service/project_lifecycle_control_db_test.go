@@ -305,3 +305,35 @@ func TestProjectLifecycleReceiptConflict(t *testing.T) {
 		t.Fatalf("replay receipt = %+v, want Replayed=true Applied=false (from stored receipt)", r)
 	}
 }
+
+// stop-current terminates live tasks (the explicit separate action; pause only
+// stops new dispatch).
+func TestStopCurrentCancelsLiveTasks(t *testing.T) {
+	pool, workspaceID, projectID, issueID := seedPausedProjectFixture(t, "in_progress")
+	q := db.New(pool)
+	svc := &TaskService{Queries: q, TxStarter: pool, Bus: events.New()}
+	ctrl := NewProjectLifecycleControlService(q, svc)
+	ctx := context.Background()
+	wsUUID, pidUUID := util.MustParseUUID(workspaceID), util.MustParseUUID(projectID)
+
+	if _, err := ctrl.Continue(ctx, wsUUID, pidUUID, "c-stop"); err != nil {
+		t.Fatalf("continue: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE agent_task_queue SET status='running' WHERE issue_id=$1`, issueID); err != nil {
+		t.Fatalf("mark running: %v", err)
+	}
+	r, err := ctrl.StopCurrent(ctx, wsUUID, pidUUID, "stop-k1")
+	if err != nil {
+		t.Fatalf("stop-current: %v", err)
+	}
+	if !r.Applied {
+		t.Fatalf("stop-current receipt = %+v, want Applied=true", r)
+	}
+	var active int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM agent_task_queue WHERE issue_id=$1 AND status IN ('queued','dispatched','running','waiting_local_directory','deferred')`, issueID).Scan(&active); err != nil {
+		t.Fatalf("count active: %v", err)
+	}
+	if active != 0 {
+		t.Fatalf("active tasks after stop-current = %d, want 0", active)
+	}
+}

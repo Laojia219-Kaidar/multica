@@ -36,6 +36,7 @@ const (
 	ActionPauseDispatch ControlAction = "pause_dispatch"
 	ActionResume        ControlAction = "resume"
 	ActionClose         ControlAction = "close"
+	ActionStopCurrent   ControlAction = "stop_current"
 )
 
 // ControlReceipt is the structured, idempotent operation receipt. It records
@@ -282,6 +283,93 @@ func (s *ProjectLifecycleControlService) Resume(ctx context.Context, workspaceID
 			receipt.Blockers = append(receipt.Blockers, "ENQUEUE_FAILED: "+enqErr.Error())
 		}
 	}
+	return finalize()
+}
+
+// StopCurrentPreview lists the live tasks stop-current would cancel.
+type StopCurrentPreview struct {
+	ProjectID string         `json:"project_id"`
+	LiveTasks []FrontierTask `json:"live_tasks"`
+	Blockers  []string       `json:"blockers"`
+}
+
+// PreviewStopCurrent returns the live tasks for a project with zero writes.
+func (s *ProjectLifecycleControlService) PreviewStopCurrent(ctx context.Context, workspaceID, projectID pgtype.UUID) (*StopCurrentPreview, error) {
+	proj, err := s.Queries.GetProjectInWorkspace(ctx, db.GetProjectInWorkspaceParams{ID: projectID, WorkspaceID: workspaceID})
+	if err != nil {
+		return nil, ErrProjectLifecycleNotFound
+	}
+	preview := &StopCurrentPreview{ProjectID: util.UUIDToString(proj.ID), LiveTasks: []FrontierTask{}}
+	preview.Blockers = validateProjectControl(proj, ActionStopCurrent)
+	if len(preview.Blockers) > 0 {
+		return preview, nil
+	}
+	tasks, err := s.Queries.ListProjectActiveTasks(ctx, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	for _, t := range tasks {
+		if util.UUIDToString(t.ProjectID) == util.UUIDToString(projectID) {
+			preview.LiveTasks = append(preview.LiveTasks, FrontierTask{
+				TaskID:      util.UUIDToString(t.TaskID),
+				Status:      t.TaskStatus,
+				AgentID:     uuidOrNil(t.AgentID),
+				IssueID:     uuidOrNil(t.IssueID),
+				IssueNumber: t.IssueNumber,
+				IssueTitle:  t.IssueTitle,
+			})
+		}
+	}
+	return preview, nil
+}
+
+// StopCurrent terminates every live task on the project's issues (the explicit,
+// separate "stop running work" action — pause_dispatch only stops NEW dispatch).
+func (s *ProjectLifecycleControlService) StopCurrent(ctx context.Context, workspaceID, projectID pgtype.UUID, idempotencyKey string) (ControlReceipt, error) {
+	proj, err := s.Queries.GetProjectInWorkspace(ctx, db.GetProjectInWorkspaceParams{ID: projectID, WorkspaceID: workspaceID})
+	if err != nil {
+		return ControlReceipt{}, ErrProjectLifecycleNotFound
+	}
+	receipt := ControlReceipt{
+		Action:         string(ActionStopCurrent),
+		ProjectID:      util.UUIDToString(proj.ID),
+		IdempotencyKey: idempotencyKey,
+		BeforeStatus:   proj.Status,
+		AfterStatus:    proj.Status,
+	}
+	if prior, err := s.receiptGuard(ctx, workspaceID, projectID, ActionStopCurrent, idempotencyKey); err != nil {
+		return ControlReceipt{}, err
+	} else if prior != nil {
+		return receiptToControl(*prior, true), nil
+	}
+	finalize := func() (ControlReceipt, error) { return s.finish(ctx, workspaceID, receipt) }
+	if blockers := validateProjectControl(proj, ActionStopCurrent); len(blockers) > 0 {
+		receipt.Blockers = blockers
+		return finalize()
+	}
+	tasks, err := s.Queries.ListProjectActiveTasks(ctx, workspaceID)
+	if err != nil {
+		return ControlReceipt{}, err
+	}
+	cancelledIssues := map[string]struct{}{}
+	for _, t := range tasks {
+		if util.UUIDToString(t.ProjectID) != util.UUIDToString(projectID) {
+			continue
+		}
+		iid := util.UUIDToString(t.IssueID)
+		if iid == "" {
+			continue
+		}
+		if _, seen := cancelledIssues[iid]; seen {
+			continue
+		}
+		if err := s.Tasks.CancelTasksForIssue(ctx, t.IssueID); err != nil {
+			receipt.Blockers = append(receipt.Blockers, "CANCEL_FAILED: "+err.Error())
+			return finalize()
+		}
+		cancelledIssues[iid] = struct{}{}
+	}
+	receipt.Applied = true
 	return finalize()
 }
 

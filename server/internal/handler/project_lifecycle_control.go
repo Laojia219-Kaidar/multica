@@ -129,6 +129,23 @@ func (h *Handler) ProjectLifecycleAction(w http.ResponseWriter, r *http.Request)
 		}
 		writeJSON(w, http.StatusOK, receipt)
 
+	case service.ActionStopCurrent:
+		if req.Preview {
+			p, err := ctrl.PreviewStopCurrent(r.Context(), wsUUID, idUUID)
+			if err != nil {
+				writeControlError(w, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"preview": p})
+			return
+		}
+		receipt, err := ctrl.StopCurrent(r.Context(), wsUUID, idUUID, req.IdempotencyKey)
+		if err != nil {
+			writeControlError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, receipt)
+
 	case service.ActionClose:
 		if req.Preview {
 			pkg, err := ctrl.PreviewClose(r.Context(), wsUUID, idUUID)
@@ -147,7 +164,7 @@ func (h *Handler) ProjectLifecycleAction(w http.ResponseWriter, r *http.Request)
 		writeJSON(w, http.StatusOK, receipt)
 
 	default:
-		writeError(w, http.StatusBadRequest, "unknown action; valid values: continue, pause_dispatch, resume, close")
+		writeError(w, http.StatusBadRequest, "unknown action; valid values: continue, pause_dispatch, resume, stop_current, close")
 	}
 }
 
