@@ -413,6 +413,13 @@ func main() {
 	autopilotSvc := service.NewAutopilotService(queries, pool, bus, taskSvc)
 	registerAutopilotListeners(bus, autopilotSvc)
 
+	// Review cell (Lane B / P2): issue/task listeners drive review-task
+	// creation, repair rework, and independent re-review. When the feature
+	// switch is off the service is nil and nothing here runs.
+	if h.ReviewCellService != nil {
+		registerReviewCellListeners(bus, h.ReviewCellService)
+	}
+
 	// Construct a LivenessStore that mirrors the one wired into the HTTP
 	// handler. Both the heartbeat write path (handler) and the sweeper read
 	// path (here) must agree on the same Redis-or-Noop choice; if they
@@ -479,6 +486,27 @@ func main() {
 	// — there is no separate goroutine for scheduled Autopilot anymore.
 	if err := schedulerMgr.Register(scheduler.AutopilotScheduleDispatchJob(pool, queries, autopilotSvc)); err != nil {
 		slog.Warn("scheduler: failed to register autopilot_schedule_dispatch job", "error", err)
+	}
+	// Lane B / P2: canonical write-lease expiry + cancel-cleanup jobs. They are
+	// harmless when no lease rows exist and are registered unconditionally so
+	// every replica keeps the lease ledger from leaking stale holders.
+	if err := schedulerMgr.Register(scheduler.WriteLeaseExpiryJob(pool)); err != nil {
+		slog.Warn("scheduler: failed to register canonical_write_lease_expiry job", "error", err)
+	}
+	if err := schedulerMgr.Register(scheduler.WriteLeaseCleanupJob(pool, time.Hour)); err != nil {
+		slog.Warn("scheduler: failed to register canonical_write_lease_cancel_cleanup job", "error", err)
+	}
+	// Lane B / P2: legacy in_review batch drain. Registered only when the
+	// review cell is enabled; each tick drains a bounded per-workspace batch
+	// (never the whole queue at once).
+	if h.ReviewCellService != nil {
+		drainSvc := service.NewReviewDrainService(queries, h.ReviewCellService)
+		if err := schedulerMgr.Register(scheduler.ReviewDrainJob(pool, drainSvc, scheduler.ReviewDrainConfig{
+			BatchSize:        20,
+			ClassifyEachTick: true,
+		})); err != nil {
+			slog.Warn("scheduler: failed to register review_drain job", "error", err)
+		}
 	}
 	go func() {
 		_ = schedulerMgr.Run(sweepCtx)

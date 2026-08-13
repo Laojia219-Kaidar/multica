@@ -329,6 +329,13 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	h.TaskService.FeatureFlags = opts.FeatureFlags
 	h.TaskService.Metrics = opts.BusinessMetrics
 	h.IssueService.Metrics = opts.BusinessMetrics
+	// Review cell (Lane B / P2): construct the acceptance-axis service only when
+	// the feature switch is on. When off, h.ReviewCellService stays nil, no
+	// review routes are registered, and every terminal-status interpretation
+	// keeps its legacy behavior.
+	if cfg := reviewCellConfigFromEnv(); cfg.Enabled {
+		h.ReviewCellService = service.NewReviewCellService(queries, pool, bus, cfg)
+	}
 	if opts.BusinessMetrics != nil {
 		// Wire the BusinessMetrics receiver into the cloud runtime client
 		// so every outbound Fleet/Gateway request feeds the
@@ -1247,6 +1254,12 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Post("/preview-trigger", h.PreviewIssueTrigger)
 				r.Post("/batch-update", h.BatchUpdateIssues)
 				r.Post("/batch-delete", h.BatchDeleteIssues)
+				// Review cell (Lane B / P2): review-queue is a static path and
+				// must register before the /{id} route. Registered only when the
+				// review cell is enabled — flag-off behavior is unchanged.
+				if h.ReviewCellService != nil {
+					r.Get("/review-queue", h.ListReviewQueue)
+				}
 				r.Route("/{id}", func(r chi.Router) {
 					r.Get("/", h.GetIssue)
 					r.Put("/", h.UpdateIssue)
@@ -1277,6 +1290,10 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Put("/properties/{propertyId}", h.SetIssueProperty)
 					r.Delete("/properties/{propertyId}", h.DeleteIssueProperty)
 					r.Get("/pull-requests", h.ListPullRequestsForIssue)
+					if h.ReviewCellService != nil {
+						r.Post("/review-verdict", h.WriteReviewVerdict)
+						r.Post("/review-requeue", h.RequeueReview)
+					}
 				})
 			})
 
