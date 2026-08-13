@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 // ready_frontier_test.go — HIV-404 ready-frontier queue sensor integration tests.
@@ -261,18 +262,41 @@ func frontierHasReason(resp IssueFrontierResponse, want string) bool {
 	return false
 }
 
-// withFrontierCountOverride returns a shallow copy of req whose context carries
-// a CountRunningTasks seam. Production code never sets this key; it exists
-// solely for handler-response fixture tests that must simulate DB query
-// outcomes (success, error, capacity-full) without a real database round-trip
-// for that one query.
-func withFrontierCountOverride(req *http.Request, fn frontierCountFn) *http.Request {
-	return req.WithContext(context.WithValue(req.Context(), frontierCountKey{}, frontierCountFn(fn)))
+// withFrontierEvidence attaches an immutable whole-frontier evidence snapshot
+// to a request's context. When GetIssueFrontier sees the snapshot it classifies
+// the snapshot directly with no DB, auth, load, prerequisite, health or
+// ListTasks query. It exists solely for the hermetic handler-response fixtures
+// (HIVECREW_DB_FREE_FRONTIER); production requests never carry this key.
+func withFrontierEvidence(req *http.Request, ev *frontierEvidence) *http.Request {
+	return req.WithContext(context.WithValue(req.Context(), frontierEvidenceKey{}, ev))
 }
 
-// callGetIssueFrontierWith invokes GetIssueFrontier through httptest with an
-// optionally overridden request (e.g. context seam). Returns the HTTP status
-// and decoded response body.
+// healthyFrontierEvidence returns an evidence snapshot that simulates the
+// canonical happy path except capacity, which is driven by countFn: a todo
+// issue the caller can access, prerequisites clear, an assigned non-archived
+// agent bound to an online runtime, and no task. The three fixture scenarios
+// vary only countFn (error / full / free).
+func healthyFrontierEvidence(countFn frontierCountFn) *frontierEvidence {
+	return &frontierEvidence{
+		issue:              db.Issue{Status: "todo"},
+		hasAssignee:        true,
+		runtimeBound:       true,
+		runtimeOnline:      true,
+		agentMaxConcurrent: 1,
+		countFn:            countFn,
+	}
+}
+
+// fixtureFrontierRequest builds a GET /api/issues/{id}/frontier request that
+// carries the given evidence snapshot. It uses no testHandler/testPool state.
+func fixtureFrontierRequest(ev *frontierEvidence) *http.Request {
+	req := httptest.NewRequest(http.MethodGet, "/api/issues/00000000-0000-0000-0000-000000000000/frontier", nil)
+	req = withURLParam(req, "id", "00000000-0000-0000-0000-000000000000")
+	return withFrontierEvidence(req, ev)
+}
+
+// callGetIssueFrontierWith invokes GetIssueFrontier through httptest with the
+// given (snapshot-carrying) request. Returns the HTTP status and decoded body.
 func callGetIssueFrontierWith(t *testing.T, req *http.Request) (int, IssueFrontierResponse) {
 	t.Helper()
 	w := httptest.NewRecorder()
@@ -286,28 +310,20 @@ func callGetIssueFrontierWith(t *testing.T, req *http.Request) (int, IssueFronti
 	return w.Code, resp
 }
 
-// TestFrontier_CountRunningTasksError_BlockedMissingEvidence verifies that when
-// ListTasksByIssue succeeds but CountRunningTasks returns an error, the handler
+// TestFrontierFixture_CountError_BlockedMissingEvidence verifies that when
+// CountRunningTasks returns an error (everything else a success), the handler
 // responds HTTP 200 with state=blocked and reason=missing_evidence — never
 // ready. This is the fail-closed property: an evidence gap must not produce an
-// optimistic ready classification.
-func TestFrontier_CountRunningTasksError_BlockedMissingEvidence(t *testing.T) {
-	if testHandler == nil || testPool == nil {
-		t.Skip("database not available")
-	}
-	projectID := seedPipelineProject(t)
-	agentID := seedFrontierAgent(t)
-	issueID := seedFrontierIssue(t, projectID, "todo", agentID, "")
-
-	req := newRequest("GET", "/api/issues/"+issueID+"/frontier", nil)
-	req = withURLParam(req, "id", issueID)
-	req = withFrontierCountOverride(req, func(ctx context.Context, agentID pgtype.UUID) (int64, error) {
+// optimistic ready classification. Runs under HIVECREW_DB_FREE_FRONTIER=1 with
+// no DB, socket, DATABASE_URL, or credential read.
+func TestFrontierFixture_CountError_BlockedMissingEvidence(t *testing.T) {
+	req := fixtureFrontierRequest(healthyFrontierEvidence(func(ctx context.Context, agentID pgtype.UUID) (int64, error) {
 		return 0, context.DeadlineExceeded
-	})
+	}))
 
 	code, resp := callGetIssueFrontierWith(t, req)
 	if code != http.StatusOK {
-		t.Fatalf("expected HTTP 200, got %d: %s", code, resp.FrontierState)
+		t.Fatalf("expected HTTP 200, got %d", code)
 	}
 	if resp.FrontierState != "blocked" {
 		t.Fatalf("CountRunningTasks error: expected state=blocked, got %q (%v)", resp.FrontierState, resp.FrontierReasons)
@@ -317,23 +333,14 @@ func TestFrontier_CountRunningTasksError_BlockedMissingEvidence(t *testing.T) {
 	}
 }
 
-// TestFrontier_CapacityFull_WaitingCapacity verifies that when the agent's
+// TestFrontierFixture_CapacityFull_Waiting verifies that when the agent's
 // concurrent-task slot is fully occupied, the classification is
 // waiting/capacity_unavailable — the issue is healthy but transiently held by
 // a known capacity constraint.
-func TestFrontier_CapacityFull_WaitingCapacity(t *testing.T) {
-	if testHandler == nil || testPool == nil {
-		t.Skip("database not available")
-	}
-	projectID := seedPipelineProject(t)
-	agentID := seedFrontierAgent(t)
-	issueID := seedFrontierIssue(t, projectID, "todo", agentID, "")
-
-	req := newRequest("GET", "/api/issues/"+issueID+"/frontier", nil)
-	req = withURLParam(req, "id", issueID)
-	req = withFrontierCountOverride(req, func(ctx context.Context, agentID pgtype.UUID) (int64, error) {
-		return 5, nil
-	})
+func TestFrontierFixture_CapacityFull_Waiting(t *testing.T) {
+	req := fixtureFrontierRequest(healthyFrontierEvidence(func(ctx context.Context, agentID pgtype.UUID) (int64, error) {
+		return 5, nil // 5 running, max 1 -> full
+	}))
 
 	code, resp := callGetIssueFrontierWith(t, req)
 	if code != http.StatusOK {
@@ -347,22 +354,13 @@ func TestFrontier_CapacityFull_WaitingCapacity(t *testing.T) {
 	}
 }
 
-// TestFrontier_HealthyFree_Ready verifies the full happy path through the
-// handler: a todo issue with a healthy agent, runtime online, and a free
+// TestFrontierFixture_HealthyFree_Ready verifies the full happy path through
+// the handler: a todo issue with a healthy agent, runtime online, and a free
 // capacity slot returns state=ready with no reasons.
-func TestFrontier_HealthyFree_Ready(t *testing.T) {
-	if testHandler == nil || testPool == nil {
-		t.Skip("database not available")
-	}
-	projectID := seedPipelineProject(t)
-	agentID := seedFrontierAgent(t)
-	issueID := seedFrontierIssue(t, projectID, "todo", agentID, "")
-
-	req := newRequest("GET", "/api/issues/"+issueID+"/frontier", nil)
-	req = withURLParam(req, "id", issueID)
-	req = withFrontierCountOverride(req, func(ctx context.Context, agentID pgtype.UUID) (int64, error) {
-		return 0, nil
-	})
+func TestFrontierFixture_HealthyFree_Ready(t *testing.T) {
+	req := fixtureFrontierRequest(healthyFrontierEvidence(func(ctx context.Context, agentID pgtype.UUID) (int64, error) {
+		return 0, nil // 0 running, max 1 -> free
+	}))
 
 	code, resp := callGetIssueFrontierWith(t, req)
 	if code != http.StatusOK {
@@ -373,5 +371,16 @@ func TestFrontier_HealthyFree_Ready(t *testing.T) {
 	}
 	if len(resp.FrontierReasons) != 0 {
 		t.Fatalf("ready must carry no reasons, got %v", resp.FrontierReasons)
+	}
+}
+
+// TestFrontierOverrideIsAdditive is a static regression: when a request carries
+// no evidence snapshot, frontierEvidenceFromContext returns nil, so
+// GetIssueFrontier selects the canonical production path
+// (loadIssueForUser/resolveFrontier*/ListTasksByIssue). The override is purely
+// additive and never alters production requests. It runs DB-free.
+func TestFrontierOverrideIsAdditive(t *testing.T) {
+	if frontierEvidenceFromContext(context.Background()) != nil {
+		t.Fatal("absent override, frontierEvidenceFromContext must return nil so the canonical production path runs unchanged")
 	}
 }

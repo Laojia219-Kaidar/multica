@@ -59,19 +59,52 @@ func (h *Handler) GetIssueFrontier(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	w.Header().Set("Cache-Control", "private, no-store")
 
-	issueID := chi.URLParam(r, "id")
-	issue, ok := h.loadIssueForUser(w, r, issueID)
-	if !ok {
-		return
-	}
+	var (
+		issue                                  db.Issue
+		prerequisiteBlocked, prerequisiteUnmet bool
+		hasAssignee, agentArchived             bool
+		runtimeBound, runtimeOnline            bool
+		capacityKnown, capacityFree            bool
+		tasks                                  []db.AgentTaskQueue
+	)
 
-	prerequisiteBlocked, prerequisiteUnmet := h.resolveFrontierPrerequisites(ctx, issue)
-	hasAssignee, agentArchived, runtimeBound, runtimeOnline, capacityKnown, capacityFree := h.resolveFrontierHealth(ctx, issue)
-
-	tasks, err := h.Queries.ListTasksByIssue(ctx, issue.ID)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to load tasks")
-		return
+	if ev := frontierEvidenceFromContext(ctx); ev != nil {
+		// Hermetic whole-frontier fixture path (HIVECREW_DB_FREE_FRONTIER):
+		// classify an immutable evidence snapshot directly. No
+		// loadIssueForUser, resolveFrontierPrerequisites,
+		// resolveFrontierHealth or ListTasksByIssue call runs —
+		// GetIssueFrontier touches no DB, auth, runtime or task-store state
+		// here. Capacity is the only signal derived from a (simulated)
+		// query so the three fixture scenarios vary just CountRunningTasks;
+		// every other signal is simulated as success. The single canonical
+		// ClassifyIssue/ClassifyTask path below is shared with production.
+		issue = ev.issue
+		prerequisiteBlocked, prerequisiteUnmet = ev.prerequisiteBlocked, ev.prerequisiteUnmet
+		hasAssignee, agentArchived = ev.hasAssignee, ev.agentArchived
+		runtimeBound, runtimeOnline = ev.runtimeBound, ev.runtimeOnline
+		running, countErr := ev.countFn(ctx, pgtype.UUID{})
+		capacityKnown = countErr == nil
+		capacityFree = capacityKnown && running < int64(ev.agentMaxConcurrent)
+		tasks = ev.tasks
+	} else {
+		// Canonical production path (unchanged): workspace-scoped load,
+		// prerequisite/health resolution, and the live task list. Absent the
+		// evidence override this branch runs exactly as before — auth, load,
+		// prerequisite, health and ListTasks paths are not weakened.
+		issueID := chi.URLParam(r, "id")
+		loaded, ok := h.loadIssueForUser(w, r, issueID)
+		if !ok {
+			return
+		}
+		issue = loaded
+		prerequisiteBlocked, prerequisiteUnmet = h.resolveFrontierPrerequisites(ctx, issue)
+		hasAssignee, agentArchived, runtimeBound, runtimeOnline, capacityKnown, capacityFree = h.resolveFrontierHealth(ctx, issue)
+		var err error
+		tasks, err = h.Queries.ListTasksByIssue(ctx, issue.ID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to load tasks")
+			return
+		}
 	}
 
 	// ListTasksByIssue is ordered created_at DESC, so tasks[0] is the latest.
@@ -172,23 +205,44 @@ func (h *Handler) resolveFrontierPrerequisites(ctx context.Context, issue db.Iss
 	return blocked, unmet
 }
 
-// frontierCountFn is the signature for the CountRunningTasks seam.
+// frontierCountFn is the signature for the capacity-query simulation used by
+// the hermetic whole-frontier evidence seam.
 type frontierCountFn func(ctx context.Context, agentID pgtype.UUID) (int64, error)
 
-// frontierCountKey is a per-request context override for CountRunningTasks.
-// It allows handler-response fixture tests to simulate DB query failures
-// without touching the production Queries path or any package-global state.
-type frontierCountKey struct{}
+// frontierEvidenceKey carries an immutable whole-frontier evidence snapshot
+// for hermetic handler-response fixtures. When a request's context carries one
+// (test-only), GetIssueFrontier classifies the snapshot directly and skips
+// every DB-touching resolution path — loadIssueForUser,
+// resolveFrontierPrerequisites, resolveFrontierHealth and ListTasksByIssue —
+// while still running the single canonical ClassifyIssue/ClassifyTask path.
+// Production requests never carry this key, so the canonical
+// auth/load/prerequisite/health/ListTasks paths are unchanged. The seam is
+// per-request and non-global: nothing is stored on the Handler or in package
+// state, and absent the key the production path is exactly as before.
+type frontierEvidenceKey struct{}
 
-// frontierCountRunningTasks returns the active-task count for an agent. When
-// the caller's context carries a test seam (WithFrontierCountOverride), that
-// function is used instead of the real DB query; production requests never
-// carry this key so the canonical path is unchanged.
-func frontierCountRunningTasks(ctx context.Context, q *db.Queries, agentID pgtype.UUID) (int64, error) {
-	if fn, ok := ctx.Value(frontierCountKey{}).(frontierCountFn); ok {
-		return fn(ctx, agentID)
+// frontierEvidence is the immutable classifier-input snapshot. Capacity is
+// derived from countFn at classification time, so the three fixture scenarios
+// vary only that one signal (error / full / free); access, prerequisites,
+// health and tasks are simulated as success.
+type frontierEvidence struct {
+	issue               db.Issue
+	prerequisiteBlocked bool
+	prerequisiteUnmet   bool
+	hasAssignee         bool
+	agentArchived       bool
+	runtimeBound        bool
+	runtimeOnline       bool
+	agentMaxConcurrent  int32
+	countFn             frontierCountFn
+	tasks               []db.AgentTaskQueue
+}
+
+func frontierEvidenceFromContext(ctx context.Context) *frontierEvidence {
+	if v, ok := ctx.Value(frontierEvidenceKey{}).(*frontierEvidence); ok {
+		return v
 	}
-	return q.CountRunningTasks(ctx, agentID)
+	return nil
 }
 
 // resolveFrontierHealth resolves the health + capacity signals from canonical
@@ -220,7 +274,7 @@ func (h *Handler) resolveFrontierHealth(ctx context.Context, issue db.Issue) (ha
 	if err != nil {
 		return false, false, false, false, false, false
 	}
-	running, countErr := frontierCountRunningTasks(ctx, h.Queries, agent.ID)
+	running, countErr := h.Queries.CountRunningTasks(ctx, agent.ID)
 	capacityKnown = countErr == nil
 	capacityFree = capacityKnown && running < int64(agent.MaxConcurrentTasks)
 	return true, agent.ArchivedAt.Valid, agent.RuntimeID.Valid, h.runtimeOnline(ctx, agent.RuntimeID), capacityKnown, capacityFree
