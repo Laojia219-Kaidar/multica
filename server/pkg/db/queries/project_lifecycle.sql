@@ -34,3 +34,15 @@ WHERE i.workspace_id = $1
   AND i.project_id IS NOT NULL
   AND atq.status = 'completed'
 GROUP BY i.project_id;
+
+-- name: ListProjectRepairGaps :many
+-- Per-project count of failed tasks whose issue is still nonterminal: a repair
+-- gate that must surface as review_or_repair_blocked (C), never as stalled (B).
+SELECT i.project_id AS project_id, COUNT(*) AS failed_count
+FROM agent_task_queue atq
+JOIN issue i ON i.id = atq.issue_id
+WHERE i.workspace_id = $1
+  AND i.project_id IS NOT NULL
+  AND atq.status = 'failed'
+  AND i.status IN ('backlog', 'todo', 'in_progress', 'in_review', 'blocked')
+GROUP BY i.project_id;

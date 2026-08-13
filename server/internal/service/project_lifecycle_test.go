@@ -145,3 +145,19 @@ func containsStr(haystack []string, needle string) bool {
 	}
 	return false
 }
+
+// Gauss F3: a failed task whose issue is still open is a repair gate (C), not
+// a plain stalled (B). The contract's C definition includes "failed repair /
+// re-review has not yet formed a live task".
+func TestClassifyProject_FailedRepairGapBlocks(t *testing.T) {
+	c := ClassifyProject(ProjectLifecycleInput{
+		ProjectID: "p1", HasLead: true, ActiveTaskCount: 0,
+		FailedRepairGapCount: 1, NonterminalIssueCount: 1,
+	})
+	if c.Health != HealthReviewOrRepairBlocked {
+		t.Fatalf("health = %q, want %q (failed repair gap)", c.Health, HealthReviewOrRepairBlocked)
+	}
+	if !containsStr(c.ClosureBlockers, "FAILED_REPAIR_GAP") {
+		t.Fatalf("closure blockers = %v, want FAILED_REPAIR_GAP", c.ClosureBlockers)
+	}
+}

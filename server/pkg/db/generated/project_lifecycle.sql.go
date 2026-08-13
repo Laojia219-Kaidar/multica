@@ -76,6 +76,44 @@ func (q *Queries) ListProjectActiveTasks(ctx context.Context, workspaceID pgtype
 	return items, nil
 }
 
+const listProjectRepairGaps = `-- name: ListProjectRepairGaps :many
+SELECT i.project_id AS project_id, COUNT(*) AS failed_count
+FROM agent_task_queue atq
+JOIN issue i ON i.id = atq.issue_id
+WHERE i.workspace_id = $1
+  AND i.project_id IS NOT NULL
+  AND atq.status = 'failed'
+  AND i.status IN ('backlog', 'todo', 'in_progress', 'in_review', 'blocked')
+GROUP BY i.project_id
+`
+
+type ListProjectRepairGapsRow struct {
+	ProjectID   pgtype.UUID `json:"project_id"`
+	FailedCount int64       `json:"failed_count"`
+}
+
+// Per-project count of failed tasks whose issue is still nonterminal: a repair
+// gate that must surface as review_or_repair_blocked (C), never as stalled (B).
+func (q *Queries) ListProjectRepairGaps(ctx context.Context, workspaceID pgtype.UUID) ([]ListProjectRepairGapsRow, error) {
+	rows, err := q.db.Query(ctx, listProjectRepairGaps, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListProjectRepairGapsRow{}
+	for rows.Next() {
+		var i ListProjectRepairGapsRow
+		if err := rows.Scan(&i.ProjectID, &i.FailedCount); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listProjectSuccessProgress = `-- name: ListProjectSuccessProgress :many
 SELECT i.project_id AS project_id,
        MAX(atq.completed_at)::timestamptz AS last_success_at,

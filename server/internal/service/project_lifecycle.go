@@ -83,6 +83,7 @@ type ProjectLifecycleInput struct {
 	ActiveTaskCount       int
 	BlockedIssueCount     int
 	ReviewIssueCount      int
+	FailedRepairGapCount  int
 	NonterminalIssueCount int
 	ConfirmedOutcomeCount int
 }
@@ -145,6 +146,16 @@ func ClassifyProject(in ProjectLifecycleInput) ProjectLifecycleClassification {
 		c.Flags = append(c.Flags, "review_backlog")
 		c.NextAction = fmt.Sprintf("review backlog: %d in_review issue(s) with no live review task; create a review/disposition task", in.ReviewIssueCount)
 		c.ClosureBlockers = append(c.ClosureBlockers, "REVIEW_BACKLOG")
+		return c
+	}
+
+	// C: a failed task whose issue is still open is a repair gate (contract C
+	// includes "failed repair/re-review has not yet formed a live task").
+	if in.FailedRepairGapCount > 0 {
+		c.Health = HealthReviewOrRepairBlocked
+		c.Flags = append(c.Flags, "repair_gap")
+		c.NextAction = fmt.Sprintf("repair gap: %d failed task(s) on open issue(s) with no live task; create a repair/re-review task", in.FailedRepairGapCount)
+		c.ClosureBlockers = append(c.ClosureBlockers, "FAILED_REPAIR_GAP")
 		return c
 	}
 
@@ -296,6 +307,18 @@ func (p *ProjectLifecycleProjector) ListPortfolio(ctx context.Context, workspace
 		}
 	}
 
+	// Per-project failed repair gaps (failed task on a still-open issue).
+	repairGaps, err := p.Queries.ListProjectRepairGaps(ctx, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	failedRepairByProject := map[string]int{}
+	for _, rg := range repairGaps {
+		if pid := util.UUIDToString(rg.ProjectID); pid != "" {
+			failedRepairByProject[pid] = int(rg.FailedCount)
+		}
+	}
+
 	// Per-project last successful progress.
 	success, err := p.Queries.ListProjectSuccessProgress(ctx, workspaceID)
 	if err != nil {
@@ -309,6 +332,28 @@ func (p *ProjectLifecycleProjector) ListPortfolio(ctx context.Context, workspace
 		}
 		if s.LastSuccessAt.Valid {
 			lastSuccessByProject[pid] = s.LastSuccessAt.Time
+		}
+	}
+
+	// Confirmed outcomes per project from the CompanyOps outcome ledger.
+	// "confirmed" = artifact approved / promoted / authority-readback-confirmed,
+	// i.e. an accepted outcome — never a bare terminal issue count.
+	outcomeRows, err := p.Queries.ListCompanyOpsOutcomeRows(ctx, db.ListCompanyOpsOutcomeRowsParams{
+		WorkspaceID: workspaceID,
+		OffsetRows:  0,
+		LimitRows:   100000,
+	})
+	if err != nil {
+		return nil, err
+	}
+	confirmedByProject := map[string]int{}
+	for _, orow := range outcomeRows {
+		pid := util.UUIDToString(orow.IssueProjectID)
+		if pid == "" {
+			continue
+		}
+		if isConfirmedOutcomeStatus(orow.ArtifactLifecycleStatus) || orow.ArtifactFormalRef.Valid {
+			confirmedByProject[pid]++
 		}
 	}
 
@@ -329,8 +374,9 @@ func (p *ProjectLifecycleProjector) ListPortfolio(ctx context.Context, workspace
 			ActiveTaskCount:       activeCountByProject[pid],
 			BlockedIssueCount:     blockedN,
 			ReviewIssueCount:      reviewN,
+			FailedRepairGapCount:  failedRepairByProject[pid],
 			NonterminalIssueCount: nonterminalN,
-			ConfirmedOutcomeCount: 0, // no confirmed outcomes exist yet (ledger empty)
+			ConfirmedOutcomeCount: confirmedByProject[pid],
 		})
 
 		// outcome_total must NOT be terminalN: terminal issue disposition is
@@ -403,6 +449,17 @@ func (p *ProjectLifecycleProjector) GetSnapshot(ctx context.Context, workspaceID
 		}
 	}
 	return nil, ErrProjectLifecycleNotFound
+}
+
+// isConfirmedOutcomeStatus reports whether an artifact lifecycle status counts
+// as an accepted/confirmed outcome (never a terminal issue status).
+func isConfirmedOutcomeStatus(s string) bool {
+	switch s {
+	case "approved", "promotion_succeeded", "authority_readback_confirmed":
+		return true
+	default:
+		return false
+	}
 }
 
 func textOrNil(t pgtype.Text) *string {
