@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 // ready_frontier_test.go — HIV-404 ready-frontier queue sensor integration tests.
@@ -257,4 +259,119 @@ func frontierHasReason(resp IssueFrontierResponse, want string) bool {
 		}
 	}
 	return false
+}
+
+// withFrontierCountOverride returns a shallow copy of req whose context carries
+// a CountRunningTasks seam. Production code never sets this key; it exists
+// solely for handler-response fixture tests that must simulate DB query
+// outcomes (success, error, capacity-full) without a real database round-trip
+// for that one query.
+func withFrontierCountOverride(req *http.Request, fn frontierCountFn) *http.Request {
+	return req.WithContext(context.WithValue(req.Context(), frontierCountKey{}, frontierCountFn(fn)))
+}
+
+// callGetIssueFrontierWith invokes GetIssueFrontier through httptest with an
+// optionally overridden request (e.g. context seam). Returns the HTTP status
+// and decoded response body.
+func callGetIssueFrontierWith(t *testing.T, req *http.Request) (int, IssueFrontierResponse) {
+	t.Helper()
+	w := httptest.NewRecorder()
+	testHandler.GetIssueFrontier(w, req)
+	var resp IssueFrontierResponse
+	if w.Code == http.StatusOK {
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("decode frontier response: %v", err)
+		}
+	}
+	return w.Code, resp
+}
+
+// TestFrontier_CountRunningTasksError_BlockedMissingEvidence verifies that when
+// ListTasksByIssue succeeds but CountRunningTasks returns an error, the handler
+// responds HTTP 200 with state=blocked and reason=missing_evidence — never
+// ready. This is the fail-closed property: an evidence gap must not produce an
+// optimistic ready classification.
+func TestFrontier_CountRunningTasksError_BlockedMissingEvidence(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	projectID := seedPipelineProject(t)
+	agentID := seedFrontierAgent(t)
+	issueID := seedFrontierIssue(t, projectID, "todo", agentID, "")
+
+	req := newRequest("GET", "/api/issues/"+issueID+"/frontier", nil)
+	req = withURLParam(req, "id", issueID)
+	req = withFrontierCountOverride(req, func(ctx context.Context, agentID pgtype.UUID) (int64, error) {
+		return 0, context.DeadlineExceeded
+	})
+
+	code, resp := callGetIssueFrontierWith(t, req)
+	if code != http.StatusOK {
+		t.Fatalf("expected HTTP 200, got %d: %s", code, resp.FrontierState)
+	}
+	if resp.FrontierState != "blocked" {
+		t.Fatalf("CountRunningTasks error: expected state=blocked, got %q (%v)", resp.FrontierState, resp.FrontierReasons)
+	}
+	if !frontierHasReason(resp, "missing_evidence") {
+		t.Fatalf("expected reason missing_evidence, got %v", resp.FrontierReasons)
+	}
+}
+
+// TestFrontier_CapacityFull_WaitingCapacity verifies that when the agent's
+// concurrent-task slot is fully occupied, the classification is
+// waiting/capacity_unavailable — the issue is healthy but transiently held by
+// a known capacity constraint.
+func TestFrontier_CapacityFull_WaitingCapacity(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	projectID := seedPipelineProject(t)
+	agentID := seedFrontierAgent(t)
+	issueID := seedFrontierIssue(t, projectID, "todo", agentID, "")
+
+	req := newRequest("GET", "/api/issues/"+issueID+"/frontier", nil)
+	req = withURLParam(req, "id", issueID)
+	req = withFrontierCountOverride(req, func(ctx context.Context, agentID pgtype.UUID) (int64, error) {
+		return 5, nil
+	})
+
+	code, resp := callGetIssueFrontierWith(t, req)
+	if code != http.StatusOK {
+		t.Fatalf("expected HTTP 200, got %d", code)
+	}
+	if resp.FrontierState != "waiting" {
+		t.Fatalf("capacity full: expected state=waiting, got %q (%v)", resp.FrontierState, resp.FrontierReasons)
+	}
+	if !frontierHasReason(resp, "capacity_unavailable") {
+		t.Fatalf("expected reason capacity_unavailable, got %v", resp.FrontierReasons)
+	}
+}
+
+// TestFrontier_HealthyFree_Ready verifies the full happy path through the
+// handler: a todo issue with a healthy agent, runtime online, and a free
+// capacity slot returns state=ready with no reasons.
+func TestFrontier_HealthyFree_Ready(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	projectID := seedPipelineProject(t)
+	agentID := seedFrontierAgent(t)
+	issueID := seedFrontierIssue(t, projectID, "todo", agentID, "")
+
+	req := newRequest("GET", "/api/issues/"+issueID+"/frontier", nil)
+	req = withURLParam(req, "id", issueID)
+	req = withFrontierCountOverride(req, func(ctx context.Context, agentID pgtype.UUID) (int64, error) {
+		return 0, nil
+	})
+
+	code, resp := callGetIssueFrontierWith(t, req)
+	if code != http.StatusOK {
+		t.Fatalf("expected HTTP 200, got %d", code)
+	}
+	if resp.FrontierState != "ready" {
+		t.Fatalf("healthy + free capacity: expected state=ready, got %q (%v)", resp.FrontierState, resp.FrontierReasons)
+	}
+	if len(resp.FrontierReasons) != 0 {
+		t.Fatalf("ready must carry no reasons, got %v", resp.FrontierReasons)
+	}
 }

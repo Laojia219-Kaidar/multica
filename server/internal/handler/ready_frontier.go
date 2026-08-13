@@ -172,6 +172,25 @@ func (h *Handler) resolveFrontierPrerequisites(ctx context.Context, issue db.Iss
 	return blocked, unmet
 }
 
+// frontierCountFn is the signature for the CountRunningTasks seam.
+type frontierCountFn func(ctx context.Context, agentID pgtype.UUID) (int64, error)
+
+// frontierCountKey is a per-request context override for CountRunningTasks.
+// It allows handler-response fixture tests to simulate DB query failures
+// without touching the production Queries path or any package-global state.
+type frontierCountKey struct{}
+
+// frontierCountRunningTasks returns the active-task count for an agent. When
+// the caller's context carries a test seam (WithFrontierCountOverride), that
+// function is used instead of the real DB query; production requests never
+// carry this key so the canonical path is unchanged.
+func frontierCountRunningTasks(ctx context.Context, q *db.Queries, agentID pgtype.UUID) (int64, error) {
+	if fn, ok := ctx.Value(frontierCountKey{}).(frontierCountFn); ok {
+		return fn(ctx, agentID)
+	}
+	return q.CountRunningTasks(ctx, agentID)
+}
+
 // resolveFrontierHealth resolves the health + capacity signals from canonical
 // agent/runtime (or squad-leader) data. Missing assignee / agent / squad rows
 // fail closed to hasAssignee=false so the classifier never marks the node ready.
@@ -201,7 +220,7 @@ func (h *Handler) resolveFrontierHealth(ctx context.Context, issue db.Issue) (ha
 	if err != nil {
 		return false, false, false, false, false, false
 	}
-	running, countErr := h.Queries.CountRunningTasks(ctx, agent.ID)
+	running, countErr := frontierCountRunningTasks(ctx, h.Queries, agent.ID)
 	capacityKnown = countErr == nil
 	capacityFree = capacityKnown && running < int64(agent.MaxConcurrentTasks)
 	return true, agent.ArchivedAt.Valid, agent.RuntimeID.Valid, h.runtimeOnline(ctx, agent.RuntimeID), capacityKnown, capacityFree
