@@ -1,0 +1,61 @@
+-- Workflow + employee memory candidate persistence queries (Slice-W2).
+-- These tables are HiveCrew-owned orchestration/candidate state; they never
+-- become a second source of company knowledge / playbook / skill truth.
+
+-- name: InsertWorkflowDefinition :exec
+INSERT INTO workflow_definition (id, version, risk, stages)
+VALUES ($1, $2, $3, $4)
+ON CONFLICT (id) DO UPDATE SET version = $2, risk = $3, stages = $4, updated_at = now();
+
+-- name: GetWorkflowDefinition :one
+SELECT * FROM workflow_definition WHERE id = $1;
+
+-- name: InsertWorkflowInstance :exec
+INSERT INTO workflow_instance (id, definition_id, definition_version, context, stage_index, status)
+VALUES ($1, $2, $3, $4, $5, $6)
+ON CONFLICT (id) DO UPDATE SET stage_index = $5, status = $6, updated_at = now();
+
+-- name: GetWorkflowInstance :one
+SELECT * FROM workflow_instance WHERE id = $1;
+
+-- name: UpdateWorkflowInstance :exec
+UPDATE workflow_instance SET stage_index = $2, status = $3, updated_at = now() WHERE id = $1;
+
+-- name: InsertWorkflowEvent :exec
+INSERT INTO workflow_event (instance_id, kind, source_ref, actor, occurred_at, observed_at, idempotency_key)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
+ON CONFLICT (instance_id, idempotency_key) DO NOTHING;
+
+-- name: ListWorkflowEvents :many
+SELECT * FROM workflow_event WHERE instance_id = $1 ORDER BY id ASC;
+
+-- name: InsertMemoryCandidate :exec
+INSERT INTO memory_candidate (id, employee_id, position_id, kind, content, evidence, source_refs, author_id, status)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+ON CONFLICT (id) DO UPDATE SET content = $5, evidence = $6, source_refs = $7, status = $9, updated_at = now();
+
+-- name: GetMemoryCandidate :one
+SELECT * FROM memory_candidate WHERE id = $1;
+
+-- name: ListMemoryCandidatesByEmployee :many
+SELECT * FROM memory_candidate WHERE employee_id = $1 ORDER BY created_at DESC;
+
+-- name: ListMemoryCandidatesByPosition :many
+SELECT * FROM memory_candidate WHERE position_id = $1 ORDER BY created_at DESC;
+
+-- name: UpdateMemoryCandidateStatus :exec
+UPDATE memory_candidate SET status = $2, updated_at = now() WHERE id = $1;
+
+-- name: InsertMemoryPromotion :exec
+INSERT INTO memory_promotion (candidate_id, target, reviewer_id, approved, reason)
+VALUES ($1, $2, $3, $4, $5);
+
+-- name: ListMemoryPromotions :many
+SELECT * FROM memory_promotion WHERE candidate_id = $1 ORDER BY promoted_at DESC;
+
+-- name: InsertMemoryRevocation :exec
+INSERT INTO memory_revocation (candidate_id, reviewer_id, reason)
+VALUES ($1, $2, $3);
+
+-- name: ListMemoryRevocations :many
+SELECT * FROM memory_revocation WHERE candidate_id = $1 ORDER BY revoked_at DESC;

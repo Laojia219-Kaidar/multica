@@ -943,6 +943,38 @@ type Member struct {
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 }
 
+type MemoryCandidate struct {
+	ID         string             `json:"id"`
+	EmployeeID string             `json:"employee_id"`
+	PositionID string             `json:"position_id"`
+	Kind       string             `json:"kind"`
+	Content    string             `json:"content"`
+	Evidence   []byte             `json:"evidence"`
+	SourceRefs []byte             `json:"source_refs"`
+	AuthorID   string             `json:"author_id"`
+	Status     string             `json:"status"`
+	CreatedAt  pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt  pgtype.Timestamptz `json:"updated_at"`
+}
+
+type MemoryPromotion struct {
+	ID          int64              `json:"id"`
+	CandidateID string             `json:"candidate_id"`
+	Target      string             `json:"target"`
+	ReviewerID  string             `json:"reviewer_id"`
+	Approved    bool               `json:"approved"`
+	Reason      string             `json:"reason"`
+	PromotedAt  pgtype.Timestamptz `json:"promoted_at"`
+}
+
+type MemoryRevocation struct {
+	ID          int64              `json:"id"`
+	CandidateID string             `json:"candidate_id"`
+	ReviewerID  string             `json:"reviewer_id"`
+	Reason      string             `json:"reason"`
+	RevokedAt   pgtype.Timestamptz `json:"revoked_at"`
+}
+
 type NotificationPreference struct {
 	ID          pgtype.UUID        `json:"id"`
 	WorkspaceID pgtype.UUID        `json:"workspace_id"`
@@ -1319,6 +1351,37 @@ type WebhookDelivery struct {
 	LeaseToken             pgtype.UUID        `json:"lease_token"`
 	LeaseExpiresAt         pgtype.Timestamptz `json:"lease_expires_at"`
 	DispatchAttempts       int32              `json:"dispatch_attempts"`
+}
+
+type WorkflowDefinition struct {
+	ID        string             `json:"id"`
+	Version   int32              `json:"version"`
+	Risk      string             `json:"risk"`
+	Stages    []byte             `json:"stages"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
+}
+
+type WorkflowEvent struct {
+	ID             int64              `json:"id"`
+	InstanceID     string             `json:"instance_id"`
+	Kind           string             `json:"kind"`
+	SourceRef      string             `json:"source_ref"`
+	Actor          string             `json:"actor"`
+	OccurredAt     pgtype.Timestamptz `json:"occurred_at"`
+	ObservedAt     pgtype.Timestamptz `json:"observed_at"`
+	IdempotencyKey string             `json:"idempotency_key"`
+}
+
+type WorkflowInstance struct {
+	ID                string             `json:"id"`
+	DefinitionID      string             `json:"definition_id"`
+	DefinitionVersion int32              `json:"definition_version"`
+	Context           []byte             `json:"context"`
+	StageIndex        int32              `json:"stage_index"`
+	Status            string             `json:"status"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
 }
 
 type Workroom struct {
