@@ -73,6 +73,18 @@ truth_anchors:
     HIV-549 [P0-F1] Inbox cursor pagination: in_progress, task FAILED (needs repair)
     HIV-550 [P0-F2] 议题活动工作流与历史视图: in_progress, task RUNNING (only live task)
     HIV-553 [P0-F4] 项目持续经营合同: in_review (this goal contract, task completed)
+  live_deployed:
+    deployed_at: '2026-08-13T23:38:27.148613+00:00'
+    candidate_branch: work/hivecrew-project-lifecycle-closure
+    backend: multica-backend:dev (rebuilt from candidate)
+    frontend: multica-web:dev (rebuilt from candidate)
+    migrations_applied:
+    - 342_project_lifecycle_receipt
+    - 343_closure_package_review
+    rollback_images:
+    - multica-backend:dev-pre-lifecycle
+    - multica-web:dev-pre-lifecycle
+    db_snapshot: /tmp/hivecrew-live-backup-20260814072111.sql
 write_boundaries:
   rule: one file = one writer; backend/frontend/migration/test areas must not overlap
     across concurrently-running sub-agents
@@ -149,7 +161,7 @@ slices:
 victory_conditions:
   VC-01:
     title: Current truth honest classification
-    status: accepted
+    status: runtime_accepted
     evidence:
     - EV-S1-03
     - EV-S1-05
@@ -157,6 +169,7 @@ victory_conditions:
     - EV-S1-GAUSS-PASS
     - EV-S1-QUINN-PASS
     - EV-S1-PIXEL-PASS
+    - EV-LIVE-01 (live :8080 portfolio honest classification)
   VC-02:
     title: Accountability per project
     status: not_started
@@ -198,7 +211,7 @@ victory_conditions:
     evidence: []
   VC-10:
     title: Runtime acceptance
-    status: api_candidate_verified
+    status: live_applied_api_verified
     evidence:
     - EV-W4-01 (candidate :18090 full-stack API, 401/200, honest portfolio + reconciler
       + closure + control)
@@ -208,7 +221,7 @@ victory_conditions:
     evidence: []
   VC-12:
     title: Self-operation
-    status: diagnostic_implemented
+    status: diagnostic_dispatch_scheduler_implemented
     evidence:
     - WAVE-5 reconciler diagnostic (4 detectors, 15 live findings)
 frontier:
@@ -306,3 +319,6 @@ subagent_roster:
       issue: 6490a022-3114-401e-accf-8190c69c4d8b
       scope: closure frontend
       status: PASS
+contracts_accepted:
+- B-C-OPERATIONALIZATION.md (in_review->C accepted; BASES/ORCHESTRATION deviate C
+  vs frozen B, visible via review_issue_count)
