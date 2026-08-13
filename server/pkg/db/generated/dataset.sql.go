@@ -12,9 +12,9 @@ import (
 )
 
 const createDataset = `-- name: CreateDataset :one
-INSERT INTO dataset (workspace_id, name, domain, version, authorized_agent_ids)
-VALUES ($1, $2, $3, $4, $5)
-RETURNING id, workspace_id, name, domain, version, authorized_agent_ids, created_at, updated_at
+INSERT INTO dataset (workspace_id, name, domain, version, product_type, authorized_agent_ids)
+VALUES ($1, $2, $3, $4, $5, $6)
+RETURNING id, workspace_id, name, domain, version, product_type, authorized_agent_ids, created_at, updated_at
 `
 
 type CreateDatasetParams struct {
@@ -22,24 +22,39 @@ type CreateDatasetParams struct {
 	Name               string        `json:"name"`
 	Domain             string        `json:"domain"`
 	Version            int32         `json:"version"`
+	ProductType        string        `json:"product_type"`
 	AuthorizedAgentIds []pgtype.UUID `json:"authorized_agent_ids"`
 }
 
-func (q *Queries) CreateDataset(ctx context.Context, arg CreateDatasetParams) (Dataset, error) {
+type CreateDatasetRow struct {
+	ID                 pgtype.UUID        `json:"id"`
+	WorkspaceID        pgtype.UUID        `json:"workspace_id"`
+	Name               string             `json:"name"`
+	Domain             string             `json:"domain"`
+	Version            int32              `json:"version"`
+	ProductType        string             `json:"product_type"`
+	AuthorizedAgentIds []pgtype.UUID      `json:"authorized_agent_ids"`
+	CreatedAt          pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
+}
+
+func (q *Queries) CreateDataset(ctx context.Context, arg CreateDatasetParams) (CreateDatasetRow, error) {
 	row := q.db.QueryRow(ctx, createDataset,
 		arg.WorkspaceID,
 		arg.Name,
 		arg.Domain,
 		arg.Version,
+		arg.ProductType,
 		arg.AuthorizedAgentIds,
 	)
-	var i Dataset
+	var i CreateDatasetRow
 	err := row.Scan(
 		&i.ID,
 		&i.WorkspaceID,
 		&i.Name,
 		&i.Domain,
 		&i.Version,
+		&i.ProductType,
 		&i.AuthorizedAgentIds,
 		&i.CreatedAt,
 		&i.UpdatedAt,
@@ -48,25 +63,38 @@ func (q *Queries) CreateDataset(ctx context.Context, arg CreateDatasetParams) (D
 }
 
 const listDatasets = `-- name: ListDatasets :many
-SELECT id, workspace_id, name, domain, version, authorized_agent_ids, created_at, updated_at
+SELECT id, workspace_id, name, domain, version, product_type, authorized_agent_ids, created_at, updated_at
 FROM dataset WHERE workspace_id = $1 ORDER BY created_at DESC
 `
 
-func (q *Queries) ListDatasets(ctx context.Context, workspaceID pgtype.UUID) ([]Dataset, error) {
+type ListDatasetsRow struct {
+	ID                 pgtype.UUID        `json:"id"`
+	WorkspaceID        pgtype.UUID        `json:"workspace_id"`
+	Name               string             `json:"name"`
+	Domain             string             `json:"domain"`
+	Version            int32              `json:"version"`
+	ProductType        string             `json:"product_type"`
+	AuthorizedAgentIds []pgtype.UUID      `json:"authorized_agent_ids"`
+	CreatedAt          pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
+}
+
+func (q *Queries) ListDatasets(ctx context.Context, workspaceID pgtype.UUID) ([]ListDatasetsRow, error) {
 	rows, err := q.db.Query(ctx, listDatasets, workspaceID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []Dataset{}
+	items := []ListDatasetsRow{}
 	for rows.Next() {
-		var i Dataset
+		var i ListDatasetsRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.WorkspaceID,
 			&i.Name,
 			&i.Domain,
 			&i.Version,
+			&i.ProductType,
 			&i.AuthorizedAgentIds,
 			&i.CreatedAt,
 			&i.UpdatedAt,
@@ -84,7 +112,7 @@ func (q *Queries) ListDatasets(ctx context.Context, workspaceID pgtype.UUID) ([]
 const updateDatasetAuthorization = `-- name: UpdateDatasetAuthorization :one
 UPDATE dataset SET authorized_agent_ids = $2, updated_at = now()
 WHERE id = $1
-RETURNING id, workspace_id, name, domain, version, authorized_agent_ids, created_at, updated_at
+RETURNING id, workspace_id, name, domain, version, product_type, authorized_agent_ids, created_at, updated_at
 `
 
 type UpdateDatasetAuthorizationParams struct {
@@ -92,15 +120,28 @@ type UpdateDatasetAuthorizationParams struct {
 	AuthorizedAgentIds []pgtype.UUID `json:"authorized_agent_ids"`
 }
 
-func (q *Queries) UpdateDatasetAuthorization(ctx context.Context, arg UpdateDatasetAuthorizationParams) (Dataset, error) {
+type UpdateDatasetAuthorizationRow struct {
+	ID                 pgtype.UUID        `json:"id"`
+	WorkspaceID        pgtype.UUID        `json:"workspace_id"`
+	Name               string             `json:"name"`
+	Domain             string             `json:"domain"`
+	Version            int32              `json:"version"`
+	ProductType        string             `json:"product_type"`
+	AuthorizedAgentIds []pgtype.UUID      `json:"authorized_agent_ids"`
+	CreatedAt          pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
+}
+
+func (q *Queries) UpdateDatasetAuthorization(ctx context.Context, arg UpdateDatasetAuthorizationParams) (UpdateDatasetAuthorizationRow, error) {
 	row := q.db.QueryRow(ctx, updateDatasetAuthorization, arg.ID, arg.AuthorizedAgentIds)
-	var i Dataset
+	var i UpdateDatasetAuthorizationRow
 	err := row.Scan(
 		&i.ID,
 		&i.WorkspaceID,
 		&i.Name,
 		&i.Domain,
 		&i.Version,
+		&i.ProductType,
 		&i.AuthorizedAgentIds,
 		&i.CreatedAt,
 		&i.UpdatedAt,

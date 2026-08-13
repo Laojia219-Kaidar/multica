@@ -1947,11 +1947,11 @@ export class ApiClient {
     return this.fetch(`/api/employees/${id}`, { method: "PATCH", body: JSON.stringify(data) });
   }
 
-  listDatasets(): Promise<{ id: string; name: string; domain: string; version: number; authorized_agent_ids: string[] }[]> {
+  listDatasets(): Promise<{ id: string; name: string; domain: string; product_type: string; version: number; authorized_agent_ids: string[] }[]> {
     return this.fetch("/api/datasets");
   }
 
-  createDataset(data: { name: string; domain: string; version?: number }): Promise<{ id: string }> {
+  createDataset(data: { name: string; domain: string; product_type?: string; version?: number }): Promise<{ id: string }> {
     return this.fetch("/api/datasets", { method: "POST", body: JSON.stringify(data) });
   }
 

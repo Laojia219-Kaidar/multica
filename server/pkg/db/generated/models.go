@@ -588,6 +588,7 @@ type Dataset struct {
 	AuthorizedAgentIds []pgtype.UUID      `json:"authorized_agent_ids"`
 	CreatedAt          pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
+	ProductType        string             `json:"product_type"`
 }
 
 type Employee struct {

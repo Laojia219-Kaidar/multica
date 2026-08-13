@@ -30,15 +30,10 @@ func TestEmployeeToResponse_StableIDs(t *testing.T) {
 
 // TestDatasetToResponse_StableIDs pins VC-17 for datasets.
 func TestDatasetToResponse_StableIDs(t *testing.T) {
-	d := db.Dataset{
-		ID:                 uuidMustParse("6b9b0f8e-0000-0000-0000-000000000021"),
-		Name:               "产品文档集",
-		Domain:             "项目成果",
-		Version:            1,
-		AuthorizedAgentIds: []pgtype.UUID{uuidMustParse("6b9b0f8e-0000-0000-0000-000000000022")},
-	}
-	out := datasetToResponse(d)
-	if out.ID == "" || out.Name == "" || out.Domain != "项目成果" || out.Version != 1 {
+	id := uuidMustParse("6b9b0f8e-0000-0000-0000-000000000021")
+	auth := []pgtype.UUID{uuidMustParse("6b9b0f8e-0000-0000-0000-000000000022")}
+	out := datasetToResponse(id, "产品文档集", "项目成果", "rag_kb", 1, auth)
+	if out.ID == "" || out.Name == "" || out.Domain != "项目成果" || out.Version != 1 || out.ProductType != "rag_kb" {
 		t.Fatalf("dataset fields wrong: %+v", out)
 	}
 	if len(out.AuthorizedAgentIds) != 1 {

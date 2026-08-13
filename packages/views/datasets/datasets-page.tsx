@@ -7,17 +7,24 @@ import { useWorkspaceId } from "@multica/core/hooks";
 import { api } from "@multica/core/api";
 import { CollectionPageHeader } from "../layout/collection-page";
 
-type Ds = { id: string; name: string; domain: string; version: number; authorized_agent_ids: string[] };
+type Ds = { id: string; name: string; domain: string; product_type: string; version: number; authorized_agent_ids: string[] };
 
 const DOMAINS = ["公司治理","项目成果","产品代码","客户市场","合同财务法务","个人受限"];
+const PRODUCTS: { value: string; label: string }[] = [
+  { value: "rag_kb", label: "RAG 知识库" },
+  { value: "training_pack", label: "员工训练包" },
+  { value: "finetune", label: "模型微调 Dataset" },
+  { value: "eval", label: "独立评测 Dataset" },
+];
+const PRODUCT_LABEL: Record<string, string> = Object.fromEntries(PRODUCTS.map((p) => [p.value, p.label]));
 
 export function DatasetsPage() {
   const wsId = useWorkspaceId();
   const qc = useQueryClient();
   const { data: datasets = [], isLoading } = useQuery({ queryKey: ["datasets", wsId], queryFn: () => api.listDatasets() });
-  const [name, setName] = useState(""); const [domain, setDomain] = useState("项目成果");
+  const [name, setName] = useState(""); const [domain, setDomain] = useState("项目成果"); const [product, setProduct] = useState("rag_kb");
   const create = useMutation({
-    mutationFn: (d: { name: string; domain: string }) => api.createDataset(d),
+    mutationFn: (d: { name: string; domain: string; product_type: string }) => api.createDataset(d),
     onSuccess: () => { void qc.invalidateQueries({ queryKey: ["datasets", wsId] }); setName(""); toast.success("数据集已创建"); },
     onError: () => toast.error("创建失败"),
   });
@@ -31,7 +38,10 @@ export function DatasetsPage() {
           <select value={domain} onChange={(e)=>setDomain(e.target.value)} className="mt-2 w-full rounded-md border bg-background px-2 py-1.5 text-sm">
             {DOMAINS.map((d)=>(<option key={d} value={d}>{d}</option>))}
           </select>
-          <button disabled={!name.trim() || create.isPending} onClick={()=>create.mutate({ name: name.trim(), domain })} className="mt-3 flex items-center gap-1 rounded-md bg-primary px-3 py-1.5 text-sm text-primary-foreground disabled:opacity-50"><Plus className="size-4" />创建</button>
+          <select value={product} onChange={(e)=>setProduct(e.target.value)} className="mt-2 w-full rounded-md border bg-background px-2 py-1.5 text-sm">
+            {PRODUCTS.map((p)=>(<option key={p.value} value={p.value}>{p.label}</option>))}
+          </select>
+          <button disabled={!name.trim() || create.isPending} onClick={()=>create.mutate({ name: name.trim(), domain, product_type: product })} className="mt-3 flex items-center gap-1 rounded-md bg-primary px-3 py-1.5 text-sm text-primary-foreground disabled:opacity-50"><Plus className="size-4" />创建</button>
         </div>
         <div className="lg:col-span-2 rounded-lg border bg-card p-4 shadow-sm">
           <h3 className="text-sm font-semibold">数据集列表</h3>
@@ -40,7 +50,7 @@ export function DatasetsPage() {
               {datasets.map((d: Ds) => (
                 <li key={d.id} className="rounded-md border p-3 text-sm">
                   <div className="font-medium">{d.name} <span className="text-xs text-muted-foreground">v{d.version}</span></div>
-                  <div className="mt-1 text-xs text-muted-foreground">域 {d.domain} · id {d.id.slice(0,8)} · 授权 {d.authorized_agent_ids.length} 员工</div>
+                  <div className="mt-1 text-xs text-muted-foreground">域 {d.domain} · {PRODUCT_LABEL[d.product_type] ?? d.product_type} · id {d.id.slice(0,8)} · 授权 {d.authorized_agent_ids.length} 员工</div>
                 </li>
               ))}
             </ul>
