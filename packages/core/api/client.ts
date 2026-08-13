@@ -204,6 +204,8 @@ import { createRequestId } from "../utils";
 import { getCurrentSlug } from "../platform/workspace-storage";
 import { parseWithFallback } from "./schema";
 import type { EmployeeLiveActivityV1 } from "./workwall";
+import type { MemoryCandidate, MemoryPromotion } from "./memory";
+import type { WorkflowEvent, WorkflowInstance } from "./workflow";
 
 const CompanyOpsAuthoritySnapshotSchema = z.object({
   kind: z.string().min(1),
@@ -3450,6 +3452,99 @@ export class ApiClient {
   /** Workspace "工作现场" (work wall) snapshot: one row per accessible agent. */
   async workWallSnapshot(): Promise<EmployeeLiveActivityV1[]> {
     return this.fetch("/api/work-wall/snapshot");
+  }
+
+  // Employee memory candidate layer (Slice-M1). Promotion is proposal-only.
+  async createMemoryCandidate(body: {
+    employee_id: string;
+    position_id?: string;
+    kind: string;
+    content: string;
+    evidence: { type: string; id: string }[];
+    source_refs: string[];
+  }): Promise<MemoryCandidate> {
+    return this.fetch("/api/memory/candidates", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  }
+
+  async listMemoryCandidates(params?: { employee_id?: string; position_id?: string }): Promise<MemoryCandidate[]> {
+    const search = new URLSearchParams();
+    if (params?.employee_id) search.set("employee_id", params.employee_id);
+    if (params?.position_id) search.set("position_id", params.position_id);
+    return this.fetch(`/api/memory/candidates?${search}`);
+  }
+
+  async validateMemoryCandidate(id: string): Promise<MemoryCandidate> {
+    return this.fetch(`/api/memory/candidates/${id}/validate`, { method: "POST" });
+  }
+
+  async promoteMemoryCandidate(
+    id: string,
+    body: { target: string; approved: boolean; reason: string },
+  ): Promise<MemoryPromotion> {
+    return this.fetch(`/api/memory/candidates/${id}/promote`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  }
+
+  async revokeMemoryCandidate(id: string, body: { reason: string }): Promise<MemoryCandidate> {
+    return this.fetch(`/api/memory/candidates/${id}/revoke`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  }
+
+  async listPromotedMemories(target?: string): Promise<MemoryCandidate[]> {
+    const q = target ? `?target=${encodeURIComponent(target)}` : "";
+    return this.fetch(`/api/memory/promoted${q}`);
+  }
+
+  async retrieveMemories(employeeId: string, q?: string): Promise<MemoryCandidate[]> {
+    const search = new URLSearchParams();
+    search.set("employee_id", employeeId);
+    if (q) search.set("q", q);
+    return this.fetch(`/api/memory/retrieve?${search}`);
+  }
+
+  // Workflow kernel (Slice-W1/W2). Drives the W2 HIV-553 project lifecycle.
+  async startWorkflowInstance(body: {
+    definition_id?: string;
+    instance_id?: string;
+    context: { project_id?: string; issue_id?: string; outcome_id?: string };
+    idempotency_key?: string;
+  }): Promise<WorkflowInstance> {
+    return this.fetch("/api/workflow/instances", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  }
+
+  async getWorkflowInstance(id: string): Promise<WorkflowInstance> {
+    return this.fetch(`/api/workflow/instances/${id}`);
+  }
+
+  async advanceWorkflowInstance(
+    id: string,
+    body: {
+      review_passed?: boolean;
+      owner_approved?: boolean;
+      task_id?: string;
+      run_id?: string;
+      notes?: string[];
+      idempotency_key?: string;
+    },
+  ): Promise<WorkflowInstance> {
+    return this.fetch(`/api/workflow/instances/${id}/advance`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  }
+
+  async workflowInstanceEvents(id: string): Promise<WorkflowEvent[]> {
+    return this.fetch(`/api/workflow/instances/${id}/events`);
   }
 
   async getProject(id: string): Promise<Project> {
