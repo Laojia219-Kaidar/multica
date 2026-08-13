@@ -103,6 +103,8 @@ type companyOpsOutcomeListResponse struct {
 	Total         int64                              `json:"total"`
 	Limit         int                                `json:"limit"`
 	Offset        int                                `json:"offset"`
+	NextCursor    *string                            `json:"next_cursor,omitempty"`
+	HasMore       bool                               `json:"has_more"`
 }
 
 type companyOpsOutcomeDetailResponse struct {
@@ -120,6 +122,8 @@ func writeCompanyOpsOutcomeServiceError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, service.ErrCompanyOpsOutcomeLedgerConflict):
 		writeCompanyOpsError(w, http.StatusConflict, "outcome_ledger_conflict", err.Error())
+	case errors.Is(err, service.ErrCompanyOpsOutcomeCursorInvalid):
+		writeCompanyOpsError(w, http.StatusBadRequest, "invalid_request", err.Error())
 	default:
 		writeCompanyOpsServiceError(w, err)
 	}
@@ -209,18 +213,25 @@ func (h *Handler) GetCompanyOpsOutcomes(w http.ResponseWriter, r *http.Request) 
 		}
 		req.Offset = n
 	}
+	if v := values.Get("cursor"); v != "" {
+		if strings.TrimSpace(v) != v {
+			writeCompanyOpsError(w, http.StatusBadRequest, "invalid_request", "cursor must not contain surrounding whitespace")
+			return
+		}
+		req.Cursor = v
+	}
 
 	// Reject unknown query keys to keep the contract explicit.
 	for key := range values {
 		switch key {
-		case "q", "status", "agent_id", "project_id", "employee_id", "type", "formal_visible", "limit", "offset":
+		case "q", "status", "agent_id", "project_id", "employee_id", "type", "formal_visible", "limit", "offset", "cursor":
 		default:
 			writeCompanyOpsError(w, http.StatusBadRequest, "invalid_request", "unknown query parameter: "+key)
 			return
 		}
 	}
 
-	summaries, total, err := h.CompanyOpsOutcomeCenter.ListOutcomes(r.Context(), req)
+	page, err := h.CompanyOpsOutcomeCenter.ListOutcomesPage(r.Context(), req)
 	if err != nil {
 		writeCompanyOpsOutcomeServiceError(w, err)
 		return
@@ -234,17 +245,19 @@ func (h *Handler) GetCompanyOpsOutcomes(w http.ResponseWriter, r *http.Request) 
 		limit = 100
 	}
 
-	items := make([]companyOpsOutcomeSummaryResponse, 0, len(summaries))
-	for i := range summaries {
-		items = append(items, companyOpsOutcomeSummaryWire(summaries[i]))
+	items := make([]companyOpsOutcomeSummaryResponse, 0, len(page.Summaries))
+	for i := range page.Summaries {
+		items = append(items, companyOpsOutcomeSummaryWire(page.Summaries[i]))
 	}
 
 	writeJSON(w, http.StatusOK, companyOpsOutcomeListResponse{
 		SchemaVersion: service.CompanyOpsOutcomeCenterSchemaVersion,
 		Items:         items,
-		Total:         total,
+		Total:         page.Total,
 		Limit:         limit,
 		Offset:        req.Offset,
+		NextCursor:    page.NextCursor,
+		HasMore:       page.HasMore,
 	})
 }
 

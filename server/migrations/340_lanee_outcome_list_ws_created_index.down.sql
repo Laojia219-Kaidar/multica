@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS assignment_dispatch_receipt_ws_created_idx;

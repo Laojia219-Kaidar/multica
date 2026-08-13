@@ -181,6 +181,8 @@ export interface CompanyOpsOutcomeListParams {
   formal_visible?: boolean;
   limit?: number;
   offset?: number;
+  /** Opaque keyset cursor returned by a previous page's next_cursor. */
+  cursor?: string;
 }
 
 export interface CompanyOpsOutcomeIssueRef {
@@ -289,6 +291,11 @@ export interface CompanyOpsOutcomeListResponse {
   total: number;
   limit: number;
   offset: number;
+  /** Opaque keyset token for the next (older) page; null on the last page. */
+  next_cursor?: string | null;
+  /** True when more rows exist beyond this page. Optional so older servers and
+   *  cached mocks without the field still parse. */
+  has_more?: boolean;
 }
 
 // ---------------------------------------------------------------------------

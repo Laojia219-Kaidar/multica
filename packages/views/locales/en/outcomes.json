@@ -19,7 +19,9 @@
     "total_one": "{{count}} outcome",
     "total_other": "{{count}} outcomes",
     "collapse": "Collapse list",
-    "expand": "Expand list"
+    "expand": "Expand list",
+    "load_history": "Load older outcomes",
+    "loading_history": "Loading…"
   },
   "detail": {
     "back": "Back to outcomes",

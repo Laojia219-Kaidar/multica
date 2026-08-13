@@ -12,6 +12,7 @@ export const outcomeKeys = {
       params.status ?? "",
       params.limit ?? "",
       params.offset ?? "",
+      params.cursor ?? "",
     ] as const,
   detail: (wsId: string, commandId: string) =>
     [...outcomeKeys.all(wsId), "detail", commandId] as const,

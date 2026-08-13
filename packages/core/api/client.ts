@@ -490,6 +490,8 @@ const CompanyOpsOutcomeListResponseSchema = z.object({
   total: z.number().int().nonnegative(),
   limit: z.number().int().nonnegative(),
   offset: z.number().int().nonnegative(),
+  next_cursor: z.string().min(1).nullable().optional(),
+  has_more: z.boolean().optional(),
 });
 
 const CompanyOpsOutcomeDetailSchema = z.object({
@@ -3011,6 +3013,7 @@ export class ApiClient {
     if (params?.formal_visible !== undefined) search.set("formal_visible", String(params.formal_visible));
     if (params?.limit !== undefined) search.set("limit", String(params.limit));
     if (params?.offset !== undefined) search.set("offset", String(params.offset));
+    if (params?.cursor) search.set("cursor", params.cursor);
     const query = search.toString();
     const raw = await this.fetch<unknown>(
       `/api/company-ops/outcomes${query ? `?${query}` : ""}`,

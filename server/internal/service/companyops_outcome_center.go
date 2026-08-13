@@ -2,9 +2,12 @@ package service
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -22,6 +25,9 @@ const (
 var (
 	ErrCompanyOpsOutcomeNotFound       = errors.New("companyops outcome not found")
 	ErrCompanyOpsOutcomeLedgerConflict = errors.New("companyops outcome ledger conflict")
+	// ErrCompanyOpsOutcomeCursorInvalid marks a client-supplied cursor that is
+	// not a well-formed keyset token. It maps to HTTP 400, not a server fault.
+	ErrCompanyOpsOutcomeCursorInvalid = errors.New("companyops outcome cursor: invalid")
 )
 
 const (
@@ -110,6 +116,101 @@ type CompanyOpsOutcomeListRequest struct {
 	FormalVisible *bool
 	Limit         int
 	Offset        int
+	Cursor        string
+}
+
+// CompanyOpsOutcomeCursor is the opaque keyset cursor for the outcome list.
+// The keyset is (created_at DESC, command_id DESC) over
+// assignment_dispatch_receipt. It is versioned so the token format can evolve
+// without breaking installed clients.
+type CompanyOpsOutcomeCursor struct {
+	Version   int    `json:"v"`
+	CreatedAt string `json:"created_at"` // RFC3339Nano, UTC
+	CommandID string `json:"command_id"` // canonical UUID
+}
+
+// CompanyOpsOutcomePage is one page of the outcome list plus cursor metadata.
+// HasMore is authoritative (the service reads limit+1 rows); NextCursor is the
+// keyset token that resumes immediately after this page.
+type CompanyOpsOutcomePage struct {
+	Summaries  []CompanyOpsOutcomeSummary
+	Total      int64
+	NextCursor *string
+	HasMore    bool
+}
+
+const companyOpsOutcomeCursorVersion = 1
+
+func encodeCompanyOpsOutcomeCursor(cursor CompanyOpsOutcomeCursor) *string {
+	encoded, err := json.Marshal(cursor)
+	if err != nil {
+		return nil
+	}
+	value := base64.RawURLEncoding.EncodeToString(encoded)
+	return &value
+}
+
+func decodeCompanyOpsOutcomeCursor(token string) (CompanyOpsOutcomeCursor, error) {
+	var cursor CompanyOpsOutcomeCursor
+	raw, err := base64.RawURLEncoding.DecodeString(token)
+	if err != nil {
+		return cursor, fmt.Errorf("%w: invalid base64", ErrCompanyOpsOutcomeCursorInvalid)
+	}
+	if err := json.Unmarshal(raw, &cursor); err != nil {
+		return cursor, fmt.Errorf("%w: invalid json", ErrCompanyOpsOutcomeCursorInvalid)
+	}
+	if cursor.Version != companyOpsOutcomeCursorVersion {
+		return cursor, fmt.Errorf("%w: unsupported version", ErrCompanyOpsOutcomeCursorInvalid)
+	}
+	if strings.TrimSpace(cursor.CreatedAt) != cursor.CreatedAt || cursor.CreatedAt == "" {
+		return cursor, fmt.Errorf("%w: non-canonical created_at", ErrCompanyOpsOutcomeCursorInvalid)
+	}
+	if _, err := time.Parse(time.RFC3339Nano, cursor.CreatedAt); err != nil {
+		return cursor, fmt.Errorf("%w: created_at is not RFC3339Nano", ErrCompanyOpsOutcomeCursorInvalid)
+	}
+	if strings.TrimSpace(cursor.CommandID) != cursor.CommandID || cursor.CommandID == "" {
+		return cursor, fmt.Errorf("%w: non-canonical command_id", ErrCompanyOpsOutcomeCursorInvalid)
+	}
+	if id, err := util.ParseUUID(cursor.CommandID); err != nil || util.UUIDToString(id) != cursor.CommandID {
+		return cursor, fmt.Errorf("%w: command_id is not a canonical UUID", ErrCompanyOpsOutcomeCursorInvalid)
+	}
+	return cursor, nil
+}
+
+// companyOpsOutcomeFilterValues maps the read-only list filters onto the query
+// parameter shape shared by the offset and keyset list paths, so the two never
+// drift on filter semantics.
+func companyOpsOutcomeFilterValues(req CompanyOpsOutcomeListRequest) (
+	qText pgtype.Text,
+	agentFilter pgtype.UUID,
+	projectFilter pgtype.UUID,
+	employeeFilter pgtype.Text,
+	typeFilter pgtype.Text,
+	statusFilter pgtype.Text,
+	formalVisibleFilter pgtype.Bool,
+) {
+	if q := strings.TrimSpace(req.Q); q != "" {
+		qText = pgtype.Text{String: q, Valid: true}
+	}
+	if req.AgentID.Valid && req.AgentID.Bytes != ([16]byte{}) {
+		agentFilter = req.AgentID
+	}
+	if req.ProjectID.Valid && req.ProjectID.Bytes != ([16]byte{}) {
+		projectFilter = req.ProjectID
+	}
+	if employeeID := strings.TrimSpace(req.EmployeeID); employeeID != "" {
+		employeeFilter = pgtype.Text{String: employeeID, Valid: true}
+	}
+	if contentType := strings.TrimSpace(req.Type); contentType != "" {
+		typeFilter = pgtype.Text{String: contentType, Valid: true}
+	}
+	if status := strings.TrimSpace(req.Status); status != "" {
+		statusFilter = pgtype.Text{String: status, Valid: true}
+	}
+	if req.FormalVisible != nil {
+		formalVisibleFilter = pgtype.Bool{Bool: *req.FormalVisible, Valid: true}
+	}
+	return qText, agentFilter, projectFilter, employeeFilter, typeFilter, statusFilter, formalVisibleFilter
 }
 
 // CompanyOpsOutcomeIssue is the issue projection carried by an outcome summary.
@@ -313,6 +414,136 @@ func (s *CompanyOpsOutcomeCenterService) ListOutcomes(
 	}
 
 	return summaries, total, nil
+}
+
+// ListOutcomesPage returns one page of the outcome list with cursor metadata.
+// When Cursor is empty it behaves like ListOutcomes (offset window) but also
+// returns a keyset NextCursor so clients can switch to cursor walking; when
+// Cursor is present it uses keyset pagination and ignores Offset. Either way
+// the service reads limit+1 rows so HasMore is authoritative rather than an
+// offset guess.
+func (s *CompanyOpsOutcomeCenterService) ListOutcomesPage(
+	ctx context.Context,
+	req CompanyOpsOutcomeListRequest,
+) (CompanyOpsOutcomePage, error) {
+	page := CompanyOpsOutcomePage{Summaries: []CompanyOpsOutcomeSummary{}}
+	if s == nil || s.queries == nil {
+		return page, ErrCompanyOpsArtifactUnavailable
+	}
+	if !req.WorkspaceID.Valid || req.WorkspaceID.Bytes == ([16]byte{}) {
+		return page, fmt.Errorf("workspace_id is required")
+	}
+
+	limit := req.Limit
+	if limit <= 0 {
+		limit = companyOpsOutcomeCenterDefaultLimit
+	}
+	if limit > companyOpsOutcomeCenterMaxLimit {
+		limit = companyOpsOutcomeCenterMaxLimit
+	}
+	offset := req.Offset
+	if offset < 0 {
+		offset = 0
+	}
+
+	qText, agentFilter, projectFilter, employeeFilter, typeFilter, statusFilter, formalVisibleFilter :=
+		companyOpsOutcomeFilterValues(req)
+
+	var rows []db.ListCompanyOpsOutcomeRowsRow
+	if cursorToken := strings.TrimSpace(req.Cursor); cursorToken != "" {
+		cursor, err := decodeCompanyOpsOutcomeCursor(cursorToken)
+		if err != nil {
+			return page, err
+		}
+		cursorCreatedAt, err := time.Parse(time.RFC3339Nano, cursor.CreatedAt)
+		if err != nil {
+			return page, fmt.Errorf("%w: invalid created_at", ErrCompanyOpsOutcomeCursorInvalid)
+		}
+		commandID, err := util.ParseUUID(cursor.CommandID)
+		if err != nil || util.UUIDToString(commandID) != cursor.CommandID {
+			return page, fmt.Errorf("%w: invalid command_id", ErrCompanyOpsOutcomeCursorInvalid)
+		}
+		cursorRows, err := s.queries.ListCompanyOpsOutcomeRowsCursor(ctx, db.ListCompanyOpsOutcomeRowsCursorParams{
+			WorkspaceID:         req.WorkspaceID,
+			QText:               qText,
+			AgentFilter:         agentFilter,
+			ProjectFilter:       projectFilter,
+			EmployeeFilter:      employeeFilter,
+			TypeFilter:          typeFilter,
+			StatusFilter:        statusFilter,
+			FormalVisibleFilter: formalVisibleFilter,
+			CursorCreatedAt:     pgtype.Timestamptz{Time: cursorCreatedAt, Valid: true},
+			CursorCommandID:     commandID,
+			LimitRows:           int32(limit + 1),
+		})
+		if err != nil {
+			return page, fmt.Errorf("list companyops outcome rows (cursor): %w", err)
+		}
+		rows = make([]db.ListCompanyOpsOutcomeRowsRow, 0, len(cursorRows))
+		for i := range cursorRows {
+			rows = append(rows, db.ListCompanyOpsOutcomeRowsRow(cursorRows[i]))
+		}
+	} else {
+		offsetRows, err := s.queries.ListCompanyOpsOutcomeRows(ctx, db.ListCompanyOpsOutcomeRowsParams{
+			WorkspaceID:         req.WorkspaceID,
+			QText:               qText,
+			AgentFilter:         agentFilter,
+			ProjectFilter:       projectFilter,
+			EmployeeFilter:      employeeFilter,
+			TypeFilter:          typeFilter,
+			StatusFilter:        statusFilter,
+			FormalVisibleFilter: formalVisibleFilter,
+			OffsetRows:          int32(offset),
+			LimitRows:           int32(limit + 1),
+		})
+		if err != nil {
+			return page, fmt.Errorf("list companyops outcome rows: %w", err)
+		}
+		rows = offsetRows
+	}
+
+	page.HasMore = len(rows) > limit
+	if page.HasMore {
+		rows = rows[:limit]
+	}
+
+	summaries := make([]CompanyOpsOutcomeSummary, 0, len(rows))
+	for i := range rows {
+		summary, err := companyOpsOutcomeSummaryFromRow(rows[i])
+		if err != nil {
+			return page, err
+		}
+		summaries = append(summaries, summary)
+	}
+	page.Summaries = summaries
+
+	total, err := s.queries.CountCompanyOpsOutcomeRows(ctx, db.CountCompanyOpsOutcomeRowsParams{
+		WorkspaceID:         req.WorkspaceID,
+		QText:               qText,
+		AgentFilter:         agentFilter,
+		ProjectFilter:       projectFilter,
+		EmployeeFilter:      employeeFilter,
+		TypeFilter:          typeFilter,
+		StatusFilter:        statusFilter,
+		FormalVisibleFilter: formalVisibleFilter,
+	})
+	if err != nil {
+		return page, fmt.Errorf("count companyops outcome rows: %w", err)
+	}
+	page.Total = total
+
+	if page.HasMore && len(rows) > 0 {
+		last := rows[len(rows)-1]
+		if last.AssignmentCreatedAt.Valid {
+			page.NextCursor = encodeCompanyOpsOutcomeCursor(CompanyOpsOutcomeCursor{
+				Version:   companyOpsOutcomeCursorVersion,
+				CreatedAt: last.AssignmentCreatedAt.Time.UTC().Format(time.RFC3339Nano),
+				CommandID: util.UUIDToString(last.CommandID),
+			})
+		}
+	}
+
+	return page, nil
 }
 
 // GetOutcome returns the full detail for one outcome keyed by its stable

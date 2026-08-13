@@ -18,7 +18,9 @@
     "status_filter_label": "상태",
     "total_other": "성과 {{count}}개",
     "collapse": "목록 접기",
-    "expand": "목록 펼치기"
+    "expand": "목록 펼치기",
+    "load_history": "이전 성과 불러오기",
+    "loading_history": "불러오는 중…"
   },
   "detail": {
     "back": "성과 센터로 돌아가기",

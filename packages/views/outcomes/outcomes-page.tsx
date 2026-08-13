@@ -19,14 +19,12 @@ import { ApiError } from "@multica/core/api";
 import { Button } from "@multica/ui/components/ui/button";
 import { PageHeader } from "../layout/page-header";
 import { useT } from "../i18n";
-import {
-  outcomeDetailOptions,
-  outcomesListOptions,
-} from "./outcome-queries";
+import { outcomeDetailOptions } from "./outcome-queries";
 import { OutcomeList } from "./outcome-list";
 import { OutcomeDetail, OutcomeDetailSkeleton } from "./outcome-detail";
 import { useOutcomeActions } from "./outcome-actions";
 import { useOutcomesCompact } from "./use-outcomes-compact";
+import { useOutcomesCursor } from "./use-outcomes-cursor";
 
 const OUTCOME_PARAM = "outcome";
 const SESSION_PARAM = "session_id";
@@ -94,14 +92,12 @@ export function OutcomesPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [qDraft]);
 
-  const listQuery = useQuery(
-    outcomesListOptions(wsId, {
-      q: urlQ || undefined,
-      status: urlStatus || undefined,
-      limit: 50,
-      offset: 0,
-    }),
-  );
+  const cursorList = useOutcomesCursor(wsId, {
+    q: urlQ || undefined,
+    status: urlStatus || undefined,
+    limit: 50,
+    offset: 0,
+  });
 
   const detailQuery = useQuery(
     outcomeDetailOptions(wsId, urlOutcome),
@@ -120,7 +116,7 @@ export function OutcomesPage() {
     });
   }, [detailQuery]);
 
-  const outcomes = listQuery.data?.items ?? [];
+  const outcomes = cursorList.outcomes;
 
   // Invalid/deleted outcome: an explicit URL selection that does not resolve
   // must surface a not-found state, never silently fall back to the first row.
@@ -177,15 +173,18 @@ export function OutcomesPage() {
   const listBody = (
     <OutcomeList
       outcomes={outcomes}
-      total={listQuery.data?.total ?? 0}
-      loading={listQuery.isPending}
-      error={listQuery.error}
+      total={cursorList.total}
+      loading={cursorList.loading}
+      loadingMore={cursorList.loadingMore}
+      hasMore={cursorList.hasMore}
+      error={cursorList.error}
       selectedCommandId={urlOutcome}
       q={qDraft}
       status={urlStatus}
       onQChange={setQDraft}
       onStatusChange={(status) => writeUrl({ status })}
       onSelect={(o) => handleSelect(o.id)}
+      onLoadMore={cursorList.loadMore}
     />
   );
 
