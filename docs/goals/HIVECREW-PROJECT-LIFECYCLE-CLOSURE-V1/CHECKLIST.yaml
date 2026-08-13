@@ -104,9 +104,9 @@ phases:
   WAVE-3 independent rolling acceptance:
     status: ready
   WAVE-4 integration + candidate deploy:
-    status: not_started
+    status: api_candidate_verified
   WAVE-5 portfolio disposition + self-operation:
-    status: not_started
+    status: reconciler_diagnostic_done
 slices:
   slice_1_project_health_visibility:
     status: accepted
@@ -135,10 +135,14 @@ slices:
     status: w3_provided_verified
     w3_ref: review_cell/review_drain/review.go + migrations 280-285
   slice_4_outcome_center_closure_package:
-    status: closure_package_implemented_under_acceptance
+    status: accepted
     gap: Closure Package generation + close gate NOT implemented by W3 (remaining
       Slice 4 work)
     commit: 528020fde
+    reviews:
+      Gauss: PASS
+      Quinn: PASS
+      Pixel: PASS
   slice_5_history_pagination_backfill:
     status: w3_provided_verified
     w3_ref: JOIN-8 projects / JOIN-10 inbox / JOIN-2 outcomes cursor
@@ -178,8 +182,10 @@ victory_conditions:
     evidence: []
   VC-07:
     title: Project closure
-    status: gap_closure_package
-    evidence: []
+    status: partial_accepted
+    evidence:
+    - Slice 4 closure package + close gate accepted (3x PASS); review record = Slice
+      3 review-cell (deferred)
   VC-08:
     title: Existing portfolio disposition
     status: partial_accepted
@@ -192,16 +198,19 @@ victory_conditions:
     evidence: []
   VC-10:
     title: Runtime acceptance
-    status: not_started
-    evidence: []
+    status: api_candidate_verified
+    evidence:
+    - EV-W4-01 (candidate :18090 full-stack API, 401/200, honest portfolio + reconciler
+      + closure + control)
   VC-11:
     title: Provenance
     status: not_started
     evidence: []
   VC-12:
     title: Self-operation
-    status: not_started
-    evidence: []
+    status: diagnostic_implemented
+    evidence:
+    - WAVE-5 reconciler diagnostic (4 detectors, 15 live findings)
 frontier:
   controller: Prime Agent
   phase: WAVE-2 Slice 4 (closure package + close gate) -> WAVE-3 acceptance
@@ -286,14 +295,14 @@ subagent_roster:
       assignee: Gauss
       issue: f80f4df5-5d17-4a34-9ca8-322895afab8b
       scope: closure/close backend
-      status: running
+      status: PASS
     HIV-561:
       assignee: Quinn
       issue: 2a93f39a-ae0a-4012-9344-9f53b9d56be6
       scope: closure quality
-      status: running
+      status: PASS
     HIV-562:
       assignee: Pixel
       issue: 6490a022-3114-401e-accf-8190c69c4d8b
       scope: closure frontend
-      status: running
+      status: PASS
