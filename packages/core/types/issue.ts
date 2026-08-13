@@ -67,3 +67,49 @@ export interface Issue {
   created_at: string;
   updated_at: string;
 }
+
+// Owner issue control plane (Lane A dispatch view) wire shapes.
+
+export interface IssueDispatchPreview {
+  dispatchable: boolean;
+  already_pending: boolean;
+  target_agent_id: string;
+  assignee_type: string;
+  reason?: string;
+  handoff_supported: boolean;
+}
+
+export interface IssueDispatchReceipt {
+  operation: "dispatch";
+  issue_id: string;
+  workspace_id: string;
+  task_id?: string;
+  already_pending: boolean;
+  target_agent_id: string;
+  assignee_type: string;
+  idempotency_key?: string;
+  performed_at: string;
+  actor_type: string;
+  actor_id: string;
+}
+
+export interface IssueStopReceipt {
+  operation: "stop";
+  issue_id: string;
+  workspace_id: string;
+  cancelled_task_ids: string[];
+  performed_at: string;
+  actor_type: string;
+  actor_id: string;
+}
+
+export interface IssueReviewReceipt {
+  operation: "send-to-review";
+  issue_id: string;
+  workspace_id: string;
+  from_status: IssueStatus;
+  to_status: IssueStatus;
+  performed_at: string;
+  actor_type: string;
+  actor_id: string;
+}

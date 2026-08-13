@@ -1,4 +1,4 @@
-export type { Issue, IssueStatus, IssuePriority, IssueAssigneeType, IssueMetadata, IssueMetadataValue, IssueReaction } from "./issue";
+export type { Issue, IssueStatus, IssuePriority, IssueAssigneeType, IssueMetadata, IssueMetadataValue, IssueReaction, IssueDispatchPreview, IssueDispatchReceipt, IssueStopReceipt, IssueReviewReceipt } from "./issue";
 export type {
   BaseRuntimeInfo,
   BaseOverview,

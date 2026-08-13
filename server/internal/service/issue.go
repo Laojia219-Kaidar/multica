@@ -604,3 +604,121 @@ func (s *IssueService) enqueueSquadLeaderTask(ctx context.Context, issue db.Issu
 			"error", err)
 	}
 }
+
+// IssueDispatchDecision is the shared preview/execute decision for the owner
+// dispatch control plane (Lane A). It answers "can this issue be dispatched
+// right now, and to which agent" without mutating anything, so the preview
+// endpoint and the execute endpoint can never drift.
+type IssueDispatchDecision struct {
+	Dispatchable   bool
+	AlreadyPending bool
+	TargetAgentID  pgtype.UUID
+	AssigneeType   string
+	Reason         string // empty when Dispatchable
+}
+
+// EvaluateIssueDispatch computes the dispatch decision for an issue in its
+// current state. Backlog (parking lot), terminal, unassigned, and not-ready
+// assignees are all non-dispatchable with an explicit reason.
+func (s *IssueService) EvaluateIssueDispatch(ctx context.Context, issue db.Issue) IssueDispatchDecision {
+	d := IssueDispatchDecision{}
+	switch {
+	case issue.Status == "done" || issue.Status == "cancelled":
+		d.Reason = "issue is terminal"
+		return d
+	case issue.Status == "backlog":
+		d.Reason = "issue is parked in backlog"
+		return d
+	case !issue.AssigneeType.Valid || !issue.AssigneeID.Valid:
+		d.Reason = "issue is unassigned"
+		return d
+	}
+
+	switch issue.AssigneeType.String {
+	case "agent":
+		agent, err := s.Queries.GetAgent(ctx, issue.AssigneeID)
+		if err != nil || !agent.RuntimeID.Valid || agent.ArchivedAt.Valid {
+			d.Reason = "assignee agent is not ready"
+			return d
+		}
+		d.TargetAgentID = issue.AssigneeID
+		d.AssigneeType = "agent"
+		if s.hasPendingRun(ctx, issue.ID, issue.AssigneeID) {
+			d.Dispatchable = true
+			d.AlreadyPending = true
+			return d
+		}
+	case "squad":
+		squad, err := s.Queries.GetSquadInWorkspace(ctx, db.GetSquadInWorkspaceParams{
+			ID:          issue.AssigneeID,
+			WorkspaceID: issue.WorkspaceID,
+		})
+		if err != nil {
+			d.Reason = "assigned squad not found"
+			return d
+		}
+		leader, err := s.Queries.GetAgent(ctx, squad.LeaderID)
+		if err != nil {
+			d.Reason = "squad leader not found"
+			return d
+		}
+		ready, _, err := AgentReadiness(ctx, s.Queries, leader)
+		if err != nil || !ready {
+			d.Reason = "squad leader is not ready"
+			return d
+		}
+		d.TargetAgentID = squad.LeaderID
+		d.AssigneeType = "squad"
+		if s.hasPendingRun(ctx, issue.ID, squad.LeaderID) {
+			d.Dispatchable = true
+			d.AlreadyPending = true
+			return d
+		}
+	default:
+		d.Reason = "unknown assignee type"
+		return d
+	}
+
+	d.Dispatchable = true
+	return d
+}
+
+// DispatchIssue enqueues a run for the issue's current assignee (agent or
+// squad leader) from the owner control plane. It is idempotent: when a pending
+// queued/dispatched run already exists for the target agent it returns
+// (zeroTask, alreadyPending=true, nil) rather than double-enqueuing. actorUserID
+// is the accountable member who performed the dispatch (invalid for agent
+// actors, matching the assign/promote path).
+func (s *IssueService) DispatchIssue(ctx context.Context, issue db.Issue, handoffNote string, actorUserID pgtype.UUID) (db.AgentTaskQueue, bool, error) {
+	decision := s.EvaluateIssueDispatch(ctx, issue)
+	if !decision.Dispatchable {
+		return db.AgentTaskQueue{}, false, fmt.Errorf("dispatch: %s", decision.Reason)
+	}
+	if decision.AlreadyPending {
+		return db.AgentTaskQueue{}, true, nil
+	}
+
+	switch decision.AssigneeType {
+	case "agent":
+		task, err := s.TaskService.EnqueueTaskForIssueWithHandoff(ctx, issue, handoffNote, actorUserID)
+		if err != nil {
+			return db.AgentTaskQueue{}, false, fmt.Errorf("dispatch: enqueue agent task: %w", err)
+		}
+		return task, false, nil
+	case "squad":
+		squad, err := s.Queries.GetSquadInWorkspace(ctx, db.GetSquadInWorkspaceParams{
+			ID:          issue.AssigneeID,
+			WorkspaceID: issue.WorkspaceID,
+		})
+		if err != nil {
+			return db.AgentTaskQueue{}, false, fmt.Errorf("dispatch: load squad: %w", err)
+		}
+		task, err := s.TaskService.EnqueueTaskForSquadLeaderWithHandoff(ctx, issue, decision.TargetAgentID, squad.ID, handoffNote, actorUserID)
+		if err != nil {
+			return db.AgentTaskQueue{}, false, fmt.Errorf("dispatch: enqueue squad leader task: %w", err)
+		}
+		return task, false, nil
+	default:
+		return db.AgentTaskQueue{}, false, fmt.Errorf("dispatch: unknown assignee type")
+	}
+}

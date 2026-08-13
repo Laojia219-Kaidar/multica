@@ -1266,6 +1266,15 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Put("/", h.UpdateIssue)
 					r.Post("/move", h.MoveIssue)
 					r.Delete("/", h.DeleteIssue)
+					// Lane A owner issue control plane (dispatch view):
+					//   POST /api/issues/{id}/dispatch-preview
+					//   POST /api/issues/{id}/dispatch
+					//   POST /api/issues/{id}/stop
+					//   POST /api/issues/{id}/send-to-review
+					r.Post("/dispatch-preview", h.PreviewIssueDispatch)
+					r.Post("/dispatch", h.DispatchIssue)
+					r.Post("/stop", h.StopIssue)
+					r.Post("/send-to-review", h.SendIssueToReview)
 					r.Post("/comments/trigger-preview", h.PreviewCommentTriggers)
 					r.Post("/comments", h.CreateComment)
 					r.Get("/comments", h.ListComments)

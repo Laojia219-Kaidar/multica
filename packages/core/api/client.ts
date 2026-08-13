@@ -66,6 +66,10 @@ import type {
   CreatePersonalAccessTokenResponse,
   RuntimeUsage,
   IssueUsageSummary,
+  IssueDispatchPreview,
+  IssueDispatchReceipt,
+  IssueStopReceipt,
+  IssueReviewReceipt,
   RuntimeHourlyActivity,
   RuntimeUsageByAgent,
   RuntimeUsageByHour,
@@ -2621,6 +2625,41 @@ export class ApiClient {
     return this.fetch(`/api/issues/${issueId}/rerun`, {
       method: "POST",
       body: JSON.stringify(taskId ? { task_id: taskId } : {}),
+    });
+  }
+
+  // Owner issue control plane (Lane A dispatch view).
+  async previewIssueDispatch(
+    issueId: string,
+  ): Promise<{ issue_id: string; preview: IssueDispatchPreview }> {
+    return this.fetch(`/api/issues/${issueId}/dispatch-preview`, {
+      method: "POST",
+    });
+  }
+
+  async dispatchIssue(
+    issueId: string,
+    data?: { idempotency_key?: string; handoff_note?: string },
+  ): Promise<{ receipt: IssueDispatchReceipt }> {
+    return this.fetch(`/api/issues/${issueId}/dispatch`, {
+      method: "POST",
+      body: JSON.stringify(data ?? {}),
+    });
+  }
+
+  async stopIssue(
+    issueId: string,
+  ): Promise<{ receipt: IssueStopReceipt }> {
+    return this.fetch(`/api/issues/${issueId}/stop`, {
+      method: "POST",
+    });
+  }
+
+  async sendIssueToReview(
+    issueId: string,
+  ): Promise<{ receipt: IssueReviewReceipt }> {
+    return this.fetch(`/api/issues/${issueId}/send-to-review`, {
+      method: "POST",
     });
   }
 
