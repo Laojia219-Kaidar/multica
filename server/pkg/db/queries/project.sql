@@ -3,7 +3,14 @@ SELECT * FROM project
 WHERE workspace_id = $1
   AND (sqlc.narg('status')::text IS NULL OR status = sqlc.narg('status'))
   AND (sqlc.narg('priority')::text IS NULL OR priority = sqlc.narg('priority'))
-ORDER BY created_at DESC;
+ORDER BY created_at DESC, id DESC
+LIMIT sqlc.narg('limit') OFFSET sqlc.narg('offset');
+
+-- name: CountProjects :one
+SELECT count(*) FROM project
+WHERE workspace_id = $1
+  AND (sqlc.narg('status')::text IS NULL OR status = sqlc.narg('status'))
+  AND (sqlc.narg('priority')::text IS NULL OR priority = sqlc.narg('priority'));
 
 -- name: GetProject :one
 SELECT * FROM project

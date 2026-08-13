@@ -128,10 +128,26 @@ func (h *Handler) ListProjects(w http.ResponseWriter, r *http.Request) {
 	if p := r.URL.Query().Get("priority"); p != "" {
 		priorityFilter = pgtype.Text{String: p, Valid: true}
 	}
+	limit, offset, limitErr := parseLimitOffset(r)
+	if limitErr != nil {
+		writeError(w, http.StatusBadRequest, limitErr.Error())
+		return
+	}
+	total, err := h.Queries.CountProjects(r.Context(), db.CountProjectsParams{
+		WorkspaceID: wsUUID,
+		Status:      statusFilter,
+		Priority:    priorityFilter,
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to count projects")
+		return
+	}
 	projects, err := h.Queries.ListProjects(r.Context(), db.ListProjectsParams{
 		WorkspaceID: wsUUID,
 		Status:      statusFilter,
 		Priority:    priorityFilter,
+		Limit:       pgtype.Int4{Int32: int32(limit), Valid: true},
+		Offset:      pgtype.Int4{Int32: int32(offset), Valid: true},
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list projects")
@@ -169,7 +185,38 @@ func (h *Handler) ListProjects(w http.ResponseWriter, r *http.Request) {
 		}
 		resp[i].ResourceCount = resourceCountMap[resp[i].ID]
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"projects": resp, "total": len(resp)})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"projects": resp,
+		"total":    total,
+		"limit":    limit,
+		"offset":   offset,
+		"has_more": offset+len(resp) < int(total),
+	})
+}
+
+// parseLimitOffset parses the shared list pagination query parameters. Missing
+// params use defaults (limit=100, offset=0); invalid or out-of-range values are
+// rejected. This is the canonical contract for the owner list surfaces (VC-09).
+func parseLimitOffset(r *http.Request) (limit, offset int, err error) {
+	limit, offset = 100, 0
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		n, e := strconv.Atoi(raw)
+		if e != nil || n < 0 {
+			return 0, 0, errors.New("invalid limit")
+		}
+		if n > 200 {
+			n = 200
+		}
+		limit = n
+	}
+	if raw := r.URL.Query().Get("offset"); raw != "" {
+		n, e := strconv.Atoi(raw)
+		if e != nil || n < 0 {
+			return 0, 0, errors.New("invalid offset")
+		}
+		offset = n
+	}
+	return limit, offset, nil
 }
 
 func (h *Handler) GetProject(w http.ResponseWriter, r *http.Request) {

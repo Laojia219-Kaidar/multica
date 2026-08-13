@@ -1001,6 +1001,21 @@ type ProjectResource struct {
 	CreatedBy    pgtype.UUID        `json:"created_by"`
 }
 
+type ProviderUsageQuotum struct {
+	ID           pgtype.UUID        `json:"id"`
+	WorkspaceID  pgtype.UUID        `json:"workspace_id"`
+	Provider     string             `json:"provider"`
+	Plan         string             `json:"plan"`
+	AccountLabel string             `json:"account_label"`
+	ApiKeyLabel  string             `json:"api_key_label"`
+	Cycle        string             `json:"cycle"`
+	TotalTokens  int64              `json:"total_tokens"`
+	ResetDay     pgtype.Int4        `json:"reset_day"`
+	LocalModel   bool               `json:"local_model"`
+	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt    pgtype.Timestamptz `json:"updated_at"`
+}
+
 type ReviewDrainProgress struct {
 	IssueID        pgtype.UUID        `json:"issue_id"`
 	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
