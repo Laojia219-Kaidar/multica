@@ -30,6 +30,7 @@
     "./inbox": "./inbox/index.ts",
     "./runtimes": "./runtimes/index.ts",
     "./bases": "./bases/index.ts",
+    "./workrooms": "./workrooms/index.ts",
     "./billing": "./billing/index.ts",
     "./dashboard": "./dashboard/index.ts",
     "./squads": "./squads/index.ts",

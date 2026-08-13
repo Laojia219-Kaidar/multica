@@ -1935,6 +1935,16 @@ export class ApiClient {
     });
   }
 
+  listWorkrooms(): Promise<
+    { id: string; name: string; project_id?: string; issue_id?: string; work_order_id?: string; created_by: string }[]
+  > {
+    return this.fetch("/api/workrooms");
+  }
+
+  createWorkroom(data: { name: string; project_id?: string; issue_id?: string; work_order_id?: string }): Promise<{ id: string }> {
+    return this.fetch("/api/workrooms", { method: "POST", body: JSON.stringify(data) });
+  }
+
   listBases(): Promise<
     { machine_title: string; runtime_online: number; runtime_registered: number; employees: number; drained: boolean }[]
   > {
