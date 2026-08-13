@@ -109,12 +109,17 @@ phases:
     status: not_started
 slices:
   slice_1_project_health_visibility:
-    status: implemented_and_verified_candidate
+    status: accepted
     scope: Project health/portfolio read API + Projects page classification + project
       cards (lead/frontier/worker/last receipt/next action/outcome coverage)
     commits:
     - 0eeb7a05b
     - 74bb1fe31
+    final_revision: 726bcca4a
+    reviews:
+      Gauss: PASS
+      Quinn: PASS
+      Pixel: PASS
   slice_2_continue_resume_pause:
     status: not_started
   slice_3_review_repair_routing:
@@ -126,11 +131,14 @@ slices:
 victory_conditions:
   VC-01:
     title: Current truth honest classification
-    status: candidate_evidence
+    status: accepted
     evidence:
     - EV-S1-03
     - EV-S1-05
     - EV-S1-09
+    - EV-S1-GAUSS-PASS
+    - EV-S1-QUINN-PASS
+    - EV-S1-PIXEL-PASS
   VC-02:
     title: Accountability per project
     status: not_started
@@ -157,7 +165,7 @@ victory_conditions:
     evidence: []
   VC-08:
     title: Existing portfolio disposition
-    status: partial_candidate_evidence
+    status: partial_accepted
     evidence:
     - EV-S1-05 (2 owner_decision, 2 source_gap, 1 duplicate surfaced)
   VC-09:
@@ -178,7 +186,7 @@ victory_conditions:
     evidence: []
 frontier:
   controller: Prime Agent
-  phase: WAVE-2 Slice 1 -> WAVE-3 independent acceptance
+  phase: Slice 1 accepted -> INTEGRATION-HANDOFF-V1 -> WAVE-2 Slice 2
   ready:
   - HiveCrew independent acceptance (Gauss/Quinn/Pixel) for Slice 1
   running: []
@@ -216,19 +224,19 @@ subagent_roster:
       assignee: Gauss
       issue: 6c263eac-7e34-48d4-97be-c6e2d119627e
       scope: backend/API/concurrency
-      status: repair3_applied
+      status: PASS
       repair_commits:
       - b954e7e5c
       - 90d7b50af
-      - (pending commit 3)
+      - 726bcca4a
     HIV-555:
       assignee: Quinn
       issue: e3741103-9e97-442c-88fa-b6e33d727858
       scope: quality/state-machine
-      status: revise_repair_applied
+      status: PASS
       repair_commit: b954e7e5c
     HIV-556:
       assignee: Pixel
       issue: 770a9e87-bad1-4837-a6a0-2aee00c00ec5
       scope: frontend/browser
-      status: running
+      status: PASS
