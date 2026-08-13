@@ -15,7 +15,8 @@
     "settings": "設定",
     "organization": "組織",
     "bases": "Bases",
-    "workrooms": "ワークルーム"
+    "workrooms": "ワークルーム",
+    "workWall": "ワークウォール"
   },
   "tab": {
     "issue": "イシュー",

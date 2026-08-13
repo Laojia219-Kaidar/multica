@@ -10,6 +10,9 @@
   },
   "exports": {
     "./navigation": "./navigation/index.ts",
+    "./workwall": "./workwall/index.ts",
+    "./memory": "./memory/index.ts",
+    "./workflow": "./workflow/index.ts",
     "./common/actor-avatar": "./common/actor-avatar.tsx",
     "./editor": "./editor/index.ts",
     "./issues/components": "./issues/components/index.ts",

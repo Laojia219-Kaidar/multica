@@ -15,7 +15,8 @@
     "settings": "설정",
     "organization": "조직",
     "bases": "Bases",
-    "workrooms": "워크룸"
+    "workrooms": "워크룸",
+    "workWall": "워크월"
   },
   "tab": {
     "issue": "이슈",

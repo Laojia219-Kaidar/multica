@@ -200,6 +200,7 @@ import { type Logger, noopLogger } from "../logger";
 import { createRequestId } from "../utils";
 import { getCurrentSlug } from "../platform/workspace-storage";
 import { parseWithFallback } from "./schema";
+import type { EmployeeLiveActivityV1 } from "./workwall";
 
 const CompanyOpsAuthoritySnapshotSchema = z.object({
   kind: z.string().min(1),
@@ -3441,6 +3442,11 @@ export class ApiClient {
     const search = new URLSearchParams();
     if (params?.status) search.set("status", params.status);
     return this.fetch(`/api/projects?${search}`);
+  }
+
+  /** Workspace "工作现场" (work wall) snapshot: one row per accessible agent. */
+  async workWallSnapshot(): Promise<EmployeeLiveActivityV1[]> {
+    return this.fetch("/api/work-wall/snapshot");
   }
 
   async getProject(id: string): Promise<Project> {

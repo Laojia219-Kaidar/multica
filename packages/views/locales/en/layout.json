@@ -15,7 +15,8 @@
     "settings": "Settings",
     "organization": "Organization",
     "bases": "Bases",
-    "workrooms": "Workrooms"
+    "workrooms": "Workrooms",
+    "workWall": "Work Wall"
   },
   "tab": {
     "issue": "Issue",
