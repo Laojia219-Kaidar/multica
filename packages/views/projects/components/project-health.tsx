@@ -18,9 +18,13 @@ export function healthBucketOf(s: ProjectLifecycleSnapshot): HealthBucket {
       return s.blocked_issue_count > 0 ? "blocked" : "review";
     case "stalled_no_open_task":
       return "stalled";
+    case "source_gap":
+      // Missing closure evidence blocks closure; surfacing it as "blocked" is
+      // more honest than "ready to close" (Quinn review O1).
+      return "blocked";
     default:
-      // ready_for_closure | source_gap: both need a closure package.
-      return "ready";
+      return "ready"; // ready_for_closure
+
   }
 }
 

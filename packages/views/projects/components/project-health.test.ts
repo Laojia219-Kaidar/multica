@@ -54,7 +54,11 @@ describe("healthBucketOf", () => {
     expect(healthBucketOf(snap({ health: "stalled_no_open_task" }))).toBe("stalled");
   });
 
-  it("maps source_gap to ready (needs a closure package)", () => {
-    expect(healthBucketOf(snap({ health: "source_gap" }))).toBe("ready");
+  it("maps source_gap to blocked (closure evidence missing blocks closure)", () => {
+    expect(healthBucketOf(snap({ health: "source_gap" }))).toBe("blocked");
+  });
+
+  it("maps ready_for_closure to ready", () => {
+    expect(healthBucketOf(snap({ health: "ready_for_closure" }))).toBe("ready");
   });
 });

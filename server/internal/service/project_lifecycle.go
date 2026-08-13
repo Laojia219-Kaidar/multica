@@ -126,6 +126,13 @@ func ClassifyProject(in ProjectLifecycleInput) ProjectLifecycleClassification {
 	}
 
 	// C: a review/blocked gate with no live task is review_or_repair_blocked.
+	//
+	// Operationalization note (Quinn review F2, accepted): the frozen HIV-553
+	// table judged a few in_review-only projects as B (stalled). Because the
+	// structured REVISE/failed-repair signals do not yet exist, this read model
+	// conservatively surfaces ANY in_review backlog as C so a review queue is
+	// never silently hidden as "stalled". This is a deliberate, fail-closed
+	// operationalization, recorded in EVIDENCE (EV-S1-11).
 	if in.BlockedIssueCount > 0 {
 		c.Health = HealthReviewOrRepairBlocked
 		c.Flags = append(c.Flags, "blocked")
@@ -326,6 +333,11 @@ func (p *ProjectLifecycleProjector) ListPortfolio(ctx context.Context, workspace
 			ConfirmedOutcomeCount: 0, // no confirmed outcomes exist yet (ledger empty)
 		})
 
+		// outcome_total must NOT be terminalN: terminal issue disposition is
+		// not outcome acceptance (contract). Until the Slice 4 outcome ledger
+		// is connected, outcome_total stays 0 and terminal_issue_count carries
+		// the honest terminal-count fact separately.
+
 		ft := frontierByProject[pid]
 		if ft == nil {
 			ft = []FrontierTask{}
@@ -366,7 +378,7 @@ func (p *ProjectLifecycleProjector) ListPortfolio(ctx context.Context, workspace
 			LastProgressAt:        lastProgress,
 			NextAction:            class.NextAction,
 			OutcomeConfirmed:      0,
-			OutcomeTotal:          terminalN,
+			OutcomeTotal:          0,
 			ClosureReady:          false,
 			ClosureBlockers:       class.ClosureBlockers,
 			DuplicateOfProjectID:  dupOfPtr,

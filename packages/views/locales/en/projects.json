@@ -163,6 +163,7 @@
     "bucket_stalled": "Stalled",
     "bucket_ready": "Ready to close",
     "next_action": "Next action",
-    "outcome_coverage": "Outcome coverage"
+    "outcome_coverage": "Outcome coverage",
+    "terminal_issues": "Terminal issues"
   }
 }

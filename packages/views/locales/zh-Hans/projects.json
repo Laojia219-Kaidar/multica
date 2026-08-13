@@ -161,6 +161,7 @@
     "bucket_stalled": "已停滞",
     "bucket_ready": "待关闭",
     "next_action": "下一步",
-    "outcome_coverage": "成果覆盖"
+    "outcome_coverage": "成果覆盖",
+    "terminal_issues": "已终结议题"
   }
 }

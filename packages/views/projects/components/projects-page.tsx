@@ -666,7 +666,7 @@ function ProjectCard({
             {snapshot.next_action}
           </p>
           <p className="mt-0.5 text-[10px] tabular-nums text-muted-foreground">
-            {t(($) => $.health.outcome_coverage)}: {snapshot.outcome_confirmed}/{snapshot.outcome_total}
+            {t(($) => $.health.terminal_issues)}: {snapshot.terminal_issue_count}
           </p>
         </div>
       )}

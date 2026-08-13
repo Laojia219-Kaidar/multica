@@ -80,3 +80,65 @@ func TestGetProjectLifecycleNotFound(t *testing.T) {
 		t.Fatalf("expected 404, got %d: %s", w.Code, w.Body.String())
 	}
 }
+
+// Contract: a project from a different workspace must NOT leak into this
+// workspace's lifecycle portfolio (cross-workspace isolation).
+func TestGetProjectLifecycleCrossWorkspaceIsolation(t *testing.T) {
+	ctx := t.Context()
+	// Create a second workspace + owner member + project.
+	var otherWsID, otherUserID, otherProjID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO "user" (name, email) VALUES ('lifecycle-other', 'lifecycle-other@example.com') RETURNING id
+	`).Scan(&otherUserID); err != nil {
+		t.Fatalf("insert other user: %v", err)
+	}
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO workspace (name, slug, description, issue_prefix) VALUES ('Lifecycle Other','lifecycle-other-ws','x','LCO') RETURNING id
+	`).Scan(&otherWsID); err != nil {
+		t.Fatalf("insert other workspace: %v", err)
+	}
+	if _, err := testPool.Exec(ctx, `INSERT INTO member (workspace_id, user_id, role) VALUES ($1,$2,'owner')`, otherWsID, otherUserID); err != nil {
+		t.Fatalf("insert other member: %v", err)
+	}
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO project (workspace_id, title, status) VALUES ($1,'other workspace project','in_progress') RETURNING id
+	`, otherWsID).Scan(&otherProjID); err != nil {
+		t.Fatalf("insert other project: %v", err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(ctx, `DELETE FROM project WHERE id=$1`, otherProjID)
+		testPool.Exec(ctx, `DELETE FROM member WHERE workspace_id=$1`, otherWsID)
+		testPool.Exec(ctx, `DELETE FROM workspace WHERE id=$1`, otherWsID)
+		testPool.Exec(ctx, `DELETE FROM "user" WHERE id=$1`, otherUserID)
+	})
+
+	// The portfolio of THIS workspace must not contain the other project.
+	w := httptest.NewRecorder()
+	req := newRequest("GET", "/api/projects/lifecycle?workspace_id="+testWorkspaceID, nil)
+	testHandler.ListProjectLifecycle(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var body struct {
+		Projects []struct {
+			ProjectID string `json:"project_id"`
+		} `json:"projects"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	for _, p := range body.Projects {
+		if p.ProjectID == otherProjID {
+			t.Fatalf("cross-workspace project %s leaked into portfolio", otherProjID)
+		}
+	}
+
+	// Direct single-project lookup from this workspace is 404.
+	w2 := httptest.NewRecorder()
+	req2 := newRequest("GET", "/api/projects/"+otherProjID+"/lifecycle?workspace_id="+testWorkspaceID, nil)
+	req2 = withURLParam(req2, "id", otherProjID)
+	testHandler.GetProjectLifecycle(w2, req2)
+	if w2.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for cross-workspace project, got %d", w2.Code)
+	}
+}
