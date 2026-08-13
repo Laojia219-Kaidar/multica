@@ -1168,6 +1168,13 @@ func (s *TaskService) prepareIssueTaskWithCommentPlan(
 		HeadSha: headShaText(preparer.ResolveIssueReviewSHA(ctx, issue.ID)),
 	})
 	if err != nil {
+		// Map the pending-task unique-index violation to the sentinel so the
+		// Slice 2 continue control op can return an idempotent replay receipt
+		// instead of surfacing a raw constraint error (Gauss re-review #4).
+		if isDuplicatePendingTaskErr(err) {
+			slog.Debug("task enqueue coalesced: pending task already exists", "issue_id", util.UUIDToString(issue.ID))
+			return db.AgentTaskQueue{}, ErrDuplicatePendingTask
+		}
 		slog.Error("task enqueue failed", "issue_id", util.UUIDToString(issue.ID), "error", err)
 		return db.AgentTaskQueue{}, fmt.Errorf("create task: %w", err)
 	}

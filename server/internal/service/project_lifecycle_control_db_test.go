@@ -148,8 +148,12 @@ func TestContinueCreatesSingleTaskAndNoDuplicate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second continue: %v", err)
 	}
-	if r2.Applied {
-		t.Fatalf("second continue applied a duplicate, receipt = %+v", r2)
+	// Idempotent replay: the existing live task is returned, not re-applied.
+	if !r2.Replayed || r2.Applied {
+		t.Fatalf("second continue receipt = %+v, want Replayed=true Applied=false", r2)
+	}
+	if r2.TaskID == nil || r1.TaskID == nil || *r2.TaskID != *r1.TaskID {
+		t.Fatalf("second continue task_id = %v, want same as first %v", r2.TaskID, r1.TaskID)
 	}
 	if countTasks(t, pool, issueID) != 1 {
 		t.Fatalf("task count after second continue = %d, want 1 (no duplicate)", countTasks(t, pool, issueID))
@@ -163,4 +167,22 @@ func countTasks(t *testing.T, pool *pgxpool.Pool, issueID string) int {
 		t.Fatalf("count tasks: %v", err)
 	}
 	return n
+}
+
+// Gauss re-review #4 (phase_critical #1): EnqueueTaskForIssue now returns the
+// ErrDuplicatePendingTask sentinel on the unique-index violation (issue-prepare
+// path aligned with the mention path), so the continue replay branch is reachable.
+func TestEnqueueTaskForIssueReturnsDuplicateSentinel(t *testing.T) {
+	pool, _, _, issueID := seedPausedProjectFixture(t, "in_progress")
+	q := db.New(pool)
+	svc := &TaskService{Queries: q, TxStarter: pool, Bus: events.New()}
+	ctx := context.Background()
+	is := loadIssue(t, pool, issueID)
+
+	if _, err := svc.EnqueueTaskForIssue(ctx, is); err != nil {
+		t.Fatalf("first enqueue: %v", err)
+	}
+	if _, err := svc.EnqueueTaskForIssue(ctx, is); !errors.Is(err, ErrDuplicatePendingTask) {
+		t.Fatalf("second enqueue err = %v, want ErrDuplicatePendingTask", err)
+	}
 }

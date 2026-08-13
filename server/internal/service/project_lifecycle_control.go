@@ -107,7 +107,7 @@ func (s *ProjectLifecycleControlService) PreviewContinue(ctx context.Context, wo
 	if len(preview.Blockers) > 0 {
 		return preview, nil
 	}
-	issue, err := s.readyFrontierIssue(ctx, workspaceID, projectID)
+	issue, err := s.frontierIssue(ctx, workspaceID, projectID)
 	if err != nil {
 		if errors.Is(err, ErrProjectLifecycleNoFrontier) {
 			return preview, nil
@@ -143,7 +143,7 @@ func (s *ProjectLifecycleControlService) Continue(ctx context.Context, workspace
 		receipt.Blockers = blockers
 		return receipt, nil
 	}
-	issue, err := s.readyFrontierIssue(ctx, workspaceID, projectID)
+	issue, err := s.frontierIssue(ctx, workspaceID, projectID)
 	if err != nil {
 		if errors.Is(err, ErrProjectLifecycleNoFrontier) {
 			receipt.Blockers = []string{"NO_READY_FRONTIER"}
@@ -151,10 +151,18 @@ func (s *ProjectLifecycleControlService) Continue(ctx context.Context, workspace
 		}
 		return ControlReceipt{}, err
 	}
+	// Idempotent replay: if the frontier issue already has a live task, return
+	// it instead of creating a duplicate (contract: 已有等价 live task 幂等返回).
+	if existing := s.activeTaskForIssue(ctx, issue.ID); existing != nil {
+		receipt.TaskID = uuidOrNil(existing.ID)
+		receipt.IssueID = uuidOrNil(issue.ID)
+		receipt.Replayed = true
+		return receipt, nil
+	}
 	task, err := s.Tasks.EnqueueTaskForIssue(ctx, issue)
 	if err != nil {
 		if errors.Is(err, ErrDuplicatePendingTask) {
-			// Idempotent replay: surface the already-live task.
+			// Lost a concurrent race: surface the already-live task.
 			if existing := s.activeTaskForIssue(ctx, issue.ID); existing != nil {
 				receipt.TaskID = uuidOrNil(existing.ID)
 				receipt.IssueID = uuidOrNil(issue.ID)
@@ -225,7 +233,7 @@ func (s *ProjectLifecycleControlService) Resume(ctx context.Context, workspaceID
 	}
 	receipt.Applied = true
 	receipt.AfterStatus = "in_progress"
-	issue, err := s.readyFrontierIssue(ctx, workspaceID, projectID)
+	issue, err := s.frontierIssue(ctx, workspaceID, projectID)
 	if err == nil {
 		if task, enqErr := s.Tasks.EnqueueTaskForIssue(ctx, issue); enqErr == nil {
 			receipt.TaskID = uuidOrNil(task.ID)
@@ -241,9 +249,10 @@ func (s *ProjectLifecycleControlService) Resume(ctx context.Context, workspaceID
 	return receipt, nil
 }
 
-// readyFrontierIssue returns the highest-priority nonterminal issue with no
-// live task, i.e. the exact frontier to dispatch — never "all issues".
-func (s *ProjectLifecycleControlService) readyFrontierIssue(ctx context.Context, workspaceID, projectID pgtype.UUID) (db.Issue, error) {
+// frontierIssue returns the highest-priority dispatchable nonterminal issue,
+// i.e. the exact frontier to dispatch — never "all issues". in_review/blocked
+// are repair gates, not dispatch targets.
+func (s *ProjectLifecycleControlService) frontierIssue(ctx context.Context, workspaceID, projectID pgtype.UUID) (db.Issue, error) {
 	issues, err := s.Queries.ListIssues(ctx, db.ListIssuesParams{
 		WorkspaceID: workspaceID,
 		ProjectID:   projectID,
@@ -253,24 +262,8 @@ func (s *ProjectLifecycleControlService) readyFrontierIssue(ctx context.Context,
 	if err != nil {
 		return db.Issue{}, err
 	}
-	activeTasks, err := s.Queries.ListProjectActiveTasks(ctx, workspaceID)
-	if err != nil {
-		return db.Issue{}, err
-	}
-	busy := map[string]struct{}{}
-	for _, t := range activeTasks {
-		if iid := util.UUIDToString(t.IssueID); iid != "" {
-			busy[iid] = struct{}{}
-		}
-	}
-	// Pick the first nonterminal issue without a live task, ordered by position
-	// (ListIssues returns position order). Priority: in_progress > todo >
-	// backlog > in_review > blocked (blocked/review are repair gates, not
-	// dispatch-ready) — keep it deterministic and safe.
+	// ListIssues returns position order; pick the first dispatchable issue.
 	for _, is := range issues {
-		if _, hasLive := busy[util.UUIDToString(is.ID)]; hasLive {
-			continue
-		}
 		switch is.Status {
 		case "in_progress", "todo", "backlog":
 			return issueRowToIssue(is), nil
