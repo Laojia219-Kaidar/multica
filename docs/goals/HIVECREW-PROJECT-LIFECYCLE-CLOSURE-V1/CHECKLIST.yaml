@@ -135,9 +135,10 @@ slices:
     status: w3_provided_verified
     w3_ref: review_cell/review_drain/review.go + migrations 280-285
   slice_4_outcome_center_closure_package:
-    status: w3_outcomes_provided_closure_package_gap
+    status: closure_package_implemented_under_acceptance
     gap: Closure Package generation + close gate NOT implemented by W3 (remaining
       Slice 4 work)
+    commit: 528020fde
   slice_5_history_pagination_backfill:
     status: w3_provided_verified
     w3_ref: JOIN-8 projects / JOIN-10 inbox / JOIN-2 outcomes cursor
@@ -203,8 +204,7 @@ victory_conditions:
     evidence: []
 frontier:
   controller: Prime Agent
-  phase: Slice 1+2 accepted; Slices 3/4/5 consume W3; remaining = Closure Package
-    (VC-07) + WAVE-4/5
+  phase: WAVE-2 Slice 4 (closure package + close gate) -> WAVE-3 acceptance
   ready:
   - Closure Package generation + close gate (Slice 4 gap)
   - WAVE-4 candidate deploy + runtime acceptance
@@ -281,3 +281,19 @@ subagent_roster:
       issue: 6771d512-1456-424b-acc5-b7dab146959e
       scope: frontend
       status: PASS
+  slice4_acceptance:
+    HIV-560:
+      assignee: Gauss
+      issue: f80f4df5-5d17-4a34-9ca8-322895afab8b
+      scope: closure/close backend
+      status: running
+    HIV-561:
+      assignee: Quinn
+      issue: 2a93f39a-ae0a-4012-9344-9f53b9d56be6
+      scope: closure quality
+      status: running
+    HIV-562:
+      assignee: Pixel
+      issue: 6490a022-3114-401e-accf-8190c69c4d8b
+      scope: closure frontend
+      status: running
