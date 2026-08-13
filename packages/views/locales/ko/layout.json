@@ -13,7 +13,8 @@
     "runtimes": "런타임",
     "skills": "스킬",
     "settings": "설정",
-    "organization": "조직"
+    "organization": "조직",
+    "bases": "Bases"
   },
   "tab": {
     "issue": "이슈",

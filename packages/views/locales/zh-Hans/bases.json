@@ -1,0 +1,11 @@
+{
+  "title": "基地",
+  "description": "五台受管理的执行基地总览",
+  "runtimeOnline": "Runtime 在线",
+  "employees": "员工",
+  "running": "运行中",
+  "status": "状态",
+  "online": "在线",
+  "offline": "离线",
+  "loading": "加载中…"
+}

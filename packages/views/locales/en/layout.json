@@ -13,7 +13,8 @@
     "runtimes": "Runtimes",
     "skills": "Skills",
     "settings": "Settings",
-    "organization": "Organization"
+    "organization": "Organization",
+    "bases": "Bases"
   },
   "tab": {
     "issue": "Issue",
