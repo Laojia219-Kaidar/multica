@@ -47,3 +47,18 @@ PromotionOutbox(source=HiveCrew, candidate_id, target, reviewer_id, reason)
 - 现状：`/api/work-wall/stream` 每 5s 推全量 snapshot；客户端重连即开新循环，天然去重。
 - 评估：当前全量 snapshot 已覆盖断线补偿的正确性（不丢不重），仅带宽非最优。
 - 建议：员工数 >~200 或 snapshot 体积 >100KB 时再上 `Last-Event-ID + 增量 delta`（按事件序号补偿）；否则维持全量快照。**优先级低，暂不实现。**
+
+
+---
+
+## 差距二补充：生产各层不同源（实测 2026-08-13T23:2xZ）
+
+生产容器实测状态（重建于 23:10 backend / 23:14 frontend）：
+
+| 层 | 内容 | 证据 |
+|---|---|---|
+| backend 镜像 | A 线（有 work-wall API + migration 342） | `/api/work-wall/snapshot` 401、`/api/work-wall/stream` 401、342 六表在库 |
+| frontend 镜像 | **非 A 线**（有 workrooms/datasets，**无 work-wall 页面**） | `/hivecosm/work-wall` 404；`.next` 路由清单缺 `work-wall` |
+| DB | B 线编号（迁移到 402_dataset） | `schema_migrations.max=402_dataset` |
+
+结论：**生产目前是 A/B 两线混装**，工作墙前端页面实际不可达（404），"落地"不完整。这进一步说明：**必须先把 A/B 两线收敛成唯一主线并统一重构建，生产才能一致**；在收敛完成前，任何单方面再部署都可能加深混装。
