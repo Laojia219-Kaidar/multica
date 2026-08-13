@@ -121,17 +121,18 @@ slices:
       Quinn: PASS
       Pixel: PASS
   slice_2_continue_resume_pause:
-    status: implemented_under_acceptance
+    status: gauss_pass_quinn_pending
     contract: contracts/SLICE-2-CONTROL-CONTRACT.md
     red_tests: contracts/SLICE-2-RED-TEST-MATRIX.md
     source_impl: BLOCKED_ON_W3_LANE
     commit: 977e3e8b5
+    final_revision: b852af8a5
   slice_3_review_repair_routing:
-    status: not_started
+    status: consume_w3_join4_laneB_review_cell
   slice_4_outcome_center_closure_package:
-    status: not_started
+    status: consume_w3_join2_laneE_outcomes
   slice_5_history_pagination_backfill:
-    status: not_started
+    status: consume_w3_join2_8_10_pagination
 victory_conditions:
   VC-01:
     title: Current truth honest classification
@@ -252,14 +253,18 @@ subagent_roster:
       assignee: Gauss
       issue: 31102a00-a5e4-4483-b234-f45cbdf14a95
       scope: backend/API/control
-      status: running
+      status: PASS
+      repair_commit: df0fdf7ab
+      final_tip: b852af8a5
     HIV-558:
       assignee: Quinn
       issue: f1dd0041-f819-4d63-986a-ad91c60a9981
       scope: quality/invariants
-      status: running
+      status: final_review_dispatched
+      repair_commit: df0fdf7ab
+      final_tip: b852af8a5
     HIV-559:
       assignee: Pixel
       issue: 6771d512-1456-424b-acc5-b7dab146959e
       scope: frontend
-      status: running
+      status: PASS
