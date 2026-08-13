@@ -7,5 +7,12 @@
   "status": "Status",
   "online": "Online",
   "offline": "Offline",
-  "loading": "Loading…"
+  "loading": "Loading…",
+  "model": "Model",
+  "noEmployees": "No employees",
+  "clickToManage": "Click to expand employees and migrate",
+  "migrateTo": "Migrate to…",
+  "migrateSuccess": "Employee migrated",
+  "migrateFailed": "Migration failed",
+  "noTargetRuntime": "No matching runtime on the target base"
 }

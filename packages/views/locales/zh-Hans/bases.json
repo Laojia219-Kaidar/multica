@@ -7,5 +7,12 @@
   "status": "状态",
   "online": "在线",
   "offline": "离线",
-  "loading": "加载中…"
+  "loading": "加载中…",
+  "model": "模型",
+  "noEmployees": "暂无员工",
+  "clickToManage": "点击展开员工并迁移",
+  "migrateTo": "迁移到…",
+  "migrateSuccess": "员工已迁移",
+  "migrateFailed": "迁移失败",
+  "noTargetRuntime": "目标基地没有对应的模型运行时"
 }

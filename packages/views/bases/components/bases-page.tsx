@@ -1,12 +1,19 @@
 "use client";
 
-import { useMemo } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { Monitor, Network, Server, Wrench } from "lucide-react";
+import { useMemo, useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { ChevronRight, Monitor, Network, Server, Wrench } from "lucide-react";
+import { toast } from "sonner";
 import { useWorkspaceId } from "@multica/core/hooks";
+import { api } from "@multica/core/api";
 import { runtimeListOptions } from "@multica/core/runtimes/queries";
 import { agentListOptions } from "@multica/core/workspace/queries";
-import { buildRuntimeMachines } from "../../runtimes/components/runtime-machines";
+import type { Agent } from "@multica/core/types";
+import {
+  buildRuntimeMachines,
+  splitRuntimeName,
+  type RuntimeMachine,
+} from "../../runtimes/components/runtime-machines";
 import { CollectionPageHeader } from "../../layout/collection-page";
 import { useT } from "../../i18n";
 
@@ -19,33 +26,75 @@ const KNOWN_BASES: { prefix: string; name: string; role: string; icon: typeof Mo
   { prefix: "HiveCrew MB M2", name: "研究基地", role: "调研 / 知识工程 / 研究分析", icon: Monitor },
 ];
 
+const SECURE_PREFIX = "HiveCosm Secure ";
+
+/** 从 runtime 名提取 Secure 配置档（如 deepseek / qwen-coding / zhipu）。 */
+function secureProfile(name: string): string | null {
+  const { base } = splitRuntimeName(name);
+  if (!base.startsWith(SECURE_PREFIX)) return null;
+  return base.slice(SECURE_PREFIX.length);
+}
+
 export function BasesPage() {
   const wsId = useWorkspaceId();
   const { t } = useT("bases");
+  const qc = useQueryClient();
   const { data: runtimes = [], isLoading } = useQuery(runtimeListOptions(wsId));
   const { data: agents = [] } = useQuery(agentListOptions(wsId));
+  const [expanded, setExpanded] = useState<string | null>(null);
+
+  const migrateMutation = useMutation({
+    mutationFn: ({ agentId, runtimeId }: { agentId: string; runtimeId: string }) =>
+      api.updateAgent(agentId, { runtime_id: runtimeId }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: agentListOptions(wsId).queryKey });
+      void qc.invalidateQueries({ queryKey: runtimeListOptions(wsId).queryKey });
+      toast.success(t(($) => $.migrateSuccess));
+    },
+    onError: () => toast.error(t(($) => $.migrateFailed)),
+  });
 
   const bases = useMemo(() => {
     const machines = buildRuntimeMachines(runtimes, { now: Date.now() });
-    const runtimeToMachine = new Map<string, number>();
-    machines.forEach((m, i) => m.runtimes.forEach((r) => runtimeToMachine.set(r.id, i)));
-    const machineAgents = new Map<number, number>();
+    const runtimeToMachine = new Map<string, RuntimeMachine>();
+    machines.forEach((m) => m.runtimes.forEach((r) => runtimeToMachine.set(r.id, m)));
+    const agentsByMachine = new Map<string, Agent[]>();
     for (const a of agents) {
-      const idx = runtimeToMachine.get(a.runtime_id);
-      if (idx !== undefined) machineAgents.set(idx, (machineAgents.get(idx) ?? 0) + 1);
+      const m = runtimeToMachine.get(a.runtime_id);
+      if (!m) continue;
+      const list = agentsByMachine.get(m.id) ?? [];
+      list.push(a);
+      agentsByMachine.set(m.id, list);
     }
-    return machines.map((m, i) => {
+    return machines.map((m) => {
       const known = KNOWN_BASES.find((b) => m.title.startsWith(b.prefix));
       return {
         machine: m,
         baseName: known?.name ?? null,
         role: known?.role ?? null,
         icon: known?.icon ?? Network,
-        employees: machineAgents.get(i) ?? 0,
+        employees: agentsByMachine.get(m.id) ?? [],
         registered: m.runtimes.length,
       };
     });
   }, [runtimes, agents]);
+
+  function migrate(agent: Agent, targetMachine: RuntimeMachine) {
+    const current = runtimes.find((r) => r.id === agent.runtime_id);
+    const profile = current ? secureProfile(current.name) : null;
+    if (!profile) {
+      toast.error(t(($) => $.noTargetRuntime));
+      return;
+    }
+    const targetRuntime = targetMachine.runtimes.find(
+      (r) => splitRuntimeName(r.name).base === `${SECURE_PREFIX}${profile}`,
+    );
+    if (!targetRuntime) {
+      toast.error(t(($) => $.noTargetRuntime));
+      return;
+    }
+    migrateMutation.mutate({ agentId: agent.id, runtimeId: targetRuntime.id });
+  }
 
   return (
     <div className="flex h-full flex-col">
@@ -58,36 +107,87 @@ export function BasesPage() {
         <div className="p-4 text-sm text-muted-foreground">{t(($) => $.loading)}</div>
       ) : (
         <div className="grid grid-cols-1 gap-4 p-4 sm:grid-cols-2 xl:grid-cols-3">
-          {bases.map(({ machine, baseName, role, icon: Icon, employees, registered }) => (
-            <div key={machine.id} className="rounded-lg border bg-card p-4 shadow-sm">
-              <div className="flex items-center gap-2">
-                <Icon className="size-5 text-muted-foreground" />
-                <h3 className="text-base font-semibold">{baseName ?? machine.title}</h3>
-              </div>
-              <p className="mt-1 text-xs text-muted-foreground">{machine.title}</p>
-              {role ? <p className="mt-1 text-xs text-muted-foreground">{role}</p> : null}
-              <div className="mt-3 grid grid-cols-2 gap-2 text-sm">
-                <div>
-                  <div className="text-xs text-muted-foreground">{t(($) => $.runtimeOnline)}</div>
-                  <div className="font-medium">{machine.onlineCount} / {registered}</div>
-                </div>
-                <div>
-                  <div className="text-xs text-muted-foreground">{t(($) => $.employees)}</div>
-                  <div className="font-medium">{employees}</div>
-                </div>
-                <div>
-                  <div className="text-xs text-muted-foreground">{t(($) => $.running)}</div>
-                  <div className="font-medium">{machine.runningCount}</div>
-                </div>
-                <div>
-                  <div className="text-xs text-muted-foreground">{t(($) => $.status)}</div>
-                  <div className={"font-medium " + (machine.onlineCount > 0 ? "text-emerald-600" : "text-red-500")}>
-                    {machine.onlineCount > 0 ? t(($) => $.online) : t(($) => $.offline)}
+          {bases.map(({ machine, baseName, role, icon: Icon, employees, registered }) => {
+            const isOpen = expanded === machine.id;
+            const otherBases = bases.filter((b) => b.machine.id !== machine.id);
+            return (
+              <div key={machine.id} className="rounded-lg border bg-card shadow-sm">
+                <button
+                  type="button"
+                  onClick={() => setExpanded(isOpen ? null : machine.id)}
+                  className="flex w-full items-center gap-2 p-4 text-left"
+                  aria-expanded={isOpen}
+                >
+                  <Icon className="size-5 text-muted-foreground" />
+                  <div className="min-w-0 flex-1">
+                    <h3 className="text-base font-semibold">{baseName ?? machine.title}</h3>
+                    <p className="mt-0.5 truncate text-xs text-muted-foreground">{machine.title}</p>
+                  </div>
+                  <ChevronRight
+                    className={"size-4 shrink-0 text-muted-foreground transition-transform " + (isOpen ? "rotate-90" : "")}
+                  />
+                </button>
+                {role ? <p className="px-4 text-xs text-muted-foreground">{role}</p> : null}
+                <div className="grid grid-cols-2 gap-2 px-4 pb-3 text-sm">
+                  <div>
+                    <div className="text-xs text-muted-foreground">{t(($) => $.runtimeOnline)}</div>
+                    <div className="font-medium">{machine.onlineCount} / {registered}</div>
+                  </div>
+                  <div>
+                    <div className="text-xs text-muted-foreground">{t(($) => $.employees)}</div>
+                    <div className="font-medium">{employees.length}</div>
+                  </div>
+                  <div>
+                    <div className="text-xs text-muted-foreground">{t(($) => $.running)}</div>
+                    <div className="font-medium">{machine.runningCount}</div>
+                  </div>
+                  <div>
+                    <div className="text-xs text-muted-foreground">{t(($) => $.status)}</div>
+                    <div className={"font-medium " + (machine.onlineCount > 0 ? "text-emerald-600" : "text-red-500")}>
+                      {machine.onlineCount > 0 ? t(($) => $.online) : t(($) => $.offline)}
+                    </div>
                   </div>
                 </div>
+                {isOpen ? (
+                  <div className="border-t px-4 py-3">
+                    {employees.length === 0 ? (
+                      <p className="text-xs text-muted-foreground">{t(($) => $.noEmployees)}</p>
+                    ) : (
+                      <ul className="space-y-2">
+                        {employees.map((agent) => (
+                          <li key={agent.id} className="flex items-center gap-2 text-sm">
+                            <div className="min-w-0 flex-1">
+                              <div className="truncate font-medium">{agent.name}</div>
+                              <div className="truncate text-xs text-muted-foreground">
+                                {t(($) => $.model)}: {agent.model}
+                              </div>
+                            </div>
+                            <select
+                              className="h-8 rounded-md border bg-background px-2 text-xs"
+                              value=""
+                              disabled={migrateMutation.isPending}
+                              onChange={(e) => {
+                                if (!e.target.value) return;
+                                const target = otherBases.find((b) => b.machine.title === e.target.value);
+                                if (target) migrate(agent, target.machine);
+                              }}
+                            >
+                              <option value="" disabled>{t(($) => $.migrateTo)}</option>
+                              {otherBases.map((b) => (
+                                <option key={b.machine.id} value={b.machine.title}>
+                                  {b.baseName ?? b.machine.title}
+                                </option>
+                              ))}
+                            </select>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                ) : null}
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>
