@@ -62,6 +62,17 @@
       "title": "加入我们的 Discord",
       "description": "和团队及其他用户一起交流。",
       "dismiss": "关闭"
-    }
+    },
+    "group_ceo": "CEO总指挥台",
+    "group_work": "工作经营",
+    "group_outcomes": "成果中心",
+    "group_org": "组织与人才",
+    "group_employee_factory": "数字员工工厂",
+    "group_workroom": "协作空间",
+    "group_data_knowledge": "数据与知识",
+    "group_model_intelligence": "模型与智能",
+    "group_base_infra": "基地与基础设施",
+    "group_governance": "治理与安全",
+    "group_settings": "设置"
   }
 }

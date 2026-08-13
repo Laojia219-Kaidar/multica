@@ -62,6 +62,17 @@
       "title": "Discord 참여하기",
       "description": "팀과 다른 사용자들과 교류해 보세요.",
       "dismiss": "닫기"
-    }
+    },
+    "group_ceo": "CEO 지휘",
+    "group_work": "업무 운영",
+    "group_outcomes": "성과 센터",
+    "group_org": "조직과 인재",
+    "group_employee_factory": "직원 공장",
+    "group_workroom": "협업 공간",
+    "group_data_knowledge": "데이터와 지식",
+    "group_model_intelligence": "모델과 지능",
+    "group_base_infra": "기지와 인프라",
+    "group_governance": "거버넌스",
+    "group_settings": "설정"
   }
 }

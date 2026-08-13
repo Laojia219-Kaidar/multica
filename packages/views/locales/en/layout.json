@@ -62,6 +62,17 @@
       "title": "Join our Discord",
       "description": "Chat with the team and other builders.",
       "dismiss": "Dismiss"
-    }
+    },
+    "group_ceo": "CEO Command",
+    "group_work": "Work",
+    "group_outcomes": "Outcomes",
+    "group_org": "Organization",
+    "group_employee_factory": "Employee Factory",
+    "group_workroom": "Collaboration",
+    "group_data_knowledge": "Data & Knowledge",
+    "group_model_intelligence": "Model & Intelligence",
+    "group_base_infra": "Bases & Infra",
+    "group_governance": "Governance",
+    "group_settings": "Settings"
   }
 }
