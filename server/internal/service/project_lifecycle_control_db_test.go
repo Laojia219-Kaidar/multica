@@ -186,3 +186,38 @@ func TestEnqueueTaskForIssueReturnsDuplicateSentinel(t *testing.T) {
 		t.Fatalf("second enqueue err = %v, want ErrDuplicatePendingTask", err)
 	}
 }
+
+// Gauss re-review #5 regression: resume must NOT duplicate a task when the
+// frontier already has a running task (pause does not stop running tasks).
+func TestResumeDoesNotDuplicateRunningTask(t *testing.T) {
+	pool, workspaceID, projectID, issueID := seedPausedProjectFixture(t, "in_progress")
+	q := db.New(pool)
+	svc := &TaskService{Queries: q, TxStarter: pool, Bus: events.New()}
+	ctrl := NewProjectLifecycleControlService(q, svc)
+	ctx := context.Background()
+	wsUUID, pidUUID := util.MustParseUUID(workspaceID), util.MustParseUUID(projectID)
+
+	// 1. dispatch the frontier, then mark it running (simulate daemon claim).
+	if _, err := ctrl.Continue(ctx, wsUUID, pidUUID, "c1"); err != nil {
+		t.Fatalf("continue: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE agent_task_queue SET status='running' WHERE issue_id=$1`, issueID); err != nil {
+		t.Fatalf("mark running: %v", err)
+	}
+	// 2. pause (does not stop running task), then resume.
+	if _, err := ctrl.PauseDispatch(ctx, wsUUID, pidUUID, "p1"); err != nil {
+		t.Fatalf("pause: %v", err)
+	}
+	r, err := ctrl.Resume(ctx, wsUUID, pidUUID, "r1")
+	if err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	// The project status transition applies; the task must be replayed (existing
+	// running task returned, no duplicate) — never a new task.
+	if !r.Replayed {
+		t.Fatalf("resume receipt = %+v, want Replayed=true (existing running task returned)", r)
+	}
+	if countTasks(t, pool, issueID) != 1 {
+		t.Fatalf("task count after resume = %d, want 1 (no duplicate)", countTasks(t, pool, issueID))
+	}
+}

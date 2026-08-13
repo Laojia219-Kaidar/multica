@@ -235,11 +235,22 @@ func (s *ProjectLifecycleControlService) Resume(ctx context.Context, workspaceID
 	receipt.AfterStatus = "in_progress"
 	issue, err := s.frontierIssue(ctx, workspaceID, projectID)
 	if err == nil {
-		if task, enqErr := s.Tasks.EnqueueTaskForIssue(ctx, issue); enqErr == nil {
+		// Idempotent: if the frontier already has a live task (running or
+		// pending), resume reactivates the project but returns that task —
+		// never a duplicate (Gauss re-review #5).
+		if existing := s.activeTaskForIssue(ctx, issue.ID); existing != nil {
+			receipt.TaskID = uuidOrNil(existing.ID)
+			receipt.IssueID = uuidOrNil(issue.ID)
+			receipt.Replayed = true
+		} else if task, enqErr := s.Tasks.EnqueueTaskForIssue(ctx, issue); enqErr == nil {
 			receipt.TaskID = uuidOrNil(task.ID)
 			receipt.IssueID = uuidOrNil(issue.ID)
 		} else if errors.Is(enqErr, ErrDuplicatePendingTask) {
 			receipt.Replayed = true
+			if existing := s.activeTaskForIssue(ctx, issue.ID); existing != nil {
+				receipt.TaskID = uuidOrNil(existing.ID)
+				receipt.IssueID = uuidOrNil(issue.ID)
+			}
 		} else {
 			// Surface the real enqueue failure; never report a silent partial
 			// success (Gauss #4 / Quinn resume-吞错).
@@ -272,7 +283,10 @@ func (s *ProjectLifecycleControlService) frontierIssue(ctx context.Context, work
 	return db.Issue{}, ErrProjectLifecycleNoFrontier
 }
 
-// activeTaskForIssue returns the currently-live task for an issue, if any.
+// activeTaskForIssue returns the currently-live (nonterminal) task for an
+// issue, if any. ListActiveTasksByIssue covers queued/dispatched/running/
+// waiting_local_directory — the states that mean "work is live" — which is the
+// regression surface pause/resume must guard.
 func (s *ProjectLifecycleControlService) activeTaskForIssue(ctx context.Context, issueID pgtype.UUID) *db.AgentTaskQueue {
 	tasks, err := s.Queries.ListActiveTasksByIssue(ctx, issueID)
 	if err != nil || len(tasks) == 0 {
