@@ -5,8 +5,18 @@ import (
 	"time"
 )
 
+// fixtureClock returns FixtureNow for deterministic time in tests.
+type fixtureClock struct{}
+
+func (fixtureClock) Now() time.Time { return FixtureNow }
+
+// newTestScorer returns a Scorer wired to the deterministic fixture clock.
+func newTestScorer(w Weights) *Scorer {
+	return NewScorer(w).WithClock(fixtureClock{})
+}
+
 func TestScoreHealthyCandidate_ImplementationTask(t *testing.T) {
-	s := NewScorer(nil)
+	s := newTestScorer(nil)
 	c := FixtureCandidateHealthy()
 	req := FixtureTaskImplementation()
 
@@ -36,7 +46,7 @@ func TestScoreHealthyCandidate_ImplementationTask(t *testing.T) {
 }
 
 func TestScoreHealthyCandidate_ReviewTask(t *testing.T) {
-	s := NewScorer(nil)
+	s := newTestScorer(nil)
 	c := FixtureCandidateHealthy()
 	req := FixtureTaskReview()
 
@@ -56,7 +66,7 @@ func TestScoreHealthyCandidate_ReviewTask(t *testing.T) {
 }
 
 func TestFailClosed_StaleQuota(t *testing.T) {
-	s := NewScorer(nil)
+	s := newTestScorer(nil)
 	c := FixtureCandidateStaleQuota()
 	req := FixtureTaskImplementation()
 
@@ -74,7 +84,7 @@ func TestFailClosed_StaleQuota(t *testing.T) {
 }
 
 func TestFailClosed_UnknownQuota(t *testing.T) {
-	s := NewScorer(nil)
+	s := newTestScorer(nil)
 	c := FixtureCandidateUnknownQuota()
 	req := FixtureTaskImplementation()
 
@@ -89,7 +99,7 @@ func TestFailClosed_UnknownQuota(t *testing.T) {
 }
 
 func TestFailClosed_ReviewerIsAuthor(t *testing.T) {
-	s := NewScorer(nil)
+	s := newTestScorer(nil)
 	c := FixtureCandidateAuthor()
 	req := FixtureTaskReview()
 
@@ -104,7 +114,7 @@ func TestFailClosed_ReviewerIsAuthor(t *testing.T) {
 }
 
 func TestFailClosed_RuntimeOffline(t *testing.T) {
-	s := NewScorer(nil)
+	s := newTestScorer(nil)
 	c := FixtureCandidateOffline()
 	req := FixtureTaskImplementation()
 
@@ -119,9 +129,9 @@ func TestFailClosed_RuntimeOffline(t *testing.T) {
 }
 
 func TestFailClosed_ExpiredQuotaCheck(t *testing.T) {
-	s := NewScorer(nil)
+	s := newTestScorer(nil)
 	c := FixtureCandidateHealthy()
-	c.QuotaCheckedAt = time.Now().Add(-20 * time.Minute) // beyond threshold
+	c.QuotaCheckedAt = FixtureNow.Add(-20 * time.Minute) // beyond threshold
 	req := FixtureTaskImplementation()
 
 	r := s.Score(c, req)
@@ -135,7 +145,7 @@ func TestFailClosed_ExpiredQuotaCheck(t *testing.T) {
 }
 
 func TestAuthorNotBlockedOnNonReviewTask(t *testing.T) {
-	s := NewScorer(nil)
+	s := newTestScorer(nil)
 	c := FixtureCandidateAuthor()
 	req := FixtureTaskImplementation() // not a review
 
@@ -147,7 +157,7 @@ func TestAuthorNotBlockedOnNonReviewTask(t *testing.T) {
 }
 
 func TestScoreLatency_NoBudget(t *testing.T) {
-	s := NewScorer(nil)
+	s := newTestScorer(nil)
 	c := FixtureCandidateHealthy()
 	req := TaskRequirement{MaxLatencyMs: 0}
 
@@ -163,13 +173,13 @@ func TestScoreLatency_NoBudget(t *testing.T) {
 }
 
 func TestScoreLatency_OverBudget(t *testing.T) {
-	s := NewScorer(nil)
+	s := newTestScorer(nil)
 	c := Candidate{
 		AgentID:        FixtureAgentKepler,
 		AgentName:      "Kepler",
 		RuntimeHealth:  RuntimeOnline,
 		Quota:          QuotaFresh,
-		QuotaCheckedAt: time.Now(),
+		QuotaCheckedAt: FixtureNow,
 		AvgLatencyMs:   15000,
 	}
 	req := TaskRequirement{MaxLatencyMs: 10000}
@@ -187,7 +197,7 @@ func TestScoreLatency_OverBudget(t *testing.T) {
 }
 
 func TestScoreCost_NoBudget(t *testing.T) {
-	s := NewScorer(nil)
+	s := newTestScorer(nil)
 	c := FixtureCandidateHealthy()
 	req := TaskRequirement{MaxCostUSD: 0}
 
@@ -203,13 +213,13 @@ func TestScoreCost_NoBudget(t *testing.T) {
 }
 
 func TestScoreHistory_NoHistory(t *testing.T) {
-	s := NewScorer(nil)
+	s := newTestScorer(nil)
 	c := Candidate{
 		AgentID:        FixtureAgentWillow,
 		AgentName:      "Willow",
 		RuntimeHealth:  RuntimeOnline,
 		Quota:          QuotaFresh,
-		QuotaCheckedAt: time.Now(),
+		QuotaCheckedAt: FixtureNow,
 	}
 	req := TaskRequirement{}
 
@@ -225,7 +235,7 @@ func TestScoreHistory_NoHistory(t *testing.T) {
 }
 
 func TestRank_FailClosedLast(t *testing.T) {
-	s := NewScorer(nil)
+	s := newTestScorer(nil)
 	req := FixtureTaskReview()
 
 	pool := FixtureCandidatePool()
@@ -253,7 +263,7 @@ func TestRank_FailClosedLast(t *testing.T) {
 }
 
 func TestRank_DeterministicTieBreak(t *testing.T) {
-	s := NewScorer(nil)
+	s := newTestScorer(nil)
 	req := FixtureTaskImplementation()
 
 	// Two identical candidates except for ID.
@@ -271,7 +281,7 @@ func TestRank_DeterministicTieBreak(t *testing.T) {
 }
 
 func TestExplanationPayload_AllDimensionsHaveReason(t *testing.T) {
-	s := NewScorer(nil)
+	s := newTestScorer(nil)
 	c := FixtureCandidateHealthy()
 	req := FixtureTaskImplementation()
 
@@ -287,7 +297,7 @@ func TestExplanationPayload_AllDimensionsHaveReason(t *testing.T) {
 }
 
 func TestExplanationPayload_FailClosedHasReasons(t *testing.T) {
-	s := NewScorer(nil)
+	s := newTestScorer(nil)
 	c := FixtureCandidateStaleQuota()
 	req := FixtureTaskImplementation()
 
@@ -309,7 +319,7 @@ func TestCustomWeights(t *testing.T) {
 		DimCost:          0.1,
 		DimIndependence:  0.1,
 	}
-	s := NewScorer(w)
+	s := newTestScorer(w)
 	c := FixtureCandidateHealthy()
 	req := FixtureTaskImplementation()
 
@@ -322,7 +332,7 @@ func TestCustomWeights(t *testing.T) {
 }
 
 func TestRuntimeDegraded_NotFailClosed(t *testing.T) {
-	s := NewScorer(nil)
+	s := newTestScorer(nil)
 	c := FixtureCandidateHealthy()
 	c.RuntimeHealth = RuntimeDegraded
 	req := FixtureTaskImplementation()
@@ -344,7 +354,7 @@ func TestRuntimeDegraded_NotFailClosed(t *testing.T) {
 }
 
 func TestQuotaExhausted_NotFailClosed(t *testing.T) {
-	s := NewScorer(nil)
+	s := newTestScorer(nil)
 	c := FixtureCandidateHealthy()
 	c.Quota = QuotaExhausted
 	req := FixtureTaskImplementation()
@@ -367,7 +377,7 @@ func TestQuotaExhausted_NotFailClosed(t *testing.T) {
 
 func TestIdentityStability(t *testing.T) {
 	// Scoring the same candidate twice must produce the same AgentID.
-	s := NewScorer(nil)
+	s := newTestScorer(nil)
 	c := FixtureCandidateHealthy()
 	req := FixtureTaskImplementation()
 
