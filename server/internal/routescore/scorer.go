@@ -42,6 +42,9 @@ func NewScorer(w Weights) *Scorer {
 		if v < 0 {
 			panic(fmt.Sprintf("routescore: negative weight %f for dimension %q", v, dim))
 		}
+		if math.IsNaN(v) || math.IsInf(v, 0) {
+			panic(fmt.Sprintf("routescore: non-finite weight %f for dimension %q", v, dim))
+		}
 	}
 	return &Scorer{weights: w, clock: realClock{}}
 }
