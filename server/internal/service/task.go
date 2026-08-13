@@ -1012,15 +1012,25 @@ type issueTaskTriggerEvidenceOverride struct {
 	RefID pgtype.UUID
 }
 
-func (s *TaskService) enqueueIssueTaskWithCommentPlan(ctx context.Context, issue db.Issue, triggerCommentID pgtype.UUID, coalescedCommentIDs []pgtype.UUID, forceFreshSession bool, handoffNote string, actorUserID pgtype.UUID, rerunOfTaskID pgtype.UUID) (db.AgentTaskQueue, error) {
-	// Project lifecycle pause gate: a paused project stops NEW dispatch. This
-	// is the single chokepoint every enqueue path funnels through, so the
-	// Slice 2 pause_dispatch flag has a real reader (Gauss phase_critical #1).
-	if issue.ProjectID.Valid {
-		if proj, err := s.Queries.GetProjectInWorkspace(ctx, db.GetProjectInWorkspaceParams{ID: issue.ProjectID, WorkspaceID: issue.WorkspaceID}); err == nil && proj.Status == "paused" {
-			return db.AgentTaskQueue{}, ErrProjectPausedDispatch
-		}
+// rejectPausedProjectDispatch blocks task enqueue when the issue's project is
+// paused. It is called from BOTH prepare paths (issue + mention), so pause
+// gates every dispatch source (comment @mention/@squad, assignment, autopilot,
+// issue creation, rerun, companyops) at the shared prepare chokepoints.
+func (s *TaskService) rejectPausedProjectDispatch(ctx context.Context, queries *db.Queries, issue db.Issue) error {
+	if !issue.ProjectID.Valid {
+		return nil
 	}
+	proj, err := queries.GetProjectInWorkspace(ctx, db.GetProjectInWorkspaceParams{ID: issue.ProjectID, WorkspaceID: issue.WorkspaceID})
+	if err != nil {
+		return nil // fail-open on lookup error; a dangling project id is not our gate to enforce
+	}
+	if proj.Status == "paused" {
+		return ErrProjectPausedDispatch
+	}
+	return nil
+}
+
+func (s *TaskService) enqueueIssueTaskWithCommentPlan(ctx context.Context, issue db.Issue, triggerCommentID pgtype.UUID, coalescedCommentIDs []pgtype.UUID, forceFreshSession bool, handoffNote string, actorUserID pgtype.UUID, rerunOfTaskID pgtype.UUID) (db.AgentTaskQueue, error) {
 	task, err := s.prepareIssueTaskWithCommentPlan(
 		ctx,
 		s.Queries,
@@ -1076,6 +1086,9 @@ func (s *TaskService) prepareIssueTaskWithCommentPlan(
 	}
 	if queries == nil {
 		return db.AgentTaskQueue{}, fmt.Errorf("task prepare queries are required")
+	}
+	if err := s.rejectPausedProjectDispatch(ctx, queries, issue); err != nil {
+		return db.AgentTaskQueue{}, err
 	}
 	if evidenceOverride != nil && (evidenceOverride.Kind == "" ||
 		!evidenceOverride.RefID.Valid || evidenceOverride.RefID.Bytes == ([16]byte{})) {
@@ -1224,6 +1237,9 @@ func (s *TaskService) prepareMentionTaskWithCommentPlan(
 ) (db.AgentTaskQueue, error) {
 	if s == nil || queries == nil {
 		return db.AgentTaskQueue{}, fmt.Errorf("task prepare queries are required")
+	}
+	if err := s.rejectPausedProjectDispatch(ctx, queries, issue); err != nil {
+		return db.AgentTaskQueue{}, err
 	}
 	preparer := *s
 	preparer.Queries = queries
