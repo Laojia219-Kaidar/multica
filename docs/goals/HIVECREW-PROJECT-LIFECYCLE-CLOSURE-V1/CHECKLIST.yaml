@@ -121,12 +121,16 @@ slices:
       Quinn: PASS
       Pixel: PASS
   slice_2_continue_resume_pause:
-    status: gauss_pass_quinn_pending
+    status: accepted
     contract: contracts/SLICE-2-CONTROL-CONTRACT.md
     red_tests: contracts/SLICE-2-RED-TEST-MATRIX.md
     source_impl: BLOCKED_ON_W3_LANE
     commit: 977e3e8b5
     final_revision: b852af8a5
+    reviews:
+      Gauss: PASS
+      Quinn: PASS
+      Pixel: PASS
   slice_3_review_repair_routing:
     status: consume_w3_join4_laneB_review_cell
   slice_4_outcome_center_closure_package:
@@ -150,12 +154,15 @@ victory_conditions:
     evidence: []
   VC-03:
     title: Owner controls
-    status: not_started
-    evidence: []
+    status: partial_accepted
+    evidence:
+    - Slice 2 continue/pause/resume accepted (3x PASS); close-preview/closure-package
+      are Slice 4
   VC-04:
     title: Continuous dispatch
-    status: not_started
-    evidence: []
+    status: partial_accepted
+    evidence:
+    - Slice 2 pause dispatch gate + idempotent replay accepted (3x PASS)
   VC-05:
     title: Review/repair
     status: not_started
@@ -192,7 +199,7 @@ victory_conditions:
     evidence: []
 frontier:
   controller: Prime Agent
-  phase: WAVE-2 Slice 2 implemented -> WAVE-3 independent acceptance
+  phase: Slice 2 accepted -> handoff W3 -> consume Slices 3/4/5 (W3 integration @5aa447c65)
   ready:
   - Slice 2 source implementation (continue/pause/resume/close-preview/closure-package)
     once W3 lane releases shared paths
@@ -260,7 +267,7 @@ subagent_roster:
       assignee: Quinn
       issue: f1dd0041-f819-4d63-986a-ad91c60a9981
       scope: quality/invariants
-      status: final_review_dispatched
+      status: PASS
       repair_commit: df0fdf7ab
       final_tip: b852af8a5
     HIV-559:
