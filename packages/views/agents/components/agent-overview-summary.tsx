@@ -6,10 +6,13 @@ import type {
   AgentRuntime,
   MemberWithUser,
 } from "@multica/core/types";
+import { useEmployeeStateExplanation } from "@multica/core/agents";
 import { runtimeDisplayLabel } from "@multica/core/runtimes";
+import { useWorkspaceId } from "@multica/core/hooks";
 import { ActorAvatar } from "../../common/actor-avatar";
 import { useT } from "../../i18n";
 import { VisibilityBadge } from "./visibility-badge";
+import { EmployeeStatusExplainer } from "./employee-status-explainer";
 import { AgentPerformanceSummary } from "./tabs/activity-tab";
 
 interface AgentOverviewSummaryProps {
@@ -29,6 +32,8 @@ export function AgentOverviewSummary({
   owner,
 }: AgentOverviewSummaryProps) {
   const { t } = useT("agents");
+  const wsId = useWorkspaceId();
+  const stateExplanation = useEmployeeStateExplanation(wsId, agent.id);
   const runtimeOnline = runtime?.status === "online";
 
   return (
@@ -83,6 +88,19 @@ export function AgentOverviewSummary({
             </span>
           </SummaryRow>
         </dl>
+      </section>
+
+      <section className="mt-5 border-t pt-5">
+        <h2 className="text-sm font-medium">
+          {t(($) => $.status_explanation.title)}
+        </h2>
+        <div className="mt-3">
+          <EmployeeStatusExplainer
+            explanation={
+              stateExplanation === "loading" ? null : stateExplanation
+            }
+          />
+        </div>
       </section>
 
       <section className="mt-5 border-t pt-5">

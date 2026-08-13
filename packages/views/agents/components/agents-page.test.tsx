@@ -30,6 +30,10 @@ const mocks = vi.hoisted(() => ({
     byAgent: new Map<string, unknown>(),
     loading: false,
   },
+  employeeStates: {
+    byAgent: new Map<string, unknown>(),
+    loading: false,
+  },
   directory: [] as SquadDirectoryEntry[],
   viewState: {
     viewMode: "list" as string,
@@ -105,6 +109,7 @@ vi.mock("@multica/core/agents", () => ({
   agentRunCounts30dOptions: () => ({ queryKey: ["agent-run-counts"] }),
   useWorkspaceActivityMap: () => mocks.activity,
   useWorkspacePresenceMap: () => mocks.presence,
+  useWorkspaceEmployeeStateMap: () => mocks.employeeStates,
   VISIBILITY_TOOLTIP: { private: "Private", workspace: "Workspace" },
   effectiveAccessScope: (pm: unknown, it: unknown) => {
     if (pm !== "public_to") return "owner-only";
@@ -254,6 +259,7 @@ beforeEach(() => {
   mocks.runCountsPending = false;
   mocks.activity = { byAgent: new Map(), loading: false };
   mocks.presence = { byAgent: new Map(), loading: false };
+  mocks.employeeStates = { byAgent: new Map(), loading: false };
   mocks.directory = [];
   mocks.viewState.viewMode = "list";
   mocks.viewState.scope = "all";

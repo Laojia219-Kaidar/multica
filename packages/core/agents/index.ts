@@ -1,5 +1,7 @@
 export * from "./types";
 export * from "./derive-presence";
+export * from "./derive-employee-state";
+export * from "./use-employee-state";
 export * from "./failure-reason";
 export * from "./effective-access";
 export * from "./queries";

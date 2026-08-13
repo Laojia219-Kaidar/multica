@@ -54,6 +54,52 @@
     "queued": "待機中",
     "idle": "アイドル"
   },
+  "status_explanation": {
+    "title": "ステータス",
+    "status": {
+      "working": "作業中",
+      "idle": "アイドル",
+      "waiting": "待機中",
+      "unavailable": "利用不可"
+    },
+    "reason": {
+      "agent_archived": "アーカイブ済み——任務から退いています",
+      "runtime_missing": "ランタイムが登録されていません",
+      "runtime_recently_lost": "ランタイムが直前に応答なし——自然復旧の可能性があります",
+      "runtime_offline": "ランタイムがオフラインです",
+      "runtime_about_to_gc": "ランタイムが数日オフライン——回収される恐れがあります",
+      "running_tasks_other": "{{count}} 件のタスクを実行中",
+      "waiting_local_directory": "作業ディレクトリの解放を待機中",
+      "dispatched_awaiting_start": "ディスパッチ済み——デーモンの起動を待機中",
+      "awaiting_dispatch": "キュー済み——ディスパッチを待機中",
+      "idle_ready": "現在タスクはありません",
+      "idle_backlog_waiting_other": "空きあり——ワークスペースのキューに {{count}} 件待機中"
+    },
+    "current_task": "現在の実行",
+    "capacity": "キャパシティ",
+    "capacity_value": "実行 {{running}} / {{capacity}}",
+    "capacity_unknown": "クォータ不明",
+    "runtime_health": "ランタイム健全性",
+    "health": {
+      "online": "オンライン",
+      "recently_lost": "直前に応答なし",
+      "offline": "オフライン",
+      "about_to_gc": "長期オフライン",
+      "missing": "ランタイムなし"
+    },
+    "last_seen": "最終確認 {{ago}}前",
+    "next_action": "次のアクション",
+    "action": {
+      "none": "なし——状態は正常です",
+      "unarchive": "アーカイブ解除で任務に復帰",
+      "restore_runtime": "ランタイムデーモンを確認または再起動",
+      "monitor_runtime": "様子見——通常数分で復旧します",
+      "await_path_lock": "占有中の実行が終われば解消します",
+      "await_daemon_start": "対応不要——デーモンが実行を開始します",
+      "await_dispatch": "対応不要——ディスパッチャーが拾います",
+      "assign_work": "この従業員にバックログを割り当ててください"
+    }
+  },
   "archived": {
     "active_link": "アクティブなエージェント",
     "title": "アーカイブ済みエージェント"
