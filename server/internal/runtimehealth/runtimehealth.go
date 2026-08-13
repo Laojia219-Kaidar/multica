@@ -35,6 +35,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"sync"
 	"time"
 )
 
@@ -416,6 +417,7 @@ func confidenceFor(current, pick HealthSnapshot) float64 {
 // Cooldown records the last replacement time per Employee so the Recommender
 // does not flap a binding back and forth. It is safe for concurrent use.
 type Cooldown struct {
+	mu         sync.RWMutex
 	lastSwitch map[string]time.Time
 }
 
@@ -431,6 +433,8 @@ func (c *Cooldown) Allow(employeeID string, now time.Time, cooldown time.Duratio
 	if c == nil {
 		return true
 	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	last, ok := c.lastSwitch[employeeID]
 	if !ok {
 		return true
@@ -443,6 +447,8 @@ func (c *Cooldown) Record(employeeID string, now time.Time) {
 	if c == nil {
 		return
 	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.lastSwitch[employeeID] = now
 }
 

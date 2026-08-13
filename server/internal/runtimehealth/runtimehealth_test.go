@@ -3,6 +3,7 @@ package runtimehealth
 import (
 	"context"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -414,6 +415,54 @@ func TestNilCooldownAlwaysAllows(t *testing.T) {
 		t.Error("nil Cooldown.Allow = false, want true")
 	}
 	cd.Record("EMP", time.Now()) // must not panic
+}
+
+// TestCooldownConcurrentAccess verifies the "safe for concurrent use"
+// contract under the race detector. Multiple goroutines concurrently call
+// Allow (read lock) and Record (write lock) on the same Cooldown; -race will
+// flag any unsynchronized map access. Run with: go test -race -count=1
+func TestCooldownConcurrentAccess(t *testing.T) {
+	cd := NewCooldown()
+	const goroutines = 64
+	const iterations = 200
+	employees := []string{"EMP-A", "EMP-B", "EMP-C", "EMP-D"}
+
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+	for i := 0; i < goroutines; i++ {
+		go func(seed int) {
+			defer wg.Done()
+			for j := 0; j < iterations; j++ {
+				emp := employees[(seed+j)%len(employees)]
+				now := time.Unix(int64(j), 0)
+				cd.Allow(emp, now, time.Second)
+				cd.Record(emp, now)
+			}
+		}(i)
+	}
+	wg.Wait()
+}
+
+// TestRecommenderConcurrentDecide verifies that concurrent Recommender.Decide
+// calls sharing one Cooldown do not race on the underlying map. This mirrors
+// the real-world scenario where multiple health evaluators run in parallel.
+func TestRecommenderConcurrentDecide(t *testing.T) {
+	current := openclawFailureProber().Probe(context.Background(), lighthouseOpenclawBinding())
+	candidate := healthyClaudeProber().Probe(context.Background(), lighthouseClaudeCandidate())
+	rec := Recommender{Cooldown: 5 * time.Minute}
+	cd := NewCooldown()
+
+	const goroutines = 32
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+	for i := 0; i < goroutines; i++ {
+		go func(n int) {
+			defer wg.Done()
+			now := fixedNow.Add(time.Duration(n) * time.Minute)
+			_, _ = rec.Decide(current, []HealthSnapshot{candidate}, cd, now)
+		}(i)
+	}
+	wg.Wait()
 }
 
 // --- Probe helpers --------------------------------------------------------
