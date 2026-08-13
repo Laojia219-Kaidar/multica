@@ -1012,6 +1012,30 @@ type issueTaskTriggerEvidenceOverride struct {
 	RefID pgtype.UUID
 }
 
+// rejectPausedProjectByID blocks task creation when the project is paused. It
+// is the projectID-level guard shared by every enqueue entry point.
+func (s *TaskService) rejectPausedProjectByID(ctx context.Context, queries *db.Queries, workspaceID, projectID pgtype.UUID) error {
+	if !projectID.Valid {
+		return nil
+	}
+	proj, err := queries.GetProjectInWorkspace(ctx, db.GetProjectInWorkspaceParams{ID: projectID, WorkspaceID: workspaceID})
+	if err != nil {
+		return nil // fail-open on lookup error; a dangling project id is not our gate to enforce
+	}
+	if proj.Status == "paused" {
+		return ErrProjectPausedDispatch
+	}
+	return nil
+}
+
+// rejectPausedProjectDispatch blocks task enqueue when the issue's project is
+// paused. It is called from BOTH prepare paths (issue + mention) plus the
+// quick-create and deferred-fallback entry points, so pause gates every
+// dispatch source.
+func (s *TaskService) rejectPausedProjectDispatch(ctx context.Context, queries *db.Queries, issue db.Issue) error {
+	return s.rejectPausedProjectByID(ctx, queries, issue.WorkspaceID, issue.ProjectID)
+}
+
 func (s *TaskService) enqueueIssueTaskWithCommentPlan(ctx context.Context, issue db.Issue, triggerCommentID pgtype.UUID, coalescedCommentIDs []pgtype.UUID, forceFreshSession bool, handoffNote string, actorUserID pgtype.UUID, rerunOfTaskID pgtype.UUID) (db.AgentTaskQueue, error) {
 	task, err := s.prepareIssueTaskWithCommentPlan(
 		ctx,
@@ -1068,6 +1092,9 @@ func (s *TaskService) prepareIssueTaskWithCommentPlan(
 	}
 	if queries == nil {
 		return db.AgentTaskQueue{}, fmt.Errorf("task prepare queries are required")
+	}
+	if err := s.rejectPausedProjectDispatch(ctx, queries, issue); err != nil {
+		return db.AgentTaskQueue{}, err
 	}
 	if evidenceOverride != nil && (evidenceOverride.Kind == "" ||
 		!evidenceOverride.RefID.Valid || evidenceOverride.RefID.Bytes == ([16]byte{})) {
@@ -1141,6 +1168,13 @@ func (s *TaskService) prepareIssueTaskWithCommentPlan(
 		HeadSha: headShaText(preparer.ResolveIssueReviewSHA(ctx, issue.ID)),
 	})
 	if err != nil {
+		// Map the pending-task unique-index violation to the sentinel so the
+		// Slice 2 continue control op can return an idempotent replay receipt
+		// instead of surfacing a raw constraint error (Gauss re-review #4).
+		if isDuplicatePendingTaskErr(err) {
+			slog.Debug("task enqueue coalesced: pending task already exists", "issue_id", util.UUIDToString(issue.ID))
+			return db.AgentTaskQueue{}, ErrDuplicatePendingTask
+		}
 		slog.Error("task enqueue failed", "issue_id", util.UUIDToString(issue.ID), "error", err)
 		return db.AgentTaskQueue{}, fmt.Errorf("create task: %w", err)
 	}
@@ -1216,6 +1250,9 @@ func (s *TaskService) prepareMentionTaskWithCommentPlan(
 ) (db.AgentTaskQueue, error) {
 	if s == nil || queries == nil {
 		return db.AgentTaskQueue{}, fmt.Errorf("task prepare queries are required")
+	}
+	if err := s.rejectPausedProjectDispatch(ctx, queries, issue); err != nil {
+		return db.AgentTaskQueue{}, err
 	}
 	preparer := *s
 	preparer.Queries = queries
@@ -1295,6 +1332,9 @@ func (s *TaskService) prepareMentionTaskWithCommentPlan(
 // EnqueueDeferredAssigneeFallback creates an inert task that becomes claimable
 // only after PromoteDueDeferredTasksForRuntime flips it from deferred to queued.
 func (s *TaskService) EnqueueDeferredAssigneeFallback(ctx context.Context, issue db.Issue, agentID, squadID pgtype.UUID, escalationForTaskID pgtype.UUID, triggerCommentID pgtype.UUID, fireAt time.Time) (db.AgentTaskQueue, error) {
+	if err := s.rejectPausedProjectDispatch(ctx, s.Queries, issue); err != nil {
+		return db.AgentTaskQueue{}, err
+	}
 	agent, err := s.Queries.GetAgent(ctx, agentID)
 	if err != nil {
 		slog.Error("deferred fallback enqueue failed: agent not found", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID), "error", err)
@@ -1416,6 +1456,9 @@ const QuickCreateContextType = "quick_create"
 // open the modal from "Add sub issue"). The handler is responsible for
 // validating it belongs to the same workspace before passing it in.
 func (s *TaskService) EnqueueQuickCreateTask(ctx context.Context, workspaceID, requesterID pgtype.UUID, agentID, squadID pgtype.UUID, prompt, priority, dueDate string, projectID, parentIssueID pgtype.UUID, attachmentIDs []pgtype.UUID) (db.AgentTaskQueue, error) {
+	if err := s.rejectPausedProjectByID(ctx, s.Queries, workspaceID, projectID); err != nil {
+		return db.AgentTaskQueue{}, err
+	}
 	agent, err := s.Queries.GetAgent(ctx, agentID)
 	if err != nil {
 		return db.AgentTaskQueue{}, fmt.Errorf("load agent: %w", err)

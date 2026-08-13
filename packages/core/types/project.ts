@@ -167,3 +167,32 @@ export interface ListProjectLifecycleResponse {
   projects: ProjectLifecycleSnapshot[];
   total: number;
 }
+
+// ---- Slice 2 owner control operations (continue / pause_dispatch / resume) ----
+
+export type ProjectControlAction = "continue" | "pause_dispatch" | "resume";
+
+export interface ProjectControlReceipt {
+  action: string;
+  project_id: string;
+  applied: boolean;
+  replayed: boolean;
+  idempotency_key: string;
+  before_status: string;
+  after_status: string;
+  task_id?: string | null;
+  issue_id?: string | null;
+  recovery_of?: string | null;
+  blockers?: string[];
+}
+
+export interface ContinuePreview {
+  project_id: string;
+  health: string;
+  lead_type: "member" | "agent" | null;
+  lead_id: string | null;
+  target_issue_id: string;
+  target_issue_number: number;
+  target_agent_id: string | null;
+  blockers: string[];
+}

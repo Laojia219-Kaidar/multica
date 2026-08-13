@@ -134,6 +134,9 @@ export type {
   ProjectLifecycleSnapshot,
   ProjectLifecycleFrontierTask,
   ListProjectLifecycleResponse,
+  ProjectControlAction,
+  ProjectControlReceipt,
+  ContinuePreview,
 } from "./project";
 export type { PinnedItem, PinnedItemType, CreatePinRequest, ReorderPinsRequest } from "./pin";
 export type {

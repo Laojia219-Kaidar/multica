@@ -25,6 +25,7 @@ import { useNavigation } from "../../navigation";
 import { TitleEditor, ContentEditor, type ContentEditorRef } from "../../editor";
 import { PriorityIcon } from "../../issues/components/priority-icon";
 import { ProjectResourcesSection } from "./project-resources-section";
+import { ProjectControlActions } from "./project-control-actions";
 import { ProjectStartDatePicker } from "./project-start-date-picker";
 import { ProjectDueDatePicker } from "./project-due-date-picker";
 import { IssueSurface } from "../../issues/surface/issue-surface";
@@ -436,6 +437,12 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
           </div>
         );
       })()}
+
+      {/* Project control (Slice 2 owner operations) */}
+      <div>
+        <div className="mb-2 px-2 text-xs font-medium text-muted-foreground">项目控制</div>
+        <ProjectControlActions project={project} workspaceId={wsId} />
+      </div>
 
       {/* Description */}
       <div>
