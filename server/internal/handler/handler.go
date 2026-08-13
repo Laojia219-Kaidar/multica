@@ -188,6 +188,10 @@ type Handler struct {
 	// (HIV-355): dispatch-preview (read-only) and dispatch (idempotent write).
 	// Nil when not wired; the handlers return 503 in that case.
 	OwnerDispatchService *service.OwnerDispatchService
+	// ProjectAutoStartService implements the bounded Project start/continue
+	// control slice (HIV-405): dependency-ready wave preview + idempotent
+	// batch dispatch. Nil when not wired; handlers return 503.
+	ProjectAutoStartService *service.ProjectAutoStartService
 	// CompanyOpsArtifacts materializes completed canonical Runs into temporary
 	// artifact candidates and appends exact Owner review decisions.
 	CompanyOpsArtifacts *service.CompanyOpsArtifactService
@@ -407,6 +411,7 @@ func New(queries *db.Queries, txStarter txStarter, hub *realtime.Hub, bus *event
 		TaskService:                  taskSvc,
 		IssueService:                 service.NewIssueService(queries, txStarter, bus, analyticsClient, taskSvc),
 		OwnerDispatchService:         service.NewOwnerDispatchService(queries, txStarter, taskSvc),
+		ProjectAutoStartService:      nil, // wired below after OwnerDispatchService is available
 		AutopilotService:             service.NewAutopilotService(queries, txStarter, bus, taskSvc),
 		EmailService:                 emailService,
 		UpdateStore:                  NewInMemoryUpdateStore(),
@@ -445,6 +450,9 @@ func New(queries *db.Queries, txStarter txStarter, hub *realtime.Hub, bus *event
 		slog.Warn("github: PR snapshot pipeline disabled (invalid App private key)", "err", err)
 	}
 	h.PRRefresh = ghsnapshot.NewManager(ghClient, queries, txStarter, h.broadcastPRSnapshotApplied)
+
+	// HIV-405: wire ProjectAutoStartService reusing the same OwnerDispatchService.
+	h.ProjectAutoStartService = service.NewProjectAutoStartService(queries, h.OwnerDispatchService)
 
 	return h
 }

@@ -248,10 +248,11 @@ func (h *Handler) GetProjectPipeline(w http.ResponseWriter, r *http.Request) {
 			CancelTask:   true,
 			RerunIssue:   true,
 			UpdateStatus: true,
-			// Sibling commands not yet merged into this mainline — fail honest.
-			DispatchPreview: false,
-			Dispatch:        false,
-			ProjectStart:    false,
+			// HIV-355: dispatch-preview and dispatch are wired.
+			DispatchPreview: true,
+			Dispatch:        true,
+			// HIV-405: project start/continue is wired.
+			ProjectStart: true,
 		},
 	}
 	writeJSON(w, http.StatusOK, resp)

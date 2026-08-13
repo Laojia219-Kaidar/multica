@@ -1980,6 +1980,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// Slice 4 project closure package (candidate, read-only).
 					r.Post("/closure-package", h.ProjectClosurePackage)
 					r.Post("/closure-package/review", h.ReviewProjectClosurePackage)
+					// HIV-405: bounded Project start/continue control.
+					r.Post("/start-preview", h.ProjectStartPreview)
+					r.Post("/start", h.ProjectStart)
 					r.Get("/resources", h.ListProjectResources)
 					r.Post("/resources", h.CreateProjectResource)
 					r.Put("/resources/{resourceId}", h.UpdateProjectResource)

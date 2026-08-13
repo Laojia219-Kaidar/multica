@@ -403,18 +403,16 @@ func TestPipeline_InvalidProjectID_Returns400(t *testing.T) {
 	}
 }
 
-// TestPipeline_CapabilityFlags_HonestWhenSiblingCommandsMissing verifies §6:
-// dispatch_preview/dispatch/project_start must be false when the sibling
-// command (HIV-355 / HIV-357) is not merged into this mainline. The frontend
-// uses these flags to render "能力待接入" instead of a fake local mutation.
-func TestPipeline_CapabilityFlags_HonestWhenSiblingCommandsMissing(t *testing.T) {
+// TestPipeline_CapabilityFlags_AllWired verifies §6: all capability flags
+// are true now that HIV-355 (dispatch) and HIV-405 (project start) have landed.
+func TestPipeline_CapabilityFlags_AllWired(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
 	}
 	projectID := seedPipelineProject(t)
 	resp := callGetProjectPipeline(t, projectID)
-	if resp.CapabilityFlags.DispatchPreview || resp.CapabilityFlags.Dispatch || resp.CapabilityFlags.ProjectStart {
-		t.Fatalf("dispatch/dispatch_preview/project_start must be false until HIV-355/HIV-357 land, got %+v", resp.CapabilityFlags)
+	if !resp.CapabilityFlags.DispatchPreview || !resp.CapabilityFlags.Dispatch || !resp.CapabilityFlags.ProjectStart {
+		t.Fatalf("dispatch/dispatch_preview/project_start must be true now that HIV-355/HIV-405 landed, got %+v", resp.CapabilityFlags)
 	}
 	if !resp.CapabilityFlags.CancelTask || !resp.CapabilityFlags.RerunIssue || !resp.CapabilityFlags.UpdateStatus {
 		t.Fatalf("existing canonical actions (cancel/rerun/status) must be true, got %+v", resp.CapabilityFlags)
