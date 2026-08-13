@@ -250,8 +250,8 @@ func TestCloseFailsClosedWithoutOutcomes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("close: %v", err)
 	}
-	if len(r.Blockers) == 0 {
-		t.Fatalf("close receipt = %+v, want fail-closed blockers (no confirmed outcomes)", r)
+	if !containsStr(r.Blockers, "OUTCOME_COVERAGE_INCOMPLETE") || !containsStr(r.Blockers, "CLOSURE_PACKAGE_MISSING") {
+		t.Fatalf("close blockers = %v, want OUTCOME_COVERAGE_INCOMPLETE + CLOSURE_PACKAGE_MISSING", r.Blockers)
 	}
 	if r.Applied {
 		t.Fatalf("close applied a terminal write despite unmet gates: %+v", r)
@@ -263,5 +263,18 @@ func TestCloseFailsClosedWithoutOutcomes(t *testing.T) {
 	}
 	if status != "in_progress" {
 		t.Fatalf("close mutated status to %q, want in_progress", status)
+	}
+}
+
+// digest determinism: same package state yields the same sha256 fingerprint.
+func TestClosurePackageDigestDeterministic(t *testing.T) {
+	p1 := &ClosurePackage{ProjectID: "p1", Status: "in_progress", TerminalIssueCount: 4, ReviewRequired: true}
+	p2 := &ClosurePackage{ProjectID: "p1", Status: "in_progress", TerminalIssueCount: 4, ReviewRequired: true}
+	if closurePackageDigest(p1) != closurePackageDigest(p2) {
+		t.Fatalf("digest not deterministic: %s vs %s", closurePackageDigest(p1), closurePackageDigest(p2))
+	}
+	p2.TerminalIssueCount = 5
+	if closurePackageDigest(p1) == closurePackageDigest(p2) {
+		t.Fatalf("digest did not change on different terminal count")
 	}
 }

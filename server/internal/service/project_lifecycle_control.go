@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/util"
@@ -471,6 +472,11 @@ func (s *ProjectLifecycleControlService) Close(ctx context.Context, workspaceID,
 		BeforeStatus:   proj.Status,
 		AfterStatus:    proj.Status,
 	}
+	// Idempotent re-close of an already-completed project (Gauss/Quinn F2).
+	if proj.Status == "completed" {
+		receipt.Replayed = true
+		return receipt, nil
+	}
 	if blockers := validateProjectControl(proj, ActionClose); len(blockers) > 0 {
 		receipt.Blockers = blockers
 		return receipt, nil
@@ -484,11 +490,10 @@ func (s *ProjectLifecycleControlService) Close(ctx context.Context, workspaceID,
 		return receipt, nil
 	}
 	if pkg.ReviewRequired {
+		// Hard fail-closed stub: the independent package-review record
+		// mechanism is Slice 3 review-cell integration (W3). Until a reviewer
+		// records approval, close refuses (Gauss P1 / red matrix C8 deferred).
 		receipt.Blockers = []string{"CLOSURE_PACKAGE_REVIEW_REQUIRED"}
-		return receipt, nil
-	}
-	if proj.Status == "completed" {
-		receipt.Replayed = true
 		return receipt, nil
 	}
 	if err := s.setProjectStatus(ctx, proj, "completed"); err != nil {
@@ -502,8 +507,17 @@ func (s *ProjectLifecycleControlService) Close(ctx context.Context, workspaceID,
 // closurePackageDigest returns a deterministic sha256 over the package's
 // gate-relevant fields (provenance fingerprint, not a second truth).
 func closurePackageDigest(p *ClosurePackage) string {
-	sum := sha256.Sum256([]byte(fmt.Sprintf("%s|%d|%d|%d|%d|%d|%v",
-		p.ProjectID, p.TerminalIssueCount, p.NonterminalIssueCount, p.ActiveTaskCount,
-		p.OutcomeConfirmed, p.OutcomeTotal, p.ReviewRequired)))
+	sum := sha256.Sum256([]byte(fmt.Sprintf("%s|%s|%s|%s|%d|%d|%d|%d|%d|%v|%v|%v",
+		p.ProjectID, p.Status, ptrOrEmpty(p.LeadType), ptrOrEmpty(p.LeadID),
+		p.TerminalIssueCount, p.NonterminalIssueCount, p.ActiveTaskCount,
+		p.OutcomeConfirmed, p.OutcomeTotal, p.ReviewRequired,
+		strings.Join(p.Blockers, ","), ptrOrEmpty(p.DuplicateOfProjectID))))
 	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+func ptrOrEmpty(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }

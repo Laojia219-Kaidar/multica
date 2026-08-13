@@ -161,9 +161,16 @@ func (h *Handler) ProjectClosurePackage(w http.ResponseWriter, r *http.Request) 
 	}
 	var req projectLifecycleActionRequest
 	if r.Body != nil {
-		body, _ := io.ReadAll(r.Body)
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "failed to read request body")
+			return
+		}
 		if len(body) > 0 {
-			_ = json.Unmarshal(body, &req)
+			if err := json.Unmarshal(body, &req); err != nil {
+				writeError(w, http.StatusBadRequest, "invalid request body")
+				return
+			}
 		}
 	}
 	ctrl := service.NewProjectLifecycleControlService(h.Queries, h.TaskService)
