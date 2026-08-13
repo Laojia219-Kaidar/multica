@@ -10,18 +10,49 @@ import (
 // the quota is considered stale. Exported for test overrides.
 var QuotaStalenessThreshold = 15 * time.Minute
 
+// Clock abstracts time retrieval so tests can inject a deterministic
+// time source instead of relying on the real wall clock.
+type Clock interface {
+	Now() time.Time
+}
+
+// realClock is the production Clock that delegates to time.Now.
+type realClock struct{}
+
+func (realClock) Now() time.Time { return time.Now() }
+
 // Scorer evaluates candidates against task requirements.
 type Scorer struct {
 	weights Weights
+	clock   Clock
 }
 
 // NewScorer constructs a Scorer with the supplied weights. If weights
-// is nil, DefaultWeights is used.
+// is nil, DefaultWeights is used. All weights must be non-negative and
+// every dimension in AllDimensions must be present.
 func NewScorer(w Weights) *Scorer {
 	if w == nil {
 		w = DefaultWeights()
 	}
-	return &Scorer{weights: w}
+	for _, dim := range AllDimensions() {
+		v, ok := w[dim]
+		if !ok {
+			panic(fmt.Sprintf("routescore: missing weight for dimension %q", dim))
+		}
+		if v < 0 {
+			panic(fmt.Sprintf("routescore: negative weight %f for dimension %q", v, dim))
+		}
+	}
+	return &Scorer{weights: w, clock: realClock{}}
+}
+
+// WithClock returns a copy of the Scorer that uses the supplied Clock
+// for time-dependent gate checks. Production code uses the real wall
+// clock; tests inject a fixed clock for determinism.
+func (s *Scorer) WithClock(c Clock) *Scorer {
+	cp := *s
+	cp.clock = c
+	return &cp
 }
 
 // Score evaluates one candidate against the task requirement. It
@@ -72,7 +103,7 @@ func (s *Scorer) hardGate(c Candidate, req TaskRequirement) (string, bool) {
 	if c.Quota == QuotaStale {
 		return "quota_stale", true
 	}
-	if time.Since(c.QuotaCheckedAt) > QuotaStalenessThreshold {
+	if s.clock.Now().Sub(c.QuotaCheckedAt) > QuotaStalenessThreshold {
 		return "quota_check_expired", true
 	}
 
