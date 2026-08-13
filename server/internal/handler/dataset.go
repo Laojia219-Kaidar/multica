@@ -44,6 +44,7 @@ func (h *Handler) CreateDataset(w http.ResponseWriter, r *http.Request) {
 	if req.Version <= 0 { req.Version = 1 }
 	d, err := h.Queries.CreateDataset(r.Context(), db.CreateDatasetParams{
 		WorkspaceID: parseUUID(workspaceID), Name: req.Name, Domain: req.Domain, Version: req.Version,
+		AuthorizedAgentIds: []pgtype.UUID{},
 	})
 	if err != nil { writeError(w, http.StatusInternalServerError, "failed to create dataset"); return }
 	writeJSON(w, http.StatusCreated, datasetToResponse(d))
