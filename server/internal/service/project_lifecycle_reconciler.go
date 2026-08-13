@@ -99,3 +99,44 @@ func (r *ProjectLifecycleReconciler) Diagnose(ctx context.Context, workspaceID p
 	}
 	return findings, nil
 }
+
+// ReconcileWorkspace runs the diagnosis and creates one dedup'd traceable
+// action per finding (the "handle" half of VC-12). A finding is skipped when an
+// open "[自愈] <kind>" issue already exists for the project (idempotent).
+func (r *ProjectLifecycleReconciler) ReconcileWorkspace(ctx context.Context, workspaceID pgtype.UUID, issueSvc *IssueService, creatorType string, creatorID pgtype.UUID) (int, error) {
+	findings, err := r.Diagnose(ctx, workspaceID)
+	if err != nil {
+		return 0, err
+	}
+	created := 0
+	for _, f := range findings {
+		prefix := "[自愈] " + f.Kind + " · %"
+		exists, err := r.Queries.HasOpenReconcileIssue(ctx, db.HasOpenReconcileIssueParams{
+			ProjectID: util.MustParseUUID(f.ProjectID),
+			Title:     prefix,
+		})
+		if err != nil || exists {
+			continue
+		}
+		title := "[自愈] " + f.Kind + " · " + f.Summary
+		if len(title) > 200 {
+			title = title[:200]
+		}
+		_, err = issueSvc.Create(ctx, IssueCreateParams{
+			WorkspaceID:    workspaceID,
+			Title:          title,
+			Description:    pgtype.Text{String: f.NextAction, Valid: true},
+			Status:         "backlog",
+			Priority:       "medium",
+			CreatorType:    creatorType,
+			CreatorID:      creatorID,
+			ProjectID:      util.MustParseUUID(f.ProjectID),
+			AllowDuplicate: true,
+		}, IssueCreateOpts{})
+		if err != nil {
+			return created, fmt.Errorf("create reconcile action for %s/%s: %w", f.ProjectID, f.Kind, err)
+		}
+		created++
+	}
+	return created, nil
+}

@@ -45,6 +45,27 @@ func (q *Queries) GetProjectLifecycleReceipt(ctx context.Context, arg GetProject
 	return i, err
 }
 
+const hasOpenReconcileIssue = `-- name: HasOpenReconcileIssue :one
+SELECT EXISTS (
+    SELECT 1 FROM issue
+    WHERE project_id = $1
+      AND status IN ('backlog','todo','in_progress','in_review','blocked')
+      AND title LIKE $2
+) AS exists
+`
+
+type HasOpenReconcileIssueParams struct {
+	ProjectID pgtype.UUID `json:"project_id"`
+	Title     string      `json:"title"`
+}
+
+func (q *Queries) HasOpenReconcileIssue(ctx context.Context, arg HasOpenReconcileIssueParams) (bool, error) {
+	row := q.db.QueryRow(ctx, hasOpenReconcileIssue, arg.ProjectID, arg.Title)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const insertProjectLifecycleReceipt = `-- name: InsertProjectLifecycleReceipt :one
 INSERT INTO project_lifecycle_receipt (
     workspace_id, project_id, action, idempotency_key, payload_digest,

@@ -382,3 +382,35 @@ func TestReviewClosurePackageSatisfiesReviewGate(t *testing.T) {
 		t.Fatalf("close blockers = %v, want OUTCOME_COVERAGE_INCOMPLETE (ledger empty)", r.Blockers)
 	}
 }
+
+// VC-12: ReconcileWorkspace creates a dedup'd traceable action per finding, and
+// a second run is idempotent (no duplicate issues).
+func TestReconcileWorkspaceDedup(t *testing.T) {
+	pool, workspaceID, _, _ := seedPausedProjectFixture(t, "in_progress")
+	q := db.New(pool)
+	svc := &TaskService{Queries: q, TxStarter: pool, Bus: events.New()}
+	issueSvc := NewIssueService(q, pool, events.New(), nil, svc)
+	reconciler := NewProjectLifecycleReconciler(q)
+	ctx := context.Background()
+	wsUUID := util.MustParseUUID(workspaceID)
+
+	var ownerID string
+	if err := pool.QueryRow(ctx, `SELECT user_id::text FROM member WHERE workspace_id=$1 AND role='owner' LIMIT 1`, workspaceID).Scan(&ownerID); err != nil {
+		t.Fatalf("load owner: %v", err)
+	}
+
+	n1, err := reconciler.ReconcileWorkspace(ctx, wsUUID, issueSvc, "member", util.MustParseUUID(ownerID))
+	if err != nil {
+		t.Fatalf("first reconcile: %v", err)
+	}
+	if n1 == 0 {
+		t.Fatalf("first reconcile created 0 actions, want >= 1")
+	}
+	n2, err := reconciler.ReconcileWorkspace(ctx, wsUUID, issueSvc, "member", util.MustParseUUID(ownerID))
+	if err != nil {
+		t.Fatalf("second reconcile: %v", err)
+	}
+	if n2 != 0 {
+		t.Fatalf("second reconcile created %d duplicate actions, want 0", n2)
+	}
+}

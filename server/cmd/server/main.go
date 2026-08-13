@@ -480,6 +480,15 @@ func main() {
 	if err := schedulerMgr.Register(scheduler.AutopilotScheduleDispatchJob(pool, queries, autopilotSvc)); err != nil {
 		slog.Warn("scheduler: failed to register autopilot_schedule_dispatch job", "error", err)
 	}
+	// HIVECREW-PROJECT-LIFECYCLE-CLOSURE-V1 (VC-12): periodic self-operation
+	// reconciler — diagnoses the four broken chains and creates one dedup'd
+	// traceable Issue per finding, so the system self-heals without Prime
+	// manually pushing each item.
+	if h.IssueService != nil {
+		if err := schedulerMgr.Register(scheduler.ProjectLifecycleReconcilerJob(pool, queries, h.IssueService)); err != nil {
+			slog.Warn("scheduler: failed to register project_lifecycle_reconciler job", "error", err)
+		}
+	}
 	go func() {
 		_ = schedulerMgr.Run(sweepCtx)
 	}()
