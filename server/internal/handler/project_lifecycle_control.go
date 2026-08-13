@@ -2,6 +2,7 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 
@@ -10,6 +11,20 @@ import (
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
+
+// writeControlError maps a control-service error to the right HTTP status:
+// not-found -> 404, idempotency conflict -> 409, anything else -> 500 (no more
+// masking every internal fault as "project not found").
+func writeControlError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, service.ErrProjectLifecycleNotFound):
+		writeError(w, http.StatusNotFound, "project not found")
+	case errors.Is(err, service.ErrProjectLifecycleConflict):
+		writeError(w, http.StatusConflict, "idempotency key conflict")
+	default:
+		writeError(w, http.StatusInternalServerError, "project control operation failed")
+	}
+}
 
 // projectLifecycleActionRequest is the body for the Slice 2 control endpoints.
 // preview=true returns the planned effect with zero writes.
@@ -67,7 +82,7 @@ func (h *Handler) ProjectLifecycleAction(w http.ResponseWriter, r *http.Request)
 		if req.Preview {
 			p, err := ctrl.PreviewContinue(r.Context(), wsUUID, idUUID)
 			if err != nil {
-				writeError(w, http.StatusNotFound, "project not found")
+				writeControlError(w, err)
 				return
 			}
 			writeJSON(w, http.StatusOK, map[string]any{"preview": p})
@@ -75,7 +90,7 @@ func (h *Handler) ProjectLifecycleAction(w http.ResponseWriter, r *http.Request)
 		}
 		receipt, err := ctrl.Continue(r.Context(), wsUUID, idUUID, req.IdempotencyKey)
 		if err != nil {
-			writeError(w, http.StatusNotFound, "project not found")
+			writeControlError(w, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, receipt)
@@ -84,7 +99,7 @@ func (h *Handler) ProjectLifecycleAction(w http.ResponseWriter, r *http.Request)
 		if req.Preview {
 			receipt, err := ctrl.PreviewPause(r.Context(), wsUUID, idUUID)
 			if err != nil {
-				writeError(w, http.StatusNotFound, "project not found")
+				writeControlError(w, err)
 				return
 			}
 			writeJSON(w, http.StatusOK, receipt)
@@ -92,7 +107,7 @@ func (h *Handler) ProjectLifecycleAction(w http.ResponseWriter, r *http.Request)
 		}
 		receipt, err := ctrl.PauseDispatch(r.Context(), wsUUID, idUUID, req.IdempotencyKey)
 		if err != nil {
-			writeError(w, http.StatusNotFound, "project not found")
+			writeControlError(w, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, receipt)
@@ -101,7 +116,7 @@ func (h *Handler) ProjectLifecycleAction(w http.ResponseWriter, r *http.Request)
 		if req.Preview {
 			receipt, err := ctrl.PreviewResume(r.Context(), wsUUID, idUUID)
 			if err != nil {
-				writeError(w, http.StatusNotFound, "project not found")
+				writeControlError(w, err)
 				return
 			}
 			writeJSON(w, http.StatusOK, receipt)
@@ -109,7 +124,7 @@ func (h *Handler) ProjectLifecycleAction(w http.ResponseWriter, r *http.Request)
 		}
 		receipt, err := ctrl.Resume(r.Context(), wsUUID, idUUID, req.IdempotencyKey)
 		if err != nil {
-			writeError(w, http.StatusNotFound, "project not found")
+			writeControlError(w, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, receipt)
@@ -118,7 +133,7 @@ func (h *Handler) ProjectLifecycleAction(w http.ResponseWriter, r *http.Request)
 		if req.Preview {
 			pkg, err := ctrl.PreviewClose(r.Context(), wsUUID, idUUID)
 			if err != nil {
-				writeError(w, http.StatusNotFound, "project not found")
+				writeControlError(w, err)
 				return
 			}
 			writeJSON(w, http.StatusOK, map[string]any{"preview": pkg})
@@ -126,7 +141,7 @@ func (h *Handler) ProjectLifecycleAction(w http.ResponseWriter, r *http.Request)
 		}
 		receipt, err := ctrl.Close(r.Context(), wsUUID, idUUID, req.IdempotencyKey)
 		if err != nil {
-			writeError(w, http.StatusNotFound, "project not found")
+			writeControlError(w, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, receipt)
@@ -176,7 +191,7 @@ func (h *Handler) ProjectClosurePackage(w http.ResponseWriter, r *http.Request) 
 	ctrl := service.NewProjectLifecycleControlService(h.Queries, h.TaskService)
 	pkg, err := ctrl.GenerateClosurePackage(r.Context(), wsUUID, idUUID, req.IdempotencyKey)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "project not found")
+		writeControlError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, pkg)

@@ -4,10 +4,12 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -144,15 +146,21 @@ func (s *ProjectLifecycleControlService) Continue(ctx context.Context, workspace
 		BeforeStatus:   proj.Status,
 		AfterStatus:    proj.Status,
 	}
+	if prior, err := s.receiptGuard(ctx, workspaceID, projectID, ActionContinue, idempotencyKey); err != nil {
+		return ControlReceipt{}, err
+	} else if prior != nil {
+		return receiptToControl(*prior, true), nil
+	}
+	finalize := func() (ControlReceipt, error) { return s.finish(ctx, workspaceID, receipt) }
 	if blockers := validateProjectControl(proj, ActionContinue); len(blockers) > 0 {
 		receipt.Blockers = blockers
-		return receipt, nil
+		return finalize()
 	}
 	issue, err := s.frontierIssue(ctx, workspaceID, projectID)
 	if err != nil {
 		if errors.Is(err, ErrProjectLifecycleNoFrontier) {
 			receipt.Blockers = []string{"NO_READY_FRONTIER"}
-			return receipt, nil
+			return finalize()
 		}
 		return ControlReceipt{}, err
 	}
@@ -162,7 +170,7 @@ func (s *ProjectLifecycleControlService) Continue(ctx context.Context, workspace
 		receipt.TaskID = uuidOrNil(existing.ID)
 		receipt.IssueID = uuidOrNil(issue.ID)
 		receipt.Replayed = true
-		return receipt, nil
+		return finalize()
 	}
 	task, err := s.Tasks.EnqueueTaskForIssue(ctx, issue)
 	if err != nil {
@@ -172,17 +180,17 @@ func (s *ProjectLifecycleControlService) Continue(ctx context.Context, workspace
 				receipt.TaskID = uuidOrNil(existing.ID)
 				receipt.IssueID = uuidOrNil(issue.ID)
 				receipt.Replayed = true
-				return receipt, nil
+				return finalize()
 			}
 			receipt.Blockers = []string{"DUPLICATE_PENDING_TASK"}
-			return receipt, nil
+			return finalize()
 		}
 		return ControlReceipt{}, err
 	}
 	receipt.TaskID = uuidOrNil(task.ID)
 	receipt.IssueID = uuidOrNil(issue.ID)
 	receipt.Applied = true
-	return receipt, nil
+	return finalize()
 }
 
 // PauseDispatch stops NEW dispatch only: it flips project.status to paused and
@@ -199,20 +207,26 @@ func (s *ProjectLifecycleControlService) PauseDispatch(ctx context.Context, work
 		BeforeStatus:   proj.Status,
 		AfterStatus:    proj.Status,
 	}
+	if prior, err := s.receiptGuard(ctx, workspaceID, projectID, ActionPauseDispatch, idempotencyKey); err != nil {
+		return ControlReceipt{}, err
+	} else if prior != nil {
+		return receiptToControl(*prior, true), nil
+	}
+	finalize := func() (ControlReceipt, error) { return s.finish(ctx, workspaceID, receipt) }
 	if blockers := validateProjectControl(proj, ActionPauseDispatch); len(blockers) > 0 {
 		receipt.Blockers = blockers
-		return receipt, nil
+		return finalize()
 	}
 	if proj.Status == "paused" {
 		receipt.Replayed = true
-		return receipt, nil
+		return finalize()
 	}
 	if err := s.setProjectStatus(ctx, proj, "paused"); err != nil {
 		return ControlReceipt{}, err
 	}
 	receipt.Applied = true
 	receipt.AfterStatus = "paused"
-	return receipt, nil
+	return finalize()
 }
 
 // Resume reactivates a paused project and dispatches its ready frontier. It
@@ -229,9 +243,15 @@ func (s *ProjectLifecycleControlService) Resume(ctx context.Context, workspaceID
 		BeforeStatus:   proj.Status,
 		AfterStatus:    proj.Status,
 	}
+	if prior, err := s.receiptGuard(ctx, workspaceID, projectID, ActionResume, idempotencyKey); err != nil {
+		return ControlReceipt{}, err
+	} else if prior != nil {
+		return receiptToControl(*prior, true), nil
+	}
+	finalize := func() (ControlReceipt, error) { return s.finish(ctx, workspaceID, receipt) }
 	if blockers := validateProjectControl(proj, ActionResume); len(blockers) > 0 {
 		receipt.Blockers = blockers
-		return receipt, nil
+		return finalize()
 	}
 	if err := s.setProjectStatus(ctx, proj, "in_progress"); err != nil {
 		return ControlReceipt{}, err
@@ -262,7 +282,7 @@ func (s *ProjectLifecycleControlService) Resume(ctx context.Context, workspaceID
 			receipt.Blockers = append(receipt.Blockers, "ENQUEUE_FAILED: "+enqErr.Error())
 		}
 	}
-	return receipt, nil
+	return finalize()
 }
 
 // frontierIssue returns the highest-priority dispatchable nonterminal issue,
@@ -382,16 +402,9 @@ func textValue(s string) pgtype.Text {
 // dispatch (Gauss phase_critical #1).
 var ErrProjectPausedDispatch = errors.New("project is paused: dispatch stopped")
 
-// validateProjectControlAt is validateProjectControl with an explicit seed map,
-// used only by tests to avoid mutating the frozen seed.
-func validateProjectControlAt(proj db.Project, action ControlAction, seed map[string]string) []string {
-	orig := frozenSupersessions
-	frozenSupersessions = seed
-	defer func() { frozenSupersessions = orig }()
-	return validateProjectControl(proj, action)
-}
-
-func parseTestUUID(s string) (pgtype.UUID, error) { return util.ParseUUID(s) }
+// ErrProjectLifecycleConflict is returned when an idempotency key is replayed
+// with a different payload digest (same key, different operation).
+var ErrProjectLifecycleConflict = errors.New("idempotency key conflict: different payload")
 
 // ClosurePackage is a candidate project closure package (Slice 4). It is a
 // DERIVED snapshot, never a second truth table: the projector recomputes it
@@ -466,20 +479,26 @@ func (s *ProjectLifecycleControlService) Close(ctx context.Context, workspaceID,
 		return ControlReceipt{}, ErrProjectLifecycleNotFound
 	}
 	receipt := ControlReceipt{
-		Action:         "close",
+		Action:         string(ActionClose),
 		ProjectID:      util.UUIDToString(proj.ID),
 		IdempotencyKey: idempotencyKey,
 		BeforeStatus:   proj.Status,
 		AfterStatus:    proj.Status,
 	}
+	if prior, err := s.receiptGuard(ctx, workspaceID, projectID, ActionClose, idempotencyKey); err != nil {
+		return ControlReceipt{}, err
+	} else if prior != nil {
+		return receiptToControl(*prior, true), nil
+	}
+	finalize := func() (ControlReceipt, error) { return s.finish(ctx, workspaceID, receipt) }
 	// Idempotent re-close of an already-completed project (Gauss/Quinn F2).
 	if proj.Status == "completed" {
 		receipt.Replayed = true
-		return receipt, nil
+		return finalize()
 	}
 	if blockers := validateProjectControl(proj, ActionClose); len(blockers) > 0 {
 		receipt.Blockers = blockers
-		return receipt, nil
+		return finalize()
 	}
 	pkg, err := s.GenerateClosurePackage(ctx, workspaceID, projectID, idempotencyKey)
 	if err != nil {
@@ -487,21 +506,110 @@ func (s *ProjectLifecycleControlService) Close(ctx context.Context, workspaceID,
 	}
 	if len(pkg.Blockers) > 0 {
 		receipt.Blockers = pkg.Blockers
-		return receipt, nil
+		return finalize()
 	}
 	if pkg.ReviewRequired {
 		// Hard fail-closed stub: the independent package-review record
 		// mechanism is Slice 3 review-cell integration (W3). Until a reviewer
 		// records approval, close refuses (Gauss P1 / red matrix C8 deferred).
 		receipt.Blockers = []string{"CLOSURE_PACKAGE_REVIEW_REQUIRED"}
-		return receipt, nil
+		return finalize()
 	}
 	if err := s.setProjectStatus(ctx, proj, "completed"); err != nil {
 		return ControlReceipt{}, err
 	}
 	receipt.Applied = true
 	receipt.AfterStatus = "completed"
-	return receipt, nil
+	return finalize()
+}
+
+// payloadDigest fingerprints an operation for idempotent replay detection.
+func payloadDigest(action ControlAction, projectID pgtype.UUID) string {
+	sum := sha256.Sum256([]byte(fmt.Sprintf("%s|%s", action, util.UUIDToString(projectID))))
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+// receiptGuard checks idempotency before an action. It returns a prior receipt
+// (replay) when the same key + digest was already applied, an error on conflict
+// (same key, different digest), or (nil, nil) to proceed.
+func (s *ProjectLifecycleControlService) receiptGuard(ctx context.Context, workspaceID, projectID pgtype.UUID, action ControlAction, idempotencyKey string) (*db.ProjectLifecycleReceipt, error) {
+	if idempotencyKey == "" {
+		return nil, nil
+	}
+	digest := payloadDigest(action, projectID)
+	existing, err := s.Queries.GetProjectLifecycleReceipt(ctx, db.GetProjectLifecycleReceiptParams{
+		WorkspaceID: workspaceID, IdempotencyKey: idempotencyKey,
+	})
+	if err == nil {
+		if existing.PayloadDigest == digest {
+			return &existing, nil
+		}
+		return nil, ErrProjectLifecycleConflict
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return nil, err
+	}
+	return nil, nil
+}
+
+// storeReceipt persists the append-only operation receipt.
+func (s *ProjectLifecycleControlService) storeReceipt(ctx context.Context, workspaceID pgtype.UUID, r ControlReceipt) error {
+	if r.IdempotencyKey == "" {
+		return nil
+	}
+	projID := util.MustParseUUID(r.ProjectID)
+	var taskID, issueID pgtype.UUID
+	if r.TaskID != nil {
+		taskID = util.MustParseUUID(*r.TaskID)
+	}
+	if r.IssueID != nil {
+		issueID = util.MustParseUUID(*r.IssueID)
+	}
+	blockersJSON, _ := json.Marshal(r.Blockers)
+	_, err := s.Queries.InsertProjectLifecycleReceipt(ctx, db.InsertProjectLifecycleReceiptParams{
+		WorkspaceID:    workspaceID,
+		ProjectID:      projID,
+		Action:         r.Action,
+		IdempotencyKey: r.IdempotencyKey,
+		PayloadDigest:  payloadDigest(ControlAction(r.Action), projID),
+		BeforeStatus:   r.BeforeStatus,
+		AfterStatus:    r.AfterStatus,
+		TaskID:         taskID,
+		IssueID:        issueID,
+		Blockers:       blockersJSON,
+		Applied:        r.Applied,
+		Replayed:       r.Replayed,
+	})
+	return err
+}
+
+// receiptToControl converts a stored receipt row to the wire shape. On replay
+// (replayed=true) this call applied nothing new: Applied=false, Replayed=true,
+// while before/after/task/issue reflect the original stored effect.
+func receiptToControl(r db.ProjectLifecycleReceipt, replayed bool) ControlReceipt {
+	applied := r.Applied
+	if replayed {
+		applied = false
+	}
+	return ControlReceipt{
+		Action:         r.Action,
+		ProjectID:      util.UUIDToString(r.ProjectID),
+		Applied:        applied,
+		Replayed:       r.Replayed || replayed,
+		IdempotencyKey: r.IdempotencyKey,
+		BeforeStatus:   r.BeforeStatus,
+		AfterStatus:    r.AfterStatus,
+		TaskID:         uuidOrNil(r.TaskID),
+		IssueID:        uuidOrNil(r.IssueID),
+	}
+}
+
+// finish stores the receipt and returns it (append-only idempotency).
+func (s *ProjectLifecycleControlService) finish(ctx context.Context, workspaceID pgtype.UUID, r ControlReceipt) (ControlReceipt, error) {
+	if err := s.storeReceipt(ctx, workspaceID, r); err != nil {
+		return ControlReceipt{}, err
+	}
+	return r, nil
 }
 
 // closurePackageDigest returns a deterministic sha256 over the package's

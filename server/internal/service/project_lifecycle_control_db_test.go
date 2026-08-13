@@ -278,3 +278,30 @@ func TestClosurePackageDigestDeterministic(t *testing.T) {
 		t.Fatalf("digest did not change on different terminal count")
 	}
 }
+
+// Durable idempotency: same key + same action replays from the stored receipt;
+// same key + DIFFERENT action conflicts (409 sentinel).
+func TestProjectLifecycleReceiptConflict(t *testing.T) {
+	pool, workspaceID, projectID, _ := seedPausedProjectFixture(t, "in_progress")
+	q := db.New(pool)
+	svc := &TaskService{Queries: q, TxStarter: pool, Bus: events.New()}
+	ctrl := NewProjectLifecycleControlService(q, svc)
+	ctx := context.Background()
+	wsUUID, pidUUID := util.MustParseUUID(workspaceID), util.MustParseUUID(projectID)
+
+	if _, err := ctrl.PauseDispatch(ctx, wsUUID, pidUUID, "shared-key"); err != nil {
+		t.Fatalf("pause: %v", err)
+	}
+	// Same key reused for a different action -> conflict.
+	if _, err := ctrl.Continue(ctx, wsUUID, pidUUID, "shared-key"); !errors.Is(err, ErrProjectLifecycleConflict) {
+		t.Fatalf("continue with reused key err = %v, want ErrProjectLifecycleConflict", err)
+	}
+	// Same key + same action -> durable replay from the stored receipt.
+	r, err := ctrl.PauseDispatch(ctx, wsUUID, pidUUID, "shared-key")
+	if err != nil {
+		t.Fatalf("replay pause: %v", err)
+	}
+	if !r.Replayed || r.Applied {
+		t.Fatalf("replay receipt = %+v, want Replayed=true Applied=false (from stored receipt)", r)
+	}
+}
