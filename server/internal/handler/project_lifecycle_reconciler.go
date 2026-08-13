@@ -3,6 +3,7 @@ package handler
 import (
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net/http"
 
 	"github.com/jackc/pgx/v5/pgtype"
@@ -84,10 +85,10 @@ func (h *Handler) DispatchProjectLifecycleReconcileAction(w http.ResponseWriter,
 		CreatorType:    "member",
 		CreatorID:      util.MustParseUUID(userID),
 		ProjectID:      projectID,
-		OriginType:     pgtypeText("reconciler"),
 		AllowDuplicate: true,
 	}, service.IssueCreateOpts{})
 	if err != nil {
+		slog.Error("reconcile dispatch failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to create reconcile action")
 		return
 	}
