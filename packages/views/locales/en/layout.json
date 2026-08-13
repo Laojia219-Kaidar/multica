@@ -15,7 +15,9 @@
     "settings": "Settings",
     "organization": "Organization",
     "bases": "Bases",
-    "workrooms": "Workrooms"
+    "workrooms": "Workrooms",
+    "employees": "Employees",
+    "datasets": "Datasets"
   },
   "tab": {
     "issue": "Issue",

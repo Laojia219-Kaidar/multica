@@ -1935,6 +1935,30 @@ export class ApiClient {
     return this.fetch("/api/workrooms", { method: "POST", body: JSON.stringify(data) });
   }
 
+  listEmployees(): Promise<{ id: string; name: string; position?: string; department?: string; agent_id?: string; status: string }[]> {
+    return this.fetch("/api/employees");
+  }
+
+  createEmployee(data: { name: string; position?: string; department?: string; agent_id?: string }): Promise<{ id: string }> {
+    return this.fetch("/api/employees", { method: "POST", body: JSON.stringify(data) });
+  }
+
+  updateEmployeeBinding(id: string, data: { agent_id?: string; status?: string }): Promise<{ id: string; status: string }> {
+    return this.fetch(`/api/employees/${id}`, { method: "PATCH", body: JSON.stringify(data) });
+  }
+
+  listDatasets(): Promise<{ id: string; name: string; domain: string; version: number; authorized_agent_ids: string[] }[]> {
+    return this.fetch("/api/datasets");
+  }
+
+  createDataset(data: { name: string; domain: string; version?: number }): Promise<{ id: string }> {
+    return this.fetch("/api/datasets", { method: "POST", body: JSON.stringify(data) });
+  }
+
+  updateDatasetAuthorization(id: string, authorized_agent_ids: string[]): Promise<{ id: string }> {
+    return this.fetch(`/api/datasets/${id}`, { method: "PATCH", body: JSON.stringify({ authorized_agent_ids: authorized_agent_ids }) });
+  }
+
   listBases(): Promise<
     { machine_title: string; runtime_online: number; runtime_registered: number; employees: number; drained: boolean }[]
   > {

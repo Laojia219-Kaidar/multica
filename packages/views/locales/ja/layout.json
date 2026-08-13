@@ -15,7 +15,9 @@
     "settings": "設定",
     "organization": "組織",
     "bases": "Bases",
-    "workrooms": "ワークルーム"
+    "workrooms": "ワークルーム",
+    "employees": "従業員",
+    "datasets": "データセット"
   },
   "tab": {
     "issue": "イシュー",

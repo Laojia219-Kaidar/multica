@@ -116,6 +116,8 @@ type NavKey =
   | "squads"
   | "bases"
   | "workrooms"
+  | "employees"
+  | "datasets"
   | "usage"
   | "runtimes"
   | "skills"
@@ -136,6 +138,8 @@ type NavLabelKey =
   | "squads"
   | "bases"
   | "workrooms"
+  | "employees"
+  | "datasets"
   | "usage"
   | "runtimes"
   | "skills"
@@ -177,6 +181,7 @@ const navGroups: { key: string; labelKey: NavGroupLabelKey; items: { key: NavKey
     { key: "organization", labelKey: "organization" },
   ]},
   { key: "employeeFactory", labelKey: "group_employee_factory", items: [
+    { key: "employees", labelKey: "employees" },
     { key: "agents", labelKey: "agents" },
     { key: "skills", labelKey: "skills" },
     { key: "squads", labelKey: "squads" },
@@ -184,7 +189,9 @@ const navGroups: { key: string; labelKey: NavGroupLabelKey; items: { key: NavKey
   { key: "workroom", labelKey: "group_workroom", items: [
     { key: "workrooms", labelKey: "workrooms" },
   ]},
-  { key: "dataKnowledge", labelKey: "group_data_knowledge", items: [] },
+  { key: "dataKnowledge", labelKey: "group_data_knowledge", items: [
+    { key: "datasets", labelKey: "datasets" },
+  ]},
   { key: "modelIntelligence", labelKey: "group_model_intelligence", items: [
     { key: "usage", labelKey: "usage" },
   ]},

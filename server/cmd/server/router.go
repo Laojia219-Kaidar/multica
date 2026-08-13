@@ -1476,6 +1476,12 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			r.Get("/api/workrooms", h.ListWorkrooms)
 			r.Post("/api/workrooms", h.CreateWorkroom)
 			r.Get("/api/workrooms/{id}", h.GetWorkroom)
+			r.Get("/api/employees", h.ListEmployees)
+			r.Post("/api/employees", h.CreateEmployee)
+			r.Patch("/api/employees/{id}", h.UpdateEmployeeBinding)
+			r.Get("/api/datasets", h.ListDatasets)
+			r.Post("/api/datasets", h.CreateDataset)
+			r.Patch("/api/datasets/{id}", h.UpdateDatasetAuthorization)
 			r.Route("/api/runtimes", func(r chi.Router) {
 				r.Get("/", h.ListAgentRuntimes)
 				r.Route("/{runtimeId}", func(r chi.Router) {
