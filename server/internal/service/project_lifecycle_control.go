@@ -527,6 +527,12 @@ func (s *ProjectLifecycleControlService) GenerateClosurePackage(ctx context.Cont
 	if err != nil {
 		return nil, err
 	}
+	approved, err := s.Queries.HasApprovedClosureReview(ctx, db.HasApprovedClosureReviewParams{
+		WorkspaceID: workspaceID, ProjectID: projectID,
+	})
+	if err != nil {
+		approved = false
+	}
 	pkg := &ClosurePackage{
 		PackageID:             idempotencyKey,
 		ProjectID:             util.UUIDToString(proj.ID),
@@ -539,13 +545,40 @@ func (s *ProjectLifecycleControlService) GenerateClosurePackage(ctx context.Cont
 		OutcomeConfirmed:      snap.OutcomeConfirmed,
 		OutcomeTotal:          snap.OutcomeTotal,
 		DuplicateOfProjectID:  snap.DuplicateOfProjectID,
-		ReviewRequired:        true, // independent review is mandatory before close
-		ClosureReady:          snap.ClosureReady,
+		ReviewRequired:        !approved, // independent review must precede close
+		ClosureReady:          snap.ClosureReady && approved,
 		Blockers:              snap.ClosureBlockers,
 	}
 	pkg.Digest = closurePackageDigest(pkg)
 	return pkg, nil
 }
+
+// ReviewClosurePackage records an independent approve/reject decision on a
+// candidate closure package (gate 5). The reviewer must be a member who is not
+// the project lead (reviewer != implementer).
+func (s *ProjectLifecycleControlService) ReviewClosurePackage(ctx context.Context, workspaceID, projectID, reviewerUserID pgtype.UUID, approve bool) (string, error) {
+	proj, err := s.Queries.GetProjectInWorkspace(ctx, db.GetProjectInWorkspaceParams{ID: projectID, WorkspaceID: workspaceID})
+	if err != nil {
+		return "", ErrProjectLifecycleNotFound
+	}
+	if proj.LeadType.Valid && proj.LeadType.String == "member" && proj.LeadID.Valid && proj.LeadID.Bytes == reviewerUserID.Bytes {
+		return "", ErrProjectLifecycleReviewerIsImplementer
+	}
+	decision := "reject"
+	if approve {
+		decision = "approve"
+	}
+	_, err = s.Queries.InsertClosurePackageReview(ctx, db.InsertClosurePackageReviewParams{
+		WorkspaceID: workspaceID, ProjectID: projectID, ReviewerUserID: reviewerUserID, Decision: decision,
+	})
+	if err != nil {
+		return "", err
+	}
+	return decision, nil
+}
+
+// ErrProjectLifecycleReviewerIsImplementer rejects a self-review.
+var ErrProjectLifecycleReviewerIsImplementer = errors.New("closure reviewer must differ from the project lead")
 
 // PreviewClose returns the closure gates and blockers with zero writes.
 func (s *ProjectLifecycleControlService) PreviewClose(ctx context.Context, workspaceID, projectID pgtype.UUID) (*ClosurePackage, error) {

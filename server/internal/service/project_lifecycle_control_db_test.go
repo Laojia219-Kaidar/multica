@@ -337,3 +337,48 @@ func TestStopCurrentCancelsLiveTasks(t *testing.T) {
 		t.Fatalf("active tasks after stop-current = %d, want 0", active)
 	}
 }
+
+// Review mechanism (VC-07 gate 5): an independent approve makes review_required
+// false; the outcome gate remains the only remaining blocker.
+func TestReviewClosurePackageSatisfiesReviewGate(t *testing.T) {
+	pool, workspaceID, projectID, issueID := seedPausedProjectFixture(t, "in_progress")
+	q := db.New(pool)
+	svc := &TaskService{Queries: q, TxStarter: pool, Bus: events.New()}
+	ctrl := NewProjectLifecycleControlService(q, svc)
+	ctx := context.Background()
+	if _, err := pool.Exec(ctx, `UPDATE issue SET status='done' WHERE id=$1`, issueID); err != nil {
+		t.Fatalf("mark done: %v", err)
+	}
+	wsUUID, pidUUID := util.MustParseUUID(workspaceID), util.MustParseUUID(projectID)
+
+	pkg, err := ctrl.GenerateClosurePackage(ctx, wsUUID, pidUUID, "pkg-r1")
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	if !pkg.ReviewRequired {
+		t.Fatalf("review_required before review = false, want true")
+	}
+	// Reviewer = the fixture owner user (a member, different from the agent lead).
+	var reviewerID string
+	if err := pool.QueryRow(ctx, `SELECT user_id::text FROM member WHERE workspace_id=$1 AND role='owner' LIMIT 1`, workspaceID).Scan(&reviewerID); err != nil {
+		t.Fatalf("load reviewer: %v", err)
+	}
+	if _, err := ctrl.ReviewClosurePackage(ctx, wsUUID, pidUUID, util.MustParseUUID(reviewerID), true); err != nil {
+		t.Fatalf("review: %v", err)
+	}
+	pkg2, err := ctrl.GenerateClosurePackage(ctx, wsUUID, pidUUID, "pkg-r2")
+	if err != nil {
+		t.Fatalf("generate after review: %v", err)
+	}
+	if pkg2.ReviewRequired {
+		t.Fatalf("review_required after approve = true, want false")
+	}
+	// Outcome gate still blocks close (ledger empty), so close remains fail-closed.
+	r, err := ctrl.Close(ctx, wsUUID, pidUUID, "close-r1")
+	if err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	if !containsStr(r.Blockers, "OUTCOME_COVERAGE_INCOMPLETE") {
+		t.Fatalf("close blockers = %v, want OUTCOME_COVERAGE_INCOMPLETE (ledger empty)", r.Blockers)
+	}
+}

@@ -213,3 +213,56 @@ func (h *Handler) ProjectClosurePackage(w http.ResponseWriter, r *http.Request) 
 	}
 	writeJSON(w, http.StatusOK, pkg)
 }
+
+// ReviewProjectClosurePackage records an independent approve/reject decision on
+// a candidate closure package (reviewer != lead).
+//
+//	POST /api/projects/{id}/closure-package/review
+func (h *Handler) ReviewProjectClosurePackage(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	workspaceID := h.resolveWorkspaceID(r)
+	idUUID, ok := parseUUIDOrBadRequest(w, id, "project id")
+	if !ok {
+		return
+	}
+	wsUUID, ok := parseUUIDOrBadRequest(w, workspaceID, "workspace id")
+	if !ok {
+		return
+	}
+	project, err := h.Queries.GetProjectInWorkspace(r.Context(), db.GetProjectInWorkspaceParams{ID: idUUID, WorkspaceID: wsUUID})
+	if err != nil {
+		writeControlError(w, err)
+		return
+	}
+	requester, ok := h.requireWorkspaceRole(w, r, util.UUIDToString(project.WorkspaceID), "project not found", "owner", "admin")
+	if !ok {
+		return
+	}
+	var req struct {
+		Approve bool `json:"approve"`
+	}
+	if r.Body != nil {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "failed to read request body")
+			return
+		}
+		if len(body) > 0 {
+			if err := json.Unmarshal(body, &req); err != nil {
+				writeError(w, http.StatusBadRequest, "invalid request body")
+				return
+			}
+		}
+	}
+	ctrl := service.NewProjectLifecycleControlService(h.Queries, h.TaskService)
+	decision, err := ctrl.ReviewClosurePackage(r.Context(), wsUUID, idUUID, requester.UserID, req.Approve)
+	if err != nil {
+		if errors.Is(err, service.ErrProjectLifecycleReviewerIsImplementer) {
+			writeError(w, http.StatusForbidden, "closure reviewer must differ from the project lead")
+			return
+		}
+		writeControlError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"decision": decision})
+}
