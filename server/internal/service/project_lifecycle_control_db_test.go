@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/util"
@@ -91,5 +92,33 @@ func TestPauseDispatchReplay(t *testing.T) {
 	}
 	if !r2.Replayed || r2.Applied {
 		t.Fatalf("second pause receipt = %+v, want replayed (not re-applied)", r2)
+	}
+}
+
+// Gauss re-review #2 (mention path): paused project gates the mention enqueue.
+func TestPausedProjectGatesMentionEnqueue(t *testing.T) {
+	pool, _, _, issueID := seedPausedProjectFixture(t, "paused")
+	q := db.New(pool)
+	svc := &TaskService{Queries: q, TxStarter: pool, Bus: events.New()}
+
+	is := loadIssue(t, pool, issueID)
+	_, err := svc.EnqueueTaskForMention(context.Background(), is, is.AssigneeID, pgtype.UUID{})
+	if !errors.Is(err, ErrProjectPausedDispatch) {
+		t.Fatalf("mention enqueue err = %v, want ErrProjectPausedDispatch", err)
+	}
+}
+
+// Gauss re-review #2 (quick-create path): paused project gates quick-create.
+func TestPausedProjectGatesQuickCreate(t *testing.T) {
+	pool, workspaceID, projectID, _ := seedPausedProjectFixture(t, "paused")
+	q := db.New(pool)
+	svc := &TaskService{Queries: q, TxStarter: pool, Bus: events.New()}
+
+	_, _, agentID, _ := seedAttributionFixture(t, pool)
+	_, err := svc.EnqueueQuickCreateTask(context.Background(),
+		util.MustParseUUID(workspaceID), pgtype.UUID{}, util.MustParseUUID(agentID), pgtype.UUID{},
+		"hi", "medium", "", util.MustParseUUID(projectID), pgtype.UUID{}, nil)
+	if !errors.Is(err, ErrProjectPausedDispatch) {
+		t.Fatalf("quick-create err = %v, want ErrProjectPausedDispatch", err)
 	}
 }
