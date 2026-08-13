@@ -104,10 +104,26 @@ func (h *Handler) ListInbox(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	limit, offset, limitErr := parseLimitOffset(r)
+	if limitErr != nil {
+		writeError(w, http.StatusBadRequest, limitErr.Error())
+		return
+	}
+	total, err := h.Queries.CountInboxItems(r.Context(), db.CountInboxItemsParams{
+		WorkspaceID:   wsUUID,
+		RecipientType: "member",
+		RecipientID:   parseUUID(userID),
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to count inbox")
+		return
+	}
 	items, err := h.Queries.ListInboxItems(r.Context(), db.ListInboxItemsParams{
 		WorkspaceID:   wsUUID,
 		RecipientType: "member",
 		RecipientID:   parseUUID(userID),
+		Limit:         pgtype.Int4{Int32: int32(limit), Valid: true},
+		Offset:        pgtype.Int4{Int32: int32(offset), Valid: true},
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list inbox")
@@ -119,7 +135,13 @@ func (h *Handler) ListInbox(w http.ResponseWriter, r *http.Request) {
 		resp[i] = inboxRowToResponse(item)
 	}
 
-	writeJSON(w, http.StatusOK, resp)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"items":    resp,
+		"total":    total,
+		"limit":    limit,
+		"offset":   offset,
+		"has_more": offset+len(resp) < int(total),
+	})
 }
 
 // ListArchivedInbox returns the recipient's archived notifications, backing the

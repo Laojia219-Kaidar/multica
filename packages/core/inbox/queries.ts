@@ -15,6 +15,7 @@ export function inboxListOptions(wsId: string) {
   return queryOptions({
     queryKey: inboxKeys.list(wsId),
     queryFn: () => api.listInbox(),
+    select: (data) => data.items,
   });
 }
 
@@ -77,8 +78,8 @@ export function useInboxUnreadCount(wsId: string | null | undefined): number {
     queryKey: inboxKeys.list(wsId ?? ""),
     queryFn: () => api.listInbox(),
     enabled: !!wsId,
-    select: (items: InboxItem[]) =>
-      deduplicateInboxItems(items).filter((i) => !i.read).length,
+    select: (data) =>
+      deduplicateInboxItems(data.items).filter((i) => !i.read).length,
   });
   return data ?? 0;
 }
