@@ -216,12 +216,17 @@ subagent_roster:
       assignee: Gauss
       issue: 6c263eac-7e34-48d4-97be-c6e2d119627e
       scope: backend/API/concurrency
-      status: running
+      status: repair3_applied
+      repair_commits:
+      - b954e7e5c
+      - 90d7b50af
+      - (pending commit 3)
     HIV-555:
       assignee: Quinn
       issue: e3741103-9e97-442c-88fa-b6e33d727858
       scope: quality/state-machine
-      status: running
+      status: revise_repair_applied
+      repair_commit: b954e7e5c
     HIV-556:
       assignee: Pixel
       issue: 770a9e87-bad1-4837-a6a0-2aee00c00ec5

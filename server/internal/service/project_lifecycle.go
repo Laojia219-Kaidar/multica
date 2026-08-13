@@ -133,7 +133,7 @@ func ClassifyProject(in ProjectLifecycleInput) ProjectLifecycleClassification {
 	// structured REVISE/failed-repair signals do not yet exist, this read model
 	// conservatively surfaces ANY in_review backlog as C so a review queue is
 	// never silently hidden as "stalled". This is a deliberate, fail-closed
-	// operationalization, recorded in EVIDENCE (EV-S1-11).
+	// operationalization, recorded in EVIDENCE (Quinn review F2 note).
 	if in.BlockedIssueCount > 0 {
 		c.Health = HealthReviewOrRepairBlocked
 		c.Flags = append(c.Flags, "blocked")
@@ -380,8 +380,9 @@ func (p *ProjectLifecycleProjector) ListPortfolio(ctx context.Context, workspace
 		})
 
 		// outcome_total must NOT be terminalN: terminal issue disposition is
-		// not outcome acceptance (contract). Until the Slice 4 outcome ledger
-		// is connected, outcome_total stays 0 and terminal_issue_count carries
+		// not outcome acceptance (contract). outcome_confirmed is read from the
+		// CompanyOps ledger; outcome_total (expected outcomes) stays 0 until the
+		// Slice 4 expected-outcome mapping exists. terminal_issue_count carries
 		// the honest terminal-count fact separately.
 
 		ft := frontierByProject[pid]
@@ -423,8 +424,8 @@ func (p *ProjectLifecycleProjector) ListPortfolio(ctx context.Context, workspace
 			TerminalIssueCount:    terminalN,
 			LastProgressAt:        lastProgress,
 			NextAction:            class.NextAction,
-			OutcomeConfirmed:      0,
-			OutcomeTotal:          0,
+			OutcomeConfirmed:      confirmedByProject[pid],
+			OutcomeTotal:          0, // expected-outcome count is a Slice 4 mapping; stays 0 until then
 			ClosureReady:          false,
 			ClosureBlockers:       class.ClosureBlockers,
 			DuplicateOfProjectID:  dupOfPtr,
