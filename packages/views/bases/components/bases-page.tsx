@@ -54,6 +54,26 @@ export function BasesPage() {
     onError: () => toast.error(t(($) => $.migrateFailed)),
   });
 
+  const { data: baseList = [] } = useQuery({
+    queryKey: ["bases", wsId],
+    queryFn: () => api.listBases(),
+  });
+  const drainedMap = useMemo(
+    () => new Map(baseList.map((b) => [b.machine_title, b.drained])),
+    [baseList],
+  );
+
+  const drainMutation = useMutation({
+    mutationFn: ({ machineTitle, mode }: { machineTitle: string; mode: "resting" | "active" }) =>
+      api.setBaseOperationalMode(machineTitle, mode),
+    onSuccess: (data) => {
+      void qc.invalidateQueries({ queryKey: ["bases", wsId] });
+      void qc.invalidateQueries({ queryKey: agentListOptions(wsId).queryKey });
+      toast.success(data.mode === "resting" ? t(($) => $.drainSuccess) : t(($) => $.resumeSuccess));
+    },
+    onError: () => toast.error(t(($) => $.drainFailed)),
+  });
+
   const bases = useMemo(() => {
     const machines = buildRuntimeMachines(runtimes, { now: Date.now() });
     const runtimeToMachine = new Map<string, RuntimeMachine>();
@@ -148,6 +168,31 @@ export function BasesPage() {
                     </div>
                   </div>
                 </div>
+                {baseName ? (
+                  <div className="flex items-center justify-between border-t px-4 py-2">
+                    <span className="text-xs text-muted-foreground">
+                      {(drainedMap.get(machine.title) ?? false) ? t(($) => $.drained) : t(($) => $.active)}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        drainMutation.mutate({
+                          machineTitle: machine.title,
+                          mode: (drainedMap.get(machine.title) ?? false) ? "active" : "resting",
+                        })
+                      }
+                      disabled={drainMutation.isPending}
+                      className={
+                        "rounded-md border px-2 py-1 text-xs transition-colors " +
+                        ((drainedMap.get(machine.title) ?? false)
+                          ? "border-emerald-300 text-emerald-700 hover:bg-emerald-50"
+                          : "border-amber-300 text-amber-700 hover:bg-amber-50")
+                      }
+                    >
+                      {(drainedMap.get(machine.title) ?? false) ? t(($) => $.resume) : t(($) => $.drain)}
+                    </button>
+                  </div>
+                ) : null}
                 {isOpen ? (
                   <div className="border-t px-4 py-3">
                     {employees.length === 0 ? (

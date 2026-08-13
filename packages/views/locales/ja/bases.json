@@ -14,5 +14,12 @@
   "migrateTo": "移行先…",
   "migrateSuccess": "従業員を移行しました",
   "migrateFailed": "移行に失敗しました",
-  "noTargetRuntime": "移行先基地に対応するランタイムがありません"
+  "noTargetRuntime": "移行先基地に対応するランタイムがありません",
+  "drain": "ドレイン",
+  "resume": "再開",
+  "drained": "ドレイン済み",
+  "active": "アクティブ",
+  "drainSuccess": "基地をドレインしました",
+  "resumeSuccess": "基地を再開しました",
+  "drainFailed": "ドレイン/再開に失敗しました"
 }

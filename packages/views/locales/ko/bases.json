@@ -14,5 +14,12 @@
   "migrateTo": "이전 대상…",
   "migrateSuccess": "직원 이전 완료",
   "migrateFailed": "이전 실패",
-  "noTargetRuntime": "대상 기지에 일치하는 런타임이 없습니다"
+  "noTargetRuntime": "대상 기지에 일치하는 런타임이 없습니다",
+  "drain": "드레인",
+  "resume": "재개",
+  "drained": "드레인됨",
+  "active": "활성",
+  "drainSuccess": "기지 드레인 완료",
+  "resumeSuccess": "기지 재개 완료",
+  "drainFailed": "드레인/재개 실패"
 }

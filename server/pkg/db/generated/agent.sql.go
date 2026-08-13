@@ -5529,6 +5529,31 @@ func (q *Queries) RestoreAgent(ctx context.Context, id pgtype.UUID) (Agent, erro
 	return i, err
 }
 
+const setAgentOperationalMode = `-- name: SetAgentOperationalMode :one
+UPDATE agent SET operational_mode = $2, updated_at = now()
+WHERE id = $1
+RETURNING id, operational_mode
+`
+
+type SetAgentOperationalModeParams struct {
+	ID              pgtype.UUID `json:"id"`
+	OperationalMode string      `json:"operational_mode"`
+}
+
+type SetAgentOperationalModeRow struct {
+	ID              pgtype.UUID `json:"id"`
+	OperationalMode string      `json:"operational_mode"`
+}
+
+// Admin control (base drain/resume): set the claim-gate mode for one agent.
+// 'resting' denies new claims (drain); 'active' re-enables (resume).
+func (q *Queries) SetAgentOperationalMode(ctx context.Context, arg SetAgentOperationalModeParams) (SetAgentOperationalModeRow, error) {
+	row := q.db.QueryRow(ctx, setAgentOperationalMode, arg.ID, arg.OperationalMode)
+	var i SetAgentOperationalModeRow
+	err := row.Scan(&i.ID, &i.OperationalMode)
+	return i, err
+}
+
 const setTaskDeliveredCommentIDs = `-- name: SetTaskDeliveredCommentIDs :one
 UPDATE agent_task_queue
 SET delivered_comment_ids = $1::uuid[]

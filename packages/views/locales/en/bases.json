@@ -14,5 +14,12 @@
   "migrateTo": "Migrate to…",
   "migrateSuccess": "Employee migrated",
   "migrateFailed": "Migration failed",
-  "noTargetRuntime": "No matching runtime on the target base"
+  "noTargetRuntime": "No matching runtime on the target base",
+  "drain": "Drain",
+  "resume": "Resume",
+  "drained": "Drained",
+  "active": "Active",
+  "drainSuccess": "Base drained",
+  "resumeSuccess": "Base resumed",
+  "drainFailed": "Drain/resume failed"
 }

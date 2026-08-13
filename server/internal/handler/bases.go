@@ -1,8 +1,12 @@
 package handler
 
 import (
+	"encoding/json"
+	"log/slog"
 	"net/http"
 	"strings"
+
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 // BaseOverview is the read-only projection of one observed execution base
@@ -14,6 +18,14 @@ type BaseOverview struct {
 	RuntimeOnline     int    `json:"runtime_online"`
 	RuntimeRegistered int    `json:"runtime_registered"`
 	Employees         int    `json:"employees"`
+	Drained           bool   `json:"drained"`
+}
+
+// SetBaseOperationalModeRequest is the body for POST /api/bases/operational-mode.
+// mode is "resting" (drain: deny new claims) or "active" (resume).
+type SetBaseOperationalModeRequest struct {
+	MachineTitle string `json:"machine_title"`
+	Mode         string `json:"mode"`
 }
 
 // ListBases returns the observed execution bases in the workspace, grouped
@@ -59,11 +71,20 @@ func (h *Handler) ListBases(w http.ResponseWriter, r *http.Request) {
 			b.online++
 		}
 	}
+	drained := make(map[string]int)   // drained agent count per machine
+	total := make(map[string]int)    // total agent count per machine
 	for _, a := range agents {
 		m := runtimeMachine[uuidToString(a.RuntimeID)]
 		if b := bases[m]; b != nil {
 			b.employees++
 		}
+		total[m]++
+		if a.OperationalMode == "resting" || a.OperationalMode == "disabled" {
+			drained[m]++
+		}
+	}
+	isDrained := func(m string) bool {
+		return total[m] > 0 && drained[m] == total[m]
 	}
 
 	resp := make([]BaseOverview, 0, len(order))
@@ -74,9 +95,74 @@ func (h *Handler) ListBases(w http.ResponseWriter, r *http.Request) {
 			RuntimeOnline:     b.online,
 			RuntimeRegistered: b.registered,
 			Employees:         b.employees,
+			Drained:           isDrained(b.machine),
 		})
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// SetBaseOperationalMode drains or resumes one observed execution base by
+// setting every agent bound to a runtime on that machine to the given claim
+// mode. "resting" denies new task claims (drain); "active" re-enables them
+// (resume). In-flight tasks are unaffected — the gate is evaluated at claim
+// time, so draining lets running work finish while new work stays queued.
+// Owner/admin only.
+func (h *Handler) SetBaseOperationalMode(w http.ResponseWriter, r *http.Request) {
+	workspaceID := h.resolveWorkspaceID(r)
+	if _, ok := h.requireWorkspaceRole(w, r, workspaceID, "workspace not found", "owner", "admin"); !ok {
+		return
+	}
+
+	var req SetBaseOperationalModeRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.Mode != "resting" && req.Mode != "active" {
+		writeError(w, http.StatusBadRequest, "mode must be 'resting' or 'active'")
+		return
+	}
+	if strings.TrimSpace(req.MachineTitle) == "" {
+		writeError(w, http.StatusBadRequest, "machine_title is required")
+		return
+	}
+
+	runtimes, err := h.Queries.ListAgentRuntimes(r.Context(), parseUUID(workspaceID))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list runtimes")
+		return
+	}
+	agents, err := h.Queries.ListAgents(r.Context(), parseUUID(workspaceID))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list agents")
+		return
+	}
+
+	runtimeMachine := make(map[string]string, len(runtimes))
+	for _, rt := range runtimes {
+		runtimeMachine[uuidToString(rt.ID)] = machineTitle(rt.DeviceInfo)
+	}
+
+	updated := 0
+	for _, a := range agents {
+		if runtimeMachine[uuidToString(a.RuntimeID)] != req.MachineTitle {
+			continue
+		}
+		if _, err := h.Queries.SetAgentOperationalMode(r.Context(), db.SetAgentOperationalModeParams{
+			ID:              a.ID,
+			OperationalMode: req.Mode,
+		}); err != nil {
+			slog.Error("set agent operational mode", "agent_id", uuidToString(a.ID), "error", err)
+			continue
+		}
+		updated++
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"machine_title":  req.MachineTitle,
+		"mode":           req.Mode,
+		"agents_updated": updated,
+	})
 }
 
 // machineTitle extracts the physical machine title from a runtime's

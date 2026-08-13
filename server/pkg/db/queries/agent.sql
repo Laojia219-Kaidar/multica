@@ -133,6 +133,13 @@ UPDATE agent SET
 WHERE id = $1
 RETURNING *;
 
+-- name: SetAgentOperationalMode :one
+-- Admin control (base drain/resume): set the claim-gate mode for one agent.
+-- 'resting' denies new claims (drain); 'active' re-enables (resume).
+UPDATE agent SET operational_mode = $2, updated_at = now()
+WHERE id = $1
+RETURNING id, operational_mode;
+
 -- name: ClearAgentComposioToolkitAllowlist :one
 -- Explicit NULL-clear for composio_toolkit_allowlist. The COALESCE-based
 -- UpdateAgent cannot set the column back to NULL — sending an empty array

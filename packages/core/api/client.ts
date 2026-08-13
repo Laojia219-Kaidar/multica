@@ -1915,6 +1915,22 @@ export class ApiClient {
     });
   }
 
+  async setBaseOperationalMode(
+    machineTitle: string,
+    mode: "resting" | "active",
+  ): Promise<{ machine_title: string; mode: string; agents_updated: number }> {
+    return this.fetch("/api/bases/operational-mode", {
+      method: "POST",
+      body: JSON.stringify({ machine_title: machineTitle, mode }),
+    });
+  }
+
+  listBases(): Promise<
+    { machine_title: string; runtime_online: number; runtime_registered: number; employees: number; drained: boolean }[]
+  > {
+    return this.fetch("/api/bases");
+  }
+
   async archiveAgent(id: string): Promise<Agent> {
     return this.fetch(`/api/agents/${id}/archive`, { method: "POST" });
   }
