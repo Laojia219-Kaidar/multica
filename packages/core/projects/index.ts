@@ -1,4 +1,17 @@
-export { projectKeys, projectListOptions, projectDetailOptions } from "./queries";
+export {
+  projectKeys,
+  projectListOptions,
+  projectDetailOptions,
+  projectPipelineOptions,
+} from "./queries";
+export type {
+  ProjectPipelineResponse,
+  ProjectPipelineColumn,
+  ProjectPipelineIssue,
+  ProjectPipelineCapabilityFlags,
+  PipelineTaskClass,
+  PipelineProcessingState,
+} from "./pipeline-types";
 export { useCreateProject, useUpdateProject, useDeleteProject } from "./mutations";
 export { useProjectDraftStore } from "./draft-store";
 export {
