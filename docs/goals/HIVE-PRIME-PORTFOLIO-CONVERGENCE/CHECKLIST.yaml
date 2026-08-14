@@ -698,3 +698,28 @@ production_deploy_single_owner:
     verify: 'migrate up 全 skip 无 apply；backend healthz ok (db ok + migrations ok)；5 表齐全'
     commit: e389c8bb9
   coordination_answer_to_W1: W1 无需回滚；其 migration 已由 W3 融合进 canonical 唯一编号，生产 schema_migrations 已一致；后续 W1 新 migration 请经 W3 JOIN（在 canonical 编唯一号）再部署
+
+direct_deploy_status:
+  schema: DirectDeployStatusV1
+  at: '2026-08-14T01:29:28.553275+00:00'
+  method: 直接 docker cp 部署（无镜像重建，遵 William「不需要做 docker daemon/镜像」）
+  backend:
+    image: multica-backend:dev（容器内二进制已直部署）
+    binary: /app/server 44105890 bytes from HEAD 1423cd751（含 P3/P4 + employee/dataset + bases + 全部 JOIN）
+    migrations: /app/migrations 同步 canonical 313 up（001-342 + 343-349），无 400+
+    healthz: ok (db ok + migrations ok)
+    verified: P3 closure sha256+review_required；/api/employees 33 人；base 表+agent home/fallback 列
+  frontend:
+    image: multica-web:dev（容器内 standalone 已直部署）
+    build: STANDALONE=true pnpm build from HEAD e378f8ceb
+    routes: /work-wall /memory /workflow /employees /datasets /projects 全部 200（浏览器实测）
+    sidebar: 11 能力域（W4 补回 workWall）
+  migration_fusion:
+    canonical: 341_workroom 342_workflow_memory_persistence 343_project_lifecycle_receipt 344_closure_package_review 345_employee 346_dataset 347_dataset_product_type 348_base_table 349_base_seed_and_migrate
+    dropped_dups: 400_workroom(同341) 401/402/403(重编号345/346/347) 404/405(重编号348/349)
+    schema_migrations: 已回填 343-349，删除全部 400-405 旧串
+    verify: migrate up 全 skip 无 apply
+  w4_coordination:
+    single_owner: W3 确认；W4 明确「只读不碰生产」「从未跑 compose up，之后不跑」，将做只读验收
+    container_recreation_warning: 生产容器曾被以旧镜像重建（丢失 docker cp 部署并重灌 400-403）；已重新直部署收敛 HEAD
+    commits: e378f8ceb(348/349) e389c8bb9(343-347) d1ec7f8dd(P3) 6241aa8ee(P4)
