@@ -293,7 +293,7 @@ func validateScope(s DispatchAuthorizationScope, tenant string, now time.Time) e
 			return err
 		}
 	}
-	if !canonicalSourceRef(*s.SourceRef) || !canonicalRevision(*s.SourceRevision) || !refHasSegments(*s.SourceRef, tenant, *s.WorkspaceID, *s.WorkflowID, *s.GoalID, *s.WorkOrderID) {
+	if !canonicalSourceRef(*s.SourceRef) || !canonicalRevision(*s.SourceRevision) || !matchesHivePath(*s.SourceRef, "scope", tenant, *s.WorkspaceID, *s.WorkflowID, *s.GoalID, *s.WorkOrderID) {
 		return errors.New("dispatch authorization scope provenance is invalid")
 	}
 	return validateFreshTimes(s.ObservedAt, s.SourceGeneratedAt, s.ExpiresAt, now)
@@ -310,7 +310,7 @@ func validateIssueLinkage(l DispatchAuthorizationIssueLinkage, now time.Time) er
 			return err
 		}
 	}
-	if !canonicalSourceRef(*l.SourceRef) || !canonicalRevision(*l.SourceRevision) || !refHasSegments(*l.SourceRef, *l.ProjectID, *l.WorkOrderID, *l.IssueID) {
+	if !canonicalSourceRef(*l.SourceRef) || !canonicalRevision(*l.SourceRevision) || !matchesHivePath(*l.SourceRef, "issues", *l.ProjectID, *l.WorkOrderID, *l.IssueID) {
 		return errors.New("dispatch authorization issue linkage provenance is invalid")
 	}
 	return validateFreshTimes(l.ObservedAt, l.SourceGeneratedAt, l.ExpiresAt, now)
@@ -332,10 +332,10 @@ func validateEvidence(e DispatchAuthorizationEvidence, tenant string, l Dispatch
 	if e.IssueLinkage.ProjectID == nil || e.IssueLinkage.WorkOrderID == nil || e.Scope.WorkOrderID == nil || *e.IssueLinkage.ProjectID != projectID || *e.IssueLinkage.WorkOrderID != workOrderID || *e.Scope.WorkOrderID != workOrderID {
 		return errors.New("dispatch authorization linkage and scope work order drift")
 	}
-	if e.Assignment.State != "OBSERVED" || e.Assignment.AssignmentID == nil || e.Assignment.EmployeeID == nil || e.Assignment.AgentID == nil || e.Assignment.WorkOrderID == nil || *e.Assignment.AssignmentID != l.ExecutionIdentity.AssignmentID || *e.Assignment.EmployeeID != l.ExecutionIdentity.EmployeeID || *e.Assignment.AgentID != l.ExecutionIdentity.AgentID || *e.Assignment.WorkOrderID != workOrderID || e.Assignment.SourceRef == nil || !refHasSegments(*e.Assignment.SourceRef, l.ExecutionIdentity.AssignmentID) {
+	if e.Assignment.State != "OBSERVED" || e.Assignment.AssignmentID == nil || e.Assignment.EmployeeID == nil || e.Assignment.AgentID == nil || e.Assignment.WorkOrderID == nil || *e.Assignment.AssignmentID != l.ExecutionIdentity.AssignmentID || *e.Assignment.EmployeeID != l.ExecutionIdentity.EmployeeID || *e.Assignment.AgentID != l.ExecutionIdentity.AgentID || *e.Assignment.WorkOrderID != workOrderID || e.Assignment.SourceRef == nil || !matchesHivePath(*e.Assignment.SourceRef, "assignments", l.ExecutionIdentity.AssignmentID) {
 		return errors.New("dispatch authorization assignment evidence is unmapped")
 	}
-	if e.IdentityBinding.State != "OBSERVED" || e.IdentityBinding.IdentityBindingID == nil || e.IdentityBinding.EmployeeID == nil || e.IdentityBinding.AgentID == nil || *e.IdentityBinding.IdentityBindingID != l.ExecutionIdentity.IdentityBindingID || *e.IdentityBinding.EmployeeID != l.ExecutionIdentity.EmployeeID || *e.IdentityBinding.AgentID != l.ExecutionIdentity.AgentID || !e.IdentityBinding.Active || e.IdentityBinding.SourceRef == nil || !refHasSegments(*e.IdentityBinding.SourceRef, l.ExecutionIdentity.IdentityBindingID) {
+	if e.IdentityBinding.State != "OBSERVED" || e.IdentityBinding.IdentityBindingID == nil || e.IdentityBinding.EmployeeID == nil || e.IdentityBinding.AgentID == nil || *e.IdentityBinding.IdentityBindingID != l.ExecutionIdentity.IdentityBindingID || *e.IdentityBinding.EmployeeID != l.ExecutionIdentity.EmployeeID || *e.IdentityBinding.AgentID != l.ExecutionIdentity.AgentID || !e.IdentityBinding.Active || e.IdentityBinding.SourceRef == nil || !matchesHivePath(*e.IdentityBinding.SourceRef, "identity-bindings", l.ExecutionIdentity.IdentityBindingID) {
 		return errors.New("dispatch authorization identity binding evidence is unmapped")
 	}
 	if err := validateEvidenceRecord(e.Assignment.dispatchEvidenceRecord, now); err != nil {
@@ -344,13 +344,13 @@ func validateEvidence(e DispatchAuthorizationEvidence, tenant string, l Dispatch
 	if err := validateEvidenceRecord(e.IdentityBinding.dispatchEvidenceRecord, now); err != nil {
 		return err
 	}
-	if e.Custody.State != "OBSERVED" || e.Custody.WorkOrderID == nil || e.Custody.AssignmentID == nil || e.Custody.EmployeeID == nil || e.Custody.AgentID == nil || *e.Custody.WorkOrderID != workOrderID || *e.Custody.AssignmentID != l.ExecutionIdentity.AssignmentID || *e.Custody.EmployeeID != l.ExecutionIdentity.EmployeeID || *e.Custody.AgentID != l.ExecutionIdentity.AgentID || len(e.Custody.Gaps) != 0 || len(e.Custody.Conflicts) != 0 || e.Custody.SourceRef == nil || !refHasSegments(*e.Custody.SourceRef, workOrderID, l.ExecutionIdentity.AssignmentID) {
+	if e.Custody.State != "OBSERVED" || e.Custody.WorkOrderID == nil || e.Custody.AssignmentID == nil || e.Custody.EmployeeID == nil || e.Custody.AgentID == nil || *e.Custody.WorkOrderID != workOrderID || *e.Custody.AssignmentID != l.ExecutionIdentity.AssignmentID || *e.Custody.EmployeeID != l.ExecutionIdentity.EmployeeID || *e.Custody.AgentID != l.ExecutionIdentity.AgentID || len(e.Custody.Gaps) != 0 || len(e.Custody.Conflicts) != 0 || e.Custody.SourceRef == nil || !matchesHivePath(*e.Custody.SourceRef, "custody", workOrderID, l.ExecutionIdentity.AssignmentID) {
 		return errors.New("dispatch authorization custody evidence is invalid")
 	}
 	if err := validateEvidenceRecord(e.Custody.dispatchEvidenceRecord, now); err != nil {
 		return err
 	}
-	if e.ContinuousWorkflowAuthorization.State != "AUTHORIZED" || e.ContinuousWorkflowAuthorization.Scope == nil || e.ContinuousWorkflowAuthorization.WorkflowID == nil || e.ContinuousWorkflowAuthorization.GoalID == nil || e.ContinuousWorkflowAuthorization.WorkOrderID == nil || e.ContinuousWorkflowAuthorization.OwnerDecisionRef == nil || e.ContinuousWorkflowAuthorization.SourceRef == nil || e.ContinuousWorkflowAuthorization.SourceRevision == nil || *e.ContinuousWorkflowAuthorization.WorkOrderID != workOrderID || *e.ContinuousWorkflowAuthorization.WorkflowID != *e.Scope.WorkflowID || *e.ContinuousWorkflowAuthorization.GoalID != *e.Scope.GoalID || !(*e.ContinuousWorkflowAuthorization.Scope == "event_reconcile" || *e.ContinuousWorkflowAuthorization.Scope == "recovery_only") || !dispatchOwnerDecisionRef.MatchString(*e.ContinuousWorkflowAuthorization.OwnerDecisionRef) || !canonicalSourceRef(*e.ContinuousWorkflowAuthorization.SourceRef) || !canonicalRevision(*e.ContinuousWorkflowAuthorization.SourceRevision) {
+	if e.ContinuousWorkflowAuthorization.State != "AUTHORIZED" || e.ContinuousWorkflowAuthorization.Freshness != "current" || e.ContinuousWorkflowAuthorization.Scope == nil || e.ContinuousWorkflowAuthorization.WorkflowID == nil || e.ContinuousWorkflowAuthorization.GoalID == nil || e.ContinuousWorkflowAuthorization.WorkOrderID == nil || e.ContinuousWorkflowAuthorization.OwnerDecisionRef == nil || e.ContinuousWorkflowAuthorization.SourceRef == nil || e.ContinuousWorkflowAuthorization.SourceRevision == nil || *e.ContinuousWorkflowAuthorization.WorkOrderID != workOrderID || *e.ContinuousWorkflowAuthorization.WorkflowID != *e.Scope.WorkflowID || *e.ContinuousWorkflowAuthorization.GoalID != *e.Scope.GoalID || !(*e.ContinuousWorkflowAuthorization.Scope == "event_reconcile" || *e.ContinuousWorkflowAuthorization.Scope == "recovery_only") || !dispatchOwnerDecisionRef.MatchString(*e.ContinuousWorkflowAuthorization.OwnerDecisionRef) || !canonicalRevision(*e.ContinuousWorkflowAuthorization.SourceRevision) || !matchesHivePathShape(*e.ContinuousWorkflowAuthorization.SourceRef, "authorizations", 1) {
 		return errors.New("dispatch authorization workflow evidence is invalid")
 	}
 	if err := validateFreshTimes(e.ContinuousWorkflowAuthorization.ObservedAt, e.ContinuousWorkflowAuthorization.SourceGeneratedAt, e.ContinuousWorkflowAuthorization.ExpiresAt, now); err != nil {
@@ -375,14 +375,18 @@ func validateEvidenceRecord(r dispatchEvidenceRecord, now time.Time) error {
 }
 
 func validateOwnerDecisionEvidence(e dispatchOwnerDecisionEvidence, expected string, now time.Time) error {
-	if e.State != "OBSERVED" || e.OwnerDecisionRef == nil || *e.OwnerDecisionRef != expected || e.SourceRef == nil || e.SourceRevision == nil || !dispatchOwnerDecisionRef.MatchString(*e.OwnerDecisionRef) || !canonicalSourceRef(*e.SourceRef) || !canonicalRevision(*e.SourceRevision) || *e.SourceRef != expected {
+	if e.State != "OBSERVED" || e.Freshness != "current" || e.OwnerDecisionRef == nil || *e.OwnerDecisionRef != expected || e.SourceRef == nil || e.SourceRevision == nil || !dispatchOwnerDecisionRef.MatchString(*e.OwnerDecisionRef) || !canonicalRevision(*e.SourceRevision) || *e.SourceRef != expected {
 		return errors.New("dispatch authorization owner decision evidence is invalid")
 	}
 	return validateFreshTimes(e.ObservedAt, e.SourceGeneratedAt, e.ExpiresAt, now)
 }
 
 func validateWorkflowOrGoalEvidence(e dispatchAuthorityEvidenceRecord, expected string, workflow bool, now time.Time) error {
-	if e.State != "OBSERVED" || e.SourceRef == nil || e.SourceRevision == nil || !canonicalSourceRef(*e.SourceRef) || !canonicalRevision(*e.SourceRevision) || !refHasSegments(*e.SourceRef, expected) {
+	host := "goals"
+	if workflow {
+		host = "workflows"
+	}
+	if e.State != "OBSERVED" || e.Freshness != "current" || e.SourceRef == nil || e.SourceRevision == nil || !canonicalRevision(*e.SourceRevision) || !matchesHivePath(*e.SourceRef, host, expected) {
 		return errors.New("dispatch authorization workflow or goal evidence is invalid")
 	}
 	if workflow && (e.WorkflowID == nil || *e.WorkflowID != expected) {
@@ -395,7 +399,7 @@ func validateWorkflowOrGoalEvidence(e dispatchAuthorityEvidenceRecord, expected 
 }
 
 func validateAuthorizationDecision(d DispatchAuthorizationDecision, wanted string, e DispatchAuthorizationEvidence, now time.Time) error {
-	if d.ObservedAt == "" || d.Freshness != e.ContinuousWorkflowAuthorization.Freshness || d.ExpiresAt == nil || e.ContinuousWorkflowAuthorization.ExpiresAt == nil || *d.ExpiresAt != *e.ContinuousWorkflowAuthorization.ExpiresAt || d.ObservedAt != e.ContinuousWorkflowAuthorization.ObservedAt {
+	if d.ObservedAt == "" || d.Freshness != "current" || d.Freshness != e.ContinuousWorkflowAuthorization.Freshness || d.ExpiresAt == nil || e.ContinuousWorkflowAuthorization.ExpiresAt == nil || *d.ExpiresAt != *e.ContinuousWorkflowAuthorization.ExpiresAt || d.ObservedAt != e.ContinuousWorkflowAuthorization.ObservedAt {
 		return errors.New("dispatch authorization decision freshness is invalid")
 	}
 	if err := validateFreshTimes(d.ObservedAt, nil, d.ExpiresAt, now); err != nil {
@@ -495,7 +499,7 @@ func validateFreshTimes(observed string, generated, expires *string, now time.Ti
 	}
 	if expires != nil {
 		x, e := parseDispatchAuthorizationTime(*expires, now, false)
-		if e != nil || !x.After(now) {
+		if e != nil || !x.After(now) || !x.After(o) {
 			return errors.New("dispatch authorization expires_at is invalid")
 		}
 	}
@@ -544,21 +548,36 @@ func parseWorkOrderSourceRef(value string) (string, string, bool) {
 	}
 	return matched[1], matched[2], true
 }
-func refHasSegments(ref string, expected ...string) bool {
+func matchesHivePath(ref, host string, expected ...string) bool {
+	return matchesHivePathShape(ref, host, len(expected)) && exactHivePathSegments(ref, expected...)
+}
+func matchesHivePathShape(ref, host string, segmentCount int) bool {
 	u, err := url.Parse(ref)
-	if err != nil || u.Scheme != "hive" || u.RawQuery != "" || u.Fragment != "" {
+	if err != nil || u.Scheme != "hive" || u.Host != host || u.User != nil || u.RawQuery != "" || u.Fragment != "" || strings.HasSuffix(u.Path, "/") {
 		return false
 	}
-	segments := append([]string{u.Host}, strings.Split(strings.Trim(u.EscapedPath(), "/"), "/")...)
-	for _, want := range expected {
-		found := false
-		for _, got := range segments {
-			if got == want {
-				found = true
-				break
-			}
+	segments := strings.Split(strings.TrimPrefix(u.EscapedPath(), "/"), "/")
+	if len(segments) != segmentCount {
+		return false
+	}
+	for _, segment := range segments {
+		if !dispatchSafeID.MatchString(segment) {
+			return false
 		}
-		if !found {
+	}
+	return true
+}
+func exactHivePathSegments(ref string, expected ...string) bool {
+	u, err := url.Parse(ref)
+	if err != nil {
+		return false
+	}
+	segments := strings.Split(strings.TrimPrefix(u.EscapedPath(), "/"), "/")
+	if len(segments) != len(expected) {
+		return false
+	}
+	for index, value := range expected {
+		if segments[index] != value {
 			return false
 		}
 	}

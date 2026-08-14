@@ -246,6 +246,106 @@ func TestDispatchAuthorizationClientUsesInjectedClockForEveryEvidenceTimestamp(t
 	}
 }
 
+func TestDispatchAuthorizationClientRejectsNonCurrentAuthorityFields(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*DispatchAuthorizationResponse)
+	}{
+		{"continuous authorization freshness", func(r *DispatchAuthorizationResponse) { r.Evidence.ContinuousWorkflowAuthorization.Freshness = "stale" }},
+		{"owner decision freshness", func(r *DispatchAuthorizationResponse) {
+			r.Evidence.ContinuousWorkflowAuthorization.OwnerDecisionAuthority.Freshness = "stale"
+		}},
+		{"workflow authority freshness", func(r *DispatchAuthorizationResponse) { r.Evidence.WorkflowAuthority.Freshness = "stale" }},
+		{"goal authority freshness", func(r *DispatchAuthorizationResponse) { r.Evidence.GoalAuthority.Freshness = "stale" }},
+		{"event decision freshness", func(r *DispatchAuthorizationResponse) { r.Authorization.EventReconcile.Freshness = "stale" }},
+		{"recovery decision freshness", func(r *DispatchAuthorizationResponse) { r.Authorization.RecoveryOnly.Freshness = "stale" }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := validDispatchResponse()
+			tt.mutate(&r)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(r)
+			}))
+			defer server.Close()
+			client, _ := NewHiveCosmDispatchAuthorizationClient(server.URL, nil, "tenant-1")
+			if _, err := client.Resolve(context.Background(), testLookup()); err == nil {
+				t.Fatal("accepted non-current authority field")
+			}
+		})
+	}
+}
+
+func TestDispatchAuthorizationClientRejectsNonCanonicalAuthorityURIShapes(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*DispatchAuthorizationResponse)
+	}{
+		{"scope extra segment", func(r *DispatchAuthorizationResponse) {
+			r.Evidence.Scope.SourceRef = ptr(*r.Evidence.Scope.SourceRef + "/extra")
+			r.Scope = r.Evidence.Scope
+		}},
+		{"issue linkage extra segment", func(r *DispatchAuthorizationResponse) {
+			r.Evidence.IssueLinkage.SourceRef = ptr(*r.Evidence.IssueLinkage.SourceRef + "/extra")
+			r.IssueLinkage = r.Evidence.IssueLinkage
+		}},
+		{"work order extra segment", func(r *DispatchAuthorizationResponse) {
+			r.Evidence.WorkOrder.SourceRef = ptr(*r.Evidence.WorkOrder.SourceRef + "/extra")
+		}},
+		{"assignment wrong type", func(r *DispatchAuthorizationResponse) {
+			r.Evidence.Assignment.SourceRef = ptr("hive://identity-bindings/assignment-1")
+		}},
+		{"identity binding wrong type", func(r *DispatchAuthorizationResponse) {
+			r.Evidence.IdentityBinding.SourceRef = ptr("hive://assignments/binding-1")
+		}},
+		{"custody extra segment", func(r *DispatchAuthorizationResponse) {
+			r.Evidence.Custody.SourceRef = ptr("hive://custody/wo-1/assignment-1/extra")
+		}},
+		{"continuous authorization wrong type", func(r *DispatchAuthorizationResponse) {
+			r.Evidence.ContinuousWorkflowAuthorization.SourceRef = ptr("hive://goals/auth-1")
+		}},
+		{"owner decision wrong source", func(r *DispatchAuthorizationResponse) {
+			r.Evidence.ContinuousWorkflowAuthorization.OwnerDecisionAuthority.SourceRef = ptr("hive://owner-decisions/other")
+		}},
+		{"workflow authority wrong type", func(r *DispatchAuthorizationResponse) {
+			r.Evidence.WorkflowAuthority.SourceRef = ptr("hive://goals/wf-1")
+		}},
+		{"goal authority extra segment", func(r *DispatchAuthorizationResponse) {
+			r.Evidence.GoalAuthority.SourceRef = ptr("hive://goals/goal-1/extra")
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := validDispatchResponse()
+			tt.mutate(&r)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(r)
+			}))
+			defer server.Close()
+			client, _ := NewHiveCosmDispatchAuthorizationClient(server.URL, nil, "tenant-1")
+			if _, err := client.Resolve(context.Background(), testLookup()); err == nil {
+				t.Fatal("accepted non-canonical Authority URI")
+			}
+		})
+	}
+}
+
+func TestDispatchAuthorizationFreshTimesRequiresExpiryAfterObservation(t *testing.T) {
+	now := time.Date(2026, 8, 14, 10, 0, 0, 0, time.UTC)
+	observed := "2026-08-14T09:59:00Z"
+	generated := "2026-08-14T09:58:00Z"
+	equal := observed
+	if err := validateFreshTimes(observed, &generated, &equal, now); err == nil {
+		t.Fatal("accepted expires_at equal to observed_at")
+	}
+	before := "2026-08-14T09:58:59Z"
+	if err := validateFreshTimes(observed, &generated, &before, now); err == nil {
+		t.Fatal("accepted expires_at before observed_at")
+	}
+}
+
 type roundTripperFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
