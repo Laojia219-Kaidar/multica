@@ -3,7 +3,6 @@ package service
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	"github.com/jackc/pgx/v5/pgtype"
 
@@ -53,20 +52,58 @@ type reviewDispatchFilteredInspector interface {
 	InspectReviewProject(context.Context, pgtype.UUID, pgtype.UUID, int, int) (*ContinuousDispatchShadowResult, error)
 }
 
+// ReviewReconcileAuthorityEvidence is an internal, read-only seam for the
+// future canonical Authority mapping. It is deliberately separate from the
+// browser-facing preview and from the route selected by Shadow. A provider
+// must prove the author and independent reviewer identity for this exact
+// candidate; it must not infer either identity from names or local Tasks.
+type ReviewReconcileAuthorityEvidence struct {
+	AuthorityKnown    bool
+	AuthorityEligible bool
+	AuthorKnown       bool
+	AuthorEmployeeID  string
+	AuthorAgentID     string
+	Reviewer          ReviewReconcileReviewer
+}
+
+// ReviewReconcileAuthorityEvidenceProvider is intentionally optional. Until
+// the canonical Authority mapping and the review gate are wired together, a
+// nil provider keeps every item fail-closed as authority_evidence_missing.
+// Implementations must not perform HTTP writes, create Tasks, or mutate the
+// Shadow projection.
+type ReviewReconcileAuthorityEvidenceProvider interface {
+	ResolveReviewReconcileEvidence(context.Context, pgtype.UUID, pgtype.UUID, ReviewReconcileCandidate) (ReviewReconcileAuthorityEvidence, error)
+}
+
 // ReviewDispatchBatchService drains only the existing review frontier. It
 // delegates each write to ContinuousDispatchTriggerService, which recomputes
 // the route and commits the existing Task+receipt idempotently. No queue,
 // scheduler, employee registry, or workflow state is introduced here.
 type ReviewDispatchBatchService struct {
-	inspector ContinuousDispatchProjectInspector
-	trigger   *ContinuousDispatchTriggerService
+	inspector         ContinuousDispatchProjectInspector
+	trigger           *ContinuousDispatchTriggerService
+	reconciler        *ReviewReconciler
+	authorityEvidence ReviewReconcileAuthorityEvidenceProvider
 }
 
 func NewReviewDispatchBatchService(
 	inspector ContinuousDispatchProjectInspector,
 	trigger *ContinuousDispatchTriggerService,
 ) *ReviewDispatchBatchService {
-	return &ReviewDispatchBatchService{inspector: inspector, trigger: trigger}
+	return &ReviewDispatchBatchService{inspector: inspector, trigger: trigger, reconciler: NewReviewReconciler()}
+}
+
+// WithAuthorityEvidenceProvider adds the explicit canonical mapping seam. It
+// does not enable production Authority or perform any network operation.
+// Dispatch still requires the Trigger's Authority gate and identity provider
+// to be composed; otherwise candidates remain blocked per item.
+func (s *ReviewDispatchBatchService) WithAuthorityEvidenceProvider(provider ReviewReconcileAuthorityEvidenceProvider) *ReviewDispatchBatchService {
+	if s == nil {
+		return nil
+	}
+	cp := *s
+	cp.authorityEvidence = provider
+	return &cp
 }
 
 func (s *ReviewDispatchBatchService) PreviewProject(
@@ -86,26 +123,123 @@ func (s *ReviewDispatchBatchService) PreviewProject(
 		page.WorkspaceID != shadowUUIDString(workspaceID) || page.ProjectID != shadowUUIDString(projectID) {
 		return ReviewDispatchPreview{}, ErrContinuousDispatchSourceGap
 	}
-	preview := ReviewDispatchPreview{SchemaVersion: reviewDispatchPreviewSchema, Items: make([]ReviewDispatchPreviewItem, 0, len(page.Items)), Total: page.Total}
+	input, err := s.reconcileInput(ctx, workspaceID, projectID, page)
+	if err != nil {
+		return ReviewDispatchPreview{}, err
+	}
+	plan := s.reconcilerOrNew().Plan(input)
+	return reviewDispatchPreviewFromPlan(page, plan), nil
+}
+
+func (s *ReviewDispatchBatchService) reconcilerOrNew() *ReviewReconciler {
+	if s != nil && s.reconciler != nil {
+		return s.reconciler
+	}
+	return NewReviewReconciler()
+}
+
+func reviewDispatchPreviewFromPlan(page *ContinuousDispatchShadowResult, plan ReviewReconcilePlan) ReviewDispatchPreview {
+	preview := ReviewDispatchPreview{SchemaVersion: reviewDispatchPreviewSchema, Items: make([]ReviewDispatchPreviewItem, 0, len(plan.Items)), Total: page.Total}
+	byIssue := make(map[string]ContinuousDispatchShadowItem, len(page.Items))
 	for _, item := range page.Items {
+		byIssue[item.IssueID] = item
+	}
+	for _, reconciled := range plan.Items {
+		shadow := byIssue[reconciled.IssueID]
 		proposal := ReviewDispatchPreviewItem{
-			IssueID: item.IssueID, IssueTitle: item.IssueTitle, SourceRef: item.SourceRef, SourceTaskID: item.SourceTaskID,
-			State: item.NextAction.State, Reasons: append([]continuousdispatch.Reason(nil), item.NextAction.Reasons...),
-			Selected: item.NextAction.Selected,
+			IssueID: reconciled.IssueID, IssueTitle: shadow.IssueTitle, SourceRef: shadow.SourceRef, SourceTaskID: shadow.SourceTaskID,
+			Selected: nil,
 		}
-		if (strings.TrimSpace(item.SourceRef) == "" || strings.TrimSpace(item.SourceTaskID) == "") && proposal.Selected != nil {
-			proposal.State = continuousdispatch.StateBlocked
-			proposal.Reasons = []continuousdispatch.Reason{continuousdispatch.ReasonReviewSourceTaskMissing}
-			proposal.Selected = nil
-		}
-		if proposal.State == continuousdispatch.StateReady || proposal.State == continuousdispatch.StateFallback {
+		switch reconciled.State {
+		case ReviewReconcileEligible:
+			proposal.State = continuousdispatch.StateReady
+			proposal.Selected = shadow.NextAction.Selected
 			preview.Eligible++
-		} else {
+		case ReviewReconcileActive:
+			proposal.State = continuousdispatch.StateAlreadyDispatched
 			preview.Skipped++
+		default:
+			proposal.State = continuousdispatch.StateBlocked
+			preview.Skipped++
+		}
+		proposal.Reasons = make([]continuousdispatch.Reason, 0, len(reconciled.Reasons))
+		for _, reason := range reconciled.Reasons {
+			proposal.Reasons = append(proposal.Reasons, continuousdispatch.Reason(reason))
 		}
 		preview.Items = append(preview.Items, proposal)
 	}
-	return preview, nil
+	return preview
+}
+
+func (s *ReviewDispatchBatchService) reconcileInput(
+	ctx context.Context,
+	workspaceID, projectID pgtype.UUID,
+	page *ContinuousDispatchShadowResult,
+) (ReviewReconcileInput, error) {
+	if page == nil || s == nil {
+		return ReviewReconcileInput{}, ErrContinuousDispatchSourceGap
+	}
+	input := ReviewReconcileInput{
+		WorkspaceID: page.WorkspaceID,
+		ProjectID:   page.ProjectID,
+		Candidates:  make([]ReviewReconcileCandidate, 0, len(page.Items)),
+		MaxDispatch: page.Limit,
+	}
+	if input.MaxDispatch <= 0 || input.MaxDispatch > 25 {
+		return ReviewReconcileInput{}, ErrContinuousDispatchSourceGap
+	}
+	for _, shadow := range page.Items {
+		candidate := reviewReconcileCandidateFromShadow(page, shadow)
+		if s.authorityEvidence != nil && s.authorityGateReady() {
+			evidence, err := s.authorityEvidence.ResolveReviewReconcileEvidence(ctx, workspaceID, projectID, candidate)
+			if err == nil && reviewReconcileAuthorityEvidenceComplete(evidence) {
+				candidate.AuthorityKnown = evidence.AuthorityKnown
+				candidate.AuthorityEligible = evidence.AuthorityEligible
+				candidate.AuthorKnown = evidence.AuthorKnown
+				candidate.AuthorEmployeeID = evidence.AuthorEmployeeID
+				candidate.AuthorAgentID = evidence.AuthorAgentID
+				candidate.Reviewer = evidence.Reviewer
+			}
+		}
+		input.Candidates = append(input.Candidates, candidate)
+	}
+	return input, nil
+}
+
+func (s *ReviewDispatchBatchService) authorityGateReady() bool {
+	return s != nil && s.trigger != nil && s.trigger.authorityReviewMode &&
+		s.trigger.authorityReviewGate != nil && s.trigger.authorityReviewIDs != nil
+}
+
+func reviewReconcileAuthorityEvidenceComplete(evidence ReviewReconcileAuthorityEvidence) bool {
+	return evidence.AuthorityKnown && evidence.AuthorityEligible && evidence.AuthorKnown &&
+		canonicalNonEmpty(evidence.AuthorEmployeeID, evidence.AuthorAgentID) &&
+		evidence.Reviewer.Known && evidence.Reviewer.Healthy && evidence.Reviewer.Independent &&
+		canonicalNonEmpty(evidence.Reviewer.EmployeeID, evidence.Reviewer.AgentID)
+}
+
+func reviewReconcileCandidateFromShadow(page *ContinuousDispatchShadowResult, shadow ContinuousDispatchShadowItem) ReviewReconcileCandidate {
+	selected := shadow.NextAction.Selected
+	candidate := ReviewReconcileCandidate{
+		WorkspaceID: page.WorkspaceID, ProjectID: page.ProjectID, IssueID: shadow.IssueID,
+		Status: shadow.Status, Stage: shadow.DispatchIdentity.Stage,
+		CandidateRevision: shadow.DispatchIdentity.CandidateRevision, Generation: shadow.DispatchIdentity.Generation,
+		SourceRef: shadow.SourceRef, SourceTaskID: shadow.SourceTaskID,
+		ExistingTask: ReviewReconcileTaskEvidence{Known: page.Sources.Tasks},
+		Lease:        ReviewReconcileLeaseEvidence{Required: true, Known: page.Sources.WriteLease, Available: page.Sources.WriteLease, LeaseID: shadow.NextAction.WriteLeaseID},
+		WIP:          ReviewReconcileWIPEvidence{Required: true, Known: page.Sources.WIP, Reconciled: page.Sources.WIP},
+	}
+	if shadow.NextAction.ExistingTaskID != "" {
+		candidate.ExistingTask = ReviewReconcileTaskEvidence{Known: page.Sources.Tasks, Found: true, Open: true, TaskID: shadow.NextAction.ExistingTaskID}
+	}
+	if selected != nil {
+		candidate.WIP.Active = selected.ActiveWIP
+		candidate.WIP.Max = selected.MaxWIP
+	}
+	// Authority, author and reviewer evidence intentionally remain unknown
+	// unless the explicit provider seam is fully composed above. The Shadow
+	// route is not sufficient proof for any of those identities.
+	return candidate
 }
 
 // inspectReviewPage prefers the SQL status-filtered shadow query. The
@@ -174,22 +308,24 @@ func (s *ReviewDispatchBatchService) DispatchProject(
 	if s == nil || s.trigger == nil {
 		return ReviewDispatchBatchResult{}, fmt.Errorf("review dispatch trigger is required")
 	}
-	preview, err := s.PreviewProject(ctx, workspaceID, projectID, limit, offset)
+	page, err := s.inspectReviewPage(ctx, workspaceID, projectID, limit, offset)
 	if err != nil {
 		return ReviewDispatchBatchResult{}, err
 	}
-	result := ReviewDispatchBatchResult{Preview: preview, Receipts: make([]ContinuousDispatchReceipt, 0, preview.Eligible)}
-	for _, item := range preview.Items {
-		if item.State != continuousdispatch.StateReady && item.State != continuousdispatch.StateFallback {
-			continue
-		}
-		dispatch, dispatchErr := s.trigger.DispatchReviewIssue(
-			ctx, workspaceID, projectID, parseDispatchUUID(item.IssueID), actorUserID, item.SourceRef, parseDispatchUUID(item.SourceTaskID),
-		)
-		if dispatchErr != nil {
-			return result, dispatchErr
-		}
-		result.Receipts = append(result.Receipts, dispatch.Receipt)
+	if page == nil || page.SchemaVersion != ContinuousDispatchShadowSchemaV1 ||
+		page.WorkspaceID != shadowUUIDString(workspaceID) || page.ProjectID != shadowUUIDString(projectID) {
+		return ReviewDispatchBatchResult{}, ErrContinuousDispatchSourceGap
 	}
-	return result, nil
+	input, err := s.reconcileInput(ctx, workspaceID, projectID, page)
+	if err != nil {
+		return ReviewDispatchBatchResult{}, err
+	}
+	dispatch, err := s.reconcilerOrNew().Dispatch(ctx, input, shadowUUIDString(actorUserID), s.trigger)
+	if err != nil {
+		return ReviewDispatchBatchResult{}, err
+	}
+	return ReviewDispatchBatchResult{
+		Preview:  reviewDispatchPreviewFromPlan(page, dispatch.Plan),
+		Receipts: dispatch.Receipts,
+	}, nil
 }
