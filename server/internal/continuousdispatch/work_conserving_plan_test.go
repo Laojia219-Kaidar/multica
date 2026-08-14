@@ -230,3 +230,42 @@ func TestPlanWorkConservingGoalMissingMetrics(t *testing.T) {
 		t.Fatalf("goal missing mismatch = %+v, want open=1 blocked=1 executable=0", got.Mismatch)
 	}
 }
+
+func TestPlanWorkConservingRejectsEmptyRuntimeAndQuotaEvenWithCurrentObservation(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*WorkConservingEmployee)
+		want   Reason
+	}{
+		{
+			name: "runtime empty",
+			mutate: func(employee *WorkConservingEmployee) {
+				employee.Candidate.Route.RuntimeHealth = ""
+			},
+			want: ReasonEmployeeRuntimeUnavailable,
+		},
+		{
+			name: "quota empty current timestamp",
+			mutate: func(employee *WorkConservingEmployee) {
+				employee.Candidate.Route.Quota = ""
+				employee.Candidate.Route.QuotaCheckedAt = fixtureNow
+			},
+			want: ReasonEmployeeQuotaUnknown,
+		},
+	}
+	for i, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			issue := workIssue("issue-empty-evidence")
+			issue.WritePath.Key = ""
+			employee := workEmployee("worker", uuid.MustParse("00000000-0000-0000-0000-00000000009"+string(rune('0'+i+1))).String(), true, true)
+			tc.mutate(&employee)
+			got := planner().PlanWorkConserving(WorkConservingInput{GoalID: workGoal, Issues: []WorkConservingIssue{issue}, Employees: []WorkConservingEmployee{employee}})
+			if len(got.Suggestions) != 0 || len(got.BlockedBacklog) != 1 || got.BlockedBacklog[0].Reasons[0] != tc.want {
+				t.Fatalf("plan = %+v, want blocked reason %q", got, tc.want)
+			}
+			if got.Mismatch.HealthyIdleEmployees != 0 {
+				t.Fatalf("healthy idle mismatch = %+v, must not count incomplete runtime/quota evidence", got.Mismatch)
+			}
+		})
+	}
+}

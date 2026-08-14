@@ -12,27 +12,31 @@ import (
 // shadow read model: these values describe why a candidate can or cannot be
 // suggested, but never authorize a Task write.
 const (
-	ReasonPlanGoalMissing           Reason = "goal_evidence_missing"
-	ReasonIssueGoalMismatch         Reason = "issue_goal_mismatch"
-	ReasonIssueProvenanceMissing    Reason = "issue_provenance_missing"
-	ReasonIssueAuthorityMissing     Reason = "issue_authority_missing"
-	ReasonIssueWritePathEvidence    Reason = "issue_write_path_evidence_missing"
-	ReasonIssueWritePathConflict    Reason = "issue_write_path_conflict"
-	ReasonEmployeeHealthEvidence    Reason = "employee_health_evidence_missing"
-	ReasonEmployeeUnhealthy         Reason = "employee_unhealthy"
-	ReasonEmployeeIdleEvidence      Reason = "employee_idle_evidence_missing"
-	ReasonEmployeeNotIdle           Reason = "employee_not_idle"
-	ReasonEmployeeIdentityDuplicate Reason = "employee_identity_duplicate"
-	ReasonEmployeeSourceMissing     Reason = "employee_provenance_missing"
-	ReasonEmployeeAuthorityMissing  Reason = "employee_authority_missing"
-	ReasonEmployeeRuntimeEvidence   Reason = "employee_runtime_evidence_missing"
-	ReasonEmployeeModelMissing      Reason = "employee_model_evidence_missing"
-	ReasonEmployeeWritePathEvidence Reason = "employee_write_path_evidence_missing"
-	ReasonEmployeeWritePathConflict Reason = "employee_write_path_conflict"
-	ReasonEmployeeWritePathMismatch Reason = "employee_write_path_mismatch"
-	ReasonWorkPathAlreadyPlanned    Reason = "write_path_already_planned"
-	ReasonNoHealthyIdleEmployee     Reason = "no_healthy_idle_employee"
-	ReasonIssueIdentityDuplicate    Reason = "issue_identity_duplicate"
+	ReasonPlanGoalMissing            Reason = "goal_evidence_missing"
+	ReasonIssueGoalMismatch          Reason = "issue_goal_mismatch"
+	ReasonIssueProvenanceMissing     Reason = "issue_provenance_missing"
+	ReasonIssueAuthorityMissing      Reason = "issue_authority_missing"
+	ReasonIssueWritePathEvidence     Reason = "issue_write_path_evidence_missing"
+	ReasonIssueWritePathConflict     Reason = "issue_write_path_conflict"
+	ReasonEmployeeHealthEvidence     Reason = "employee_health_evidence_missing"
+	ReasonEmployeeUnhealthy          Reason = "employee_unhealthy"
+	ReasonEmployeeIdleEvidence       Reason = "employee_idle_evidence_missing"
+	ReasonEmployeeNotIdle            Reason = "employee_not_idle"
+	ReasonEmployeeIdentityDuplicate  Reason = "employee_identity_duplicate"
+	ReasonEmployeeSourceMissing      Reason = "employee_provenance_missing"
+	ReasonEmployeeAuthorityMissing   Reason = "employee_authority_missing"
+	ReasonEmployeeRuntimeEvidence    Reason = "employee_runtime_evidence_missing"
+	ReasonEmployeeModelMissing       Reason = "employee_model_evidence_missing"
+	ReasonEmployeeWritePathEvidence  Reason = "employee_write_path_evidence_missing"
+	ReasonEmployeeWritePathConflict  Reason = "employee_write_path_conflict"
+	ReasonEmployeeWritePathMismatch  Reason = "employee_write_path_mismatch"
+	ReasonWorkPathAlreadyPlanned     Reason = "write_path_already_planned"
+	ReasonNoHealthyIdleEmployee      Reason = "no_healthy_idle_employee"
+	ReasonIssueIdentityDuplicate     Reason = "issue_identity_duplicate"
+	ReasonEmployeeRuntimeUnavailable Reason = "runtime_unavailable"
+	ReasonEmployeeQuotaUnknown       Reason = "quota_unknown"
+	ReasonEmployeeQuotaStale         Reason = "quota_stale"
+	ReasonEmployeeQuotaExhausted     Reason = "quota_exhausted"
 )
 
 // WorkConservingWritePath is the caller's read-only observation of the
@@ -160,7 +164,7 @@ func (p *Planner) PlanWorkConserving(in WorkConservingInput) WorkConservingPlan 
 			plan.Mismatch.OpenIssues++
 			plan.BlockedBacklog = append(plan.BlockedBacklog, blockedWorkIssue(issue, []Reason{ReasonPlanGoalMissing}, 0))
 		}
-		plan.Mismatch = workMismatch(in, plan)
+		plan.Mismatch = p.workMismatch(in, plan)
 		return plan
 	}
 
@@ -173,7 +177,7 @@ func (p *Planner) PlanWorkConserving(in WorkConservingInput) WorkConservingPlan 
 				plan.addBlocked(issue, []Reason{ReasonEmployeeIdentityDuplicate}, 0)
 			}
 		}
-		plan.Mismatch = workMismatch(in, plan)
+		plan.Mismatch = p.workMismatch(in, plan)
 		return plan
 	}
 	locks := activeWorkLocks(in.ActiveLocks)
@@ -281,7 +285,7 @@ func (p *Planner) PlanWorkConserving(in WorkConservingInput) WorkConservingPlan 
 		plan.Mismatch.PlannedIssues++
 	}
 
-	plan.Mismatch = workMismatch(in, plan)
+	plan.Mismatch = p.workMismatch(in, plan)
 	return plan
 }
 
@@ -306,6 +310,7 @@ func (p *Planner) bestWorkCandidate(issue WorkConservingIssue, all []WorkConserv
 	var best *workCandidateResult
 	eligible := 0
 	pathBlocked := false
+	var candidateBlock Reason
 	for _, employee := range all {
 		if _, ok := used[employee.Candidate.EmployeeID]; ok {
 			continue
@@ -329,6 +334,7 @@ func (p *Planner) bestWorkCandidate(issue WorkConservingIssue, all []WorkConserv
 		}
 		decision := workEmployeeDecision(employee, issue)
 		if !decision.Eligible {
+			candidateBlock = stableWorkBlockReason(candidateBlock, firstWorkDecisionReason(decision))
 			continue
 		}
 		// Reuse the canonical route scorer for quota/runtime/role and
@@ -336,6 +342,7 @@ func (p *Planner) bestWorkCandidate(issue WorkConservingIssue, all []WorkConserv
 		scored := p.scorer.Score(employee.Candidate.Route, issue.Requirement)
 		decision.Score = scored.TotalScore
 		if scored.FailClosed {
+			candidateBlock = stableWorkBlockReason(candidateBlock, Reason(scored.FailReason))
 			continue
 		}
 		eligible++
@@ -347,7 +354,7 @@ func (p *Planner) bestWorkCandidate(issue WorkConservingIssue, all []WorkConserv
 	if best == nil && pathBlocked {
 		return nil, eligible, ReasonWorkPathAlreadyPlanned
 	}
-	return best, eligible, ""
+	return best, eligible, candidateBlock
 }
 
 func workEmployeeDecision(employee WorkConservingEmployee, issue WorkConservingIssue) CandidateDecision {
@@ -379,6 +386,26 @@ func workEmployeeDecision(employee WorkConservingEmployee, issue WorkConservingI
 	}
 	if c.Route.AgentID == uuid.Nil || c.Route.RuntimeID == uuid.Nil {
 		d.Reasons = []Reason{ReasonEmployeeRuntimeEvidence}
+		return d
+	}
+	if c.Route.RuntimeHealth != routescore.RuntimeOnline {
+		d.Reasons = []Reason{ReasonEmployeeRuntimeUnavailable}
+		return d
+	}
+	switch c.Route.Quota {
+	case routescore.QuotaFresh:
+		// Fresh is the only quota state that is schedulable.
+	case routescore.QuotaStale:
+		d.Reasons = []Reason{ReasonEmployeeQuotaStale}
+		return d
+	case routescore.QuotaExhausted:
+		d.Reasons = []Reason{ReasonEmployeeQuotaExhausted}
+		return d
+	case routescore.QuotaUnknown:
+		d.Reasons = []Reason{ReasonEmployeeQuotaUnknown}
+		return d
+	default:
+		d.Reasons = []Reason{ReasonEmployeeQuotaUnknown}
 		return d
 	}
 	if c.Model == "" {
@@ -537,11 +564,12 @@ func workReceiverWake(reasons []Reason) (string, string) {
 	return "dispatch-coordinator", "an eligible non-conflicting candidate is observed and current dispatch evidence is re-read"
 }
 
-func workMismatch(in WorkConservingInput, plan WorkConservingPlan) WorkConservingMismatch {
+func (p *Planner) workMismatch(in WorkConservingInput, plan WorkConservingPlan) WorkConservingMismatch {
 	m := plan.Mismatch
 	m.BlockedBacklog = len(plan.BlockedBacklog)
 	for _, employee := range in.Employees {
-		if employee.HealthyKnown && employee.Healthy && employee.IdleKnown && employee.Idle && employee.Candidate.ActiveWIP == 0 {
+		decision := workEmployeeDecision(employee, WorkConservingIssue{})
+		if decision.Eligible && !p.scorer.Score(employee.Candidate.Route, routescore.TaskRequirement{}).FailClosed {
 			m.HealthyIdleEmployees++
 		}
 	}
@@ -554,4 +582,18 @@ func workMismatch(in WorkConservingInput, plan WorkConservingPlan) WorkConservin
 		m.IdleBacklogMismatch = m.ExecutableBacklog - m.HealthyIdleEmployees
 	}
 	return m
+}
+
+func firstWorkDecisionReason(decision CandidateDecision) Reason {
+	if len(decision.Reasons) == 0 {
+		return ""
+	}
+	return decision.Reasons[0]
+}
+
+func stableWorkBlockReason(current, next Reason) Reason {
+	if next == "" || (current != "" && current <= next) {
+		return current
+	}
+	return next
 }
