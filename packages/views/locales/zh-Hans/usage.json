@@ -8,7 +8,7 @@
     "plan_confirmation": "套餐/账户映射待你确认",
     "plan_confirmed": "Owner 已确认",
     "window_days": "{{count}} 天",
-    "observed_calibration": "100% 耗尽时实测标定",
+    "measured_cycle_total": "本周期实测总额度",
     "reset_unknown": "供应商未提供",
     "runtime_unbound": "未绑定 Runtime",
     "observed_usage_hint": "本页 {{days}} 天实测",

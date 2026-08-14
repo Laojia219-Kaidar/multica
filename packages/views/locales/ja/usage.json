@@ -8,7 +8,7 @@
     "plan_confirmation": "プラン/アカウント対応は確認待ち",
     "plan_confirmed": "Owner 確認済み",
     "window_days": "{{count}} 日",
-    "observed_calibration": "100% 消化時の実測値",
+    "measured_cycle_total": "今サイクルの実測総枠",
     "reset_unknown": "プロバイダー未提示",
     "runtime_unbound": "Runtime 未紐付け",
     "observed_usage_hint": "この {{days}} 日間表示で実測",

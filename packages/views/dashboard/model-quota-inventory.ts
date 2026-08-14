@@ -27,7 +27,7 @@ export interface ModelPlanQuotaSnapshot {
   usedRatio: number;
   resetAt: string | null;
   observedAt: string;
-  evidence: "owner_confirmed_exhaustion_and_workspace_observation";
+  evidence: "owner_confirmed_zero_based_full_window_total";
 }
 
 export interface ModelPlanUsageRow {
@@ -78,10 +78,12 @@ interface PlanAccumulator {
 
 const BAILIAN_PERSONAL_PLAN_KEY = "阿里云百炼:bailian-token-plan-personal";
 
-// William confirmed that this personal Bailian window was exhausted on
-// 2026-08-14. The token figure is the matching HiveCrew execution-receipt
-// total observed at that boundary (input + output + cache tokens), so it is
-// an empirical calibration rather than a provider-published contractual cap.
+// William confirmed that this personal Bailian account started from zero when
+// the five employees were connected, that only those employees consumed it,
+// and that the seven-day window reached 100% exhaustion on 2026-08-14. Their
+// matching HiveCrew execution receipts (input + output + cache tokens) therefore
+// form this cycle's measured total quota. It remains distinct from a
+// provider-published contractual cap, which has not been supplied.
 const CONFIRMED_QUOTA_SNAPSHOTS: Readonly<
   Record<string, ModelPlanQuotaSnapshot>
 > = {
@@ -93,7 +95,7 @@ const CONFIRMED_QUOTA_SNAPSHOTS: Readonly<
     usedRatio: 1,
     resetAt: null,
     observedAt: "2026-08-14T13:28:05+08:00",
-    evidence: "owner_confirmed_exhaustion_and_workspace_observation",
+    evidence: "owner_confirmed_zero_based_full_window_total",
   },
 };
 

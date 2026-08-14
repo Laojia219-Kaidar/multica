@@ -930,7 +930,7 @@ function ProviderQuotaPanel({
                           {formatTokens(plan.quota.totalTokens)}
                         </div>
                         <div className="text-[10px] text-muted-foreground">
-                          {t(($) => $.quota.observed_calibration)}
+                          {t(($) => $.quota.measured_cycle_total)}
                         </div>
                       </td>
                       <td className="px-3 py-3 text-right font-medium">

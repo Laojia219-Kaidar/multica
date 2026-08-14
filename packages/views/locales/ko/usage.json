@@ -8,7 +8,7 @@
     "plan_confirmation": "플랜/계정 매핑 확인 필요",
     "plan_confirmed": "Owner 확인 완료",
     "window_days": "{{count}}일",
-    "observed_calibration": "100% 소진 시 실측 보정값",
+    "measured_cycle_total": "이번 주기 실측 총한도",
     "reset_unknown": "공급자 미제공",
     "runtime_unbound": "Runtime 미연결",
     "observed_usage_hint": "이 {{days}}일 화면에서 실측",

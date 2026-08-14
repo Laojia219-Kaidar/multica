@@ -537,6 +537,9 @@ describe("DashboardPage — provider and plan inventory", () => {
     expect(screen.getByText("Owner confirmed")).toBeInTheDocument();
     expect(screen.getByText("7 days")).toBeInTheDocument();
     expect(screen.getAllByText("415.6M")).toHaveLength(2);
+    expect(
+      screen.getByText("Measured total quota for this cycle"),
+    ).toBeInTheDocument();
     expect(screen.getAllByText("100%").length).toBeGreaterThan(0);
     expect(screen.getByText("Not provided by provider")).toBeInTheDocument();
   });

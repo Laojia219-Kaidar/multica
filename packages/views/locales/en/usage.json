@@ -8,7 +8,7 @@
     "plan_confirmation": "Plan/account mapping awaits confirmation",
     "plan_confirmed": "Owner confirmed",
     "window_days": "{{count}} days",
-    "observed_calibration": "Observed calibration at 100% exhaustion",
+    "measured_cycle_total": "Measured total quota for this cycle",
     "reset_unknown": "Not provided by provider",
     "runtime_unbound": "Runtime not bound",
     "observed_usage_hint": "Observed in this {{days}}-day view",

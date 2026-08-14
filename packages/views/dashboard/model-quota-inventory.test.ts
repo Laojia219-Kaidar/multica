@@ -159,6 +159,7 @@ describe("buildModelQuotaUsageInventory", () => {
         remainingTokens: 0,
         usedRatio: 1,
         resetAt: null,
+        evidence: "owner_confirmed_zero_based_full_window_total",
       },
     });
     expect(bailian?.plans[0]?.employees.map((employee) => employee.id).toSorted()).toEqual([
