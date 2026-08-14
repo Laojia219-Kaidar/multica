@@ -4,6 +4,7 @@ import React from "react";
 import {
   User,
   SlidersHorizontal,
+  Network,
   Key,
   Settings,
   Users,
@@ -35,6 +36,7 @@ import { LabsTab } from "./labs-tab";
 import { NotificationsTab } from "./notifications-tab";
 import { LabelsTab } from "./labels-tab";
 import { PropertiesTab } from "./properties-tab";
+import { IaTab } from "./ia-tab";
 import { KeyboardShortcutsTab } from "./keyboard-shortcuts-tab";
 import { useT } from "../../i18n";
 
@@ -58,6 +60,7 @@ const WORKSPACE_TAB_KEYS = [
   "members",
   "labels",
   "properties",
+  "ia",
 ] as const;
 const WORKSPACE_TAB_VALUES = {
   general: "workspace",
@@ -68,6 +71,7 @@ const WORKSPACE_TAB_VALUES = {
   members: "members",
   labels: "labels",
   properties: "properties",
+  ia: "ia",
 } as const;
 const WORKSPACE_TAB_ICONS = {
   general: Settings,
@@ -78,6 +82,7 @@ const WORKSPACE_TAB_ICONS = {
   members: Users,
   labels: Tags,
   properties: SlidersHorizontal,
+  ia: Network,
 } as const;
 
 const DEFAULT_TAB = "profile";
@@ -223,6 +228,7 @@ export function SettingsPage({ extraAccountTabs }: SettingsPageProps = {}) {
           <TabsContent value="members"><MembersTab /></TabsContent>
           <TabsContent value="labels"><LabelsTab /></TabsContent>
           <TabsContent value="properties"><PropertiesTab /></TabsContent>
+          <TabsContent value="ia"><IaTab /></TabsContent>
           {extraAccountTabs?.map((tab) => (
             <TabsContent key={tab.value} value={tab.value}>{tab.content}</TabsContent>
           ))}

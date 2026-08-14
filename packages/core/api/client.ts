@@ -1959,6 +1959,10 @@ export class ApiClient {
     return this.fetch(`/api/datasets/${id}`, { method: "PATCH", body: JSON.stringify({ authorized_agent_ids: authorized_agent_ids }) });
   }
 
+  getObjectOwnership(): Promise<{ domains: { domain: string; domain_key: string; objects: string[]; canonical_writer: string }[]; count: number }> {
+    return this.fetch("/api/ia/object-ownership");
+  }
+
   listBases(): Promise<
     { machine_title: string; runtime_online: number; runtime_registered: number; employees: number; drained: boolean }[]
   > {
