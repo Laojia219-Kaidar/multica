@@ -7,7 +7,10 @@ export type OperatingProgram = {
 
 export type OperatingProject = {
   id: string;
+  /** Existing web scope contract remains string-based for compatibility. */
   programId: string;
+  /** Explicitly distinguishes an unclassified formal Project from a fake L3 subject. */
+  programClassification?: "assigned" | "unassigned";
   formalProjectId: string;
   name: string;
   platform?: string;

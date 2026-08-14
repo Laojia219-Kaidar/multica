@@ -99,4 +99,37 @@ describe("WorkflowOperationsPage", () => {
     expect(screen.getByText("先选择 L4 项目，尚未查询成果")).toBeDefined();
     expect(screen.queryByText(/当前项目没有被 Outcome Center 观察到成果/)).toBeNull();
   });
+
+  it("lets an L3 settings view classify an unassigned formal project through callbacks", () => {
+    const onAssignProject = vi.fn();
+    render(<WorkflowOperationsPage
+      {...props}
+      projects={[...props.projects, { id: "novel", programId: "", programClassification: "unassigned" as const, formalProjectId: "PRJ-NOVEL", name: "微信读书小说", platform: "微信读书" }]}
+      selection={{ kind: "program", id: "brand" }}
+      section="settings"
+      programManagement={{ onAssignProject }}
+    />);
+    expect(screen.getByTestId("workflow-program-settings")).toBeDefined();
+    expect(screen.getByTestId("workflow-program-unassigned-projects")).toHaveTextContent("微信读书小说");
+    fireEvent.click(screen.getByRole("button", { name: "归入此科目：微信读书小说" }));
+    expect(onAssignProject).toHaveBeenCalledWith("brand", "novel");
+  });
+
+  it("renders disabled assignment controls and preserves errors from the integration", () => {
+    render(<WorkflowOperationsPage
+      {...props}
+      projects={[...props.projects, { id: "novel", programId: "", programClassification: "unassigned" as const, formalProjectId: "PRJ-NOVEL", name: "微信读书小说" }]}
+      selection={{ kind: "program", id: "brand" }}
+      section="settings"
+      programManagement={{
+        onAssignProject: () => undefined,
+        projectMutationState: () => "disabled",
+        projectMutationError: () => "权限不足",
+      }}
+    />);
+    const button = screen.getByRole("button", { name: "归入此科目：微信读书小说" });
+    expect(button).toBeDisabled();
+    expect(screen.getAllByRole("alert")).toHaveLength(2);
+    expect(screen.getAllByRole("alert")[0]).toHaveTextContent("权限不足");
+  });
 });

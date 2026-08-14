@@ -13,8 +13,18 @@ export interface WorkflowContextTreeProps {
   projects: OperatingProject[];
   selected?: WorkflowContextSelection;
   onSelect: (selection: WorkflowContextSelection) => void;
+  /** The view only emits intent; the integration owns persistence. */
+  onCreateProgram?: (input: { name: string; description?: string }) => void | Promise<void>;
+  programCreationState?: WorkflowProgramMutationState;
+  programCreationError?: string;
   collapsed?: boolean;
   onToggleCollapsed?: () => void;
+}
+
+export type WorkflowProgramMutationState = "ready" | "loading" | "error" | "disabled";
+
+function isUnassignedProject(project: OperatingProject): boolean {
+  return project.programClassification === "unassigned" || project.programId === "";
 }
 
 const CONTEXT_TREE_WIDTH_KEY = "hivecrew.workflow.context-tree.width.v1";
@@ -31,19 +41,31 @@ export function WorkflowContextTree({
   projects,
   selected,
   onSelect,
+  onCreateProgram,
+  programCreationState = "ready",
+  programCreationError,
   collapsed = false,
   onToggleCollapsed,
 }: WorkflowContextTreeProps) {
   const [width, setWidth] = useState(DEFAULT_CONTEXT_TREE_WIDTH);
+  const [createProgramOpen, setCreateProgramOpen] = useState(false);
+  const [programName, setProgramName] = useState("");
+  const [programDescription, setProgramDescription] = useState("");
   const resizeCleanup = useRef<(() => void) | null>(null);
   const [expanded, setExpanded] = useState<Record<string, boolean>>(() =>
     Object.fromEntries(programs.map((program) => [program.id, true])),
   );
-  const projectsByProgram = useMemo(() => {
-    const result = new Map<string, OperatingProject[]>();
-    for (const project of projects) result.set(project.programId, [...(result.get(project.programId) ?? []), project]);
-    return result;
-  }, [projects]);
+  const assignedProjectIds = useMemo(() => {
+    const knownProgramIds = new Set(programs.map((program) => program.id));
+    return new Set([
+      ...programs.flatMap((program) => program.projectIds),
+      ...projects.filter((project) => !isUnassignedProject(project) && knownProgramIds.has(project.programId)).map((project) => project.id),
+    ]);
+  }, [programs, projects]);
+  const unassignedProjects = useMemo(
+    () => projects.filter((project) => isUnassignedProject(project) && !assignedProjectIds.has(project.id)),
+    [assignedProjectIds, projects],
+  );
 
   useEffect(() => {
     try {
@@ -98,6 +120,13 @@ export function WorkflowContextTree({
     }
   }, [setAndPersistWidth, width]);
 
+  const submitProgram = (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const name = programName.trim();
+    if (!onCreateProgram || !name || programCreationState === "loading" || programCreationState === "disabled") return;
+    void onCreateProgram({ name, description: programDescription.trim() || undefined });
+  };
+
   if (collapsed) {
     return (
       <aside className="flex w-10 shrink-0 flex-col items-center border-r bg-muted/20 py-3" data-testid="workflow-context-tree-collapsed">
@@ -119,6 +148,21 @@ export function WorkflowContextTree({
           <PanelLeftClose className="h-4 w-4" />
         </button>
       </div>
+      {onCreateProgram ? (
+        <details open={createProgramOpen} onToggle={(event) => setCreateProgramOpen(event.currentTarget.open)} className="border-b px-3 py-2">
+          <summary className="cursor-pointer text-xs font-medium">新建运营科目</summary>
+          <form className="mt-2 space-y-2" onSubmit={submitProgram} aria-label="新建运营科目">
+            <label className="block text-[11px] text-muted-foreground" htmlFor="workflow-new-program-name">科目名称</label>
+            <input id="workflow-new-program-name" value={programName} onChange={(event) => setProgramName(event.target.value)} className="w-full rounded border bg-background px-2 py-1.5 text-xs" placeholder="例如：蜂巢创科品牌运营" disabled={programCreationState === "loading" || programCreationState === "disabled"} required />
+            <label className="block text-[11px] text-muted-foreground" htmlFor="workflow-new-program-description">描述（可选）</label>
+            <textarea id="workflow-new-program-description" value={programDescription} onChange={(event) => setProgramDescription(event.target.value)} className="w-full rounded border bg-background px-2 py-1.5 text-xs" rows={2} disabled={programCreationState === "loading" || programCreationState === "disabled"} />
+            <button type="submit" className="w-full rounded border px-2 py-1.5 text-xs hover:bg-accent disabled:cursor-not-allowed disabled:opacity-60" disabled={!programName.trim() || programCreationState === "loading" || programCreationState === "disabled"}>
+              {programCreationState === "loading" ? "正在创建…" : "创建运营科目"}
+            </button>
+            {programCreationError ? <p role="alert" className="text-[11px] text-destructive">创建失败：{programCreationError}</p> : null}
+          </form>
+        </details>
+      ) : null}
       <nav className="min-h-0 flex-1 overflow-y-auto p-2" aria-label="运营项目上下文">
         {programs.length === 0 ? <p className="p-2 text-xs text-muted-foreground">暂无运营科目</p> : null}
         {programs.map((program) => {
@@ -148,7 +192,7 @@ export function WorkflowContextTree({
               </div>
               {isExpanded ? (
                 <div className="ml-5 border-l pl-2">
-                  {(projectsByProgram.get(program.id) ?? []).map((project) => {
+                  {projects.filter((project) => !isUnassignedProject(project) && (project.programId === program.id || program.projectIds.includes(project.id))).map((project) => {
                     const projectSelected = selected?.kind === "project" && selected.id === project.id;
                     return (
                       <button
@@ -169,6 +213,28 @@ export function WorkflowContextTree({
             </div>
           );
         })}
+        {unassignedProjects.length > 0 ? (
+          <div className="mt-3 border-t pt-2" data-testid="workflow-unassigned-projects">
+            <p className="px-2 py-1 text-[11px] font-medium text-muted-foreground">未归类正式项目</p>
+            <p className="px-2 pb-1 text-[10px] text-muted-foreground">这些项目尚未归入任何 L3 科目</p>
+            {unassignedProjects.map((project) => {
+              const projectSelected = selected?.kind === "project" && selected.id === project.id;
+              return (
+                <button
+                  type="button"
+                  key={project.id}
+                  data-testid={`workflow-unassigned-project-${project.id}`}
+                  aria-current={projectSelected ? "page" : undefined}
+                  onClick={() => onSelect({ kind: "project", id: project.id })}
+                  className={`mb-0.5 flex w-full items-center justify-between rounded px-2 py-1.5 text-left text-xs hover:bg-accent ${projectSelected ? "bg-accent" : ""}`}
+                >
+                  <span className="truncate">{project.name}</span>
+                  {project.platform ? <span className="ml-2 shrink-0 text-[10px] text-muted-foreground">{project.platform}</span> : null}
+                </button>
+              );
+            })}
+          </div>
+        ) : null}
       </nav>
       <button
         type="button"

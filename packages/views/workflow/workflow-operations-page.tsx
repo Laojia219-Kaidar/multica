@@ -5,10 +5,11 @@ import { ChevronRight, LayoutDashboard, PackageCheck, PlayCircle, Settings2, Wor
 import type { ArtifactSummary, OperatingProgram, OperatingProject, WorkflowDefinitionDraft, WorkflowRuntime } from "@multica/core/workflow";
 import type { WorkflowDefinition, WorkflowInstance } from "@multica/core/api/workflow";
 import type { CompanyOpsArtifactReplicaLocation, CompanyOpsOutcomeSummary } from "@multica/core/types";
-import { WorkflowContextTree, type WorkflowContextSelection } from "./workflow-context-tree";
+import { WorkflowContextTree, type WorkflowContextSelection, type WorkflowProgramMutationState } from "./workflow-context-tree";
 import { WorkflowDesigner } from "./workflow-designer";
 import { WorkflowRuntimeGraph } from "./workflow-runtime-graph";
 import { WorkflowWorkbench, type WorkflowWorkbenchProps } from "./workflow-workbench";
+import { WorkflowProgramSettings, type WorkflowProgramSettingsProps } from "./workflow-program-settings";
 
 export type WorkflowOperationsSection = "overview" | "plan" | "workflow" | "instances" | "artifacts" | "review" | "settings";
 
@@ -40,6 +41,16 @@ export interface WorkflowOperationsPageProps {
   onPublishDefinition?: (definition: WorkflowDefinitionDraft) => void;
   publishReceipt?: { definitionId: string; version: number; changed: boolean } | null;
   publishError?: string | null;
+  /** Pure view callbacks for L3 subject and L4 Project classification. */
+  programManagement?: {
+    onCreateProgram?: (input: { name: string; description?: string }) => void | Promise<void>;
+    programCreationState?: WorkflowProgramMutationState;
+    programCreationError?: string;
+    onAssignProject?: WorkflowProgramSettingsProps["onAssignProject"];
+    onUnassignProject?: WorkflowProgramSettingsProps["onUnassignProject"];
+    projectMutationState?: WorkflowProgramSettingsProps["projectMutationState"];
+    projectMutationError?: WorkflowProgramSettingsProps["projectMutationError"];
+  };
 }
 
 export interface ArtifactLocationsState {
@@ -91,6 +102,7 @@ export function WorkflowOperationsPage({
   onPublishDefinition,
   publishReceipt,
   publishError,
+  programManagement,
 }: WorkflowOperationsPageProps) {
   const [uncontrolledSelection, setUncontrolledSelection] = useState<WorkflowContextSelection | undefined>(initialSelection);
   const [uncontrolledSection, setUncontrolledSection] = useState<WorkflowOperationsSection>(initialSection);
@@ -106,7 +118,7 @@ export function WorkflowOperationsPage({
   const selection = controlledSelection ?? uncontrolledSelection;
   const section = controlledSection ?? uncontrolledSection;
   const project = selection?.kind === "project" ? projects.find((item) => item.id === selection.id) : undefined;
-  const program = selection?.kind === "program" ? programs.find((item) => item.id === selection.id) : project ? programs.find((item) => item.id === project.programId) : undefined;
+  const program = selection?.kind === "program" ? programs.find((item) => item.id === selection.id) : project?.programId ? programs.find((item) => item.id === project.programId) : undefined;
   const projectDrafts = useMemo(() => definitionDrafts.filter((draft) => draft.projectId === project?.id), [definitionDrafts, project?.id]);
   const selectedDraft = useMemo(
     () => projectDrafts.find((draft) => draft.id === selectedDefinitionId) ?? projectDrafts[0],
@@ -131,7 +143,7 @@ export function WorkflowOperationsPage({
         {project ? <span className="ml-auto rounded-full border px-2 py-1 text-[11px] text-muted-foreground">Project · {project.formalProjectId}</span> : null}
       </header>
       <div className="flex min-h-0 flex-1">
-        <WorkflowContextTree programs={programs} projects={projects} selected={selection} onSelect={selectContext} collapsed={treeCollapsed} onToggleCollapsed={() => setTreeCollapsed((value) => {
+        <WorkflowContextTree programs={programs} projects={projects} selected={selection} onSelect={selectContext} onCreateProgram={programManagement?.onCreateProgram} programCreationState={programManagement?.programCreationState} programCreationError={programManagement?.programCreationError} collapsed={treeCollapsed} onToggleCollapsed={() => setTreeCollapsed((value) => {
           const next = !value;
           try {
             window.localStorage.setItem(CONTEXT_TREE_COLLAPSED_KEY, String(next));
@@ -144,7 +156,7 @@ export function WorkflowOperationsPage({
           <div className="mb-4 flex flex-wrap items-center gap-1 border-b pb-2" role="tablist" aria-label="项目工作区">
             {sectionLabels.map(({ id, label, icon: Icon }) => <button type="button" role="tab" aria-selected={section === id} key={id} onClick={() => selectSection(id)} className={`inline-flex items-center gap-1 rounded px-2 py-1.5 text-xs hover:bg-accent ${section === id ? "bg-accent font-medium" : "text-muted-foreground"}`}><Icon className="h-3.5 w-3.5" />{label}</button>)}
           </div>
-          {!selection ? <EmptyProjectState /> : section === "workflow" && project ? <WorkflowDefinitionsPanel project={project} drafts={projectDrafts} selectedDraft={selectedDraft} onSelectDefinition={onSelectDefinition} onCreateDefinition={onCreateDefinition} onChangeDefinition={onChangeDefinition} onPublishDefinition={onPublishDefinition} publishReceipt={publishReceipt} publishError={publishError} /> : section === "instances" ? <WorkflowWorkbench instances={instances} definitions={definitions} {...workbench} /> : section === "artifacts" && !project ? <NoProjectArtifactState /> : section === "artifacts" ? <ArtifactList artifacts={artifacts} outcomes={outcomes} loading={outcomesLoading} sourceError={outcomesError} outcomeHref={outcomeHref} artifactLocationsByOutcome={artifactLocationsByOutcome} /> : <ProjectSection section={section} project={project} program={program} />}
+          {!selection ? <EmptyProjectState /> : selection.kind === "program" && section === "settings" && program ? <WorkflowProgramSettings program={program} projects={projects} onAssignProject={programManagement?.onAssignProject} onUnassignProject={programManagement?.onUnassignProject} projectMutationState={programManagement?.projectMutationState} projectMutationError={programManagement?.projectMutationError} /> : section === "workflow" && project ? <WorkflowDefinitionsPanel project={project} drafts={projectDrafts} selectedDraft={selectedDraft} onSelectDefinition={onSelectDefinition} onCreateDefinition={onCreateDefinition} onChangeDefinition={onChangeDefinition} onPublishDefinition={onPublishDefinition} publishReceipt={publishReceipt} publishError={publishError} /> : section === "instances" ? <WorkflowWorkbench instances={instances} definitions={definitions} {...workbench} /> : section === "artifacts" && !project ? <NoProjectArtifactState /> : section === "artifacts" ? <ArtifactList artifacts={artifacts} outcomes={outcomes} loading={outcomesLoading} sourceError={outcomesError} outcomeHref={outcomeHref} artifactLocationsByOutcome={artifactLocationsByOutcome} /> : <ProjectSection section={section} project={project} program={program} />}
           {runtime && section === "instances" ? <div className="mt-4"><WorkflowRuntimeGraph graph={selectedDraft?.graph ?? { nodes: [], edges: [] }} runtime={runtime} /></div> : null}
         </main>
         {runtime && section !== "instances" ? <aside className="hidden w-72 shrink-0 border-l p-3 xl:block" data-testid="workflow-inspector"><WorkflowRuntimeGraph graph={selectedDraft?.graph ?? { nodes: [], edges: [] }} runtime={runtime} /></aside> : null}
