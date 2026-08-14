@@ -89,6 +89,35 @@ export type WorkflowRuntime = {
   nodes: RuntimeNode[];
 };
 
+/**
+ * Read-only adapter for the workflow kernel's existing event/control receipt
+ * payloads. This is deliberately a view contract: it does not own lifecycle
+ * state and must be populated from the authoritative API response.
+ */
+export type WorkflowReceiptView = {
+  id: string;
+  instanceId: string;
+  kind: "event" | "control";
+  status: "accepted" | "rejected" | "observed";
+  label: string;
+  sourceRef?: string;
+  actor?: string;
+  occurredAt?: string;
+  observedAt?: string;
+  idempotencyKey?: string;
+  reason?: string;
+};
+
+/** Explicit query state so an empty response is never used as an error state. */
+export type WorkflowDataState = "loading" | "ready" | "error";
+
+/**
+ * Compatibility seam for the future "create instance from published DAG"
+ * endpoint. The UI may render a request affordance only when its integration
+ * callback is supplied; it never manufactures an execution or success receipt.
+ */
+export type WorkflowInstanceCreationState = "unavailable" | "ready" | "loading" | "error";
+
 export type ArtifactSummary = {
   id: string;
   version: number;

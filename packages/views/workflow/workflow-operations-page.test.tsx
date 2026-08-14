@@ -2,6 +2,10 @@ import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { WorkflowOperationsPage } from "./workflow-operations-page";
 
+vi.mock("@multica/core/workflow", () => ({
+  validateWorkflowGraph: () => [],
+}));
+
 vi.mock("@xyflow/react", () => ({
   Background: () => <div data-testid="flow-background" />,
   Controls: () => <div data-testid="flow-controls" />,
@@ -64,5 +68,11 @@ describe("WorkflowOperationsPage", () => {
     expect(screen.getByText(/读取既有正式 Outcome Center/)).toBeDefined();
     expect(screen.getByText(/撰稿数字员工/)).toBeDefined();
     expect(screen.getByRole("link", { name: "在成果中心查看、审核与晋级" })).toHaveAttribute("href", "/acme/outcomes?outcome=a4d7525e-98ba-4aa2-8dc4-bf49c6bf5ed9");
+  });
+
+  it("does not query or claim zero outcomes for an L3 program without an L4 project", () => {
+    render(<WorkflowOperationsPage {...props} selection={{ kind: "program", id: "brand" }} section="artifacts" outcomes={[]} />);
+    expect(screen.getByText("先选择 L4 项目，尚未查询成果")).toBeDefined();
+    expect(screen.queryByText(/当前项目没有被 Outcome Center 观察到成果/)).toBeNull();
   });
 });

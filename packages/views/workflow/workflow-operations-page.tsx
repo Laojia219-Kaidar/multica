@@ -8,7 +8,7 @@ import type { CompanyOpsOutcomeSummary } from "@multica/core/types";
 import { WorkflowContextTree, type WorkflowContextSelection } from "./workflow-context-tree";
 import { WorkflowDesigner } from "./workflow-designer";
 import { WorkflowRuntimeGraph } from "./workflow-runtime-graph";
-import { WorkflowWorkbench } from "./workflow-workbench";
+import { WorkflowWorkbench, type WorkflowWorkbenchProps } from "./workflow-workbench";
 
 export type WorkflowOperationsSection = "overview" | "plan" | "workflow" | "instances" | "artifacts" | "review" | "settings";
 
@@ -24,6 +24,8 @@ export interface WorkflowOperationsPageProps {
   outcomeHref?: (outcomeId: string) => string;
   instances?: WorkflowInstance[];
   definitions?: WorkflowDefinition[];
+  /** Read-only API adapter forwarded to the instances workbench. */
+  workbench?: Omit<WorkflowWorkbenchProps, "instances" | "definitions">;
   selectedDefinitionId?: string;
   selection?: WorkflowContextSelection;
   section?: WorkflowOperationsSection;
@@ -67,6 +69,7 @@ export function WorkflowOperationsPage({
   outcomeHref,
   instances = [],
   definitions = [],
+  workbench,
   selectedDefinitionId,
   selection: controlledSelection,
   section: controlledSection,
@@ -133,7 +136,7 @@ export function WorkflowOperationsPage({
           <div className="mb-4 flex flex-wrap items-center gap-1 border-b pb-2" role="tablist" aria-label="项目工作区">
             {sectionLabels.map(({ id, label, icon: Icon }) => <button type="button" role="tab" aria-selected={section === id} key={id} onClick={() => selectSection(id)} className={`inline-flex items-center gap-1 rounded px-2 py-1.5 text-xs hover:bg-accent ${section === id ? "bg-accent font-medium" : "text-muted-foreground"}`}><Icon className="h-3.5 w-3.5" />{label}</button>)}
           </div>
-          {!selection ? <EmptyProjectState /> : section === "workflow" && project ? <WorkflowDefinitionsPanel project={project} drafts={projectDrafts} selectedDraft={selectedDraft} onSelectDefinition={onSelectDefinition} onCreateDefinition={onCreateDefinition} onChangeDefinition={onChangeDefinition} onPublishDefinition={onPublishDefinition} publishReceipt={publishReceipt} publishError={publishError} /> : section === "instances" ? <WorkflowWorkbench instances={instances} definitions={definitions} /> : section === "artifacts" ? <ArtifactList artifacts={artifacts} outcomes={outcomes} loading={outcomesLoading} sourceError={outcomesError} outcomeHref={outcomeHref} /> : <ProjectSection section={section} project={project} program={program} />}
+          {!selection ? <EmptyProjectState /> : section === "workflow" && project ? <WorkflowDefinitionsPanel project={project} drafts={projectDrafts} selectedDraft={selectedDraft} onSelectDefinition={onSelectDefinition} onCreateDefinition={onCreateDefinition} onChangeDefinition={onChangeDefinition} onPublishDefinition={onPublishDefinition} publishReceipt={publishReceipt} publishError={publishError} /> : section === "instances" ? <WorkflowWorkbench instances={instances} definitions={definitions} {...workbench} /> : section === "artifacts" && !project ? <NoProjectArtifactState /> : section === "artifacts" ? <ArtifactList artifacts={artifacts} outcomes={outcomes} loading={outcomesLoading} sourceError={outcomesError} outcomeHref={outcomeHref} /> : <ProjectSection section={section} project={project} program={program} />}
           {runtime && section === "instances" ? <div className="mt-4"><WorkflowRuntimeGraph graph={selectedDraft?.graph ?? { nodes: [], edges: [] }} runtime={runtime} /></div> : null}
         </main>
         {runtime && section !== "instances" ? <aside className="hidden w-72 shrink-0 border-l p-3 xl:block" data-testid="workflow-inspector"><WorkflowRuntimeGraph graph={selectedDraft?.graph ?? { nodes: [], edges: [] }} runtime={runtime} /></aside> : null}
@@ -183,6 +186,10 @@ function WorkflowDefinitionsPanel({
 function ProjectSection({ section, project, program }: { section: WorkflowOperationsSection; project?: OperatingProject; program?: OperatingProgram }) {
   const label = sectionLabels.find((item) => item.id === section)?.label ?? section;
   return <section className="rounded-lg border bg-card p-5"><div className="flex items-center gap-2"><ChevronRight className="h-4 w-4 text-muted-foreground" /><h2 className="text-sm font-semibold">{label}</h2></div><p className="mt-2 text-xs text-muted-foreground">{project ? `${program?.name ?? "运营科目"} / ${project.name}` : "请选择 L4 项目"}。该视图将由正式 API 数据驱动。</p></section>;
+}
+
+function NoProjectArtifactState() {
+  return <section data-testid="workflow-artifact-list" className="rounded-lg border border-dashed bg-card p-5"><h2 className="text-sm font-semibold">项目成果</h2><p className="mt-2 text-xs text-muted-foreground">先选择 L4 项目，尚未查询成果</p><p className="mt-1 text-[11px] text-muted-foreground">L3 运营科目不直接查询成果；成果归属于正式 Project，并由 Outcome Center 提供。</p></section>;
 }
 
 function ArtifactList({ artifacts, outcomes, loading, sourceError, outcomeHref }: { artifacts: ArtifactSummary[]; outcomes: CompanyOpsOutcomeSummary[]; loading: boolean; sourceError: boolean; outcomeHref?: (outcomeId: string) => string }) {
