@@ -35,7 +35,7 @@ func (q *Queries) GetMemoryCandidate(ctx context.Context, id string) (MemoryCand
 }
 
 const getWorkflowDefinition = `-- name: GetWorkflowDefinition :one
-SELECT id, version, risk, stages, created_at, updated_at FROM workflow_definition WHERE id = $1
+SELECT id, version, risk, stages, created_at, updated_at, workspace_id FROM workflow_definition WHERE id = $1
 `
 
 func (q *Queries) GetWorkflowDefinition(ctx context.Context, id string) (WorkflowDefinition, error) {
@@ -48,12 +48,13 @@ func (q *Queries) GetWorkflowDefinition(ctx context.Context, id string) (Workflo
 		&i.Stages,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.WorkspaceID,
 	)
 	return i, err
 }
 
 const getWorkflowInstance = `-- name: GetWorkflowInstance :one
-SELECT id, definition_id, definition_version, context, stage_index, status, created_at, updated_at FROM workflow_instance WHERE id = $1
+SELECT id, definition_id, definition_version, context, stage_index, status, created_at, updated_at, workspace_id FROM workflow_instance WHERE id = $1
 `
 
 func (q *Queries) GetWorkflowInstance(ctx context.Context, id string) (WorkflowInstance, error) {
@@ -68,6 +69,34 @@ func (q *Queries) GetWorkflowInstance(ctx context.Context, id string) (WorkflowI
 		&i.Status,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.WorkspaceID,
+	)
+	return i, err
+}
+
+const getWorkflowInstanceInWorkspace = `-- name: GetWorkflowInstanceInWorkspace :one
+SELECT id, definition_id, definition_version, context, stage_index, status, created_at, updated_at, workspace_id FROM workflow_instance
+WHERE workspace_id = $1 AND id = $2
+`
+
+type GetWorkflowInstanceInWorkspaceParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	ID          string      `json:"id"`
+}
+
+func (q *Queries) GetWorkflowInstanceInWorkspace(ctx context.Context, arg GetWorkflowInstanceInWorkspaceParams) (WorkflowInstance, error) {
+	row := q.db.QueryRow(ctx, getWorkflowInstanceInWorkspace, arg.WorkspaceID, arg.ID)
+	var i WorkflowInstance
+	err := row.Scan(
+		&i.ID,
+		&i.DefinitionID,
+		&i.DefinitionVersion,
+		&i.Context,
+		&i.StageIndex,
+		&i.Status,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.WorkspaceID,
 	)
 	return i, err
 }
@@ -218,6 +247,39 @@ type InsertWorkflowInstanceParams struct {
 
 func (q *Queries) InsertWorkflowInstance(ctx context.Context, arg InsertWorkflowInstanceParams) error {
 	_, err := q.db.Exec(ctx, insertWorkflowInstance,
+		arg.ID,
+		arg.DefinitionID,
+		arg.DefinitionVersion,
+		arg.Context,
+		arg.StageIndex,
+		arg.Status,
+	)
+	return err
+}
+
+const insertWorkflowInstanceInWorkspace = `-- name: InsertWorkflowInstanceInWorkspace :exec
+INSERT INTO workflow_instance (workspace_id, id, definition_id, definition_version, context, stage_index, status)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
+ON CONFLICT (id) DO UPDATE SET
+  stage_index = $6,
+  status = $7,
+  updated_at = now()
+WHERE workflow_instance.workspace_id = $1
+`
+
+type InsertWorkflowInstanceInWorkspaceParams struct {
+	WorkspaceID       pgtype.UUID `json:"workspace_id"`
+	ID                string      `json:"id"`
+	DefinitionID      string      `json:"definition_id"`
+	DefinitionVersion int32       `json:"definition_version"`
+	Context           []byte      `json:"context"`
+	StageIndex        int32       `json:"stage_index"`
+	Status            string      `json:"status"`
+}
+
+func (q *Queries) InsertWorkflowInstanceInWorkspace(ctx context.Context, arg InsertWorkflowInstanceInWorkspaceParams) error {
+	_, err := q.db.Exec(ctx, insertWorkflowInstanceInWorkspace,
+		arg.WorkspaceID,
 		arg.ID,
 		arg.DefinitionID,
 		arg.DefinitionVersion,
@@ -395,6 +457,84 @@ func (q *Queries) ListWorkflowEvents(ctx context.Context, instanceID string) ([]
 	return items, nil
 }
 
+const listWorkflowEventsInWorkspace = `-- name: ListWorkflowEventsInWorkspace :many
+SELECT e.id, e.instance_id, e.kind, e.source_ref, e.actor, e.occurred_at, e.observed_at, e.idempotency_key
+FROM workflow_event e
+JOIN workflow_instance i ON i.id = e.instance_id
+WHERE i.workspace_id = $1 AND e.instance_id = $2
+ORDER BY e.id ASC
+`
+
+type ListWorkflowEventsInWorkspaceParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	InstanceID  string      `json:"instance_id"`
+}
+
+func (q *Queries) ListWorkflowEventsInWorkspace(ctx context.Context, arg ListWorkflowEventsInWorkspaceParams) ([]WorkflowEvent, error) {
+	rows, err := q.db.Query(ctx, listWorkflowEventsInWorkspace, arg.WorkspaceID, arg.InstanceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []WorkflowEvent{}
+	for rows.Next() {
+		var i WorkflowEvent
+		if err := rows.Scan(
+			&i.ID,
+			&i.InstanceID,
+			&i.Kind,
+			&i.SourceRef,
+			&i.Actor,
+			&i.OccurredAt,
+			&i.ObservedAt,
+			&i.IdempotencyKey,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listWorkflowInstances = `-- name: ListWorkflowInstances :many
+SELECT id, definition_id, definition_version, context, stage_index, status, created_at, updated_at, workspace_id FROM workflow_instance
+WHERE workspace_id = $1
+ORDER BY created_at DESC, id DESC
+`
+
+func (q *Queries) ListWorkflowInstances(ctx context.Context, workspaceID pgtype.UUID) ([]WorkflowInstance, error) {
+	rows, err := q.db.Query(ctx, listWorkflowInstances, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []WorkflowInstance{}
+	for rows.Next() {
+		var i WorkflowInstance
+		if err := rows.Scan(
+			&i.ID,
+			&i.DefinitionID,
+			&i.DefinitionVersion,
+			&i.Context,
+			&i.StageIndex,
+			&i.Status,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.WorkspaceID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const updateMemoryCandidateStatus = `-- name: UpdateMemoryCandidateStatus :exec
 UPDATE memory_candidate SET status = $2, updated_at = now() WHERE id = $1
 `
@@ -421,5 +561,28 @@ type UpdateWorkflowInstanceParams struct {
 
 func (q *Queries) UpdateWorkflowInstance(ctx context.Context, arg UpdateWorkflowInstanceParams) error {
 	_, err := q.db.Exec(ctx, updateWorkflowInstance, arg.ID, arg.StageIndex, arg.Status)
+	return err
+}
+
+const updateWorkflowInstanceInWorkspace = `-- name: UpdateWorkflowInstanceInWorkspace :exec
+UPDATE workflow_instance
+SET stage_index = $3, status = $4, updated_at = now()
+WHERE workspace_id = $1 AND id = $2
+`
+
+type UpdateWorkflowInstanceInWorkspaceParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	ID          string      `json:"id"`
+	StageIndex  int32       `json:"stage_index"`
+	Status      string      `json:"status"`
+}
+
+func (q *Queries) UpdateWorkflowInstanceInWorkspace(ctx context.Context, arg UpdateWorkflowInstanceInWorkspaceParams) error {
+	_, err := q.db.Exec(ctx, updateWorkflowInstanceInWorkspace,
+		arg.WorkspaceID,
+		arg.ID,
+		arg.StageIndex,
+		arg.Status,
+	)
 	return err
 }

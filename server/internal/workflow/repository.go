@@ -3,8 +3,10 @@ package workflow
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -60,6 +62,14 @@ type Repository struct {
 
 func NewRepository(q *db.Queries) *Repository { return &Repository{Q: q} }
 
+func workspaceUUID(workspaceID string) (pgtype.UUID, error) {
+	id, err := uuid.Parse(workspaceID)
+	if err != nil {
+		return pgtype.UUID{}, fmt.Errorf("invalid workflow workspace id %q: %w", workspaceID, err)
+	}
+	return pgtype.UUID{Bytes: id, Valid: true}, nil
+}
+
 func (r *Repository) SaveDefinition(ctx context.Context, d WorkflowDefinition) error {
 	stages, err := marshalStages(d.Stages)
 	if err != nil {
@@ -93,9 +103,39 @@ func (r *Repository) SaveInstance(ctx context.Context, i WorkflowInstance) error
 	})
 }
 
+// SaveInstanceInWorkspace persists a new or existing instance while requiring
+// an explicit workspace scope. The upsert predicate prevents an instance ID
+// from being updated through a different workspace.
+func (r *Repository) SaveInstanceInWorkspace(ctx context.Context, workspaceID string, i WorkflowInstance) error {
+	ws, err := workspaceUUID(workspaceID)
+	if err != nil {
+		return err
+	}
+	ctxJSON, err := marshalContext(i.Context)
+	if err != nil {
+		return err
+	}
+	i.WorkspaceID = workspaceID
+	return r.Q.InsertWorkflowInstanceInWorkspace(ctx, db.InsertWorkflowInstanceInWorkspaceParams{
+		WorkspaceID: ws, ID: i.ID, DefinitionID: i.DefinitionID,
+		DefinitionVersion: int32(i.DefinitionVersion), Context: ctxJSON,
+		StageIndex: int32(i.StageIndex), Status: string(i.Status),
+	})
+}
+
 func (r *Repository) UpdateInstance(ctx context.Context, i WorkflowInstance) error {
 	return r.Q.UpdateWorkflowInstance(ctx, db.UpdateWorkflowInstanceParams{
 		ID: i.ID, StageIndex: int32(i.StageIndex), Status: string(i.Status),
+	})
+}
+
+func (r *Repository) UpdateInstanceInWorkspace(ctx context.Context, workspaceID string, i WorkflowInstance) error {
+	ws, err := workspaceUUID(workspaceID)
+	if err != nil {
+		return err
+	}
+	return r.Q.UpdateWorkflowInstanceInWorkspace(ctx, db.UpdateWorkflowInstanceInWorkspaceParams{
+		WorkspaceID: ws, ID: i.ID, StageIndex: int32(i.StageIndex), Status: string(i.Status),
 	})
 }
 
@@ -109,9 +149,62 @@ func (r *Repository) LoadInstance(ctx context.Context, id string) (WorkflowInsta
 		return WorkflowInstance{}, err
 	}
 	return WorkflowInstance{
-		ID: row.ID, DefinitionID: row.DefinitionID, DefinitionVersion: int(row.DefinitionVersion),
+		ID: row.ID, WorkspaceID: uuidString(row.WorkspaceID), DefinitionID: row.DefinitionID, DefinitionVersion: int(row.DefinitionVersion),
 		Context: ctxRef, StageIndex: int(row.StageIndex), Status: InstanceStatus(row.Status),
 	}, nil
+}
+
+func uuidString(id pgtype.UUID) string {
+	if !id.Valid {
+		return ""
+	}
+	return uuid.UUID(id.Bytes).String()
+}
+
+func workflowInstanceFromRow(row db.WorkflowInstance) (WorkflowInstance, error) {
+	ctxRef, err := unmarshalContext(row.Context)
+	if err != nil {
+		return WorkflowInstance{}, err
+	}
+	return WorkflowInstance{
+		ID: row.ID, WorkspaceID: uuidString(row.WorkspaceID), DefinitionID: row.DefinitionID,
+		DefinitionVersion: int(row.DefinitionVersion), Context: ctxRef,
+		StageIndex: int(row.StageIndex), Status: InstanceStatus(row.Status),
+	}, nil
+}
+
+// LoadInstanceInWorkspace is the only scoped instance read used by HTTP
+// handlers. A matching ID in another workspace is intentionally invisible.
+func (r *Repository) LoadInstanceInWorkspace(ctx context.Context, workspaceID, id string) (WorkflowInstance, error) {
+	ws, err := workspaceUUID(workspaceID)
+	if err != nil {
+		return WorkflowInstance{}, err
+	}
+	row, err := r.Q.GetWorkflowInstanceInWorkspace(ctx, db.GetWorkflowInstanceInWorkspaceParams{WorkspaceID: ws, ID: id})
+	if err != nil {
+		return WorkflowInstance{}, err
+	}
+	return workflowInstanceFromRow(row)
+}
+
+func (r *Repository) ListInstances(ctx context.Context, workspaceID string) ([]WorkflowInstance, error) {
+	ws, err := workspaceUUID(workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := r.Q.ListWorkflowInstances(ctx, ws)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]WorkflowInstance, 0, len(rows))
+	for _, row := range rows {
+		inst, err := workflowInstanceFromRow(row)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, inst)
+	}
+	return out, nil
 }
 
 // AppendEvent inserts an event; duplicate (instance_id, idempotency_key) is a
@@ -138,4 +231,28 @@ func (r *Repository) ListEvents(ctx context.Context, instanceID string) ([]Event
 		})
 	}
 	return out, nil
+}
+
+func (r *Repository) ListEventsInWorkspace(ctx context.Context, workspaceID, instanceID string) ([]Event, error) {
+	ws, err := workspaceUUID(workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := r.Q.ListWorkflowEventsInWorkspace(ctx, db.ListWorkflowEventsInWorkspaceParams{WorkspaceID: ws, InstanceID: instanceID})
+	if err != nil {
+		return nil, err
+	}
+	return workflowEventsFromRows(rows), nil
+}
+
+func workflowEventsFromRows(rows []db.WorkflowEvent) []Event {
+	out := make([]Event, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, Event{
+			Sequence: row.ID, InstanceID: row.InstanceID, Kind: row.Kind, SourceRef: row.SourceRef,
+			Actor: row.Actor, OccurredAt: pgToTS(row.OccurredAt), ObservedAt: pgToTS(row.ObservedAt),
+			IdempotencyKey: row.IdempotencyKey,
+		})
+	}
+	return out
 }

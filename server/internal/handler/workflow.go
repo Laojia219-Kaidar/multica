@@ -37,17 +37,19 @@ type workflowContextDTO struct {
 }
 
 type workflowInstanceDTO struct {
-	ID                string            `json:"id"`
-	DefinitionID      string            `json:"definition_id"`
-	DefinitionVersion int               `json:"definition_version"`
+	ID                string             `json:"id"`
+	WorkspaceID       string             `json:"workspace_id,omitempty"`
+	DefinitionID      string             `json:"definition_id"`
+	DefinitionVersion int                `json:"definition_version"`
 	Context           workflowContextDTO `json:"context"`
-	StageIndex        int               `json:"stage_index"`
-	Status            string            `json:"status"`
+	StageIndex        int                `json:"stage_index"`
+	Status            string             `json:"status"`
 }
 
 func toWorkflowInstanceDTO(i workflow.WorkflowInstance) workflowInstanceDTO {
 	return workflowInstanceDTO{
 		ID:                i.ID,
+		WorkspaceID:       i.WorkspaceID,
 		DefinitionID:      i.DefinitionID,
 		DefinitionVersion: i.DefinitionVersion,
 		Context: workflowContextDTO{
@@ -58,6 +60,27 @@ func toWorkflowInstanceDTO(i workflow.WorkflowInstance) workflowInstanceDTO {
 		StageIndex: i.StageIndex,
 		Status:     string(i.Status),
 	}
+}
+
+// ListWorkflowInstances GET /api/workflow/instances. The database query is
+// intentionally the source of truth; the process-global engine is only a
+// runtime cache and must not determine which instances are visible after a
+// refresh or restart.
+func (h *Handler) ListWorkflowInstances(w http.ResponseWriter, r *http.Request) {
+	workspaceID := h.resolveWorkspaceID(r)
+	if _, ok := h.workspaceMember(w, r, workspaceID); !ok {
+		return
+	}
+	instances, err := h.workflowRepo().ListInstances(r.Context(), workspaceID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list workflow instances")
+		return
+	}
+	dtos := make([]workflowInstanceDTO, 0, len(instances))
+	for _, inst := range instances {
+		dtos = append(dtos, toWorkflowInstanceDTO(inst))
+	}
+	writeJSON(w, http.StatusOK, dtos)
 }
 
 type workflowEventDTO struct {
@@ -85,10 +108,10 @@ func toWorkflowEventDTO(e workflow.Event) workflowEventDTO {
 }
 
 type startWorkflowRequest struct {
-	DefinitionID   string            `json:"definition_id,omitempty"`
-	InstanceID     string            `json:"instance_id,omitempty"`
+	DefinitionID   string             `json:"definition_id,omitempty"`
+	InstanceID     string             `json:"instance_id,omitempty"`
 	Context        workflowContextDTO `json:"context"`
-	IdempotencyKey string            `json:"idempotency_key,omitempty"`
+	IdempotencyKey string             `json:"idempotency_key,omitempty"`
 }
 
 // StartWorkflowInstance POST /api/workflow/instances
@@ -119,13 +142,15 @@ func (h *Handler) StartWorkflowInstance(w http.ResponseWriter, r *http.Request) 
 		IssueID:   req.Context.IssueID,
 		OutcomeID: req.Context.OutcomeID,
 	}
-	inst, receipt, err := workflowEngine().Start(defID, instanceID, ctx, key)
+	inst, receipt, err := workflowEngine().StartForWorkspace(defID, instanceID, ctx, workspaceID, key)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	inst.WorkspaceID = workspaceID
+	workflowEngine().AttachWorkspace(instanceID, workspaceID)
 	repo := h.workflowRepo()
-	if err := repo.SaveInstance(r.Context(), inst); err != nil {
+	if err := repo.SaveInstanceInWorkspace(r.Context(), workspaceID, inst); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to persist workflow instance")
 		return
 	}
@@ -147,14 +172,23 @@ func (h *Handler) GetWorkflowInstance(w http.ResponseWriter, r *http.Request) {
 	}
 	id := r.PathValue("id")
 	// Resume-after-restart read-back.
-	if _, ok := workflowEngine().Get(id); !ok {
-		if err := workflowEngine().Hydrate(r.Context(), h.workflowRepo(), id); err != nil {
+	// Always validate visibility from the workspace-scoped database row before
+	// consulting the process-global engine cache.
+	if _, err := h.workflowRepo().LoadInstanceInWorkspace(r.Context(), workspaceID, id); err != nil {
+		if err := workflowEngine().HydrateInWorkspace(r.Context(), h.workflowRepo(), workspaceID, id); err != nil {
 			writeError(w, http.StatusNotFound, "workflow instance not found")
 			return
 		}
 	}
 	inst, ok := workflowEngine().Get(id)
 	if !ok {
+		if err := workflowEngine().HydrateInWorkspace(r.Context(), h.workflowRepo(), workspaceID, id); err != nil {
+			writeError(w, http.StatusNotFound, "workflow instance not found")
+			return
+		}
+		inst, ok = workflowEngine().Get(id)
+	}
+	if !ok || inst.WorkspaceID != "" && inst.WorkspaceID != workspaceID {
 		writeError(w, http.StatusNotFound, "workflow instance not found")
 		return
 	}
@@ -162,12 +196,12 @@ func (h *Handler) GetWorkflowInstance(w http.ResponseWriter, r *http.Request) {
 }
 
 type advanceWorkflowRequest struct {
-	ReviewPassed  bool     `json:"review_passed"`
-	OwnerApproved bool     `json:"owner_approved"`
-	TaskID        string   `json:"task_id,omitempty"`
-	RunID         string   `json:"run_id,omitempty"`
-	Notes         []string `json:"notes,omitempty"`
-	IdempotencyKey string  `json:"idempotency_key,omitempty"`
+	ReviewPassed   bool     `json:"review_passed"`
+	OwnerApproved  bool     `json:"owner_approved"`
+	TaskID         string   `json:"task_id,omitempty"`
+	RunID          string   `json:"run_id,omitempty"`
+	Notes          []string `json:"notes,omitempty"`
+	IdempotencyKey string   `json:"idempotency_key,omitempty"`
 }
 
 // AdvanceWorkflowInstance POST /api/workflow/instances/{id}/advance
@@ -177,6 +211,22 @@ func (h *Handler) AdvanceWorkflowInstance(w http.ResponseWriter, r *http.Request
 		return
 	}
 	id := r.PathValue("id")
+	if _, err := h.workflowRepo().LoadInstanceInWorkspace(r.Context(), workspaceID, id); err != nil {
+		if err := workflowEngine().HydrateInWorkspace(r.Context(), h.workflowRepo(), workspaceID, id); err != nil {
+			writeError(w, http.StatusNotFound, "workflow instance not found")
+			return
+		}
+	}
+	if cached, ok := workflowEngine().Get(id); ok && cached.WorkspaceID != "" && cached.WorkspaceID != workspaceID {
+		writeError(w, http.StatusNotFound, "workflow instance not found")
+		return
+	}
+	if _, ok := workflowEngine().Get(id); !ok {
+		if err := workflowEngine().HydrateInWorkspace(r.Context(), h.workflowRepo(), workspaceID, id); err != nil {
+			writeError(w, http.StatusNotFound, "workflow instance not found")
+			return
+		}
+	}
 	var req advanceWorkflowRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body")
@@ -202,7 +252,8 @@ func (h *Handler) AdvanceWorkflowInstance(w http.ResponseWriter, r *http.Request
 		return
 	}
 	repo := h.workflowRepo()
-	if err := repo.UpdateInstance(r.Context(), inst); err != nil {
+	inst.WorkspaceID = workspaceID
+	if err := repo.UpdateInstanceInWorkspace(r.Context(), workspaceID, inst); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to persist workflow advance")
 		return
 	}
@@ -222,13 +273,17 @@ func (h *Handler) WorkflowInstanceEvents(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	id := r.PathValue("id")
-	if _, ok := workflowEngine().Get(id); !ok {
-		if err := workflowEngine().Hydrate(r.Context(), h.workflowRepo(), id); err != nil {
+	if _, err := h.workflowRepo().LoadInstanceInWorkspace(r.Context(), workspaceID, id); err != nil {
+		if err := workflowEngine().HydrateInWorkspace(r.Context(), h.workflowRepo(), workspaceID, id); err != nil {
 			writeError(w, http.StatusNotFound, "workflow instance not found")
 			return
 		}
 	}
-	events := workflowEngine().Events(id)
+	events, err := h.workflowRepo().ListEventsInWorkspace(r.Context(), workspaceID, id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "workflow instance not found")
+		return
+	}
 	dtos := make([]workflowEventDTO, 0, len(events))
 	for _, e := range events {
 		dtos = append(dtos, toWorkflowEventDTO(e))

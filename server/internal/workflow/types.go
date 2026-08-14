@@ -52,6 +52,62 @@ type WorkflowDefinition struct {
 	Stages  []Stage
 }
 
+// NodeKind is the minimal versioned graph contract. Graph definitions are
+// candidate workflow configuration; they reference, but do not duplicate,
+// HiveCrew Employee/Task/Run state.
+type NodeKind string
+
+const (
+	NodeAgentTask NodeKind = "agent_task"
+	NodeHumanTask NodeKind = "human_task"
+	NodeApproval  NodeKind = "approval"
+	NodeDecision  NodeKind = "decision"
+)
+
+func (k NodeKind) Valid() bool {
+	switch k {
+	case NodeAgentTask, NodeHumanTask, NodeApproval, NodeDecision:
+		return true
+	default:
+		return false
+	}
+}
+
+type AgentBinding struct {
+	Mode         string   `json:"mode"` // fixed_employee, capability_pool, project_default, human
+	EmployeeID   string   `json:"employee_id,omitempty"`
+	Capabilities []string `json:"capabilities,omitempty"`
+}
+
+type GraphNode struct {
+	ID           string        `json:"id"`
+	Kind         NodeKind      `json:"kind"`
+	Name         string        `json:"name"`
+	AgentBinding *AgentBinding `json:"agent_binding,omitempty"`
+}
+
+type GraphEdge struct {
+	ID   string `json:"id"`
+	From string `json:"from"`
+	To   string `json:"to"`
+	When string `json:"when,omitempty"`
+}
+
+type WorkflowGraph struct {
+	Nodes []GraphNode `json:"nodes"`
+	Edges []GraphEdge `json:"edges"`
+}
+
+// WorkflowDefinitionVersion is immutable once published. It is deliberately
+// separate from WorkflowDefinition's legacy stage representation so the
+// designer can evolve without creating a second runtime engine.
+type WorkflowDefinitionVersion struct {
+	DefinitionID string        `json:"definition_id"`
+	Version      int           `json:"version"`
+	Risk         RiskTier      `json:"risk"`
+	Graph        WorkflowGraph `json:"graph"`
+}
+
 // ContextRef references the business objects a workflow instance is about,
 // WITHOUT copying their state.
 type ContextRef struct {
@@ -62,7 +118,11 @@ type ContextRef struct {
 
 // WorkflowInstance is one running instance of a definition.
 type WorkflowInstance struct {
-	ID                string
+	ID string
+	// WorkspaceID scopes the orchestration record to the HiveCrew workspace.
+	// It is a reference only; Project/Issue/Task/Run/Employee remain owned by
+	// their respective authorities.
+	WorkspaceID       string
 	DefinitionID      string
 	DefinitionVersion int
 	Context           ContextRef

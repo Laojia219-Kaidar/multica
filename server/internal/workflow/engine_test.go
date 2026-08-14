@@ -33,6 +33,25 @@ func TestValidateDefinition(t *testing.T) {
 	}
 }
 
+func TestValidateGraphVersion(t *testing.T) {
+	v := WorkflowDefinitionVersion{
+		DefinitionID: "content.wechat-production-package", Version: 1, Risk: RiskOwner,
+		Graph: WorkflowGraph{
+			Nodes: []GraphNode{{ID: "draft", Kind: NodeAgentTask, Name: "Draft"}, {ID: "approve", Kind: NodeApproval, Name: "Approve"}},
+			Edges: []GraphEdge{{ID: "draft-approve", From: "draft", To: "approve"}},
+		},
+	}
+	if err := ValidateGraph(v); err != nil {
+		t.Fatalf("valid graph rejected: %v", err)
+	}
+
+	bad := v
+	bad.Graph.Edges = []GraphEdge{{ID: "cycle", From: "draft", To: "draft"}}
+	if err := ValidateGraph(bad); err == nil {
+		t.Fatal("self-cycle must be rejected")
+	}
+}
+
 func TestStartIdempotent(t *testing.T) {
 	e := NewEngine()
 	_ = e.Register(threeStages())
@@ -57,6 +76,17 @@ func TestStartIdempotent(t *testing.T) {
 	}
 	if n := len(e.Events("inst-1")); n != 1 {
 		t.Fatalf("replay must not duplicate events, got %d", n)
+	}
+}
+
+func TestStartForWorkspaceRejectsCrossWorkspaceReplay(t *testing.T) {
+	e := NewEngine()
+	_ = e.Register(threeStages())
+	if _, _, err := e.StartForWorkspace("d1", "ws-a-instance", ContextRef{}, "00000000-0000-0000-0000-000000000001", "shared-key"); err != nil {
+		t.Fatalf("first scoped start: %v", err)
+	}
+	if _, _, err := e.StartForWorkspace("d1", "ws-b-instance", ContextRef{}, "00000000-0000-0000-0000-000000000002", "shared-key"); err == nil {
+		t.Fatal("cross-workspace idempotency replay must be rejected")
 	}
 }
 

@@ -1417,12 +1417,13 @@ type WebhookDelivery struct {
 }
 
 type WorkflowDefinition struct {
-	ID        string             `json:"id"`
-	Version   int32              `json:"version"`
-	Risk      string             `json:"risk"`
-	Stages    []byte             `json:"stages"`
-	CreatedAt pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
+	ID          string             `json:"id"`
+	Version     int32              `json:"version"`
+	Risk        string             `json:"risk"`
+	Stages      []byte             `json:"stages"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
 }
 
 type WorkflowEvent struct {
@@ -1445,6 +1446,7 @@ type WorkflowInstance struct {
 	Status            string             `json:"status"`
 	CreatedAt         pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
+	WorkspaceID       pgtype.UUID        `json:"workspace_id"`
 }
 
 type Workroom struct {

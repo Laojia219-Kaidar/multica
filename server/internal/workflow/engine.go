@@ -76,6 +76,61 @@ func ValidateDefinition(d WorkflowDefinition) error {
 	return nil
 }
 
+// ValidateGraph enforces the stable, acyclic graph contract used by published
+// definition versions. It does not execute nodes or resolve external agents.
+func ValidateGraph(v WorkflowDefinitionVersion) error {
+	if v.DefinitionID == "" || v.Version <= 0 || !v.Risk.Valid() || len(v.Graph.Nodes) == 0 {
+		return fmt.Errorf("%w: graph identity, version, risk and nodes are required", ErrInvalidDefinition)
+	}
+	nodes := make(map[string]GraphNode, len(v.Graph.Nodes))
+	for _, n := range v.Graph.Nodes {
+		if n.ID == "" || n.Name == "" || !n.Kind.Valid() {
+			return fmt.Errorf("%w: invalid graph node", ErrInvalidDefinition)
+		}
+		if _, exists := nodes[n.ID]; exists {
+			return fmt.Errorf("%w: duplicate graph node %q", ErrInvalidDefinition, n.ID)
+		}
+		nodes[n.ID] = n
+	}
+	adj := make(map[string][]string, len(nodes))
+	indegree := make(map[string]int, len(nodes))
+	for _, edge := range v.Graph.Edges {
+		if edge.ID == "" || edge.From == "" || edge.To == "" || edge.From == edge.To {
+			return fmt.Errorf("%w: invalid graph edge", ErrInvalidDefinition)
+		}
+		if _, ok := nodes[edge.From]; !ok {
+			return fmt.Errorf("%w: edge source %q missing", ErrInvalidDefinition, edge.From)
+		}
+		if _, ok := nodes[edge.To]; !ok {
+			return fmt.Errorf("%w: edge target %q missing", ErrInvalidDefinition, edge.To)
+		}
+		adj[edge.From] = append(adj[edge.From], edge.To)
+		indegree[edge.To]++
+	}
+	queue := make([]string, 0, len(nodes))
+	for id := range nodes {
+		if indegree[id] == 0 {
+			queue = append(queue, id)
+		}
+	}
+	visited := 0
+	for len(queue) > 0 {
+		id := queue[0]
+		queue = queue[1:]
+		visited++
+		for _, next := range adj[id] {
+			indegree[next]--
+			if indegree[next] == 0 {
+				queue = append(queue, next)
+			}
+		}
+	}
+	if visited != len(nodes) {
+		return fmt.Errorf("%w: graph contains a cycle", ErrInvalidDefinition)
+	}
+	return nil
+}
+
 func (e *Engine) Register(d WorkflowDefinition) error {
 	if err := ValidateDefinition(d); err != nil {
 		return err
@@ -84,6 +139,20 @@ func (e *Engine) Register(d WorkflowDefinition) error {
 	defer e.mu.Unlock()
 	e.definitions[d.ID] = d
 	return nil
+}
+
+// AttachWorkspace records the workspace reference on an in-memory instance
+// after the command has been authorized by the HTTP boundary. It does not
+// create or copy any project/task/employee state.
+func (e *Engine) AttachWorkspace(instanceID, workspaceID string) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	inst, ok := e.instances[instanceID]
+	if !ok {
+		return false
+	}
+	inst.WorkspaceID = workspaceID
+	return true
 }
 
 // replay returns the stored receipt for an already-applied idempotency key
@@ -99,10 +168,23 @@ func (e *Engine) replay(key string) (Receipt, bool) {
 
 // Start creates (or returns the existing) instance. Idempotent by key.
 func (e *Engine) Start(defID, instanceID string, ctx ContextRef, key string) (WorkflowInstance, Receipt, error) {
+	return e.start(defID, instanceID, ctx, "", key)
+}
+
+// StartForWorkspace applies the same idempotent start command while binding
+// the in-memory instance and replay key to one workspace.
+func (e *Engine) StartForWorkspace(defID, instanceID string, ctx ContextRef, workspaceID, key string) (WorkflowInstance, Receipt, error) {
+	return e.start(defID, instanceID, ctx, workspaceID, key)
+}
+
+func (e *Engine) start(defID, instanceID string, ctx ContextRef, workspaceID, key string) (WorkflowInstance, Receipt, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if r, ok := e.replay(key); ok {
 		if inst, found := e.instances[r.InstanceID]; found {
+			if workspaceID != "" && inst.WorkspaceID != "" && inst.WorkspaceID != workspaceID {
+				return WorkflowInstance{}, Receipt{}, fmt.Errorf("%w: idempotency key belongs to another workspace", ErrIllegalTransition)
+			}
 			return *inst, r, nil
 		}
 	}
@@ -112,6 +194,7 @@ func (e *Engine) Start(defID, instanceID string, ctx ContextRef, key string) (Wo
 	}
 	inst := &WorkflowInstance{
 		ID:                instanceID,
+		WorkspaceID:       workspaceID,
 		DefinitionID:      def.ID,
 		DefinitionVersion: def.Version,
 		Context:           ctx,

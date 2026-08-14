@@ -18,6 +18,29 @@ ON CONFLICT (id) DO UPDATE SET stage_index = $5, status = $6, updated_at = now()
 -- name: GetWorkflowInstance :one
 SELECT * FROM workflow_instance WHERE id = $1;
 
+-- name: ListWorkflowInstances :many
+SELECT * FROM workflow_instance
+WHERE workspace_id = $1
+ORDER BY created_at DESC, id DESC;
+
+-- name: GetWorkflowInstanceInWorkspace :one
+SELECT * FROM workflow_instance
+WHERE workspace_id = $1 AND id = $2;
+
+-- name: InsertWorkflowInstanceInWorkspace :exec
+INSERT INTO workflow_instance (workspace_id, id, definition_id, definition_version, context, stage_index, status)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
+ON CONFLICT (id) DO UPDATE SET
+  stage_index = $6,
+  status = $7,
+  updated_at = now()
+WHERE workflow_instance.workspace_id = $1;
+
+-- name: UpdateWorkflowInstanceInWorkspace :exec
+UPDATE workflow_instance
+SET stage_index = $3, status = $4, updated_at = now()
+WHERE workspace_id = $1 AND id = $2;
+
 -- name: UpdateWorkflowInstance :exec
 UPDATE workflow_instance SET stage_index = $2, status = $3, updated_at = now() WHERE id = $1;
 
@@ -28,6 +51,13 @@ ON CONFLICT (instance_id, idempotency_key) DO NOTHING;
 
 -- name: ListWorkflowEvents :many
 SELECT * FROM workflow_event WHERE instance_id = $1 ORDER BY id ASC;
+
+-- name: ListWorkflowEventsInWorkspace :many
+SELECT e.*
+FROM workflow_event e
+JOIN workflow_instance i ON i.id = e.instance_id
+WHERE i.workspace_id = $1 AND e.instance_id = $2
+ORDER BY e.id ASC;
 
 -- name: InsertMemoryCandidate :exec
 INSERT INTO memory_candidate (id, employee_id, position_id, kind, content, evidence, source_refs, author_id, status)
