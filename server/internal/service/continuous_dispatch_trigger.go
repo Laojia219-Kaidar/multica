@@ -26,6 +26,19 @@ type ContinuousDispatchExactDispatcher interface {
 	Dispatch(context.Context, ContinuousDispatchRequest) (ContinuousDispatchReceipt, error)
 }
 
+// AuthorityReviewDispatchIdentityProvider resolves the server-side Authority
+// identity for an Authority-gated review dispatch. Implementations must read
+// the canonical Authority mapping; they must not derive selectors from local
+// Issue/Task/name data or choose a fallback employee/Agent.
+//
+// The candidate is already built by this Trigger from the current Shadow
+// decision. Passing it into the resolver lets the resolver bind the Authority
+// read to the exact candidate without allowing an external caller to construct
+// or replace the dispatch request.
+type AuthorityReviewDispatchIdentityProvider interface {
+	ResolveReviewDispatchIdentity(context.Context, pgtype.UUID, pgtype.UUID, pgtype.UUID, AuthorityReviewDispatchCandidate) (AuthorityReviewDispatchIdentity, error)
+}
+
 // ContinuousDispatchRecoveryPreconditionVerifier must re-read canonical
 // Issue/Task/Comment evidence immediately before a recovery dispatch. It is
 // deliberately separate from the Shadow projection because review_state and
@@ -48,6 +61,9 @@ type ContinuousDispatchTriggerService struct {
 	inspector             ContinuousDispatchProjectInspector
 	dispatcher            ContinuousDispatchExactDispatcher
 	recoveryPreconditions ContinuousDispatchRecoveryPreconditionVerifier
+	authorityReviewGate   *AuthorityReviewDispatchGate
+	authorityReviewIDs    AuthorityReviewDispatchIdentityProvider
+	authorityReviewMode   bool
 }
 
 func NewContinuousDispatchTriggerService(
@@ -66,6 +82,25 @@ func (s *ContinuousDispatchTriggerService) WithReviewOrphanRecoveryPreconditionV
 	}
 	cp := *s
 	cp.recoveryPreconditions = verifier
+	return &cp
+}
+
+// WithAuthorityReviewDispatchGate enables the explicit candidate-only
+// Authority-gated review mode. The mode is deliberately opt-in so existing
+// non-Authority candidate tests and paths retain their behavior. Once enabled,
+// a missing gate or identity provider is a source gap and the exact dispatcher
+// is never called.
+func (s *ContinuousDispatchTriggerService) WithAuthorityReviewDispatchGate(
+	gate *AuthorityReviewDispatchGate,
+	provider AuthorityReviewDispatchIdentityProvider,
+) *ContinuousDispatchTriggerService {
+	if s == nil {
+		return nil
+	}
+	cp := *s
+	cp.authorityReviewGate = gate
+	cp.authorityReviewIDs = provider
+	cp.authorityReviewMode = true
 	return &cp
 }
 
@@ -99,7 +134,7 @@ func (s *ContinuousDispatchTriggerService) DispatchIssue(
 			if item.IssueID != wantedIssueID {
 				continue
 			}
-			return s.dispatchShadowItem(ctx, item, actorUserID, handoffNote)
+			return s.dispatchShadowItem(ctx, workspaceID, projectID, item, actorUserID, handoffNote)
 		}
 		if len(page.Items) == 0 || offset+len(page.Items) >= page.Total {
 			return ContinuousDispatchTriggerResult{}, ErrContinuousDispatchIssueAbsent
@@ -188,7 +223,7 @@ func (s *ContinuousDispatchTriggerService) dispatchReviewIssue(
 				InitiatorSource: continuousDispatchReviewInitiatorSourceV1,
 			}
 			note := fmt.Sprintf("review_dispatch source_ref=%s source_issue_id=%s source_task_id=%s initiator_source=%s", item.SourceRef, item.IssueID, item.SourceTaskID, provenance.InitiatorSource)
-			return s.dispatchReviewShadowItem(ctx, item, actorUserID, note, provenance)
+			return s.dispatchReviewShadowItem(ctx, workspaceID, projectID, item, actorUserID, note, provenance)
 		}
 		if len(page.Items) == 0 || offset+len(page.Items) >= page.Total {
 			return ContinuousDispatchTriggerResult{}, ErrContinuousDispatchIssueAbsent
@@ -230,25 +265,28 @@ func (s *ContinuousDispatchTriggerService) verifyReviewOrphanRecoveryPreconditio
 
 func (s *ContinuousDispatchTriggerService) dispatchShadowItem(
 	ctx context.Context,
+	workspaceID, projectID pgtype.UUID,
 	item ContinuousDispatchShadowItem,
 	actorUserID pgtype.UUID,
 	handoffNote string,
 ) (ContinuousDispatchTriggerResult, error) {
-	return s.dispatchShadowItemWithPrecondition(ctx, item, actorUserID, handoffNote, false, nil)
+	return s.dispatchShadowItemWithPrecondition(ctx, workspaceID, projectID, item, actorUserID, handoffNote, false, nil)
 }
 
 func (s *ContinuousDispatchTriggerService) dispatchReviewShadowItem(
 	ctx context.Context,
+	workspaceID, projectID pgtype.UUID,
 	item ContinuousDispatchShadowItem,
 	actorUserID pgtype.UUID,
 	handoffNote string,
 	provenance *ContinuousDispatchReviewProvenance,
 ) (ContinuousDispatchTriggerResult, error) {
-	return s.dispatchShadowItemWithPrecondition(ctx, item, actorUserID, handoffNote, true, provenance)
+	return s.dispatchShadowItemWithPrecondition(ctx, workspaceID, projectID, item, actorUserID, handoffNote, true, provenance)
 }
 
 func (s *ContinuousDispatchTriggerService) dispatchShadowItemWithPrecondition(
 	ctx context.Context,
+	workspaceID, projectID pgtype.UUID,
 	item ContinuousDispatchShadowItem,
 	actorUserID pgtype.UUID,
 	handoffNote string,
@@ -271,7 +309,7 @@ func (s *ContinuousDispatchTriggerService) dispatchShadowItemWithPrecondition(
 		return ContinuousDispatchTriggerResult{}, ErrContinuousDispatchSourceGap
 	}
 
-	receipt, err := s.dispatcher.Dispatch(ctx, ContinuousDispatchRequest{
+	request := ContinuousDispatchRequest{
 		Identity: item.DispatchIdentity,
 		Route: ContinuousDispatchRoute{
 			EmployeeRef:  continuousDispatchEmployeeRefPrefix + selected.EmployeeID,
@@ -284,11 +322,35 @@ func (s *ContinuousDispatchTriggerService) dispatchShadowItemWithPrecondition(
 		HandoffNote:      handoffNote,
 		requireInReview:  requireInReview,
 		reviewProvenance: cloneContinuousDispatchReviewProvenance(reviewProvenance),
-	})
+	}
+	if s.authorityReviewMode && requireInReview {
+		if s.authorityReviewGate == nil || s.authorityReviewIDs == nil {
+			return ContinuousDispatchTriggerResult{}, ErrAuthorityReviewDispatchSourceGap
+		}
+		candidate := authorityReviewDispatchCandidateFromServer(request)
+		issueID := itemIssueUUID(item)
+		if !issueID.Valid || issueID.Bytes == ([16]byte{}) {
+			return ContinuousDispatchTriggerResult{}, ErrAuthorityReviewDispatchSourceGap
+		}
+		identity, err := s.authorityReviewIDs.ResolveReviewDispatchIdentity(ctx, workspaceID, projectID, issueID, candidate)
+		if err != nil {
+			return ContinuousDispatchTriggerResult{}, fmt.Errorf("%w: authority identity resolution failed", ErrAuthorityReviewDispatchSourceGap)
+		}
+		receipt, err := s.authorityReviewGate.DispatchReview(ctx, identity, candidate)
+		if err != nil {
+			return ContinuousDispatchTriggerResult{}, err
+		}
+		return ContinuousDispatchTriggerResult{Action: action, Receipt: receipt}, nil
+	}
+	receipt, err := s.dispatcher.Dispatch(ctx, request)
 	if err != nil {
 		return ContinuousDispatchTriggerResult{}, err
 	}
 	return ContinuousDispatchTriggerResult{Action: action, Receipt: receipt}, nil
+}
+
+func itemIssueUUID(item ContinuousDispatchShadowItem) pgtype.UUID {
+	return parseDispatchUUID(item.IssueID)
 }
 
 var _ ContinuousDispatchExactDispatcher = (*ContinuousDispatchService)(nil)

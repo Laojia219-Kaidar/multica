@@ -39,6 +39,26 @@ type triggerRecoveryVerifierFixture struct {
 	err   error
 }
 
+type triggerAuthorityIdentityProviderFixture struct {
+	identity  AuthorityReviewDispatchIdentity
+	err       error
+	calls     int
+	workspace pgtype.UUID
+	project   pgtype.UUID
+	issue     pgtype.UUID
+	candidate AuthorityReviewDispatchCandidate
+}
+
+func (f *triggerAuthorityIdentityProviderFixture) ResolveReviewDispatchIdentity(
+	_ context.Context,
+	workspaceID, projectID, issueID pgtype.UUID,
+	candidate AuthorityReviewDispatchCandidate,
+) (AuthorityReviewDispatchIdentity, error) {
+	f.calls++
+	f.workspace, f.project, f.issue, f.candidate = workspaceID, projectID, issueID, candidate
+	return f.identity, f.err
+}
+
 func (f *triggerRecoveryVerifierFixture) VerifyReviewOrphanRecoveryPrecondition(_ context.Context, _ ReviewOrphanRecoveryPrecondition) error {
 	f.calls++
 	return f.err
@@ -154,6 +174,105 @@ func TestContinuousDispatchReviewTriggerMarksAtomicReviewPrecondition(t *testing
 	}
 	if len(dispatcher.requests) != 1 || !dispatcher.requests[0].requireInReview {
 		t.Fatalf("review dispatch request = %+v, want atomic in_review precondition", dispatcher.requests)
+	}
+}
+
+func TestContinuousDispatchReviewTriggerAuthorityModeRunsResolverGateBeforeDispatcher(t *testing.T) {
+	workspaceID, projectID, issueID := dispatchReceiptUUID(68), dispatchReceiptUUID(69), dispatchReceiptUUID(70)
+	sourceTaskID, sourceCommentID := dispatchReceiptUUID(71), dispatchReceiptUUID(72)
+	agentID, runtimeID := dispatchReceiptUUID(73), dispatchReceiptUUID(74)
+	item := triggerShadowItem(workspaceID, issueID, agentID, runtimeID)
+	item.DispatchIdentity.Stage = "review"
+	item.Status = "in_review"
+	item.SourceRef = continuousDispatchReviewCommentRef(sourceCommentID)
+	item.SourceTaskID = shadowUUIDString(sourceTaskID)
+	inspector := &triggerInspectorFixture{pages: map[int]*ContinuousDispatchShadowResult{0: {
+		SchemaVersion: ContinuousDispatchShadowSchemaV1, WorkspaceID: shadowUUIDString(workspaceID),
+		ProjectID: shadowUUIDString(projectID), Items: []ContinuousDispatchShadowItem{item}, Total: 1,
+	}}}
+	dispatcher := &triggerDispatcherFixture{receipt: dispatchReceiptFixture(75)}
+	identity := AuthorityReviewDispatchIdentity{
+		TenantID:           "tenant-hivecosm-1",
+		WorkOrderSourceRef: "hive://hivecosm/delivery/project/project-1/work-order/wo-1",
+		EmployeeID:         item.NextAction.Selected.EmployeeID,
+		IdentityBindingID:  "binding-review-trigger",
+		AgentID:            shadowUUIDString(agentID),
+		AssignmentID:       "assignment-review-trigger",
+	}
+	lookup, err := identity.lookup()
+	if err != nil {
+		t.Fatal(err)
+	}
+	authorizer := &authorityReviewDispatchAuthorizerFake{response: authorityReviewDispatchResponse(lookup)}
+	provider := &triggerAuthorityIdentityProviderFixture{identity: identity}
+	gate := NewAuthorityReviewDispatchGate(authorizer, dispatcher)
+	trigger := NewContinuousDispatchTriggerService(inspector, dispatcher).WithAuthorityReviewDispatchGate(gate, provider)
+
+	result, err := trigger.DispatchReviewIssue(context.Background(), workspaceID, projectID, issueID, dispatchReceiptUUID(76), item.SourceRef, sourceTaskID)
+	if err != nil {
+		t.Fatalf("DispatchReviewIssue: %v", err)
+	}
+	if result.Receipt.TaskID != dispatcher.receipt.TaskID || provider.calls != 1 || authorizer.calls != 1 || len(dispatcher.requests) != 1 {
+		t.Fatalf("receipt/provider/authority/dispatcher = %#v/%d/%d/%d, want receipt/1/1/1", result.Receipt, provider.calls, authorizer.calls, len(dispatcher.requests))
+	}
+	if provider.workspace != workspaceID || provider.project != projectID || provider.issue != issueID {
+		t.Fatalf("resolver scope = %s/%s/%s, want %s/%s/%s", provider.workspace, provider.project, provider.issue, workspaceID, projectID, issueID)
+	}
+	if provider.candidate.request.Route.LocalAgentID != agentID || !provider.candidate.request.requireInReview {
+		t.Fatalf("resolver candidate = %+v, want server-built review candidate", provider.candidate.request)
+	}
+}
+
+func TestContinuousDispatchReviewTriggerAuthorityModeFailsClosedWithoutResolver(t *testing.T) {
+	workspaceID, projectID, issueID := dispatchReceiptUUID(78), dispatchReceiptUUID(79), dispatchReceiptUUID(80)
+	sourceTaskID, sourceCommentID := dispatchReceiptUUID(81), dispatchReceiptUUID(82)
+	item := triggerShadowItem(workspaceID, issueID, dispatchReceiptUUID(83), dispatchReceiptUUID(84))
+	item.DispatchIdentity.Stage = "review"
+	item.Status = "in_review"
+	item.SourceRef = continuousDispatchReviewCommentRef(sourceCommentID)
+	item.SourceTaskID = shadowUUIDString(sourceTaskID)
+	inspector := &triggerInspectorFixture{pages: map[int]*ContinuousDispatchShadowResult{0: {
+		SchemaVersion: ContinuousDispatchShadowSchemaV1, WorkspaceID: shadowUUIDString(workspaceID),
+		ProjectID: shadowUUIDString(projectID), Items: []ContinuousDispatchShadowItem{item}, Total: 1,
+	}}}
+	dispatcher := &triggerDispatcherFixture{}
+	authorizer := &authorityReviewDispatchAuthorizerFake{}
+	gate := NewAuthorityReviewDispatchGate(authorizer, dispatcher)
+	trigger := NewContinuousDispatchTriggerService(inspector, dispatcher).WithAuthorityReviewDispatchGate(gate, nil)
+
+	_, err := trigger.DispatchReviewIssue(context.Background(), workspaceID, projectID, issueID, dispatchReceiptUUID(85), item.SourceRef, sourceTaskID)
+	if !errors.Is(err, ErrAuthorityReviewDispatchSourceGap) {
+		t.Fatalf("DispatchReviewIssue error = %v, want authority source gap", err)
+	}
+	if authorizer.calls != 0 || len(dispatcher.requests) != 0 {
+		t.Fatalf("authority/dispatcher calls = %d/%d, want 0/0", authorizer.calls, len(dispatcher.requests))
+	}
+}
+
+func TestContinuousDispatchReviewTriggerAuthorityModeFailsClosedOnResolverError(t *testing.T) {
+	workspaceID, projectID, issueID := dispatchReceiptUUID(86), dispatchReceiptUUID(87), dispatchReceiptUUID(88)
+	sourceTaskID, sourceCommentID := dispatchReceiptUUID(89), dispatchReceiptUUID(90)
+	item := triggerShadowItem(workspaceID, issueID, dispatchReceiptUUID(91), dispatchReceiptUUID(92))
+	item.DispatchIdentity.Stage = "review"
+	item.Status = "in_review"
+	item.SourceRef = continuousDispatchReviewCommentRef(sourceCommentID)
+	item.SourceTaskID = shadowUUIDString(sourceTaskID)
+	inspector := &triggerInspectorFixture{pages: map[int]*ContinuousDispatchShadowResult{0: {
+		SchemaVersion: ContinuousDispatchShadowSchemaV1, WorkspaceID: shadowUUIDString(workspaceID),
+		ProjectID: shadowUUIDString(projectID), Items: []ContinuousDispatchShadowItem{item}, Total: 1,
+	}}}
+	dispatcher := &triggerDispatcherFixture{}
+	authorizer := &authorityReviewDispatchAuthorizerFake{}
+	provider := &triggerAuthorityIdentityProviderFixture{err: errors.New("authority unavailable")}
+	gate := NewAuthorityReviewDispatchGate(authorizer, dispatcher)
+	trigger := NewContinuousDispatchTriggerService(inspector, dispatcher).WithAuthorityReviewDispatchGate(gate, provider)
+
+	_, err := trigger.DispatchReviewIssue(context.Background(), workspaceID, projectID, issueID, dispatchReceiptUUID(93), item.SourceRef, sourceTaskID)
+	if !errors.Is(err, ErrAuthorityReviewDispatchSourceGap) {
+		t.Fatalf("DispatchReviewIssue error = %v, want authority source gap", err)
+	}
+	if provider.calls != 1 || authorizer.calls != 0 || len(dispatcher.requests) != 0 {
+		t.Fatalf("resolver/authority/dispatcher calls = %d/%d/%d, want 1/0/0", provider.calls, authorizer.calls, len(dispatcher.requests))
 	}
 }
 
