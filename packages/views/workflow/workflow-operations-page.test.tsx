@@ -70,6 +70,30 @@ describe("WorkflowOperationsPage", () => {
     expect(screen.getByRole("link", { name: "在成果中心查看、审核与晋级" })).toHaveAttribute("href", "/acme/outcomes?outcome=a4d7525e-98ba-4aa2-8dc4-bf49c6bf5ed9");
   });
 
+  it("shows storage observations separately and keeps source failures distinct from empty", () => {
+    const outcomeId = "a4d7525e-98ba-4aa2-8dc4-bf49c6bf5ed9";
+    const summary = {
+      id: outcomeId,
+      issue: null,
+      work_order: { source_ref: "work-order:wechat", revision: "r1", digest: "sha256:work" },
+      employee: { source_ref: "employee:writer", id: "writer" },
+      identity_binding: { source_ref: "binding:writer", id: "writer-binding" },
+      execution_target: { local_agent_id: "writer", agent_ref: "agent:writer", agent_revision: "r1", agent_digest: "sha256:agent" },
+      current_agent_display: { name: "撰稿数字员工", status: "idle" },
+      initial_task_id: "c4f9fbe4-c0fd-472b-b595-f2ea304b20b6",
+      current_task_id: "c4f9fbe4-c0fd-472b-b595-f2ea304b20b6",
+      execution_state: "completed",
+      active_artifact: undefined,
+      version_count: 1,
+    };
+    render(<WorkflowOperationsPage {...props} selection={{ kind: "project", id: "wechat" }} section="artifacts" outcomes={[summary]} artifactLocationsByOutcome={{ [outcomeId]: { items: [{ id: "b7222a44-d93d-4d57-9f4c-fbf6ca594c74", outcome_id: outcomeId, candidate_id: "c4f9fbe4-c0fd-472b-b595-f2ea304b20b6", candidate_revision: 1, location_class: "nas-primary", location_id: "nas-01", storage_id: "synology-main", object_ref: "nas://candidate/draft.md", state: "registered", digest: "sha256:artifact", metadata_digest: "sha256:metadata", size_bytes: 42, created_at: "2026-08-14T00:00:00Z", updated_at: "2026-08-14T00:00:00Z" }] } }} />);
+    expect(screen.getByTestId(`workflow-artifact-location-summary-${outcomeId}`)).toHaveTextContent("已登记 1 个存储位置");
+    expect(screen.getByTestId(`workflow-artifact-location-summary-${outcomeId}`)).toHaveTextContent("synology-main");
+
+    render(<WorkflowOperationsPage {...props} selection={{ kind: "project", id: "wechat" }} section="artifacts" outcomes={[summary]} artifactLocationsByOutcome={{ [outcomeId]: { items: [], error: true } }} />);
+    expect(screen.getByTestId(`workflow-artifact-location-error-${outcomeId}`)).toHaveTextContent("不会把读取失败显示为零位置");
+  });
+
   it("does not query or claim zero outcomes for an L3 program without an L4 project", () => {
     render(<WorkflowOperationsPage {...props} selection={{ kind: "program", id: "brand" }} section="artifacts" outcomes={[]} />);
     expect(screen.getByText("先选择 L4 项目，尚未查询成果")).toBeDefined();

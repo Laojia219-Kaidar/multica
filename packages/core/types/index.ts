@@ -255,6 +255,8 @@ export type {
   CompanyOpsOutcomeRun,
   CompanyOpsOutcomeDetail,
   CompanyOpsOutcomeListResponse,
+  CompanyOpsArtifactReplicaLocation,
+  CompanyOpsArtifactReplicaLocationsResponse,
   CompanyOpsBindingState,
   CompanyOpsDepartmentAppointment,
   CompanyOpsDepartmentPosition,

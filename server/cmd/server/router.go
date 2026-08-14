@@ -1219,6 +1219,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			r.Get("/work-context", h.GetCompanyOpsWorkContext)
 			r.Get("/outcomes", h.GetCompanyOpsOutcomes)
 			r.Get("/outcomes/{commandId}", h.GetCompanyOpsOutcome)
+			r.Get("/outcomes/{commandId}/artifact-locations", h.GetCompanyOpsArtifactReplicaLocations)
 			r.Get("/organization", h.GetCompanyOpsOrganization)
 			r.Get("/employees", h.GetCompanyOpsEmployees)
 			r.Get("/employees/{employeeId}", h.GetCompanyOpsEmployee)

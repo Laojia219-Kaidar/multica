@@ -298,6 +298,31 @@ export interface CompanyOpsOutcomeListResponse {
   has_more?: boolean;
 }
 
+export interface CompanyOpsArtifactReplicaLocation {
+  id: string;
+  outcome_id: string;
+  candidate_id: string;
+  candidate_revision: number;
+  location_class: "local-cache" | "nas-primary" | "offline-copy" | "cloud-replica";
+  location_id: string;
+  storage_id: string;
+  object_ref: string;
+  retention_hint?: string;
+  state: "fixture" | "registered" | "pending" | "verified" | "failed";
+  digest: string;
+  metadata_digest: string;
+  size_bytes: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CompanyOpsArtifactReplicaLocationsResponse {
+  schema_version: "hivecrew.artifact-replica-locations.v1";
+  workspace_id: string;
+  outcome_id: string;
+  items: CompanyOpsArtifactReplicaLocation[];
+}
+
 // ---------------------------------------------------------------------------
 // Organization & Employees roster/dossier — hivecrew.organization.v1
 //

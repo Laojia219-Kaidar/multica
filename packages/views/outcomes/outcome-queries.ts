@@ -19,6 +19,8 @@ export const outcomeKeys = {
     ] as const,
   detail: (wsId: string, commandId: string) =>
     [...outcomeKeys.all(wsId), "detail", commandId] as const,
+  artifactLocations: (wsId: string, commandId: string) =>
+    [...outcomeKeys.all(wsId), "artifact-locations", commandId] as const,
 };
 
 export function outcomesListOptions(
@@ -37,6 +39,16 @@ export function outcomeDetailOptions(wsId: string, commandId: string) {
   return queryOptions({
     queryKey: outcomeKeys.detail(wsId, commandId),
     queryFn: () => api.getCompanyOpsOutcome(commandId),
+    enabled: !!wsId && !!commandId,
+    retry: false,
+    staleTime: 30_000,
+  });
+}
+
+export function outcomeArtifactLocationsOptions(wsId: string, commandId: string) {
+  return queryOptions({
+    queryKey: outcomeKeys.artifactLocations(wsId, commandId),
+    queryFn: () => api.listCompanyOpsArtifactReplicaLocations(commandId),
     enabled: !!wsId && !!commandId,
     retry: false,
     staleTime: 30_000,

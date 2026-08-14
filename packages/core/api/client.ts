@@ -186,6 +186,7 @@ import type {
   CompanyOpsOutcomeListParams,
   CompanyOpsOutcomeListResponse,
   CompanyOpsOutcomeDetail,
+  CompanyOpsArtifactReplicaLocationsResponse,
   CompanyOpsOrganization,
   CompanyOpsRosterParams,
   CompanyOpsRosterResponse,
@@ -520,6 +521,29 @@ const CompanyOpsOutcomeDetailSchema = z.object({
   versions: z.array(CompanyOpsOutcomeVersionSchema),
   events: z.array(CompanyOpsOutcomeEventSchema),
   runs: z.array(CompanyOpsOutcomeRunSchema),
+});
+
+const CompanyOpsArtifactReplicaLocationsResponseSchema = z.object({
+  schema_version: z.literal("hivecrew.artifact-replica-locations.v1"),
+  workspace_id: z.string().uuid(),
+  outcome_id: z.string().uuid(),
+  items: z.array(z.object({
+    id: z.string().uuid(),
+    outcome_id: z.string().uuid(),
+    candidate_id: z.string().uuid(),
+    candidate_revision: z.number().int().positive(),
+    location_class: z.enum(["local-cache", "nas-primary", "offline-copy", "cloud-replica"]),
+    location_id: z.string().min(1),
+    storage_id: z.string().min(1),
+    object_ref: z.string().min(1),
+    retention_hint: z.string().min(1).optional(),
+    state: z.enum(["fixture", "registered", "pending", "verified", "failed"]),
+    digest: z.string(),
+    metadata_digest: z.string(),
+    size_bytes: z.number().int().nonnegative(),
+    created_at: z.string().min(1),
+    updated_at: z.string().min(1),
+  })),
 });
 
 const CompanyOpsBindingStateSchema = z.enum([
@@ -3175,6 +3199,24 @@ export class ApiClient {
     );
     if (!parsed) {
       throw new Error("Invalid CompanyOps outcome center detail response.");
+    }
+    return parsed;
+  }
+
+  async listCompanyOpsArtifactReplicaLocations(
+    commandId: string,
+  ): Promise<CompanyOpsArtifactReplicaLocationsResponse> {
+    const raw = await this.fetch<unknown>(
+      `/api/company-ops/outcomes/${encodeURIComponent(commandId)}/artifact-locations`,
+    );
+    const parsed = parseWithFallback<CompanyOpsArtifactReplicaLocationsResponse | null>(
+      raw,
+      CompanyOpsArtifactReplicaLocationsResponseSchema,
+      null,
+      { endpoint: "GET /api/company-ops/outcomes/:command_id/artifact-locations" },
+    );
+    if (!parsed) {
+      throw new Error("Invalid CompanyOps artifact replica locations response.");
     }
     return parsed;
   }

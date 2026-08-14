@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { ChevronRight, LayoutDashboard, PackageCheck, PlayCircle, Settings2, Workflow } from "lucide-react";
 import type { ArtifactSummary, OperatingProgram, OperatingProject, WorkflowDefinitionDraft, WorkflowRuntime } from "@multica/core/workflow";
 import type { WorkflowDefinition, WorkflowInstance } from "@multica/core/api/workflow";
-import type { CompanyOpsOutcomeSummary } from "@multica/core/types";
+import type { CompanyOpsArtifactReplicaLocation, CompanyOpsOutcomeSummary } from "@multica/core/types";
 import { WorkflowContextTree, type WorkflowContextSelection } from "./workflow-context-tree";
 import { WorkflowDesigner } from "./workflow-designer";
 import { WorkflowRuntimeGraph } from "./workflow-runtime-graph";
@@ -22,6 +22,7 @@ export interface WorkflowOperationsPageProps {
   outcomesLoading?: boolean;
   outcomesError?: boolean;
   outcomeHref?: (outcomeId: string) => string;
+  artifactLocationsByOutcome?: Record<string, ArtifactLocationsState>;
   instances?: WorkflowInstance[];
   definitions?: WorkflowDefinition[];
   /** Read-only API adapter forwarded to the instances workbench. */
@@ -39,6 +40,12 @@ export interface WorkflowOperationsPageProps {
   onPublishDefinition?: (definition: WorkflowDefinitionDraft) => void;
   publishReceipt?: { definitionId: string; version: number; changed: boolean } | null;
   publishError?: string | null;
+}
+
+export interface ArtifactLocationsState {
+  items: CompanyOpsArtifactReplicaLocation[];
+  loading?: boolean;
+  error?: boolean;
 }
 
 const CONTEXT_TREE_COLLAPSED_KEY = "hivecrew.workflow.context-tree.collapsed.v1";
@@ -67,6 +74,7 @@ export function WorkflowOperationsPage({
   outcomesLoading = false,
   outcomesError = false,
   outcomeHref,
+  artifactLocationsByOutcome,
   instances = [],
   definitions = [],
   workbench,
@@ -136,7 +144,7 @@ export function WorkflowOperationsPage({
           <div className="mb-4 flex flex-wrap items-center gap-1 border-b pb-2" role="tablist" aria-label="项目工作区">
             {sectionLabels.map(({ id, label, icon: Icon }) => <button type="button" role="tab" aria-selected={section === id} key={id} onClick={() => selectSection(id)} className={`inline-flex items-center gap-1 rounded px-2 py-1.5 text-xs hover:bg-accent ${section === id ? "bg-accent font-medium" : "text-muted-foreground"}`}><Icon className="h-3.5 w-3.5" />{label}</button>)}
           </div>
-          {!selection ? <EmptyProjectState /> : section === "workflow" && project ? <WorkflowDefinitionsPanel project={project} drafts={projectDrafts} selectedDraft={selectedDraft} onSelectDefinition={onSelectDefinition} onCreateDefinition={onCreateDefinition} onChangeDefinition={onChangeDefinition} onPublishDefinition={onPublishDefinition} publishReceipt={publishReceipt} publishError={publishError} /> : section === "instances" ? <WorkflowWorkbench instances={instances} definitions={definitions} {...workbench} /> : section === "artifacts" && !project ? <NoProjectArtifactState /> : section === "artifacts" ? <ArtifactList artifacts={artifacts} outcomes={outcomes} loading={outcomesLoading} sourceError={outcomesError} outcomeHref={outcomeHref} /> : <ProjectSection section={section} project={project} program={program} />}
+          {!selection ? <EmptyProjectState /> : section === "workflow" && project ? <WorkflowDefinitionsPanel project={project} drafts={projectDrafts} selectedDraft={selectedDraft} onSelectDefinition={onSelectDefinition} onCreateDefinition={onCreateDefinition} onChangeDefinition={onChangeDefinition} onPublishDefinition={onPublishDefinition} publishReceipt={publishReceipt} publishError={publishError} /> : section === "instances" ? <WorkflowWorkbench instances={instances} definitions={definitions} {...workbench} /> : section === "artifacts" && !project ? <NoProjectArtifactState /> : section === "artifacts" ? <ArtifactList artifacts={artifacts} outcomes={outcomes} loading={outcomesLoading} sourceError={outcomesError} outcomeHref={outcomeHref} artifactLocationsByOutcome={artifactLocationsByOutcome} /> : <ProjectSection section={section} project={project} program={program} />}
           {runtime && section === "instances" ? <div className="mt-4"><WorkflowRuntimeGraph graph={selectedDraft?.graph ?? { nodes: [], edges: [] }} runtime={runtime} /></div> : null}
         </main>
         {runtime && section !== "instances" ? <aside className="hidden w-72 shrink-0 border-l p-3 xl:block" data-testid="workflow-inspector"><WorkflowRuntimeGraph graph={selectedDraft?.graph ?? { nodes: [], edges: [] }} runtime={runtime} /></aside> : null}
@@ -192,6 +200,6 @@ function NoProjectArtifactState() {
   return <section data-testid="workflow-artifact-list" className="rounded-lg border border-dashed bg-card p-5"><h2 className="text-sm font-semibold">项目成果</h2><p className="mt-2 text-xs text-muted-foreground">先选择 L4 项目，尚未查询成果</p><p className="mt-1 text-[11px] text-muted-foreground">L3 运营科目不直接查询成果；成果归属于正式 Project，并由 Outcome Center 提供。</p></section>;
 }
 
-function ArtifactList({ artifacts, outcomes, loading, sourceError, outcomeHref }: { artifacts: ArtifactSummary[]; outcomes: CompanyOpsOutcomeSummary[]; loading: boolean; sourceError: boolean; outcomeHref?: (outcomeId: string) => string }) {
-  return <section data-testid="workflow-artifact-list" className="rounded-lg border bg-card p-4"><h2 className="text-sm font-semibold">项目成果</h2><p className="mt-1 text-xs text-muted-foreground">读取既有正式 Outcome Center；本页面不维护第二套成果或审核状态。</p>{sourceError ? <p data-testid="workflow-artifact-source-error" className="mt-3 rounded border border-destructive/40 p-3 text-xs text-destructive">成果中心来源暂不可用；不会把读取失败显示为零成果。</p> : loading ? <p className="mt-3 text-xs text-muted-foreground">正在读取正式成果中心…</p> : outcomes.length > 0 ? <div className="mt-3 space-y-2">{outcomes.map((outcome) => <div key={outcome.id} className="rounded border p-3"><div className="flex items-center justify-between gap-2 text-xs"><span className="font-medium">Outcome · {outcome.id}</span><span className="text-muted-foreground">{outcome.execution_state}</span></div><div className="mt-1 text-[11px] text-muted-foreground">{outcome.current_agent_display.name} · 版本 {outcome.version_count}{outcome.active_artifact ? ` · ${outcome.active_artifact.status}${outcome.active_artifact.formal_visible ? "（正式可见）" : "（候选）"}` : " · 尚未形成活动成果"}</div>{outcomeHref ? <a className="mt-2 inline-block text-xs underline" href={outcomeHref(outcome.id)}>在成果中心查看、审核与晋级</a> : null}</div>)}</div> : artifacts.length === 0 ? <p className="mt-3 text-xs text-muted-foreground">当前项目没有被 Outcome Center 观察到成果；工作流节点产出会进入该正式中心。</p> : <div className="mt-3 space-y-2">{artifacts.map((artifact) => <div key={`${artifact.id}:${artifact.version}`} className="rounded border p-3"><div className="flex items-center justify-between gap-2 text-xs"><span className="font-medium">{artifact.title}</span><span className="text-muted-foreground">v{artifact.version} · {artifact.status}</span></div><div className="mt-1 text-[11px] text-muted-foreground">{artifact.id} · {artifact.locationCount ?? 0} 个物理位置</div></div>)}</div>}</section>;
+function ArtifactList({ artifacts, outcomes, loading, sourceError, outcomeHref, artifactLocationsByOutcome }: { artifacts: ArtifactSummary[]; outcomes: CompanyOpsOutcomeSummary[]; loading: boolean; sourceError: boolean; outcomeHref?: (outcomeId: string) => string; artifactLocationsByOutcome?: Record<string, ArtifactLocationsState> }) {
+  return <section data-testid="workflow-artifact-list" className="rounded-lg border bg-card p-4"><h2 className="text-sm font-semibold">项目成果</h2><p className="mt-1 text-xs text-muted-foreground">读取既有正式 Outcome Center；本页面不维护第二套成果或审核状态。存储位置仅是副本观察台账。</p>{sourceError ? <p data-testid="workflow-artifact-source-error" className="mt-3 rounded border border-destructive/40 p-3 text-xs text-destructive">成果中心来源暂不可用；不会把读取失败显示为零成果。</p> : loading ? <p className="mt-3 text-xs text-muted-foreground">正在读取正式成果中心…</p> : outcomes.length > 0 ? <div className="mt-3 space-y-2">{outcomes.map((outcome) => { const locations = artifactLocationsByOutcome?.[outcome.id]; return <div key={outcome.id} className="rounded border p-3"><div className="flex items-center justify-between gap-2 text-xs"><span className="font-medium">Outcome · {outcome.id}</span><span className="text-muted-foreground">{outcome.execution_state}</span></div><div className="mt-1 text-[11px] text-muted-foreground">{outcome.current_agent_display.name} · 版本 {outcome.version_count}{outcome.active_artifact ? ` · ${outcome.active_artifact.status}${outcome.active_artifact.formal_visible ? "（正式可见）" : "（候选）"}` : " · 尚未形成活动成果"}</div>{locations?.error ? <p data-testid={`workflow-artifact-location-error-${outcome.id}`} className="mt-2 text-[11px] text-destructive">存储位置来源暂不可用；不会把读取失败显示为零位置。</p> : locations?.loading ? <p className="mt-2 text-[11px] text-muted-foreground">正在读取存储位置…</p> : locations ? <p data-testid={`workflow-artifact-location-summary-${outcome.id}`} className="mt-2 text-[11px] text-muted-foreground">已登记 {locations.items.length} 个存储位置{locations.items.length > 0 ? `：${locations.items.map((item) => `${item.location_class} / ${item.storage_id}`).join("、")}` : "（当前无位置台账记录）"}</p> : null}{outcomeHref ? <a className="mt-2 inline-block text-xs underline" href={outcomeHref(outcome.id)}>在成果中心查看、审核与晋级</a> : null}</div>; })}</div> : artifacts.length === 0 ? <p className="mt-3 text-xs text-muted-foreground">当前项目没有被 Outcome Center 观察到成果；工作流节点产出会进入该正式中心。</p> : <div className="mt-3 space-y-2">{artifacts.map((artifact) => <div key={`${artifact.id}:${artifact.version}`} className="rounded border p-3"><div className="flex items-center justify-between gap-2 text-xs"><span className="font-medium">{artifact.title}</span><span className="text-muted-foreground">v{artifact.version} · {artifact.status}</span></div><div className="mt-1 text-[11px] text-muted-foreground">{artifact.id} · {artifact.locationCount ?? 0} 个物理位置</div></div>)}</div>}</section>;
 }

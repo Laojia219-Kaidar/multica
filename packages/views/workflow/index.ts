@@ -1,7 +1,7 @@
 export { WorkflowWorkbench } from "./workflow-workbench";
 export type { WorkflowWorkbenchProps } from "./workflow-workbench";
 export { WorkflowOperationsPage } from "./workflow-operations-page";
-export type { WorkflowOperationsPageProps, WorkflowOperationsSection } from "./workflow-operations-page";
+export type { ArtifactLocationsState, WorkflowOperationsPageProps, WorkflowOperationsSection } from "./workflow-operations-page";
 export { WorkflowContextTree } from "./workflow-context-tree";
 export type { WorkflowContextTreeProps, WorkflowContextSelection } from "./workflow-context-tree";
 export { WorkflowDesigner } from "./workflow-designer";
