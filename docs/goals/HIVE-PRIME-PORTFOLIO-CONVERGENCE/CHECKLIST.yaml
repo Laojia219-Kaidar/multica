@@ -734,3 +734,16 @@ w4_readonly_acceptance:
   migrations: schema_migrations 唯一编号 341-349 无 400-405
   containers: 稳定 3 分钟无重建
   conclusion: 收敛 + 部署确认闭环
+
+production_deploy_hard_constraint:
+  schema: ProductionDeployHardConstraintV1
+  at: '2026-08-14T01:46:17.337881+00:00'
+  rule: 生产容器只允许 W3 直部署（docker cp），禁止任何窗口执行 docker compose up -d 重建 / 直连 migration / 直连二进制替换
+  accepted_by:
+    W4: 'confirmed read-only, never compose up, will not'
+    W1: 'confirmed: 承认越界(compose up + 直连404/405)、立即停止、接受本硬约束、退回本职(架构输入+代码+隔离验证 :3001/:8090/:55440，不碰生产部署与生产DB迁移)'
+  w1_followup_available:
+    branch: work/hivecrew-bases-v1.1
+    commits: '3c51d4b5f(backend GetCompanyBases + sqlc) + 83ebb6819(frontend base registry display)'
+    migration_already_fused: '404/405 -> 348/349 done'
+    not_yet_joined: '/api/bases/company 端点 + 前端 base registry 展示（2 commits，可后续 JOIN）'
