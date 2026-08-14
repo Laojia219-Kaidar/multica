@@ -1,0 +1,75 @@
+schema_version: hivecosm.goal-graph/v2
+meta:
+  goal_id: HIVECREW-OPERATIONS-WORKFLOW-OUTCOME-FABRIC-V2
+  goal_version: 2
+  title: HiveCrew production operations workflow and outcome fabric
+  owner: William
+  parent_goal: HIVECREW-OWNER-OPERATING-WORKBENCH-V1
+  state: activated_candidate_only
+truth_contract:
+  progress_truth: docs/goals/HIVECREW-OPERATIONS-WORKFLOW-OUTCOME-FABRIC-V2/CHECKLIST.yaml
+  code_truth:
+    repository: /Volumes/HiveData/hivecosm/HQ-50-代码仓库/01-源码下载/multica
+    worktree: /Users/jiawei/hivecosm-worktrees/hivecrew-operations-workflow-v2
+    branch: work/hivecrew-operations-workflow-v2
+    baseline_commit: 8c45692399bc460edc1aefbfdf10ee7dc8a6344f
+  projections_are_non_authoritative: true
+boundaries:
+  candidate_only: true
+  forbidden:
+    - main_merge
+    - production_deploy
+    - production_db_migration
+    - real_platform_publish
+    - real_trading
+    - nas_or_cloud_write_without_owner_authority
+    - destructive_storage_action
+nodes:
+  - id: WO-00-CONTROL-AND-ENVIRONMENT
+    status: running
+    owner: integrator
+    mutex: [goal-control, candidate-worktree]
+    deliverables: [GOAL.md, CHECKLIST.yaml, candidate-env-receipt]
+    verification: [clean-worktree, isolated-port-readback]
+  - id: WO-10-WORKFLOW-KERNEL
+    status: ready
+    owner: luna-backend
+    depends_on: [WO-00-CONTROL-AND-ENVIRONMENT]
+    mutex: [workflow-kernel, workflow-schema]
+    write_scope: [server/internal/workflow, server/internal/handler/workflow.go, server/pkg/db/queries]
+    deliverables: [persisted-instance-list, versioned-definition-contract, DAG-runtime-candidate]
+    verification: [go-tests, migration-readback, restart-hydration]
+  - id: WO-20-OPERATIONS-UI
+    status: ready
+    owner: luna-frontend
+    depends_on: [WO-00-CONTROL-AND-ENVIRONMENT]
+    mutex: [workflow-ui]
+    write_scope: [packages/core/workflow, packages/views/workflow]
+    deliverables: [operations-workbench, context-tree, graph-designer]
+    verification: [view-tests, browser-candidate]
+  - id: WO-30-OUTCOME-STORAGE
+    status: ready
+    owner: luna-artifact-storage
+    depends_on: [WO-00-CONTROL-AND-ENVIRONMENT]
+    mutex: [artifact-storage]
+    write_scope: [server/internal/companyops, server/internal/service, packages/views/outcomes]
+    deliverables: [workflow-artifact-lineage, location-ledger, fixture-store]
+    verification: [artifact-tests, checksum-and-recovery-fixture]
+  - id: WO-40-INTEGRATION
+    status: pending
+    owner: integrator
+    depends_on: [WO-10-WORKFLOW-KERNEL, WO-20-OPERATIONS-UI, WO-30-OUTCOME-STORAGE]
+    mutex: [shared-api-router-navigation, integration]
+    deliverables: [integrated-candidate]
+    verification: [typecheck, build, focused-tests]
+  - id: WO-50-CANARY-AND-REVIEW
+    status: pending
+    owner: integrator
+    depends_on: [WO-40-INTEGRATION]
+    mutex: [candidate-acceptance]
+    deliverables: [wechat-canary, browser-evidence, handoff]
+    verification: [concurrency-canary, independent-review, candidate-handoff]
+resume_package:
+  current_controller: codex
+  current_frontier: [WO-00-CONTROL-AND-ENVIRONMENT]
+  next_action: Generate isolated candidate environment, then dispatch three non-overlapping Luna workstreams.
