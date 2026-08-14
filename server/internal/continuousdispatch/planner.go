@@ -56,6 +56,26 @@ type GenerationEvidence struct {
 	DuplicateUnattributed bool   `json:"duplicate_unattributed"`
 }
 
+// DispatchIdentity is the canonical identity of one dispatchable unit. The
+// tuple is intentionally explicit on the wire because Phase 2 persists the
+// same five fields as its idempotency key; callers must never derive it from a
+// display title, assignee, Task status, or an arbitrary client key.
+type DispatchIdentity struct {
+	WorkspaceID       string `json:"workspace_id"`
+	IssueID           string `json:"issue_id"`
+	Stage             string `json:"stage"`
+	CandidateRevision string `json:"candidate_revision"`
+	Generation        string `json:"generation"`
+}
+
+// Complete reports whether every component required by the Phase 2 unique
+// key is present. It deliberately performs no normalization: producers must
+// emit the canonical values already stored in the Issue/Goal projection.
+func (i DispatchIdentity) Complete() bool {
+	return i.WorkspaceID != "" && i.IssueID != "" && i.Stage != "" &&
+		i.CandidateRevision != "" && i.Generation != ""
+}
+
 // LeaseEvidence is a read-only view of the canonical worktree lease. The
 // planner never acquires or renews it.
 type LeaseEvidence struct {
@@ -152,17 +172,16 @@ func (p *Planner) WithScorer(s *routescore.Scorer) *Planner {
 // Plan returns a recommendation without mutating canonical state.
 func (p *Planner) Plan(in Input) NextAction {
 	frontier := readyfrontier.ClassifyIssue(in.Frontier)
-	switch frontier.State {
-	case readyfrontier.StateRunning:
-		return NextAction{State: StateRunning, Reasons: frontierReasons(frontier.Reasons)}
-	case readyfrontier.StateSuperseded:
+	// Terminal/historical truth wins even when dispatch identity evidence is
+	// incomplete: a done/cancelled/superseded Issue must never re-enter the
+	// active frontier.
+	if frontier.State == readyfrontier.StateSuperseded {
 		return NextAction{State: StateSuperseded, Reasons: frontierReasons(frontier.Reasons)}
-	case readyfrontier.StateWaiting:
-		return NextAction{State: StateWaiting, Reasons: frontierReasons(frontier.Reasons)}
-	case readyfrontier.StateBlocked:
-		return NextAction{State: StateBlocked, Reasons: frontierReasons(frontier.Reasons)}
 	}
 
+	// Generation attribution precedes the ordinary running/waiting projection.
+	// Otherwise any old open Task would make the planner return "running" before
+	// it could prove that the Task belongs to this exact stage/revision/generation.
 	if !in.Generation.Known {
 		return NextAction{State: StateBlocked, Reasons: []Reason{ReasonGenerationEvidenceMissing}}
 	}
@@ -175,6 +194,15 @@ func (p *Planner) Plan(in Input) NextAction {
 			Reasons:        []Reason{ReasonExistingOpenTask},
 			ExistingTaskID: in.Generation.OpenTaskID,
 		}
+	}
+
+	switch frontier.State {
+	case readyfrontier.StateRunning:
+		return NextAction{State: StateRunning, Reasons: frontierReasons(frontier.Reasons)}
+	case readyfrontier.StateWaiting:
+		return NextAction{State: StateWaiting, Reasons: frontierReasons(frontier.Reasons)}
+	case readyfrontier.StateBlocked:
+		return NextAction{State: StateBlocked, Reasons: frontierReasons(frontier.Reasons)}
 	}
 
 	if in.WIP.Required {

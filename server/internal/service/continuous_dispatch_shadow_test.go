@@ -119,6 +119,11 @@ func TestContinuousDispatchShadowReturnsFallbackFromRealSourceRows(t *testing.T)
 	if len(got.Items) != 1 || got.Items[0].IssueID != uuidString(issueID) {
 		t.Fatalf("items = %+v", got.Items)
 	}
+	if identity := got.Items[0].DispatchIdentity; !identity.Complete() ||
+		identity.Stage != "implementation" || identity.Generation != "g-1" ||
+		identity.CandidateRevision != "abc123" {
+		t.Fatalf("dispatch identity = %+v, want complete canonical tuple", identity)
+	}
 	action := got.Items[0].NextAction
 	if action.State != continuousdispatch.StateFallback || action.Selected == nil {
 		t.Fatalf("action = %+v, want fallback", action)
@@ -178,11 +183,58 @@ func TestContinuousDispatchShadowRejectsDuplicateOpenGeneration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("InspectProject: %v", err)
 	}
-	if got.Items[0].NextAction.State != continuousdispatch.StateRunning {
-		t.Fatalf("frontier state = %+v, want running", got.Items[0].NextAction)
+	if got.Items[0].NextAction.State != continuousdispatch.StateBlocked ||
+		got.Items[0].NextAction.Reasons[0] != continuousdispatch.ReasonDuplicateUnattributed {
+		t.Fatalf("frontier state = %+v, want unattributed duplicate block", got.Items[0].NextAction)
 	}
 	if !got.Items[0].Generation.DuplicateUnattributed {
 		t.Fatalf("generation = %+v, want duplicate evidence", got.Items[0].Generation)
+	}
+}
+
+func TestContinuousDispatchShadowReturnsOnlyExactGenerationTaskReceipt(t *testing.T) {
+	fixture, workspaceID, projectID, issueID, primaryID, fallbackID := validShadowFixture(t)
+	task := shadowTask(t, issueID, primaryID, "running", "00000000-0000-0000-0000-000000000905")
+	task.Context = []byte(`{"continuous_dispatch":{"workspace_id":"00000000-0000-0000-0000-000000000101","issue_id":"00000000-0000-0000-0000-000000000301","stage":"implementation","candidate_revision":"abc123","generation":"g-1"}}`)
+	fixture.tasks[uuidString(issueID)] = []db.AgentTaskQueue{task}
+	service := NewContinuousDispatchShadowService(
+		fixture,
+		shadowDirectoryFixture{result: employeeDirectory(primaryID, fallbackID)},
+		shadowQuotaFixture{},
+		shadowLeaseFixture{leases: map[string]*WriteLease{}},
+	).WithClock(fixedShadowClock{now: shadowNow})
+
+	got, err := service.InspectProject(context.Background(), workspaceID, projectID, 50, 0)
+	if err != nil {
+		t.Fatalf("InspectProject: %v", err)
+	}
+	action := got.Items[0].NextAction
+	if action.State != continuousdispatch.StateAlreadyDispatched ||
+		action.ExistingTaskID != "00000000-0000-0000-0000-000000000905" {
+		t.Fatalf("action = %+v, want exact existing generation receipt", action)
+	}
+	if got.Items[0].Generation.DuplicateUnattributed {
+		t.Fatalf("generation = %+v, exact task was treated as unattributed", got.Items[0].Generation)
+	}
+}
+
+func TestContinuousDispatchShadowFailsClosedWhenStageIsMissing(t *testing.T) {
+	fixture, workspaceID, projectID, _, primaryID, fallbackID := validShadowFixture(t)
+	fixture.issues[0].Metadata = []byte(`{"generation":"g-1","candidate_revision":"abc123","required_base_id":"base-a"}`)
+	service := NewContinuousDispatchShadowService(
+		fixture,
+		shadowDirectoryFixture{result: employeeDirectory(primaryID, fallbackID)},
+		shadowQuotaFixture{},
+		shadowLeaseFixture{leases: map[string]*WriteLease{}},
+	).WithClock(fixedShadowClock{now: shadowNow})
+
+	got, err := service.InspectProject(context.Background(), workspaceID, projectID, 50, 0)
+	if err != nil {
+		t.Fatalf("InspectProject: %v", err)
+	}
+	if got.Items[0].Generation.Known || got.Items[0].NextAction.State != continuousdispatch.StateBlocked ||
+		got.Items[0].NextAction.Reasons[0] != continuousdispatch.ReasonGenerationEvidenceMissing {
+		t.Fatalf("item = %+v, want stage-missing fail closed", got.Items[0])
 	}
 }
 
@@ -240,7 +292,7 @@ func validShadowFixture(t *testing.T) (*shadowStoreFixture, pgtype.UUID, pgtype.
 			AssigneeType: pgtype.Text{String: "agent", Valid: true},
 			AssigneeID:   primaryID,
 			ProjectID:    projectID,
-			Metadata:     []byte(`{"generation":"g-1","candidate_revision":"abc123","preferred_employee_id":"DE-PRIMARY","required_base_id":"base-a","write_mutex_key":"repo:main"}`),
+			Metadata:     []byte(`{"stage":"implementation","generation":"g-1","candidate_revision":"abc123","preferred_employee_id":"DE-PRIMARY","required_base_id":"base-a","write_mutex_key":"repo:main"}`),
 		}},
 		agents: []db.Agent{
 			{ID: primaryID, WorkspaceID: workspaceID, Name: "Primary", RuntimeID: primaryRuntimeID, Status: "idle", MaxConcurrentTasks: 1, Model: pgtype.Text{String: "glm-5.2", Valid: true}, Kind: "user"},

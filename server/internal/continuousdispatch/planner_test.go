@@ -38,6 +38,34 @@ func readyInput(candidates ...Candidate) Input {
 	}
 }
 
+func TestDispatchIdentityCompleteRequiresCanonicalTuple(t *testing.T) {
+	complete := DispatchIdentity{
+		WorkspaceID:       "workspace-1",
+		IssueID:           "issue-1",
+		Stage:             "implementation",
+		CandidateRevision: "abc123",
+		Generation:        "g-1",
+	}
+	if !complete.Complete() {
+		t.Fatalf("complete identity = %+v, want true", complete)
+	}
+
+	tests := map[string]DispatchIdentity{
+		"workspace":          {IssueID: "issue-1", Stage: "implementation", CandidateRevision: "abc123", Generation: "g-1"},
+		"issue":              {WorkspaceID: "workspace-1", Stage: "implementation", CandidateRevision: "abc123", Generation: "g-1"},
+		"stage":              {WorkspaceID: "workspace-1", IssueID: "issue-1", CandidateRevision: "abc123", Generation: "g-1"},
+		"candidate revision": {WorkspaceID: "workspace-1", IssueID: "issue-1", Stage: "implementation", Generation: "g-1"},
+		"generation":         {WorkspaceID: "workspace-1", IssueID: "issue-1", Stage: "implementation", CandidateRevision: "abc123"},
+	}
+	for name, identity := range tests {
+		t.Run(name, func(t *testing.T) {
+			if identity.Complete() {
+				t.Fatalf("incomplete identity = %+v, want false", identity)
+			}
+		})
+	}
+}
+
 func candidate(employee, agent, base string, quota routescore.QuotaState) Candidate {
 	return Candidate{
 		EmployeeID: employee,
@@ -218,6 +246,17 @@ func TestPlanFrontierStateDominates(t *testing.T) {
 	got := planner().Plan(in)
 	if got.State != StateRunning || got.Reasons[0] != Reason(readyfrontier.ReasonRunning) {
 		t.Fatalf("plan = %+v, want running frontier", got)
+	}
+}
+
+func TestPlanTerminalFrontierDominatesMissingGenerationEvidence(t *testing.T) {
+	in := readyInput(candidate("emp", "00000000-0000-0000-0000-000000000001", "base-a", routescore.QuotaFresh))
+	in.Frontier.Status = "done"
+	in.Generation.Known = false
+
+	got := planner().Plan(in)
+	if got.State != StateSuperseded {
+		t.Fatalf("plan = %+v, want terminal frontier to remain superseded", got)
 	}
 }
 

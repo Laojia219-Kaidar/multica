@@ -66,11 +66,12 @@ type ContinuousDispatchShadowSources struct {
 }
 
 type ContinuousDispatchShadowItem struct {
-	IssueID    string                                `json:"issue_id"`
-	IssueTitle string                                `json:"issue_title"`
-	Status     string                                `json:"status"`
-	Generation continuousdispatch.GenerationEvidence `json:"generation"`
-	NextAction continuousdispatch.NextAction         `json:"next_action"`
+	IssueID          string                                `json:"issue_id"`
+	IssueTitle       string                                `json:"issue_title"`
+	Status           string                                `json:"status"`
+	DispatchIdentity continuousdispatch.DispatchIdentity   `json:"dispatch_identity"`
+	Generation       continuousdispatch.GenerationEvidence `json:"generation"`
+	NextAction       continuousdispatch.NextAction         `json:"next_action"`
 }
 
 type ContinuousDispatchShadowResult struct {
@@ -194,7 +195,14 @@ func (s *ContinuousDispatchShadowService) InspectProject(
 			return nil, fmt.Errorf("read issue tasks: %w", taskErr)
 		}
 		metadata := parseShadowMetadata(issue.Metadata)
-		generation := composeGeneration(metadata, tasks)
+		identity := continuousdispatch.DispatchIdentity{
+			WorkspaceID:       shadowUUIDString(workspaceID),
+			IssueID:           shadowUUIDString(issue.ID),
+			Stage:             metadata.Stage,
+			CandidateRevision: metadata.CandidateRevision,
+			Generation:        metadata.Generation,
+		}
+		generation := composeGeneration(identity, tasks)
 		lease, leaseKnown := s.composeLease(ctx, metadata.WriteMutexKey, now)
 		leaseComplete = leaseComplete && leaseKnown
 		frontier := composeFrontier(issue, tasks, agentsByID, runtimesByID, activeWIP, now)
@@ -222,7 +230,7 @@ func (s *ContinuousDispatchShadowService) InspectProject(
 		})
 		items = append(items, ContinuousDispatchShadowItem{
 			IssueID: shadowUUIDString(issue.ID), IssueTitle: issue.Title, Status: issue.Status,
-			Generation: generation, NextAction: next,
+			DispatchIdentity: identity, Generation: generation, NextAction: next,
 		})
 	}
 
@@ -301,6 +309,7 @@ func (s *ContinuousDispatchShadowService) buildCandidates(
 }
 
 type shadowIssueMetadata struct {
+	Stage               string `json:"stage"`
 	Generation          string `json:"generation"`
 	CandidateRevision   string `json:"candidate_revision"`
 	PreferredEmployeeID string `json:"preferred_employee_id"`
@@ -314,6 +323,7 @@ func parseShadowMetadata(raw []byte) shadowIssueMetadata {
 	if len(raw) == 0 || json.Unmarshal(raw, &value) != nil {
 		return shadowIssueMetadata{}
 	}
+	value.Stage = strings.TrimSpace(value.Stage)
 	value.Generation = strings.TrimSpace(value.Generation)
 	value.CandidateRevision = strings.TrimSpace(value.CandidateRevision)
 	value.PreferredEmployeeID = strings.TrimSpace(value.PreferredEmployeeID)
@@ -323,20 +333,31 @@ func parseShadowMetadata(raw []byte) shadowIssueMetadata {
 	return value
 }
 
-func composeGeneration(metadata shadowIssueMetadata, tasks []db.AgentTaskQueue) continuousdispatch.GenerationEvidence {
-	open := make([]db.AgentTaskQueue, 0, 1)
+type shadowTaskContext struct {
+	ContinuousDispatch continuousdispatch.DispatchIdentity `json:"continuous_dispatch"`
+}
+
+func composeGeneration(identity continuousdispatch.DispatchIdentity, tasks []db.AgentTaskQueue) continuousdispatch.GenerationEvidence {
+	matching := make([]db.AgentTaskQueue, 0, 1)
+	conflictingOrUnattributed := 0
 	for _, task := range tasks {
 		switch task.Status {
 		case "queued", "dispatched", "running", "waiting_local_directory":
-			open = append(open, task)
+			var contextValue shadowTaskContext
+			if len(task.Context) == 0 || json.Unmarshal(task.Context, &contextValue) != nil ||
+				!contextValue.ContinuousDispatch.Complete() || contextValue.ContinuousDispatch != identity {
+				conflictingOrUnattributed++
+				continue
+			}
+			matching = append(matching, task)
 		}
 	}
 	evidence := continuousdispatch.GenerationEvidence{
-		Known:                 metadata.Generation != "" && metadata.CandidateRevision != "",
-		DuplicateUnattributed: len(open) > 1,
+		Known:                 identity.Complete(),
+		DuplicateUnattributed: conflictingOrUnattributed > 0 || len(matching) > 1,
 	}
-	if len(open) == 1 {
-		evidence.OpenTaskID = shadowUUIDString(open[0].ID)
+	if len(matching) == 1 && !evidence.DuplicateUnattributed {
+		evidence.OpenTaskID = shadowUUIDString(matching[0].ID)
 	}
 	return evidence
 }
