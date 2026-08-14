@@ -74,4 +74,36 @@ describe("WorkConservingPanel", () => {
     expect(screen.getByText(/Read-only/)).toBeInTheDocument();
     expect(screen.queryByRole("button")).toBeNull();
   });
+
+  it("does not render stale source_gap metrics, Authority, or plan entries", () => {
+    const base = projection("source_gap");
+    const invalidSourceGap = {
+      ...base,
+      total: 9,
+      authority: {
+        workspaceId: "workspace-1",
+        projectId: "project-1",
+        sourceRef: "hivecosm://goal/stale",
+        revision: "stale-rev",
+        observedAt: "2026-08-15T00:00:00Z",
+        expiresAt: "2026-08-15T00:15:00Z",
+      },
+      mismatch: { ...base.mismatch, openIssues: 9 },
+      suggestions: [{
+        issueId: "stale-issue",
+        goalId: "goal-1",
+        employeeId: "employee-1",
+        agentId: "agent-1",
+        runtimeId: "runtime-1",
+        score: 1,
+        receiver: "receiver",
+        wakeCondition: "wake",
+      }],
+    };
+    mockQuery.result = { data: invalidSourceGap, isLoading: false, isError: false };
+    renderPanel();
+    expect(screen.queryByText("9")).toBeNull();
+    expect(screen.queryByText(/Authority revision/)).toBeNull();
+    expect(screen.queryByText("Current plan evidence")).toBeNull();
+  });
 });

@@ -107,14 +107,30 @@ const WorkConservingProjectionWireSchema = z.object({
   offset: z.number().int().nonnegative(),
   no_write: z.literal(true),
 }).strict().superRefine((projection, ctx) => {
-  if (projection.state !== "source_gap" && (
+  if (projection.state === "source_gap") {
+    const authorityPresent = Object.values(projection.authority).some(Boolean);
+    const mismatchIsZero = Object.values(projection.mismatch).every((value) => value === 0);
+    if (
+      projection.blocked !== true ||
+      authorityPresent ||
+      projection.suggestions.length !== 0 ||
+      projection.blocked_backlog.length !== 0 ||
+      projection.total !== 0 ||
+      !mismatchIsZero ||
+      projection.reason_code !== "source_gap"
+    ) {
+      ctx.addIssue({ code: "custom", message: "source_gap projection must be empty and blocked" });
+    }
+    return;
+  }
+  if (
     !projection.authority.workspace_id ||
     !projection.authority.project_id ||
     !projection.authority.source_ref ||
     !projection.authority.revision ||
     !projection.authority.observed_at ||
     !projection.authority.expires_at
-  )) {
+  ) {
     ctx.addIssue({ code: "custom", message: "work-conserving authority snapshot is incomplete" });
   }
 });

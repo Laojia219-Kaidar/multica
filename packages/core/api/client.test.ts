@@ -102,6 +102,39 @@ describe("ApiClient work-conserving projection", () => {
       noWrite: true,
     });
   });
+
+  it("fails closed when source_gap carries a non-empty plan or metrics", async () => {
+    const invalidSourceGap = {
+      ...readyResponse.work_conserving,
+      state: "source_gap",
+      reason_code: "source_gap",
+      blocked: true,
+      total: 1,
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(new Response(JSON.stringify({ work_conserving: invalidSourceGap }), { status: 200 })),
+    );
+
+    await expect(
+      new ApiClient("https://api.example.test").getProjectWorkConservingProjection("project-1"),
+    ).resolves.toMatchObject({
+      state: "source_gap",
+      total: 0,
+      authority: null,
+      suggestions: [],
+      blockedBacklog: [],
+      mismatch: {
+        openIssues: 0,
+        plannedIssues: 0,
+        blockedBacklog: 0,
+        healthyIdleEmployees: 0,
+        unmatchedHealthyIdleEmployees: 0,
+        executableBacklog: 0,
+        idleBacklogMismatch: 0,
+      },
+    });
+  });
 });
 
 describe("ApiClient CompanyOps owner work context", () => {

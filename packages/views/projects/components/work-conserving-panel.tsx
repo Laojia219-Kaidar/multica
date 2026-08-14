@@ -10,8 +10,8 @@ import type { WorkConservingProjection } from "@multica/core/types";
 import { useT } from "../../i18n";
 
 function StateIcon({ state }: { state: WorkConservingProjection["state"] }) {
-  if (state === "ready") return <CheckCircle2 className="size-4 text-emerald-600" />;
-  if (state === "blocked") return <CircleSlash2 className="size-4 text-amber-600" />;
+  if (state === "ready") return <CheckCircle2 className="size-4 text-success" />;
+  if (state === "blocked") return <CircleSlash2 className="size-4 text-warning" />;
   return <AlertTriangle className="size-4 text-muted-foreground" />;
 }
 
@@ -39,7 +39,7 @@ export function WorkConservingPanel({ projectId }: { projectId: string }) {
     );
   }
 
-  const projection = isError || !data
+  const rawProjection = isError || !data
     ? {
         state: "source_gap" as const,
         blocked: true,
@@ -60,6 +60,24 @@ export function WorkConservingPanel({ projectId }: { projectId: string }) {
         noWrite: true as const,
       }
     : data;
+  const projection = rawProjection.state === "source_gap"
+    ? {
+        ...rawProjection,
+        authority: null,
+        suggestions: [],
+        blockedBacklog: [],
+        total: 0,
+        mismatch: {
+          openIssues: 0,
+          plannedIssues: 0,
+          blockedBacklog: 0,
+          healthyIdleEmployees: 0,
+          unmatchedHealthyIdleEmployees: 0,
+          executableBacklog: 0,
+          idleBacklogMismatch: 0,
+        },
+      }
+    : rawProjection;
   const stateLabel = t(($) => $.detail.work_conserving.status[projection.state]);
   const stateDescription = projection.state === "ready"
     ? t(($) => $.detail.work_conserving.ready_description)
@@ -76,8 +94,8 @@ export function WorkConservingPanel({ projectId }: { projectId: string }) {
             <span>{t(($) => $.detail.work_conserving.title)}</span>
             <span className={cn(
               "rounded-full border px-2 py-0.5 text-[11px] font-medium",
-              projection.state === "ready" && "border-emerald-500/30 text-emerald-700",
-              projection.state === "blocked" && "border-amber-500/30 text-amber-700",
+              projection.state === "ready" && "border-success/30 text-success",
+              projection.state === "blocked" && "border-warning/30 text-warning",
               projection.state === "source_gap" && "border-muted text-muted-foreground",
             )}>
               {stateLabel}
@@ -129,7 +147,7 @@ export function WorkConservingPanel({ projectId }: { projectId: string }) {
                 </div>
               ))}
               {projection.blockedBacklog.slice(0, 5).map((issue) => (
-                <div key={issue.issueId} className="rounded-md bg-amber-500/5 px-2.5 py-2 text-xs">
+                <div key={issue.issueId} className="rounded-md bg-warning/5 px-2.5 py-2 text-xs">
                   <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
                     <span className="font-medium">{issue.issueId}</span>
                     <span className="text-muted-foreground">{issue.receiver}</span>
