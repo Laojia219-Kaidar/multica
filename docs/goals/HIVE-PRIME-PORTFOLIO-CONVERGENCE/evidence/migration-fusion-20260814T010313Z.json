@@ -1,0 +1,44 @@
+{
+  "schema": "MigrationFusionEvidenceV1",
+  "at": "2026-08-14T01:03:13.791808+00:00",
+  "collision_detected": {
+    "duplicate_342": [
+      "342_workflow_memory_persistence (W3)",
+      "342_project_lifecycle_receipt (W1)"
+    ],
+    "duplicate_workroom": [
+      "341_workroom (W3)",
+      "400_workroom (W1, identical)"
+    ],
+    "out_of_sequence": [
+      "400_workroom",
+      "401_employee",
+      "402_dataset",
+      "403_dataset_product_type"
+    ]
+  },
+  "fusion": {
+    "renumbered": {
+      "342_project_lifecycle_receipt": "343_project_lifecycle_receipt",
+      "343_closure_package_review": "344_closure_package_review",
+      "401_employee": "345_employee",
+      "402_dataset": "346_dataset",
+      "403_dataset_product_type": "347_dataset_product_type"
+    },
+    "dropped_duplicate": "400_workroom",
+    "schema_migrations_op": "DELETE 6 old W1 versions; INSERT 5 renumbered (atomic transaction)",
+    "container_sync": "rm + canonical copy; 400-403 removed"
+  },
+  "verify": {
+    "migrate_up": "all skip, no apply",
+    "healthz": "ok (db ok, migrations ok)",
+    "tables": [
+      "workroom",
+      "employee",
+      "dataset",
+      "project_lifecycle_receipt",
+      "closure_package_review"
+    ]
+  },
+  "commit": "e389c8bb9"
+}

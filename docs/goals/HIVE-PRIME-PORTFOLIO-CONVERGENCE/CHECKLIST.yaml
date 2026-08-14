@@ -677,3 +677,24 @@ post_completion_self_audit:
     evidence: docker ps/exec 正常但 docker pull busybox 90s 超时；curl registry-1.docker.io 可达(HTTP 401)
     recommendation: 重启 Docker Desktop（会短暂重启生产容器 multica-*，约 30-60s，容器有 restart 策略自动恢复）或等待 daemon 自愈；恢复后 W3 统一重建前端镜像 + 部署 P3/P4 + 重跑浏览器 E2E
   p3_p4_deploy_ready: 两个 Go 修复已 commit + go build/vet/test 全绿；仅待 Docker 恢复后重建 backend 镜像并重新部署
+
+production_deploy_single_owner:
+  schema: ProductionDeployOwnerV1
+  decided_at: '2026-08-14T01:03:13.791808+00:00'
+  owner: W3 (canonical worktree hivecrew-product-integration-mainline; sole product-integration execution window)
+  rule: 生产后端部署 + migration 唯一 owner = W3；W1/W2/W4 的 migration/后端改动必须经 W3 JOIN 流程进 canonical worktree 后由 W3 统一编号+部署，禁止各窗口直连生产 DB 自编号
+  trigger: W1 反馈生产 DB 出现 342_project_lifecycle_receipt / 343_closure_package_review / 400-403（与 W3 342_workflow_memory_persistence 编号冲突 + 400_workroom 与 341_workroom 重复）
+  fusion_performed:
+    at: '2026-08-14T01:03:13.791808+00:00'
+    imported_renumbered:
+      - '342_project_lifecycle_receipt -> 343_project_lifecycle_receipt'
+      - '343_closure_package_review -> 344_closure_package_review'
+      - '401_employee -> 345_employee'
+      - '402_dataset -> 346_dataset'
+      - '403_dataset_product_type -> 347_dataset_product_type'
+    dropped_duplicate: '400_workroom (与 W3 341_workroom 完全相同，重复)'
+    production_schema_migrations: 删除旧 W1 版本串 342_project_lifecycle_receipt/343_closure_package_review/400_workroom/401_employee/402_dataset/403_dataset_product_type，插入 343-347 重编号（保留原 applied_at）
+    container_migrations_synced: 后端容器 /app/migrations 已同步为 canonical 全量(311 up)，移除 400-403 旧文件
+    verify: 'migrate up 全 skip 无 apply；backend healthz ok (db ok + migrations ok)；5 表齐全'
+    commit: e389c8bb9
+  coordination_answer_to_W1: W1 无需回滚；其 migration 已由 W3 融合进 canonical 唯一编号，生产 schema_migrations 已一致；后续 W1 新 migration 请经 W3 JOIN（在 canonical 编唯一号）再部署
