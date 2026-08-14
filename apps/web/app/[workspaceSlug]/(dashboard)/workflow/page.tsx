@@ -9,7 +9,7 @@ import type {
   PublishedWorkflowGraph,
   WorkflowDefinition,
 } from "@multica/core/api/workflow";
-import { useCurrentWorkspace } from "@multica/core/paths";
+import { useCurrentWorkspace, useWorkspacePaths } from "@multica/core/paths";
 import { projectListOptions } from "@multica/core/projects/queries";
 import {
   workflowDefinitionListOptions,
@@ -29,6 +29,7 @@ import {
   type WorkflowContextSelection,
   type WorkflowOperationsSection,
 } from "@multica/views/workflow";
+import { outcomesListOptions } from "@multica/views/outcomes";
 
 const SECTIONS: WorkflowOperationsSection[] = [
   "overview",
@@ -141,9 +142,9 @@ function toLegacyDefinition(version: PublishedWorkflowDefinitionVersion): Workfl
   };
 }
 
-function candidateDraftForProject(project: OperatingProject): WorkflowDefinitionDraft {
+function candidateDraftForProject(project: OperatingProject, id: string): WorkflowDefinitionDraft {
   return {
-    id: `candidate.workflow.${project.formalProjectId}`,
+    id,
     name: `${project.name} · 候选工作流`,
     version: 1,
     projectId: project.id,
@@ -157,6 +158,7 @@ function newIdempotencyKey() {
 
 export default function Page() {
   const workspace = useCurrentWorkspace();
+  const workspacePaths = useWorkspacePaths();
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -194,7 +196,16 @@ export default function Page() {
     : projection.programs.some((program) => program.id === requestedProgramId)
       ? { kind: "program", id: requestedProgramId! }
       : undefined;
-  const section = isSection(searchParams.get("section")) ? searchParams.get("section") : "overview";
+  const requestedSection = searchParams.get("section");
+  const section: WorkflowOperationsSection = isSection(requestedSection) ? requestedSection : "overview";
+  const selectedDefinitionId = searchParams.get("workflow") ?? undefined;
+  const outcomesQuery = useQuery({
+    ...outcomesListOptions(workspace?.id ?? "workflow-workspace-unresolved", {
+      project_id: selectedProject?.formalProjectId,
+      limit: 30,
+    }),
+    enabled: Boolean(workspace?.id && selectedProject),
+  });
 
   const publishMutation = useMutation({
     mutationFn: async (draft: WorkflowDefinitionDraft) => api.publishWorkflowDefinitionVersion(draft.id, {
@@ -228,10 +239,10 @@ export default function Page() {
   const selectContext = (next: WorkflowContextSelection) => {
     if (next.kind === "project") {
       const project = projection.projects.find((item) => item.id === next.id);
-      updateSearch({ project: next.id, program: project?.programId ?? null });
+      updateSearch({ project: next.id, program: project?.programId ?? null, workflow: null });
       return;
     }
-    updateSearch({ program: next.id, project: null });
+    updateSearch({ program: next.id, project: null, workflow: null });
   };
 
   if (!workspace) {
@@ -254,14 +265,22 @@ export default function Page() {
       definitionDrafts={definitionDrafts}
       definitions={(definitionsQuery.data ?? []).map(toLegacyDefinition)}
       instances={instancesQuery.data ?? []}
+      outcomes={outcomesQuery.data?.items ?? []}
+      outcomesLoading={outcomesQuery.isLoading}
+      outcomesError={outcomesQuery.isError}
+      outcomeHref={(outcomeId) => `${workspacePaths.outcomes()}?outcome=${encodeURIComponent(outcomeId)}`}
       selection={selection}
       section={section}
+      selectedDefinitionId={selectedDefinitionId}
       onSelectContext={selectContext}
       onSelectSection={(next) => updateSearch({ section: next })}
+      onSelectDefinition={(definitionId) => updateSearch({ workflow: definitionId, section: "workflow" })}
       onCreateDefinition={(project) => {
+        const id = `candidate.workflow.${project.formalProjectId}.${newIdempotencyKey()}`;
         setPublishReceipt(null);
         setPublishError(null);
-        setLocalDrafts((current) => current.some((draft) => draft.projectId === project.id) ? current : [...current, candidateDraftForProject(project)]);
+        setLocalDrafts((current) => [...current, candidateDraftForProject(project, id)]);
+        updateSearch({ workflow: id, section: "workflow" });
       }}
       onChangeDefinition={(next) => {
         setPublishReceipt(null);

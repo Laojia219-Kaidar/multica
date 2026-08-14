@@ -65,3 +65,19 @@ candidate handoff.
 `CANDIDATE_READY_WAITING_OWNER_ACCEPTANCE`: focused tests, build, database
 readback, candidate browser journey, failure-path checks, exact revision, and
 handoff all exist. This is not production or Owner acceptance.
+
+## Candidate implementation boundary (2026-08-14)
+
+- A published visual graph is immutable, workspace-scoped and versioned. It is
+  a design and governance artifact today; the existing stage engine remains the
+  only executor. Publishing a graph never silently creates Task, Run, Outcome,
+  platform publication, NAS write or cloud write.
+- An L4 Project may own multiple independent workflow definitions. The chosen
+  definition identity is in the workflow page URL; L3/L4 never become action
+  nodes.
+- The workflow `项目成果` tab is an L4-filtered read projection of the existing
+  CompanyOps Outcome Center. It links back to that center for detail, review
+  and promotion; it does not own a second artifact/status lifecycle.
+- Storage capability is candidate-only fixture coverage: local cache, NAS
+  primary, offline copy and cloud replica records are assessed by metadata.
+  No real Synology, removable disk or cloud object was mounted or written.

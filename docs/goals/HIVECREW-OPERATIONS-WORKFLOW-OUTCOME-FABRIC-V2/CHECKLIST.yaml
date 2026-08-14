@@ -26,29 +26,29 @@ boundaries:
     - destructive_storage_action
 nodes:
   - id: WO-00-CONTROL-AND-ENVIRONMENT
-    status: running
+    status: completed
     owner: integrator
     mutex: [goal-control, candidate-worktree]
     deliverables: [GOAL.md, CHECKLIST.yaml, candidate-env-receipt]
-    verification: [clean-worktree, isolated-port-readback]
+    verification: [isolated-worktree, candidate-db, candidate-port-readback]
   - id: WO-10-WORKFLOW-KERNEL
-    status: ready
+    status: completed
     owner: luna-backend
     depends_on: [WO-00-CONTROL-AND-ENVIRONMENT]
     mutex: [workflow-kernel, workflow-schema]
     write_scope: [server/internal/workflow, server/internal/handler/workflow.go, server/pkg/db/queries]
-    deliverables: [persisted-instance-list, versioned-definition-contract, DAG-runtime-candidate]
-    verification: [go-tests, migration-readback, restart-hydration]
+    deliverables: [persisted-instance-list, versioned-definition-contract, immutable-visual-graph]
+    verification: [go-tests, migration-readback, restart-hydration, concurrent-publish]
   - id: WO-20-OPERATIONS-UI
-    status: ready
+    status: completed
     owner: luna-frontend
     depends_on: [WO-00-CONTROL-AND-ENVIRONMENT]
     mutex: [workflow-ui]
     write_scope: [packages/core/workflow, packages/views/workflow]
     deliverables: [operations-workbench, context-tree, graph-designer]
-    verification: [view-tests, browser-candidate]
+    verification: [view-tests, typecheck, route-source-contract]
   - id: WO-30-OUTCOME-STORAGE
-    status: ready
+    status: completed
     owner: luna-artifact-storage
     depends_on: [WO-00-CONTROL-AND-ENVIRONMENT]
     mutex: [artifact-storage]
@@ -56,14 +56,14 @@ nodes:
     deliverables: [workflow-artifact-lineage, location-ledger, fixture-store]
     verification: [artifact-tests, checksum-and-recovery-fixture]
   - id: WO-40-INTEGRATION
-    status: pending
+    status: running
     owner: integrator
     depends_on: [WO-10-WORKFLOW-KERNEL, WO-20-OPERATIONS-UI, WO-30-OUTCOME-STORAGE]
     mutex: [shared-api-router-navigation, integration]
     deliverables: [integrated-candidate]
     verification: [typecheck, build, focused-tests]
   - id: WO-50-CANARY-AND-REVIEW
-    status: pending
+    status: running
     owner: integrator
     depends_on: [WO-40-INTEGRATION]
     mutex: [candidate-acceptance]
@@ -71,5 +71,5 @@ nodes:
     verification: [concurrency-canary, independent-review, candidate-handoff]
 resume_package:
   current_controller: codex
-  current_frontier: [WO-00-CONTROL-AND-ENVIRONMENT]
-  next_action: Generate isolated candidate environment, then dispatch three non-overlapping Luna workstreams.
+  current_frontier: [WO-40-INTEGRATION, WO-50-CANARY-AND-REVIEW]
+  next_action: Run clean candidate build and record its result; browser localhost navigation is an environment blocker, while API and component canaries are already source-backed.

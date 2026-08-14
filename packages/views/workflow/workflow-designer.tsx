@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Background,
   Controls,
@@ -106,6 +106,7 @@ export function WorkflowDesigner({ definition, onChange, onPublish, readOnly = f
   const [selectedId, setSelectedId] = useState<string>();
   const [selectedEdgeId, setSelectedEdgeId] = useState<string>();
   const [issues, setIssues] = useState(() => validateWorkflowGraph(definition.graph));
+  const nodeSequence = useRef(0);
   const definitionIdentity = `${definition.id}:${definition.version}`;
   const selected = nodes.find((node) => node.id === selectedId);
   const selectedEdge = edges.find((edge) => edge.id === selectedEdgeId);
@@ -154,7 +155,9 @@ export function WorkflowDesigner({ definition, onChange, onPublish, readOnly = f
   }, [emit, nodes]);
 
   const addNode = (kind: WorkflowNodeKind) => {
-    const id = `${kind}-${nodes.length + 1}`;
+    nodeSequence.current += 1;
+    const token = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${nodeSequence.current}-${Math.random().toString(16).slice(2)}`;
+    const id = `${kind}-${token}`;
     const next = [...nodes, {
       id,
       type: "default",

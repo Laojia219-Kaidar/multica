@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { ChevronRight, LayoutDashboard, PackageCheck, PlayCircle, Settings2, Workflow } from "lucide-react";
 import type { ArtifactSummary, OperatingProgram, OperatingProject, WorkflowDefinitionDraft, WorkflowRuntime } from "@multica/core/workflow";
 import type { WorkflowDefinition, WorkflowInstance } from "@multica/core/api/workflow";
+import type { CompanyOpsOutcomeSummary } from "@multica/core/types";
 import { WorkflowContextTree, type WorkflowContextSelection } from "./workflow-context-tree";
 import { WorkflowDesigner } from "./workflow-designer";
 import { WorkflowRuntimeGraph } from "./workflow-runtime-graph";
@@ -17,14 +18,20 @@ export interface WorkflowOperationsPageProps {
   definitionDrafts?: WorkflowDefinitionDraft[];
   runtime?: WorkflowRuntime;
   artifacts?: ArtifactSummary[];
+  outcomes?: CompanyOpsOutcomeSummary[];
+  outcomesLoading?: boolean;
+  outcomesError?: boolean;
+  outcomeHref?: (outcomeId: string) => string;
   instances?: WorkflowInstance[];
   definitions?: WorkflowDefinition[];
+  selectedDefinitionId?: string;
   selection?: WorkflowContextSelection;
   section?: WorkflowOperationsSection;
   initialSelection?: WorkflowContextSelection;
   initialSection?: WorkflowOperationsSection;
   onSelectContext?: (selection: WorkflowContextSelection) => void;
   onSelectSection?: (section: WorkflowOperationsSection) => void;
+  onSelectDefinition?: (definitionId: string) => void;
   onChangeDefinition?: (definition: WorkflowDefinitionDraft) => void;
   onCreateDefinition?: (project: OperatingProject) => void;
   onPublishDefinition?: (definition: WorkflowDefinitionDraft) => void;
@@ -54,14 +61,20 @@ export function WorkflowOperationsPage({
   definitionDrafts = [],
   runtime,
   artifacts = [],
+  outcomes = [],
+  outcomesLoading = false,
+  outcomesError = false,
+  outcomeHref,
   instances = [],
   definitions = [],
+  selectedDefinitionId,
   selection: controlledSelection,
   section: controlledSection,
   initialSelection,
   initialSection = "overview",
   onSelectContext,
   onSelectSection,
+  onSelectDefinition,
   onChangeDefinition,
   onCreateDefinition,
   onPublishDefinition,
@@ -83,7 +96,11 @@ export function WorkflowOperationsPage({
   const section = controlledSection ?? uncontrolledSection;
   const project = selection?.kind === "project" ? projects.find((item) => item.id === selection.id) : undefined;
   const program = selection?.kind === "program" ? programs.find((item) => item.id === selection.id) : project ? programs.find((item) => item.id === project.programId) : undefined;
-  const selectedDraft = useMemo(() => definitionDrafts.find((draft) => draft.projectId === project?.id), [definitionDrafts, project?.id]);
+  const projectDrafts = useMemo(() => definitionDrafts.filter((draft) => draft.projectId === project?.id), [definitionDrafts, project?.id]);
+  const selectedDraft = useMemo(
+    () => projectDrafts.find((draft) => draft.id === selectedDefinitionId) ?? projectDrafts[0],
+    [projectDrafts, selectedDefinitionId],
+  );
 
   const selectContext = (next: WorkflowContextSelection) => {
     if (!controlledSelection) setUncontrolledSelection(next);
@@ -116,7 +133,7 @@ export function WorkflowOperationsPage({
           <div className="mb-4 flex flex-wrap items-center gap-1 border-b pb-2" role="tablist" aria-label="项目工作区">
             {sectionLabels.map(({ id, label, icon: Icon }) => <button type="button" role="tab" aria-selected={section === id} key={id} onClick={() => selectSection(id)} className={`inline-flex items-center gap-1 rounded px-2 py-1.5 text-xs hover:bg-accent ${section === id ? "bg-accent font-medium" : "text-muted-foreground"}`}><Icon className="h-3.5 w-3.5" />{label}</button>)}
           </div>
-          {!selection ? <EmptyProjectState /> : section === "workflow" && selectedDraft ? <><WorkflowDesigner definition={selectedDraft} onChange={onChangeDefinition} onPublish={onPublishDefinition} />{publishReceipt ? <p className="mt-3 rounded border border-emerald-500/30 bg-emerald-500/5 p-2 text-xs text-emerald-700">已持久化候选版本：{publishReceipt.definitionId} v{publishReceipt.version}{publishReceipt.changed ? "" : "（幂等重放）"}</p> : null}{publishError ? <p className="mt-3 rounded border border-destructive/40 bg-destructive/5 p-2 text-xs text-destructive">发布未完成：{publishError}。草稿仍保留在当前页面。</p> : null}</> : section === "workflow" && project && onCreateDefinition ? <div className="rounded-lg border border-dashed p-6 text-center"><p className="text-xs text-muted-foreground">该项目尚无已发布工作流版本。</p><button type="button" onClick={() => onCreateDefinition(project)} className="mt-3 rounded border px-3 py-1.5 text-xs hover:bg-accent">新建候选工作流草稿</button></div> : section === "workflow" ? <div className="rounded-lg border border-dashed p-6 text-center text-xs text-muted-foreground">该项目暂无工作流草稿</div> : section === "instances" ? <WorkflowWorkbench instances={instances} definitions={definitions} /> : section === "artifacts" ? <ArtifactList artifacts={artifacts} /> : <ProjectSection section={section} project={project} program={program} />}
+          {!selection ? <EmptyProjectState /> : section === "workflow" && project ? <WorkflowDefinitionsPanel project={project} drafts={projectDrafts} selectedDraft={selectedDraft} onSelectDefinition={onSelectDefinition} onCreateDefinition={onCreateDefinition} onChangeDefinition={onChangeDefinition} onPublishDefinition={onPublishDefinition} publishReceipt={publishReceipt} publishError={publishError} /> : section === "instances" ? <WorkflowWorkbench instances={instances} definitions={definitions} /> : section === "artifacts" ? <ArtifactList artifacts={artifacts} outcomes={outcomes} loading={outcomesLoading} sourceError={outcomesError} outcomeHref={outcomeHref} /> : <ProjectSection section={section} project={project} program={program} />}
           {runtime && section === "instances" ? <div className="mt-4"><WorkflowRuntimeGraph graph={selectedDraft?.graph ?? { nodes: [], edges: [] }} runtime={runtime} /></div> : null}
         </main>
         {runtime && section !== "instances" ? <aside className="hidden w-72 shrink-0 border-l p-3 xl:block" data-testid="workflow-inspector"><WorkflowRuntimeGraph graph={selectedDraft?.graph ?? { nodes: [], edges: [] }} runtime={runtime} /></aside> : null}
@@ -125,11 +142,49 @@ export function WorkflowOperationsPage({
   );
 }
 
+function WorkflowDefinitionsPanel({
+  project,
+  drafts,
+  selectedDraft,
+  onSelectDefinition,
+  onCreateDefinition,
+  onChangeDefinition,
+  onPublishDefinition,
+  publishReceipt,
+  publishError,
+}: {
+  project: OperatingProject;
+  drafts: WorkflowDefinitionDraft[];
+  selectedDraft?: WorkflowDefinitionDraft;
+  onSelectDefinition?: (definitionId: string) => void;
+  onCreateDefinition?: (project: OperatingProject) => void;
+  onChangeDefinition?: (definition: WorkflowDefinitionDraft) => void;
+  onPublishDefinition?: (definition: WorkflowDefinitionDraft) => void;
+  publishReceipt?: WorkflowOperationsPageProps["publishReceipt"];
+  publishError?: string | null;
+}) {
+  if (!selectedDraft) {
+    return <div className="rounded-lg border border-dashed p-6 text-center"><p className="text-xs text-muted-foreground">该项目尚无工作流。每个项目可并行维护多条独立的候选或已发布流程。</p>{onCreateDefinition ? <button type="button" onClick={() => onCreateDefinition(project)} className="mt-3 rounded border px-3 py-1.5 text-xs hover:bg-accent">新建候选工作流草稿</button> : null}</div>;
+  }
+  return <>
+    <div className="mb-3 flex flex-wrap items-center gap-2 rounded border bg-muted/20 p-2">
+      <label className="text-xs text-muted-foreground" htmlFor="workflow-definition-select">项目工作流</label>
+      <select id="workflow-definition-select" aria-label="选择项目工作流" value={selectedDraft.id} onChange={(event) => onSelectDefinition?.(event.target.value)} className="min-w-0 flex-1 rounded border bg-background px-2 py-1 text-xs">
+        {drafts.map((draft) => <option key={draft.id} value={draft.id}>{draft.name} · v{draft.version}</option>)}
+      </select>
+      {onCreateDefinition ? <button type="button" onClick={() => onCreateDefinition(project)} className="rounded border px-2 py-1 text-xs hover:bg-accent">新增工作流</button> : null}
+    </div>
+    <WorkflowDesigner definition={selectedDraft} onChange={onChangeDefinition} onPublish={onPublishDefinition} />
+    {publishReceipt ? <p className="mt-3 rounded border border-emerald-500/30 bg-emerald-500/5 p-2 text-xs text-emerald-700">已持久化候选版本：{publishReceipt.definitionId} v{publishReceipt.version}{publishReceipt.changed ? "" : "（幂等重放）"}</p> : null}
+    {publishError ? <p className="mt-3 rounded border border-destructive/40 bg-destructive/5 p-2 text-xs text-destructive">发布未完成：{publishError}。草稿仍保留在当前页面。</p> : null}
+  </>;
+}
+
 function ProjectSection({ section, project, program }: { section: WorkflowOperationsSection; project?: OperatingProject; program?: OperatingProgram }) {
   const label = sectionLabels.find((item) => item.id === section)?.label ?? section;
   return <section className="rounded-lg border bg-card p-5"><div className="flex items-center gap-2"><ChevronRight className="h-4 w-4 text-muted-foreground" /><h2 className="text-sm font-semibold">{label}</h2></div><p className="mt-2 text-xs text-muted-foreground">{project ? `${program?.name ?? "运营科目"} / ${project.name}` : "请选择 L4 项目"}。该视图将由正式 API 数据驱动。</p></section>;
 }
 
-function ArtifactList({ artifacts }: { artifacts: ArtifactSummary[] }) {
-  return <section data-testid="workflow-artifact-list" className="rounded-lg border bg-card p-4"><h2 className="text-sm font-semibold">项目成果</h2>{artifacts.length === 0 ? <p className="mt-3 text-xs text-muted-foreground">暂无成果；工作流节点产出会进入正式 Outcome Center。</p> : <div className="mt-3 space-y-2">{artifacts.map((artifact) => <div key={`${artifact.id}:${artifact.version}`} className="rounded border p-3"><div className="flex items-center justify-between gap-2 text-xs"><span className="font-medium">{artifact.title}</span><span className="text-muted-foreground">v{artifact.version} · {artifact.status}</span></div><div className="mt-1 text-[11px] text-muted-foreground">{artifact.id} · {artifact.locationCount ?? 0} 个物理位置</div></div>)}</div>}</section>;
+function ArtifactList({ artifacts, outcomes, loading, sourceError, outcomeHref }: { artifacts: ArtifactSummary[]; outcomes: CompanyOpsOutcomeSummary[]; loading: boolean; sourceError: boolean; outcomeHref?: (outcomeId: string) => string }) {
+  return <section data-testid="workflow-artifact-list" className="rounded-lg border bg-card p-4"><h2 className="text-sm font-semibold">项目成果</h2><p className="mt-1 text-xs text-muted-foreground">读取既有正式 Outcome Center；本页面不维护第二套成果或审核状态。</p>{sourceError ? <p data-testid="workflow-artifact-source-error" className="mt-3 rounded border border-destructive/40 p-3 text-xs text-destructive">成果中心来源暂不可用；不会把读取失败显示为零成果。</p> : loading ? <p className="mt-3 text-xs text-muted-foreground">正在读取正式成果中心…</p> : outcomes.length > 0 ? <div className="mt-3 space-y-2">{outcomes.map((outcome) => <div key={outcome.id} className="rounded border p-3"><div className="flex items-center justify-between gap-2 text-xs"><span className="font-medium">Outcome · {outcome.id}</span><span className="text-muted-foreground">{outcome.execution_state}</span></div><div className="mt-1 text-[11px] text-muted-foreground">{outcome.current_agent_display.name} · 版本 {outcome.version_count}{outcome.active_artifact ? ` · ${outcome.active_artifact.status}${outcome.active_artifact.formal_visible ? "（正式可见）" : "（候选）"}` : " · 尚未形成活动成果"}</div>{outcomeHref ? <a className="mt-2 inline-block text-xs underline" href={outcomeHref(outcome.id)}>在成果中心查看、审核与晋级</a> : null}</div>)}</div> : artifacts.length === 0 ? <p className="mt-3 text-xs text-muted-foreground">当前项目没有被 Outcome Center 观察到成果；工作流节点产出会进入该正式中心。</p> : <div className="mt-3 space-y-2">{artifacts.map((artifact) => <div key={`${artifact.id}:${artifact.version}`} className="rounded border p-3"><div className="flex items-center justify-between gap-2 text-xs"><span className="font-medium">{artifact.title}</span><span className="text-muted-foreground">v{artifact.version} · {artifact.status}</span></div><div className="mt-1 text-[11px] text-muted-foreground">{artifact.id} · {artifact.locationCount ?? 0} 个物理位置</div></div>)}</div>}</section>;
 }

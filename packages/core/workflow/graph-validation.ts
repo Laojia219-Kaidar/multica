@@ -1,7 +1,7 @@
 import type { WorkflowGraph } from "./types";
 
 export type GraphValidationIssue = {
-  code: "empty_graph" | "missing_start" | "missing_end" | "unknown_edge" | "cycle";
+  code: "empty_graph" | "duplicate_node" | "invalid_node" | "invalid_binding" | "missing_start" | "missing_end" | "unknown_edge" | "cycle";
   message: string;
   nodeIds?: string[];
 };
@@ -11,10 +11,28 @@ export function validateWorkflowGraph(graph: WorkflowGraph): GraphValidationIssu
     return [{ code: "empty_graph", message: "工作流至少需要一个节点" }];
   }
 
-  const nodeIds = new Set(graph.nodes.map((node) => node.id));
+  const nodeIds = new Set<string>();
+  const issues: GraphValidationIssue[] = [];
+  for (const node of graph.nodes) {
+    if (!node.id || nodeIds.has(node.id)) {
+      issues.push({ code: "duplicate_node", message: `节点 ${node.id || "(缺失)"} 的 ID 不唯一` });
+    }
+    nodeIds.add(node.id);
+    if (!node.data.label.trim()) {
+      issues.push({ code: "invalid_node", message: `节点 ${node.id || "(缺失)"} 必须填写名称` });
+    }
+    if (node.type === "agent_task") {
+      if (!node.data.binding) {
+        issues.push({ code: "invalid_binding", message: `Agent 节点 ${node.id} 必须绑定正式员工、角色池或项目默认执行者` });
+      } else if (node.data.binding.mode === "fixed_employee" && !node.data.binding.employeeId.trim()) {
+        issues.push({ code: "invalid_binding", message: `固定员工节点 ${node.id} 必须填写正式 Employee ID` });
+      } else if (node.data.binding.mode === "role_pool" && !node.data.binding.role.trim()) {
+        issues.push({ code: "invalid_binding", message: `角色池节点 ${node.id} 必须填写执行角色` });
+      }
+    }
+  }
   const incoming = new Map(graph.nodes.map((node) => [node.id, 0]));
   const outgoing = new Map(graph.nodes.map((node) => [node.id, 0]));
-  const issues: GraphValidationIssue[] = [];
 
   for (const edge of graph.edges) {
     if (!nodeIds.has(edge.source) || !nodeIds.has(edge.target)) {

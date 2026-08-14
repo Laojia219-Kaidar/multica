@@ -5,6 +5,7 @@ package workflow
 import (
 	"context"
 	"os"
+	"sync"
 	"testing"
 
 	"github.com/google/uuid"
@@ -47,7 +48,45 @@ func TestDefinitionVersionPublishIsImmutableWorkspaceScopedAndRestartReadable(t 
 	}
 	other := v
 	other.WorkspaceID = uuid.NewString()
-	if got, err := restarted.ListPublishedDefinitionVersions(ctx, other.WorkspaceID, false); err != nil || len(got) != 0 {
+	otherPublished, changed, err := restarted.PublishDefinitionVersion(ctx, other, "other-workspace-publish")
+	if err != nil || !changed || otherPublished.Version != 1 {
+		t.Fatalf("cross-workspace same definition publish: version=%+v changed=%v err=%v", otherPublished, changed, err)
+	}
+	if got, err := restarted.ListPublishedDefinitionVersions(ctx, other.WorkspaceID, false); err != nil || len(got) != 1 || got[0].DefinitionID != v.DefinitionID {
 		t.Fatalf("workspace isolation: got=%v err=%v", got, err)
+	}
+
+	// Distinct publishers can race on the same next version. The repository must
+	// return two durable, sequential versions instead of leaking a transient
+	// uniqueness conflict to either caller.
+	type publishResult struct {
+		version WorkflowDefinitionVersion
+		changed bool
+		err     error
+	}
+	results := make(chan publishResult, 2)
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for _, key := range []string{"concurrent-publish-1", "concurrent-publish-2"} {
+		wg.Add(1)
+		go func(idempotencyKey string) {
+			defer wg.Done()
+			<-start
+			version, changed, publishErr := restarted.PublishDefinitionVersion(ctx, v, idempotencyKey)
+			results <- publishResult{version: version, changed: changed, err: publishErr}
+		}(key)
+	}
+	close(start)
+	wg.Wait()
+	close(results)
+	versions := map[int]bool{}
+	for result := range results {
+		if result.err != nil || !result.changed {
+			t.Fatalf("concurrent publish: version=%+v changed=%v err=%v", result.version, result.changed, result.err)
+		}
+		versions[result.version.Version] = true
+	}
+	if !versions[3] || !versions[4] || len(versions) != 2 {
+		t.Fatalf("concurrent publishers did not receive sequential versions: %v", versions)
 	}
 }

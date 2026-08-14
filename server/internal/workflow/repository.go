@@ -4,10 +4,12 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -122,6 +124,11 @@ func (r *Repository) PublishDefinitionVersion(ctx context.Context, v WorkflowDef
 	if idempotencyKey == "" {
 		return WorkflowDefinitionVersion{}, false, fmt.Errorf("idempotency key is required")
 	}
+	// Version is allocated atomically below from the durable definition history;
+	// callers publish graph semantics, not a client-chosen version number. Set a
+	// temporary positive value only so the shared graph contract can validate
+	// the rest of the immutable payload before persistence.
+	v.Version = 1
 	if err := v.ValidatePublishedGraph(); err != nil {
 		return WorkflowDefinitionVersion{}, false, err
 	}
@@ -133,12 +140,6 @@ func (r *Repository) PublishDefinitionVersion(ctx context.Context, v WorkflowDef
 		out, convErr := workflowVersionFromRow(row)
 		return out, false, convErr
 	}
-	latest, err := r.Q.GetLatestWorkflowDefinitionVersion(ctx, db.GetLatestWorkflowDefinitionVersionParams{WorkspaceID: ws, DefinitionID: v.DefinitionID})
-	next := 1
-	if err == nil {
-		next = int(latest.Version) + 1
-	}
-	v.Version = next
 	stages, err := marshalStages(v.Stages)
 	if err != nil {
 		return WorkflowDefinitionVersion{}, false, err
@@ -147,23 +148,39 @@ func (r *Repository) PublishDefinitionVersion(ctx context.Context, v WorkflowDef
 	if err != nil {
 		return WorkflowDefinitionVersion{}, false, err
 	}
-	v.Digest = versionDigest(v, stages, graph)
-	row, err := r.Q.InsertWorkflowDefinitionVersion(ctx, db.InsertWorkflowDefinitionVersionParams{
-		DefinitionID: v.DefinitionID, WorkspaceID: ws, ProjectID: v.ProjectID, Version: int32(v.Version),
-		Risk: string(v.Risk), Stages: stages, Graph: graph, Digest: v.Digest,
-		IdempotencyKey: idempotencyKey,
-	})
-	if err != nil {
+	// The database is the serialization point for version numbers. Two distinct
+	// publishers may read the same latest version, so a uniqueness collision is
+	// retried with a fresh durable latest row. An idempotency collision still
+	// returns the original receipt below.
+	for attempt := 0; attempt < 4; attempt++ {
+		latest, latestErr := r.Q.GetLatestWorkflowDefinitionVersion(ctx, db.GetLatestWorkflowDefinitionVersionParams{WorkspaceID: ws, DefinitionID: v.DefinitionID})
+		v.Version = 1
+		if latestErr == nil {
+			v.Version = int(latest.Version) + 1
+		}
+		v.Digest = versionDigest(v, stages, graph)
+		row, insertErr := r.Q.InsertWorkflowDefinitionVersion(ctx, db.InsertWorkflowDefinitionVersionParams{
+			DefinitionID: v.DefinitionID, WorkspaceID: ws, ProjectID: v.ProjectID, Version: int32(v.Version),
+			Risk: string(v.Risk), Stages: stages, Graph: graph, Digest: v.Digest,
+			IdempotencyKey: idempotencyKey,
+		})
+		if insertErr == nil {
+			out, convErr := workflowVersionFromRow(row)
+			return out, true, convErr
+		}
 		// A concurrent publisher may have won the idempotency key. Return its
 		// durable receipt rather than exposing a transient duplicate failure.
 		if existing, lookupErr := r.Q.GetWorkflowDefinitionVersionByIdempotency(ctx, db.GetWorkflowDefinitionVersionByIdempotencyParams{WorkspaceID: ws, IdempotencyKey: idempotencyKey}); lookupErr == nil {
 			out, convErr := workflowVersionFromRow(existing)
 			return out, false, convErr
 		}
-		return WorkflowDefinitionVersion{}, false, err
+		var pgErr *pgconn.PgError
+		if errors.As(insertErr, &pgErr) && pgErr.Code == "23505" {
+			continue
+		}
+		return WorkflowDefinitionVersion{}, false, insertErr
 	}
-	out, err := workflowVersionFromRow(row)
-	return out, true, err
+	return WorkflowDefinitionVersion{}, false, fmt.Errorf("publish workflow definition version: retry budget exhausted")
 }
 
 func (r *Repository) ListPublishedDefinitionVersions(ctx context.Context, workspaceID string, latestOnly bool) ([]WorkflowDefinitionVersion, error) {

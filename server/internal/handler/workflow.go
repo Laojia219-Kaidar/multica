@@ -8,7 +8,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/workflow"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 // The workflow kernel (Slice-W1/W2) is now exposed over HTTP. The in-memory
@@ -74,7 +76,7 @@ func (h *Handler) ListWorkflowDefinitions(w http.ResponseWriter, r *http.Request
 }
 
 type publishWorkflowDefinitionVersionRequest struct {
-	ProjectID      string                `json:"project_id,omitempty"`
+	ProjectID      string                 `json:"project_id,omitempty"`
 	Risk           workflow.RiskTier      `json:"risk"`
 	Stages         []workflow.Stage       `json:"stages"`
 	Graph          workflow.WorkflowGraph `json:"graph"`
@@ -110,6 +112,28 @@ func (h *Handler) PublishWorkflowDefinitionVersion(w http.ResponseWriter, r *htt
 	if key == "" {
 		writeError(w, http.StatusBadRequest, "idempotency_key is required")
 		return
+	}
+	if req.ProjectID != "" {
+		projectID, err := uuid.Parse(req.ProjectID)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "project_id must be a canonical UUID")
+			return
+		}
+		workspaceUUID, err := uuid.Parse(workspaceID)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "workspace scope is invalid")
+			return
+		}
+		if _, err := h.Queries.GetProjectInWorkspace(r.Context(), db.GetProjectInWorkspaceParams{
+			ID:          pgtype.UUID{Bytes: projectID, Valid: true},
+			WorkspaceID: pgtype.UUID{Bytes: workspaceUUID, Valid: true},
+		}); err != nil {
+			// Do not distinguish an absent Project from a cross-workspace Project.
+			// The graph may only claim an L4 project that is authoritative in this
+			// caller's workspace.
+			writeError(w, http.StatusBadRequest, "project_id is not a Project in the current workspace")
+			return
+		}
 	}
 	v, changed, err := h.workflowRepo().PublishDefinitionVersion(r.Context(), workflow.WorkflowDefinitionVersion{
 		DefinitionID: r.PathValue("id"), WorkspaceID: workspaceID, ProjectID: req.ProjectID,
