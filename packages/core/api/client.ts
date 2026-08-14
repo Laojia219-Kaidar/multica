@@ -3542,6 +3542,10 @@ export class ApiClient {
   }
 
   // Workflow kernel (Slice-W1/W2). Drives the W2 HIV-553 project lifecycle.
+  async listWorkflowInstances(): Promise<WorkflowInstance[]> {
+    return this.fetch("/api/workflow/instances");
+  }
+
   async startWorkflowInstance(body: {
     definition_id?: string;
     instance_id?: string;

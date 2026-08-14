@@ -18,7 +18,8 @@
     "workrooms": "ワークルーム",
     "workWall": "ワークウォール",
     "employees": "従業員",
-    "datasets": "データセット"
+    "datasets": "データセット",
+    "workflow": "ワークフロー"
   },
   "tab": {
     "issue": "イシュー",
@@ -68,7 +69,8 @@
       "dismiss": "閉じる"
     },
     "group_ceo": "CEO総指揮台",
-    "group_work": "ワーク運営",
+  "group_work": "ワーク運営",
+  "group_production_workflow": "制作・運用",
     "group_outcomes": "成果センター",
     "group_org": "組織と人材",
     "group_employee_factory": "従業員工場",

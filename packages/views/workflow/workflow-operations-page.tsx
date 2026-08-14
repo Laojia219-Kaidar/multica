@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { ChevronRight, LayoutDashboard, PackageCheck, PlayCircle, Settings2, Workflow } from "lucide-react";
 import type { ArtifactSummary, OperatingProgram, OperatingProject, WorkflowDefinitionDraft, WorkflowRuntime } from "@multica/core/workflow";
 import type { WorkflowDefinition, WorkflowInstance } from "@multica/core/api/workflow";
@@ -19,12 +19,17 @@ export interface WorkflowOperationsPageProps {
   artifacts?: ArtifactSummary[];
   instances?: WorkflowInstance[];
   definitions?: WorkflowDefinition[];
+  selection?: WorkflowContextSelection;
+  section?: WorkflowOperationsSection;
   initialSelection?: WorkflowContextSelection;
   initialSection?: WorkflowOperationsSection;
   onSelectContext?: (selection: WorkflowContextSelection) => void;
+  onSelectSection?: (section: WorkflowOperationsSection) => void;
   onChangeDefinition?: (definition: WorkflowDefinitionDraft) => void;
   onPublishDefinition?: (definition: WorkflowDefinitionDraft) => void;
 }
+
+const CONTEXT_TREE_COLLAPSED_KEY = "hivecrew.workflow.context-tree.collapsed.v1";
 
 const sectionLabels: Array<{ id: WorkflowOperationsSection; label: string; icon: typeof LayoutDashboard }> = [
   { id: "overview", label: "项目总览", icon: LayoutDashboard },
@@ -48,22 +53,40 @@ export function WorkflowOperationsPage({
   artifacts = [],
   instances = [],
   definitions = [],
+  selection: controlledSelection,
+  section: controlledSection,
   initialSelection,
   initialSection = "overview",
   onSelectContext,
+  onSelectSection,
   onChangeDefinition,
   onPublishDefinition,
 }: WorkflowOperationsPageProps) {
-  const [selection, setSelection] = useState<WorkflowContextSelection | undefined>(initialSelection);
-  const [section, setSection] = useState<WorkflowOperationsSection>(initialSection);
+  const [uncontrolledSelection, setUncontrolledSelection] = useState<WorkflowContextSelection | undefined>(initialSelection);
+  const [uncontrolledSection, setUncontrolledSection] = useState<WorkflowOperationsSection>(initialSection);
   const [treeCollapsed, setTreeCollapsed] = useState(false);
+
+  useEffect(() => {
+    try {
+      setTreeCollapsed(window.localStorage.getItem(CONTEXT_TREE_COLLAPSED_KEY) === "true");
+    } catch {
+      // Layout preference is intentionally best-effort.
+    }
+  }, []);
+  const selection = controlledSelection ?? uncontrolledSelection;
+  const section = controlledSection ?? uncontrolledSection;
   const project = selection?.kind === "project" ? projects.find((item) => item.id === selection.id) : undefined;
   const program = selection?.kind === "program" ? programs.find((item) => item.id === selection.id) : project ? programs.find((item) => item.id === project.programId) : undefined;
   const selectedDraft = useMemo(() => definitionDrafts.find((draft) => draft.projectId === project?.id) ?? definitionDrafts[0], [definitionDrafts, project?.id]);
 
   const selectContext = (next: WorkflowContextSelection) => {
-    setSelection(next);
+    if (!controlledSelection) setUncontrolledSelection(next);
     onSelectContext?.(next);
+  };
+
+  const selectSection = (next: WorkflowOperationsSection) => {
+    if (!controlledSection) setUncontrolledSection(next);
+    onSelectSection?.(next);
   };
 
   return (
@@ -74,10 +97,18 @@ export function WorkflowOperationsPage({
         {project ? <span className="ml-auto rounded-full border px-2 py-1 text-[11px] text-muted-foreground">Project · {project.formalProjectId}</span> : null}
       </header>
       <div className="flex min-h-0 flex-1">
-        <WorkflowContextTree programs={programs} projects={projects} selected={selection} onSelect={selectContext} collapsed={treeCollapsed} onToggleCollapsed={() => setTreeCollapsed((value) => !value)} />
+        <WorkflowContextTree programs={programs} projects={projects} selected={selection} onSelect={selectContext} collapsed={treeCollapsed} onToggleCollapsed={() => setTreeCollapsed((value) => {
+          const next = !value;
+          try {
+            window.localStorage.setItem(CONTEXT_TREE_COLLAPSED_KEY, String(next));
+          } catch {
+            // The current view remains usable when local storage is unavailable.
+          }
+          return next;
+        })} />
         <main className="min-w-0 flex-1 overflow-y-auto p-4" data-testid="workflow-main-workbench">
           <div className="mb-4 flex flex-wrap items-center gap-1 border-b pb-2" role="tablist" aria-label="项目工作区">
-            {sectionLabels.map(({ id, label, icon: Icon }) => <button type="button" role="tab" aria-selected={section === id} key={id} onClick={() => setSection(id)} className={`inline-flex items-center gap-1 rounded px-2 py-1.5 text-xs hover:bg-accent ${section === id ? "bg-accent font-medium" : "text-muted-foreground"}`}><Icon className="h-3.5 w-3.5" />{label}</button>)}
+            {sectionLabels.map(({ id, label, icon: Icon }) => <button type="button" role="tab" aria-selected={section === id} key={id} onClick={() => selectSection(id)} className={`inline-flex items-center gap-1 rounded px-2 py-1.5 text-xs hover:bg-accent ${section === id ? "bg-accent font-medium" : "text-muted-foreground"}`}><Icon className="h-3.5 w-3.5" />{label}</button>)}
           </div>
           {!selection ? <EmptyProjectState /> : section === "workflow" && selectedDraft ? <WorkflowDesigner definition={selectedDraft} onChange={onChangeDefinition} onPublish={onPublishDefinition} /> : section === "workflow" ? <div className="rounded-lg border border-dashed p-6 text-center text-xs text-muted-foreground">该项目暂无工作流草稿</div> : section === "instances" ? <WorkflowWorkbench instances={instances} definitions={definitions} /> : section === "artifacts" ? <ArtifactList artifacts={artifacts} /> : <ProjectSection section={section} project={project} program={program} />}
           {runtime && section === "instances" ? <div className="mt-4"><WorkflowRuntimeGraph graph={selectedDraft?.graph ?? { nodes: [], edges: [] }} runtime={runtime} /></div> : null}

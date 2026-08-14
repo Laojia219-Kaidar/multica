@@ -1,7 +1,7 @@
 "use client";
 
 import { ChevronDown, ChevronRight, FolderKanban, PanelLeftClose, PanelLeftOpen } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { OperatingProgram, OperatingProject } from "@multica/core/workflow";
 
 export type WorkflowContextSelection =
@@ -17,6 +17,15 @@ export interface WorkflowContextTreeProps {
   onToggleCollapsed?: () => void;
 }
 
+const CONTEXT_TREE_WIDTH_KEY = "hivecrew.workflow.context-tree.width.v1";
+const DEFAULT_CONTEXT_TREE_WIDTH = 256;
+const MIN_CONTEXT_TREE_WIDTH = 208;
+const MAX_CONTEXT_TREE_WIDTH = 360;
+
+function clampWidth(value: number) {
+  return Math.min(MAX_CONTEXT_TREE_WIDTH, Math.max(MIN_CONTEXT_TREE_WIDTH, value));
+}
+
 export function WorkflowContextTree({
   programs,
   projects,
@@ -25,6 +34,8 @@ export function WorkflowContextTree({
   collapsed = false,
   onToggleCollapsed,
 }: WorkflowContextTreeProps) {
+  const [width, setWidth] = useState(DEFAULT_CONTEXT_TREE_WIDTH);
+  const resizeCleanup = useRef<(() => void) | null>(null);
   const [expanded, setExpanded] = useState<Record<string, boolean>>(() =>
     Object.fromEntries(programs.map((program) => [program.id, true])),
   );
@@ -33,6 +44,59 @@ export function WorkflowContextTree({
     for (const project of projects) result.set(project.programId, [...(result.get(project.programId) ?? []), project]);
     return result;
   }, [projects]);
+
+  useEffect(() => {
+    try {
+      const stored = Number(window.localStorage.getItem(CONTEXT_TREE_WIDTH_KEY));
+      if (Number.isFinite(stored)) setWidth(clampWidth(stored));
+    } catch {
+      // Layout preference is optional and must never block project context.
+    }
+  }, []);
+
+  useEffect(() => () => resizeCleanup.current?.(), []);
+
+  const setAndPersistWidth = useCallback((next: number) => {
+    const bounded = clampWidth(next);
+    setWidth(bounded);
+    try {
+      window.localStorage.setItem(CONTEXT_TREE_WIDTH_KEY, String(bounded));
+    } catch {
+      // Private-mode or quota errors leave the current in-memory layout usable.
+    }
+  }, []);
+
+  const startResize = useCallback((event: React.PointerEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+    const originX = event.clientX;
+    const originWidth = width;
+    resizeCleanup.current?.();
+    const onMove = (move: PointerEvent) => setAndPersistWidth(originWidth + move.clientX - originX);
+    const onUp = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      resizeCleanup.current = null;
+    };
+    resizeCleanup.current = onUp;
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp, { once: true });
+  }, [setAndPersistWidth, width]);
+
+  const onResizeKeyDown = useCallback((event: React.KeyboardEvent<HTMLButtonElement>) => {
+    if (event.key === "ArrowLeft") {
+      event.preventDefault();
+      setAndPersistWidth(width - 16);
+    } else if (event.key === "ArrowRight") {
+      event.preventDefault();
+      setAndPersistWidth(width + 16);
+    } else if (event.key === "Home") {
+      event.preventDefault();
+      setAndPersistWidth(MIN_CONTEXT_TREE_WIDTH);
+    } else if (event.key === "End") {
+      event.preventDefault();
+      setAndPersistWidth(MAX_CONTEXT_TREE_WIDTH);
+    }
+  }, [setAndPersistWidth, width]);
 
   if (collapsed) {
     return (
@@ -45,7 +109,7 @@ export function WorkflowContextTree({
   }
 
   return (
-    <aside className="flex w-64 min-w-52 max-w-80 shrink-0 flex-col border-r bg-muted/20" data-testid="workflow-context-tree">
+    <aside className="relative flex min-w-0 shrink-0 flex-col border-r bg-muted/20" style={{ width }} data-testid="workflow-context-tree">
       <div className="flex items-center justify-between border-b px-3 py-2">
         <div>
           <p className="text-xs font-semibold">运营项目</p>
@@ -106,6 +170,18 @@ export function WorkflowContextTree({
           );
         })}
       </nav>
+      <button
+        type="button"
+        role="separator"
+        aria-label="调整运营项目树宽度"
+        aria-orientation="vertical"
+        aria-valuemin={MIN_CONTEXT_TREE_WIDTH}
+        aria-valuemax={MAX_CONTEXT_TREE_WIDTH}
+        aria-valuenow={width}
+        onPointerDown={startResize}
+        onKeyDown={onResizeKeyDown}
+        className="absolute -right-1 top-0 z-10 h-full w-2 cursor-col-resize touch-none focus:bg-primary/30 focus:outline-none"
+      />
     </aside>
   );
 }

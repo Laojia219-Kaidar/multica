@@ -1523,6 +1523,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			r.Post("/api/memory/candidates/{id}/revoke", h.RevokeMemoryCandidate)
 			r.Get("/api/memory/promoted", h.ListPromotedMemories)
 			r.Get("/api/memory/retrieve", h.RetrieveMemories)
+			r.Get("/api/workflow/instances", h.ListWorkflowInstances)
 			r.Post("/api/workflow/instances", h.StartWorkflowInstance)
 			r.Get("/api/workflow/instances/{id}", h.GetWorkflowInstance)
 			r.Post("/api/workflow/instances/{id}/advance", h.AdvanceWorkflowInstance)

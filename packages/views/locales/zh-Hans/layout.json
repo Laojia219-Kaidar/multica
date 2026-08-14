@@ -18,7 +18,8 @@
     "workrooms": "协作空间",
     "workWall": "工作现场",
     "employees": "员工",
-    "datasets": "数据集"
+    "datasets": "数据集",
+    "workflow": "工作流"
   },
   "tab": {
     "issue": "议题",
@@ -68,7 +69,8 @@
       "dismiss": "关闭"
     },
     "group_ceo": "CEO总指挥台",
-    "group_work": "工作经营",
+  "group_work": "工作经营",
+  "group_production_workflow": "生产运营",
     "group_outcomes": "成果中心",
     "group_org": "组织与人才",
     "group_employee_factory": "数字员工工厂",

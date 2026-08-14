@@ -18,7 +18,8 @@
     "workrooms": "워크룸",
     "workWall": "워크월",
     "employees": "직원",
-    "datasets": "데이터셋"
+    "datasets": "데이터셋",
+    "workflow": "워크플로"
   },
   "tab": {
     "issue": "이슈",
@@ -68,7 +69,8 @@
       "dismiss": "닫기"
     },
     "group_ceo": "CEO 지휘",
-    "group_work": "업무 운영",
+  "group_work": "업무 운영",
+  "group_production_workflow": "생산 운영",
     "group_outcomes": "성과 센터",
     "group_org": "조직과 인재",
     "group_employee_factory": "직원 공장",

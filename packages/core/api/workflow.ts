@@ -36,6 +36,7 @@ export const ContextRefSchema = z.object({
 export const WorkflowInstanceSchema = z
   .object({
     id: z.string(),
+    workspace_id: z.string().uuid().optional(),
     definition_id: z.string(),
     definition_version: z.number().int().positive(),
     context: ContextRefSchema,

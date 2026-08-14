@@ -22,6 +22,7 @@ function workspaceScoped(slug: string) {
     issues: () => `${ws}/issues`,
     issueDetail: (id: string) => `${ws}/issues/${encode(id)}`,
     projects: () => `${ws}/projects`,
+    workflow: () => `${ws}/workflow`,
     projectDetail: (id: string) => `${ws}/projects/${encode(id)}`,
     outcomes: () => `${ws}/outcomes`,
     organization: () => `${ws}/organization`,

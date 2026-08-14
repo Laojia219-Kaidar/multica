@@ -109,6 +109,7 @@ type NavKey =
   | "myIssues"
   | "issues"
   | "projects"
+  | "workflow"
   | "outcomes"
   | "organization"
   | "autopilots"
@@ -132,6 +133,7 @@ type NavLabelKey =
   | "my_issues"
   | "issues"
   | "projects"
+  | "workflow"
   | "outcomes"
   | "organization"
   | "autopilots"
@@ -151,6 +153,7 @@ type NavLabelKey =
 type NavGroupLabelKey =
   | "group_ceo"
   | "group_work"
+  | "group_production_workflow"
   | "group_outcomes"
   | "group_org"
   | "group_employee_factory"
@@ -174,6 +177,9 @@ const navGroups: { key: string; labelKey: NavGroupLabelKey; items: { key: NavKey
     { key: "issues", labelKey: "issues" },
     { key: "projects", labelKey: "projects" },
     { key: "autopilots", labelKey: "autopilots" },
+  ]},
+  { key: "productionWorkflow", labelKey: "group_production_workflow", items: [
+    { key: "workflow", labelKey: "workflow" },
   ]},
   { key: "outcomes", labelKey: "group_outcomes", items: [
     { key: "outcomes", labelKey: "outcomes" },

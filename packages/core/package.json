@@ -21,6 +21,7 @@
     "./api/workwall": "./api/workwall.ts",
     "./api/memory": "./api/memory.ts",
     "./api/workflow": "./api/workflow.ts",
+    "./workflow": "./workflow/index.ts",
     "./config": "./config/index.ts",
     "./product": "./product/index.ts",
     "./auth": "./auth/index.ts",

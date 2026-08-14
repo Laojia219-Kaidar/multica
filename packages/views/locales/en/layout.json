@@ -18,7 +18,8 @@
     "workrooms": "Workrooms",
     "workWall": "Work Wall",
     "employees": "Employees",
-    "datasets": "Datasets"
+    "datasets": "Datasets",
+    "workflow": "Workflow"
   },
   "tab": {
     "issue": "Issue",
@@ -68,7 +69,8 @@
       "dismiss": "Dismiss"
     },
     "group_ceo": "CEO Command",
-    "group_work": "Work",
+  "group_work": "Work",
+  "group_production_workflow": "Production Operations",
     "group_outcomes": "Outcomes",
     "group_org": "Organization",
     "group_employee_factory": "Employee Factory",
