@@ -79,7 +79,32 @@
     "no_issues_yet": "No issues yet",
     "toast_link_copied": "Link copied",
     "toast_project_deleted": "Project deleted",
-    "toast_move_issue_failed": "Failed to move issue"
+    "toast_move_issue_failed": "Failed to move issue",
+    "work_conserving": {
+      "title": "Work-conserving plan",
+      "status": {
+        "ready": "Ready",
+        "blocked": "Blocked",
+        "source_gap": "Source gap"
+      },
+      "ready_description": "Read-only recommendations from the complete Goal snapshot.",
+      "blocked_description": "The plan is blocked; each open issue keeps an accountable receiver and wake condition.",
+      "source_gap_description": "The authoritative snapshot is unavailable or incomplete. No local data is used as a fallback.",
+      "no_write": "Read-only · no Task, dispatch, or database write",
+      "metrics": {
+        "open": "Open issues",
+        "planned": "Planned",
+        "blocked": "Blocked backlog",
+        "idle": "Healthy idle employees"
+      },
+      "authority": {
+        "revision": "Authority revision",
+        "observed_at": "Observed at"
+      },
+      "plan_title": "Current plan evidence",
+      "empty_plan": "No plan entries were returned.",
+      "wake_condition": "Wake condition"
+    }
   },
   "resources": {
     "section_header": "Resources",

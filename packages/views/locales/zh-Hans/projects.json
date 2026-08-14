@@ -78,7 +78,32 @@
     "no_issues_yet": "目前还没有 议题",
     "toast_link_copied": "已复制链接",
     "toast_project_deleted": "已删除项目",
-    "toast_move_issue_failed": "移动 议题 失败"
+    "toast_move_issue_failed": "移动 议题 失败",
+    "work_conserving": {
+      "title": "持续工作计划",
+      "status": {
+        "ready": "可执行建议",
+        "blocked": "已阻塞",
+        "source_gap": "权威来源缺口"
+      },
+      "ready_description": "来自完整 Goal 快照的只读建议。",
+      "blocked_description": "计划被阻塞；每个未完成 issue 都保留负责人和唤醒条件。",
+      "source_gap_description": "权威快照不可用或不完整，不使用本地数据兜底。",
+      "no_write": "只读 · 不创建 task、不派工、不写数据库",
+      "metrics": {
+        "open": "未完成 issue",
+        "planned": "已规划",
+        "blocked": "阻塞 backlog",
+        "idle": "健康空闲员工"
+      },
+      "authority": {
+        "revision": "权威版本",
+        "observed_at": "观测时间"
+      },
+      "plan_title": "当前计划证据",
+      "empty_plan": "没有返回计划条目。",
+      "wake_condition": "唤醒条件"
+    }
   },
   "resources": {
     "section_header": "资源",

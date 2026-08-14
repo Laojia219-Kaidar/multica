@@ -126,6 +126,14 @@ export type {
   UpdateProjectResourceRequest,
   ListProjectResourcesResponse,
 } from "./project";
+export type {
+  WorkConservingAuthoritySnapshot,
+  WorkConservingBlockedIssue,
+  WorkConservingMismatch,
+  WorkConservingProjection,
+  WorkConservingProjectionState,
+  WorkConservingSuggestion,
+} from "./continuous-dispatch";
 export type { PinnedItem, PinnedItemType, CreatePinRequest, ReorderPinsRequest } from "./pin";
 export type {
   GitHubInstallation,

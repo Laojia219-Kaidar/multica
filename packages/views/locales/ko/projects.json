@@ -78,7 +78,32 @@
     "no_issues_yet": "아직 이슈가 없습니다",
     "toast_link_copied": "링크를 복사했습니다",
     "toast_project_deleted": "프로젝트를 삭제했습니다",
-    "toast_move_issue_failed": "이슈를 이동하지 못했습니다"
+    "toast_move_issue_failed": "이슈를 이동하지 못했습니다",
+    "work_conserving": {
+      "title": "지속 작업 계획",
+      "status": {
+        "ready": "준비됨",
+        "blocked": "차단됨",
+        "source_gap": "소스 공백"
+      },
+      "ready_description": "완전한 Goal 스냅샷에서 나온 읽기 전용 제안입니다.",
+      "blocked_description": "계획이 차단되었습니다. 각 미완료 이슈에는 담당자와 재개 조건이 있습니다.",
+      "source_gap_description": "권위 스냅샷을 사용할 수 없거나 불완전합니다. 로컬 데이터를 대체로 사용하지 않습니다.",
+      "no_write": "읽기 전용 · task 생성, 배정, 데이터베이스 쓰기 없음",
+      "metrics": {
+        "open": "미완료 이슈",
+        "planned": "계획됨",
+        "blocked": "차단된 backlog",
+        "idle": "건강한 유휴 직원"
+      },
+      "authority": {
+        "revision": "권위 리비전",
+        "observed_at": "관측 시각"
+      },
+      "plan_title": "현재 계획 증거",
+      "empty_plan": "반환된 계획 항목이 없습니다.",
+      "wake_condition": "재개 조건"
+    }
   },
   "resources": {
     "section_header": "리소스",

@@ -5,6 +5,105 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+describe("ApiClient work-conserving projection", () => {
+  const authority = {
+    workspace_id: "00000000-0000-0000-0000-000000000001",
+    project_id: "00000000-0000-0000-0000-000000000002",
+    source_ref: "hivecosm://company-ops/goal/goal-1",
+    revision: "authority-rev-1",
+    observed_at: "2026-08-15T00:00:00Z",
+    expires_at: "2026-08-15T00:15:00Z",
+  };
+
+  const readyResponse = {
+    work_conserving: {
+      schema_version: "hivecrew.work-conserving-projection/v1",
+      state: "ready",
+      blocked: false,
+      goal_id: "goal-1",
+      authority,
+      suggestions: [{
+        issue_id: "issue-1",
+        goal_id: "goal-1",
+        employee_id: "employee-1",
+        agent_id: "agent-1",
+        runtime_id: "runtime-1",
+        score: 10,
+        receiver: "dispatch-coordinator",
+        wake_condition: "fresh evidence",
+      }],
+      blocked_backlog: [],
+      mismatch: {
+        open_issues: 1,
+        planned_issues: 1,
+        blocked_backlog: 0,
+        healthy_idle_employees: 1,
+        unmatched_healthy_idle_employees: 0,
+        executable_backlog: 1,
+        idle_backlog_mismatch: 0,
+      },
+      total: 1,
+      limit: 50,
+      offset: 0,
+      no_write: true,
+    },
+  };
+
+  it("uses the fixed read-only URL without selectors", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(readyResponse), { status: 200 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await new ApiClient("https://api.example.test")
+      .getProjectWorkConservingProjection("project-1");
+
+    const [url, init] = fetchMock.mock.calls[0]!;
+    const parsed = new URL(url as string);
+    expect(`${parsed.origin}${parsed.pathname}`).toBe(
+      "https://api.example.test/api/projects/project-1/next-actions",
+    );
+    expect(Object.fromEntries(parsed.searchParams)).toEqual({
+      projection: "work_conserving",
+    });
+    expect(init?.method ?? "GET").toBe("GET");
+  });
+
+  it("round-trips a complete projection into the camelCase view model", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(new Response(JSON.stringify(readyResponse), { status: 200 })),
+    );
+
+    await expect(
+      new ApiClient("https://api.example.test").getProjectWorkConservingProjection("project-1"),
+    ).resolves.toMatchObject({
+      state: "ready",
+      goalId: "goal-1",
+      authority: { sourceRef: authority.source_ref, revision: authority.revision },
+      suggestions: [{ issueId: "issue-1", employeeId: "employee-1" }],
+      noWrite: true,
+    });
+  });
+
+  it("fails closed to source_gap for a malformed projection", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(new Response(JSON.stringify({ work_conserving: { state: "ready" } }), { status: 200 })),
+    );
+
+    await expect(
+      new ApiClient("https://api.example.test").getProjectWorkConservingProjection("project-1"),
+    ).resolves.toMatchObject({
+      state: "source_gap",
+      blocked: true,
+      suggestions: [],
+      blockedBacklog: [],
+      noWrite: true,
+    });
+  });
+});
+
 describe("ApiClient CompanyOps owner work context", () => {
   const agentId = "d34db33f-4ef7-4fe1-a32d-8f24c57b07b1";
   const sessionId = "01972f7e-7e8d-77ef-a13d-1b0ce3e9c001";
