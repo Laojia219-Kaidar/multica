@@ -660,6 +660,13 @@ func (h *Handler) DeleteProject(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to clear project chat context")
 		return
 	}
+	if err := qtx.DeleteWorkflowOperatingProgramProjectsByProject(r.Context(), db.DeleteWorkflowOperatingProgramProjectsByProjectParams{
+		WorkspaceID: project.WorkspaceID,
+		ProjectID:   project.ID,
+	}); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to clear workflow operating program mapping")
+		return
+	}
 	if err := qtx.DeleteProject(r.Context(), db.DeleteProjectParams{
 		ID:          project.ID,
 		WorkspaceID: project.WorkspaceID,

@@ -22,6 +22,20 @@ ORDER BY created_at ASC, id ASC;
 SELECT * FROM workflow_operating_program
 WHERE workspace_id = $1 AND id = $2;
 
+-- Serialize Program deletion and Project assignment/unassignment. The
+-- application uses this lock before any mapping mutation.
+-- name: LockWorkflowOperatingProgramForMutation :one
+SELECT * FROM workflow_operating_program
+WHERE workspace_id = $1 AND id = $2
+FOR UPDATE;
+
+-- Project lifecycle remains owned by the Project authority. This lock is
+-- acquired after the Program lock by workflow mapping mutations.
+-- name: LockWorkflowProjectForOperatingProgramMutation :one
+SELECT id FROM project
+WHERE workspace_id = $1 AND id = $2
+FOR UPDATE;
+
 -- name: UpdateWorkflowOperatingProgram :one
 UPDATE workflow_operating_program
 SET name = $3, description = $4, updated_at = now()
@@ -56,3 +70,10 @@ RETURNING program_id, workspace_id, project_id;
 -- name: DeleteWorkflowOperatingProgramProject :exec
 DELETE FROM workflow_operating_program_project
 WHERE workspace_id = $1 AND program_id = $2 AND project_id = $3;
+
+-- Native Project deletion calls this inside its existing project-delete
+-- transaction after locking the Project and before deleting the Project row.
+-- It removes only HiveCrew's organizational mapping.
+-- name: DeleteWorkflowOperatingProgramProjectsByProject :exec
+DELETE FROM workflow_operating_program_project
+WHERE workspace_id = $1 AND project_id = $2;

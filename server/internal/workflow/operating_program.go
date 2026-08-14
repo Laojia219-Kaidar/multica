@@ -164,12 +164,12 @@ func (r *OperatingProgramRepository) AssignExistingProject(ctx context.Context, 
 	if err != nil {
 		return false, err
 	}
-	if _, err := r.Q.GetWorkflowOperatingProgramInWorkspace(ctx, db.GetWorkflowOperatingProgramInWorkspaceParams{WorkspaceID: ws, ID: program}); errors.Is(err, pgx.ErrNoRows) {
+	if _, err := r.Q.LockWorkflowOperatingProgramForMutation(ctx, db.LockWorkflowOperatingProgramForMutationParams{WorkspaceID: ws, ID: program}); errors.Is(err, pgx.ErrNoRows) {
 		return false, ErrOperatingProgramNotFound
 	} else if err != nil {
 		return false, err
 	}
-	if _, err := r.Q.GetProjectInWorkspace(ctx, db.GetProjectInWorkspaceParams{ID: project, WorkspaceID: ws}); errors.Is(err, pgx.ErrNoRows) {
+	if _, err := r.Q.LockWorkflowProjectForOperatingProgramMutation(ctx, db.LockWorkflowProjectForOperatingProgramMutationParams{WorkspaceID: ws, ID: project}); errors.Is(err, pgx.ErrNoRows) {
 		return false, ErrProjectNotFound
 	} else if err != nil {
 		return false, err
@@ -207,7 +207,7 @@ func (r *OperatingProgramRepository) UnassignExistingProject(ctx context.Context
 	if err != nil {
 		return false, err
 	}
-	if _, err := r.Q.GetWorkflowOperatingProgramInWorkspace(ctx, db.GetWorkflowOperatingProgramInWorkspaceParams{WorkspaceID: ws, ID: program}); errors.Is(err, pgx.ErrNoRows) {
+	if _, err := r.Q.LockWorkflowOperatingProgramForMutation(ctx, db.LockWorkflowOperatingProgramForMutationParams{WorkspaceID: ws, ID: program}); errors.Is(err, pgx.ErrNoRows) {
 		return false, ErrOperatingProgramNotFound
 	} else if err != nil {
 		return false, err
@@ -237,7 +237,7 @@ func (r *OperatingProgramRepository) Delete(ctx context.Context, workspaceID, pr
 	if err != nil {
 		return err
 	}
-	if _, err := r.Q.GetWorkflowOperatingProgramInWorkspace(ctx, db.GetWorkflowOperatingProgramInWorkspaceParams{WorkspaceID: ws, ID: id}); errors.Is(err, pgx.ErrNoRows) {
+	if _, err := r.Q.LockWorkflowOperatingProgramForMutation(ctx, db.LockWorkflowOperatingProgramForMutationParams{WorkspaceID: ws, ID: id}); errors.Is(err, pgx.ErrNoRows) {
 		return ErrOperatingProgramNotFound
 	} else if err != nil {
 		return err

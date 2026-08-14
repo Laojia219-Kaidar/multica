@@ -57,6 +57,24 @@ func (q *Queries) DeleteWorkflowOperatingProgramProjects(ctx context.Context, ar
 	return err
 }
 
+const deleteWorkflowOperatingProgramProjectsByProject = `-- name: DeleteWorkflowOperatingProgramProjectsByProject :exec
+DELETE FROM workflow_operating_program_project
+WHERE workspace_id = $1 AND project_id = $2
+`
+
+type DeleteWorkflowOperatingProgramProjectsByProjectParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	ProjectID   pgtype.UUID `json:"project_id"`
+}
+
+// Native Project deletion calls this inside its existing project-delete
+// transaction after locking the Project and before deleting the Project row.
+// It removes only HiveCrew's organizational mapping.
+func (q *Queries) DeleteWorkflowOperatingProgramProjectsByProject(ctx context.Context, arg DeleteWorkflowOperatingProgramProjectsByProjectParams) error {
+	_, err := q.db.Exec(ctx, deleteWorkflowOperatingProgramProjectsByProject, arg.WorkspaceID, arg.ProjectID)
+	return err
+}
+
 const getWorkflowOperatingProgramByIdempotency = `-- name: GetWorkflowOperatingProgramByIdempotency :one
 
 SELECT id, workspace_id, name, description, idempotency_key, created_at, updated_at FROM workflow_operating_program
@@ -262,6 +280,54 @@ func (q *Queries) ListWorkflowOperatingPrograms(ctx context.Context, workspaceID
 		return nil, err
 	}
 	return items, nil
+}
+
+const lockWorkflowOperatingProgramForMutation = `-- name: LockWorkflowOperatingProgramForMutation :one
+SELECT id, workspace_id, name, description, idempotency_key, created_at, updated_at FROM workflow_operating_program
+WHERE workspace_id = $1 AND id = $2
+FOR UPDATE
+`
+
+type LockWorkflowOperatingProgramForMutationParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	ID          pgtype.UUID `json:"id"`
+}
+
+// Serialize Program deletion and Project assignment/unassignment. The
+// application uses this lock before any mapping mutation.
+func (q *Queries) LockWorkflowOperatingProgramForMutation(ctx context.Context, arg LockWorkflowOperatingProgramForMutationParams) (WorkflowOperatingProgram, error) {
+	row := q.db.QueryRow(ctx, lockWorkflowOperatingProgramForMutation, arg.WorkspaceID, arg.ID)
+	var i WorkflowOperatingProgram
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.Name,
+		&i.Description,
+		&i.IdempotencyKey,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const lockWorkflowProjectForOperatingProgramMutation = `-- name: LockWorkflowProjectForOperatingProgramMutation :one
+SELECT id FROM project
+WHERE workspace_id = $1 AND id = $2
+FOR UPDATE
+`
+
+type LockWorkflowProjectForOperatingProgramMutationParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	ID          pgtype.UUID `json:"id"`
+}
+
+// Project lifecycle remains owned by the Project authority. This lock is
+// acquired after the Program lock by workflow mapping mutations.
+func (q *Queries) LockWorkflowProjectForOperatingProgramMutation(ctx context.Context, arg LockWorkflowProjectForOperatingProgramMutationParams) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, lockWorkflowProjectForOperatingProgramMutation, arg.WorkspaceID, arg.ID)
+	var id pgtype.UUID
+	err := row.Scan(&id)
+	return id, err
 }
 
 const updateWorkflowOperatingProgram = `-- name: UpdateWorkflowOperatingProgram :one
