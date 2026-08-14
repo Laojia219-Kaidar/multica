@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/multica-ai/multica/server/internal/continuousdispatch"
 	"github.com/multica-ai/multica/server/internal/service"
 )
 
@@ -57,6 +58,46 @@ func TestGetProjectNextActionsReturnsStrictReadOnlyEnvelope(t *testing.T) {
 	}
 	if body["schema_version"] != service.ContinuousDispatchShadowSchemaV1 {
 		t.Fatalf("body = %v", body)
+	}
+}
+
+func TestGetProjectNextActionsReturnsRealisticReadOnlyNextAction(t *testing.T) {
+	inspector := &shadowInspectorFixture{result: &service.ContinuousDispatchShadowResult{
+		SchemaVersion: service.ContinuousDispatchShadowSchemaV1,
+		WorkspaceID:   testWorkspaceID,
+		ProjectID:     "00000000-0000-0000-0000-000000000201",
+		ProjectTitle:  "Bounded adapter project",
+		Items: []service.ContinuousDispatchShadowItem{{
+			IssueID:    "00000000-0000-0000-0000-000000000301",
+			IssueTitle: "Implement read-only preview",
+			Status:     "in_progress",
+			NextAction: continuousdispatch.NextAction{
+				State: continuousdispatch.StateFallback,
+				Selected: &continuousdispatch.CandidateDecision{
+					EmployeeID: "DE-REPAIR",
+					AgentID:    "00000000-0000-0000-0000-000000000401",
+					Eligible:   true,
+				},
+			},
+		}},
+		Total: 1, Limit: 50, Offset: 0,
+	}}
+	h := &Handler{ContinuousDispatchShadow: inspector}
+	req := newRequest(http.MethodGet, "/api/projects/00000000-0000-0000-0000-000000000201/next-actions?workspace_id="+testWorkspaceID, nil)
+	req = withURLParam(req, "id", "00000000-0000-0000-0000-000000000201")
+	w := httptest.NewRecorder()
+
+	h.GetProjectNextActions(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", w.Code, w.Body.String())
+	}
+	var body service.ContinuousDispatchShadowResult
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode read-only envelope: %v", err)
+	}
+	if len(body.Items) != 1 || body.Items[0].NextAction.State != continuousdispatch.StateFallback ||
+		body.Items[0].NextAction.Selected == nil || body.Items[0].NextAction.Selected.EmployeeID != "DE-REPAIR" {
+		t.Fatalf("next action = %+v, want realistic read-only fallback", body.Items[0].NextAction)
 	}
 }
 

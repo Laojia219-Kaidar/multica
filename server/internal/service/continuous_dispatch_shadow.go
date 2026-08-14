@@ -261,7 +261,11 @@ func (s *ContinuousDispatchShadowService) buildCandidates(
 			continue
 		}
 		agent, ok := agents[employee.HiveCrewAgentID]
-		if !ok || !agent.RuntimeID.Valid {
+		// Archived agents are no longer executable workforce candidates. The
+		// directory/authority projection may still contain a stale employee
+		// row, so this service must fail closed locally instead of relying on
+		// that projection to filter the archived state.
+		if !ok || agent.ArchivedAt.Valid || !agent.RuntimeID.Valid {
 			continue
 		}
 		runtime, ok := runtimes[shadowUUIDString(agent.RuntimeID)]

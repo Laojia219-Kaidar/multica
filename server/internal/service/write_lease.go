@@ -53,20 +53,20 @@ const (
 
 // WriteLease is the in-memory representation of a write_lease row.
 type WriteLease struct {
-	ID                uuid.UUID
-	MutexKey          string
-	HolderID          string
-	LeaseToken        uuid.UUID
-	FenceGeneration   int64
-	Status            WriteLeaseStatus
-	AcquiredAt        time.Time
-	ExpiresAt         *time.Time
-	RenewedCount      int32
-	ReleasedAt        *time.Time
-	LastCancelReason  *string
-	LastCancelledAt   *time.Time
-	CreatedAt         time.Time
-	UpdatedAt         time.Time
+	ID               uuid.UUID
+	MutexKey         string
+	HolderID         string
+	LeaseToken       uuid.UUID
+	FenceGeneration  int64
+	Status           WriteLeaseStatus
+	AcquiredAt       time.Time
+	ExpiresAt        *time.Time
+	RenewedCount     int32
+	ReleasedAt       *time.Time
+	LastCancelReason *string
+	LastCancelledAt  *time.Time
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
 }
 
 // ErrLeaseBusy is returned when a lease cannot be acquired because another
@@ -125,6 +125,7 @@ WHERE mutex_key        = $1
   AND lease_token      = $2
   AND fence_generation = $4
   AND status           = 'held'
+  AND expires_at        > now()
 RETURNING *;
 `
 
@@ -186,7 +187,8 @@ FROM write_lease
 WHERE mutex_key        = $1
   AND lease_token      = $2
   AND fence_generation = $3
-  AND status           = 'held';
+  AND status           = 'held'
+  AND expires_at        > now();
 `
 
 // ---------------------------------------------------------------------------

@@ -139,6 +139,53 @@ func TestContinuousDispatchShadowReturnsFallbackFromRealSourceRows(t *testing.T)
 	}
 }
 
+func TestContinuousDispatchShadowExcludesArchivedAgentAndFailsClosed(t *testing.T) {
+	fixture, workspaceID, projectID, _, primaryID, fallbackID := validShadowFixture(t)
+	fixture.agents[0].ArchivedAt = pgtype.Timestamptz{Time: shadowNow.Add(-time.Hour), Valid: true}
+	service := NewContinuousDispatchShadowService(
+		fixture,
+		shadowDirectoryFixture{result: employeeDirectory(primaryID, fallbackID)},
+		shadowQuotaFixture{
+			uuidString(primaryID):  {State: routescore.QuotaFresh, CheckedAt: shadowNow.Add(-time.Minute)},
+			uuidString(fallbackID): {State: routescore.QuotaFresh, CheckedAt: shadowNow.Add(-time.Minute)},
+		},
+		shadowLeaseFixture{leases: map[string]*WriteLease{}},
+	).WithClock(fixedShadowClock{now: shadowNow})
+
+	agentsByID := map[string]db.Agent{}
+	for _, agent := range fixture.agents {
+		agentsByID[uuidString(agent.ID)] = agent
+	}
+	runtimesByID := map[string]db.AgentRuntime{}
+	for _, runtime := range fixture.runtimes {
+		runtimesByID[uuidString(runtime.ID)] = runtime
+	}
+	candidates, _, quotaComplete := service.buildCandidates(
+		context.Background(), employeeDirectory(primaryID, fallbackID).Items,
+		agentsByID, runtimesByID, map[string]int{},
+	)
+	if !quotaComplete {
+		t.Fatal("quota fixture should be complete")
+	}
+	for _, candidate := range candidates {
+		if candidate.EmployeeID == "DE-PRIMARY" {
+			t.Fatalf("archived agent entered candidate set: %+v", candidate)
+		}
+	}
+	if len(candidates) != 1 || candidates[0].EmployeeID != "DE-FALLBACK" {
+		t.Fatalf("candidates = %+v, want only fallback", candidates)
+	}
+
+	got, err := service.InspectProject(context.Background(), workspaceID, projectID, 50, 0)
+	if err != nil {
+		t.Fatalf("InspectProject: %v", err)
+	}
+	if got.Items[0].NextAction.State != continuousdispatch.StateBlocked ||
+		got.Items[0].NextAction.Reasons[0] != continuousdispatch.Reason("agent_archived") {
+		t.Fatalf("action = %+v, want archived-agent fail-closed", got.Items[0].NextAction)
+	}
+}
+
 func TestContinuousDispatchShadowFailsClosedWhenQuotaSourceIsMissing(t *testing.T) {
 	fixture, workspaceID, projectID, _, primaryID, fallbackID := validShadowFixture(t)
 	service := NewContinuousDispatchShadowService(

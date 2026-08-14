@@ -506,6 +506,40 @@ func TestWriteLease_ReleaseThenStaleRejected(t *testing.T) {
 	}
 }
 
+// An expired row can remain in status=held until the sweeper runs. That
+// state must not be treated as a live lease by either mutation or readback;
+// both operations must apply the database clock atomically with fencing.
+func TestWriteLease_ExpiredWithoutSweepRejectsRenewAndVerifyHeld(t *testing.T) {
+	ctx := context.Background()
+	pool := newWriteLeaseTestPool(t)
+	svc := NewWriteLeaseService(pool)
+	key := uniqueMutexKey(t)
+	cleanupLease(t, pool, key)
+
+	lease, err := svc.Acquire(ctx, key, "expired-worker", 30*time.Second)
+	if err != nil {
+		t.Fatalf("acquire: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE write_lease SET expires_at = now() - interval '2 seconds' WHERE mutex_key = $1`, key); err != nil {
+		t.Fatalf("expire lease without sweep: %v", err)
+	}
+
+	if _, err := svc.Renew(ctx, key, lease.LeaseToken, lease.FenceGeneration, 30*time.Second); !errors.Is(err, ErrLeaseNotHeld) {
+		t.Fatalf("renew on an unswept expired lease must be rejected, got %v", err)
+	}
+	if _, err := svc.VerifyHeld(ctx, key, lease.LeaseToken, lease.FenceGeneration); !errors.Is(err, ErrLeaseNotHeld) {
+		t.Fatalf("verify on an unswept expired lease must be rejected, got %v", err)
+	}
+
+	current, err := svc.Read(ctx, key)
+	if err != nil {
+		t.Fatalf("read expired lease: %v", err)
+	}
+	if current.Status != WriteLeaseHeld || current.RenewedCount != 0 {
+		t.Fatalf("expired rejection must not mutate unswept row: status=%s renewed_count=%d", current.Status, current.RenewedCount)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Expired-row concurrent acquire: a lapsed held row is reclaimed directly
 // by the acquire UPSERT (no sweep needed), and exactly one racer wins.
