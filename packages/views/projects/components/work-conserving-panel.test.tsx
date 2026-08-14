@@ -71,7 +71,7 @@ describe("WorkConservingPanel", () => {
     mockQuery.result = { data: projection(state), isLoading: false, isError: false };
     renderPanel();
     expect(screen.getByText(label)).toBeInTheDocument();
-    expect(screen.getByText(/Read-only/)).toBeInTheDocument();
+    expect(screen.getByText("Read-only · no Task, dispatch, or database write")).toBeInTheDocument();
     expect(screen.queryByRole("button")).toBeNull();
   });
 
