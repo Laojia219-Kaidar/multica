@@ -135,3 +135,56 @@ RETURNING *;
 -- name: GetArtifactPromotionClaim :one
 SELECT * FROM artifact_promotion_claim
 WHERE workspace_id = @workspace_id AND promotion_id = @promotion_id;
+
+-- Storage-location rows are a replica placement ledger, not Artifact lifecycle
+-- events. Every read is explicitly workspace-scoped and can be addressed by
+-- the formal Outcome identity (outcome_id) or a candidate revision.
+-- name: InsertArtifactReplicaLocation :one
+INSERT INTO artifact_replica_location (
+    id, workspace_id, outcome_id, candidate_id, candidate_revision,
+    location_class, location_id, storage_id, object_ref, state,
+    digest, metadata_digest, size_bytes, retention_hint, metadata
+) VALUES (
+    @id, @workspace_id, @outcome_id, @candidate_id, @candidate_revision,
+    @location_class, @location_id, @storage_id, @object_ref, @state,
+    @digest, @metadata_digest, @size_bytes, @retention_hint, @metadata
+)
+ON CONFLICT (workspace_id, outcome_id, candidate_id, location_class, location_id)
+DO NOTHING
+RETURNING *;
+
+-- name: GetArtifactReplicaLocation :one
+SELECT * FROM artifact_replica_location
+WHERE workspace_id = @workspace_id
+  AND id = @id;
+
+-- name: GetArtifactReplicaLocationByIdentity :one
+SELECT * FROM artifact_replica_location
+WHERE workspace_id = @workspace_id
+  AND outcome_id = @outcome_id
+  AND candidate_id = @candidate_id
+  AND location_class = @location_class
+  AND location_id = @location_id;
+
+-- name: UpdateArtifactReplicaLocationState :one
+UPDATE artifact_replica_location
+SET state = @state,
+    digest = @digest,
+    metadata_digest = @metadata_digest,
+    size_bytes = @size_bytes,
+    updated_at = now()
+WHERE workspace_id = @workspace_id
+  AND id = @id
+RETURNING *;
+
+-- name: ListArtifactReplicaLocationsByOutcome :many
+SELECT * FROM artifact_replica_location
+WHERE workspace_id = @workspace_id
+  AND outcome_id = @outcome_id
+ORDER BY created_at ASC, id ASC;
+
+-- name: ListArtifactReplicaLocationsByCandidate :many
+SELECT * FROM artifact_replica_location
+WHERE workspace_id = @workspace_id
+  AND candidate_id = @candidate_id
+ORDER BY created_at ASC, id ASC;

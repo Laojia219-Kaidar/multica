@@ -57,11 +57,15 @@ SELECT
     latest_event_at.max_event_at AS latest_event_at,
     rtc.rework_task_count AS rework_task_count
 FROM assignment_dispatch_receipt adr
-LEFT JOIN issue i ON i.id = adr.issue_id
+LEFT JOIN issue i ON i.id = adr.issue_id AND i.workspace_id = adr.workspace_id
 LEFT JOIN workspace w ON w.id = adr.workspace_id
-LEFT JOIN agent a ON a.id = adr.local_agent_id
+LEFT JOIN agent a ON a.id = adr.local_agent_id AND a.workspace_id = adr.workspace_id
 LEFT JOIN agent_task_queue t ON t.id = adr.initial_task_id
+    AND t.issue_id = adr.issue_id AND i.id = t.issue_id
 LEFT JOIN execution_receipt er ON er.task_id = adr.initial_task_id
+    AND er.workspace_id = adr.workspace_id
+    AND er.issue_id = adr.issue_id
+    AND er.assignment_command_id = adr.command_id
 LEFT JOIN LATERAL (
     SELECT ac.id, ac.revision, ac.durable_object_ref, ac.digest, ac.content_type
     FROM artifact_candidate ac
@@ -90,7 +94,7 @@ LEFT JOIN LATERAL (
 LEFT JOIN LATERAL (
     SELECT COUNT(*)::int AS rework_task_count
     FROM agent_task_queue atq
-    WHERE atq.issue_id = adr.issue_id
+    WHERE atq.issue_id = adr.issue_id AND i.id = atq.issue_id
       AND atq.trigger_evidence_kind = 'artifact_revision'
       AND atq.trigger_evidence_ref_id = (
           SELECT ae2.id FROM artifact_event ae2
@@ -102,7 +106,7 @@ LEFT JOIN LATERAL (
 ) rtc ON true
 LEFT JOIN agent_task_queue ct ON ct.id = COALESCE(
     (SELECT atq.id FROM agent_task_queue atq
-     WHERE atq.issue_id = adr.issue_id
+     WHERE atq.issue_id = adr.issue_id AND i.id = atq.issue_id
        AND atq.trigger_evidence_kind = 'artifact_revision'
        AND atq.trigger_evidence_ref_id = (
            SELECT ae2.id FROM artifact_event ae2
@@ -115,7 +119,11 @@ LEFT JOIN agent_task_queue ct ON ct.id = COALESCE(
     lc.id,
     adr.initial_task_id
 )
+    AND ct.issue_id = adr.issue_id AND i.id = ct.issue_id
 LEFT JOIN execution_receipt cer ON cer.task_id = ct.id
+    AND cer.workspace_id = adr.workspace_id
+    AND cer.issue_id = adr.issue_id
+    AND cer.assignment_command_id = adr.command_id
 WHERE adr.workspace_id = $1
     AND ($2::text IS NULL OR
          i.title ILIKE '%' || $2 || '%' OR

@@ -226,6 +226,26 @@ type ArtifactPromotionClaim struct {
 	PayloadDigest pgtype.Text        `json:"payload_digest"`
 }
 
+type ArtifactReplicaLocation struct {
+	ID                pgtype.UUID        `json:"id"`
+	WorkspaceID       pgtype.UUID        `json:"workspace_id"`
+	OutcomeID         pgtype.UUID        `json:"outcome_id"`
+	CandidateID       pgtype.UUID        `json:"candidate_id"`
+	CandidateRevision int32              `json:"candidate_revision"`
+	LocationClass     string             `json:"location_class"`
+	LocationID        string             `json:"location_id"`
+	StorageID         string             `json:"storage_id"`
+	ObjectRef         string             `json:"object_ref"`
+	State             string             `json:"state"`
+	Digest            string             `json:"digest"`
+	MetadataDigest    string             `json:"metadata_digest"`
+	SizeBytes         int64              `json:"size_bytes"`
+	RetentionHint     string             `json:"retention_hint"`
+	Metadata          []byte             `json:"metadata"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
+}
+
 type AssignmentDispatchReceipt struct {
 	CommandID         pgtype.UUID        `json:"command_id"`
 	WorkspaceID       pgtype.UUID        `json:"workspace_id"`
