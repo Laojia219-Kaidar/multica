@@ -71,6 +71,13 @@ describe("WorkflowWorkbench", () => {
     expect(screen.getByTestId("workflow-stage-progress-plc-1")).not.toHaveTextContent("已完成");
   });
 
+  it("renders a terminal stage index as completion rather than a nonexistent next stage", () => {
+    render(<WorkflowWorkbench instances={[{ ...inst, stage_index: 2, status: "completed" }]} definitions={[def]} />);
+    expect(screen.getByTestId("workflow-stage-progress-plc-1")).toHaveTextContent("当前阶段：流程完成 · 已完成");
+    expect(screen.getByTestId("workflow-stage-progress-plc-1")).toHaveTextContent("2/2");
+    expect(screen.getByText("阶段：流程完成 · 标准")).toBeDefined();
+  });
+
   it("keeps loading and error states distinct from an empty response", () => {
     render(
       <WorkflowWorkbench

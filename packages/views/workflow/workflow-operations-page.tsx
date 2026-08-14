@@ -18,6 +18,7 @@ export interface WorkflowOperationsPageProps {
   projects: OperatingProject[];
   definitionDrafts?: WorkflowDefinitionDraft[];
   runtime?: WorkflowRuntime;
+  runtimeGraph?: WorkflowDefinitionDraft["graph"];
   artifacts?: ArtifactSummary[];
   outcomes?: CompanyOpsOutcomeSummary[];
   outcomesLoading?: boolean;
@@ -86,6 +87,7 @@ export function WorkflowOperationsPage({
   projects,
   definitionDrafts = [],
   runtime,
+  runtimeGraph,
   artifacts = [],
   outcomes = [],
   outcomesLoading = false,
@@ -163,9 +165,9 @@ export function WorkflowOperationsPage({
             {sectionLabels.map(({ id, label, icon: Icon }) => <button type="button" role="tab" aria-selected={section === id} key={id} onClick={() => selectSection(id)} className={`inline-flex items-center gap-1 rounded px-2 py-1.5 text-xs hover:bg-accent ${section === id ? "bg-accent font-medium" : "text-muted-foreground"}`}><Icon className="h-3.5 w-3.5" />{label}</button>)}
           </div>
           {!selection ? <EmptyProjectState /> : selection.kind === "program" && section === "settings" && program ? <WorkflowProgramSettings program={program} projects={projects} onUpdateProgram={programManagement?.onUpdateProgram} programUpdateState={programManagement?.programUpdateState} programUpdateError={programManagement?.programUpdateError} onDeleteProgram={programManagement?.onDeleteProgram} programDeletionState={programManagement?.programDeletionState} programDeletionError={programManagement?.programDeletionError} onAssignProject={programManagement?.onAssignProject} onUnassignProject={programManagement?.onUnassignProject} projectMutationState={programManagement?.projectMutationState} projectMutationError={programManagement?.projectMutationError} /> : section === "workflow" && project ? <WorkflowDefinitionsPanel project={project} drafts={projectDrafts} selectedDraft={selectedDraft} onSelectDefinition={onSelectDefinition} onCreateDefinition={onCreateDefinition} onChangeDefinition={onChangeDefinition} onPublishDefinition={onPublishDefinition} publishReceipt={publishReceipt} publishError={publishError} /> : section === "instances" ? <WorkflowWorkbench instances={instances} definitions={definitions} {...workbench} /> : section === "artifacts" && !project ? <NoProjectArtifactState /> : section === "artifacts" ? <ArtifactList artifacts={artifacts} outcomes={outcomes} loading={outcomesLoading} sourceError={outcomesError} outcomeHref={outcomeHref} artifactLocationsByOutcome={artifactLocationsByOutcome} /> : <ProjectSection section={section} project={project} program={program} />}
-          {runtime && section === "instances" ? <div className="mt-4"><WorkflowRuntimeGraph graph={selectedDraft?.graph ?? { nodes: [], edges: [] }} runtime={runtime} /></div> : null}
+          {runtime && section === "instances" ? <div className="mt-4"><WorkflowRuntimeGraph graph={runtimeGraph ?? selectedDraft?.graph ?? { nodes: [], edges: [] }} runtime={runtime} /></div> : null}
         </main>
-        {runtime && section !== "instances" ? <aside className="hidden w-72 shrink-0 border-l p-3 xl:block" data-testid="workflow-inspector"><WorkflowRuntimeGraph graph={selectedDraft?.graph ?? { nodes: [], edges: [] }} runtime={runtime} /></aside> : null}
+        {runtime && section !== "instances" ? <aside className="hidden w-72 shrink-0 border-l p-3 xl:block" data-testid="workflow-inspector"><WorkflowRuntimeGraph graph={runtimeGraph ?? selectedDraft?.graph ?? { nodes: [], edges: [] }} runtime={runtime} /></aside> : null}
       </div>
     </div>
   );

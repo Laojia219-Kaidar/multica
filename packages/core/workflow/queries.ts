@@ -7,6 +7,7 @@ import { api } from "../api";
 export const workflowKeys = {
   all: (workspaceId: string) => ["workflow", workspaceId] as const,
   instances: (workspaceId: string) => [...workflowKeys.all(workspaceId), "instances"] as const,
+  instanceEvents: (workspaceId: string, instanceId: string) => [...workflowKeys.instances(workspaceId), instanceId, "events"] as const,
   definitions: (workspaceId: string) => [...workflowKeys.all(workspaceId), "definitions"] as const,
   operatingPrograms: (workspaceId: string) => [...workflowKeys.all(workspaceId), "operating-programs"] as const,
 };
@@ -25,6 +26,15 @@ export function workflowDefinitionListOptions(workspaceId: string) {
     queryKey: workflowKeys.definitions(workspaceId),
     queryFn: () => api.listPublishedWorkflowDefinitionVersions(),
     refetchInterval: 10_000,
+    placeholderData: (previous) => previous,
+  });
+}
+
+export function workflowInstanceEventListOptions(workspaceId: string, instanceId: string) {
+  return queryOptions({
+    queryKey: workflowKeys.instanceEvents(workspaceId, instanceId),
+    queryFn: () => api.workflowInstanceEvents(instanceId),
+    refetchInterval: 5_000,
     placeholderData: (previous) => previous,
   });
 }

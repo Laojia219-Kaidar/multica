@@ -61,13 +61,16 @@ export interface WorkflowWorkbenchProps {
   onRetryDefinitions?: () => void;
   onRetryRuntimes?: () => void;
   onRetryReceipts?: () => void;
+  selectedInstanceId?: string;
+  onSelectInstance?: (instanceId: string) => void;
   /** Compatibility seam for the future published-DAG instance endpoint. */
   onCreateInstance?: (definition: WorkflowDefinition) => void | Promise<void>;
   instanceCreationState?: WorkflowInstanceCreationState;
   instanceCreationError?: string;
 }
 
-function stageName(def: WorkflowDefinition | undefined, idx: number): string {
+function stageName(def: WorkflowDefinition | undefined, idx: number, status?: WorkflowInstance["status"]): string {
+  if (status === "completed" && def && idx >= def.stages.length) return "流程完成";
   if (!def || idx < 0 || idx >= def.stages.length) return `阶段 ${idx + 1}`;
   return def.stages[idx]?.name ?? `阶段 ${idx + 1}`;
 }
@@ -92,7 +95,7 @@ function ErrorState({ message, onRetry, testId }: { message: string; onRetry?: (
 function InstanceStageReadback({ instance, definition, runtime }: { instance: WorkflowInstance; definition?: WorkflowDefinition; runtime?: WorkflowRuntime }) {
   const nodeAwaitingApproval = runtime?.nodes.some((node) => node.status === "waiting_approval") ?? false;
   const effectiveStatus = nodeAwaitingApproval ? "waiting_approval" : instance.status;
-  const currentStage = stageName(definition, instance.stage_index);
+  const currentStage = stageName(definition, instance.stage_index, instance.status);
 
   return (
     <div className="mt-3 rounded-md border bg-muted/20 p-3" data-testid={`workflow-stage-progress-${instance.id}`}>
@@ -101,7 +104,7 @@ function InstanceStageReadback({ instance, definition, runtime }: { instance: Wo
         <span className={`rounded-full border px-2 py-0.5 ${statusTone(effectiveStatus)}`}>
           当前阶段：{currentStage} · {INSTANCE_STATUS_LABEL[effectiveStatus] ?? NODE_STATUS_LABEL[effectiveStatus as WorkflowNodeStatus] ?? effectiveStatus}
         </span>
-        <span className="text-muted-foreground">{instance.stage_index + 1}/{definition?.stages.length ?? "?"}</span>
+        <span className="text-muted-foreground">{definition ? `${Math.min(instance.stage_index + 1, definition.stages.length)}/${definition.stages.length}` : "?"}</span>
       </div>
       {definition ? (
         <div className="mt-2 flex flex-wrap gap-1.5" aria-label="工作流阶段列表">
@@ -154,6 +157,8 @@ export function WorkflowWorkbench({
   onRetryDefinitions,
   onRetryRuntimes,
   onRetryReceipts,
+  selectedInstanceId,
+  onSelectInstance,
   onCreateInstance,
   instanceCreationState,
   instanceCreationError,
@@ -188,15 +193,16 @@ export function WorkflowWorkbench({
               const definition = definitions.find((item) => item.id === instance.definition_id);
               const runtime = runtimeByInstance.get(instance.id);
               return (
-                <article key={instance.id} className="rounded-md border px-3 py-3 text-sm" data-testid={`workflow-instance-${instance.id}`}>
+                <article key={instance.id} className={`rounded-md border px-3 py-3 text-sm ${selectedInstanceId === instance.id ? "border-primary/60 bg-primary/5" : ""}`} data-testid={`workflow-instance-${instance.id}`}>
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="font-mono">{instance.id}</span>
                     <span className={`rounded-full border px-2 py-0.5 text-xs ${statusTone(instance.status)}`}>{INSTANCE_STATUS_LABEL[instance.status] ?? instance.status}</span>
                     {runtime?.nodes.some((node) => node.status === "waiting_approval") ? <span className={`rounded-full border px-2 py-0.5 text-xs ${statusTone("waiting_approval")}`}>等待审批</span> : null}
                     <span className="ml-auto text-xs text-muted-foreground">定义 v{instance.definition_version}</span>
+                    {onSelectInstance ? <button type="button" className="rounded border px-2 py-1 text-[11px] hover:bg-accent" aria-pressed={selectedInstanceId === instance.id} onClick={() => onSelectInstance(instance.id)}>查看运行图</button> : null}
                   </div>
                   <div className="mt-1 text-xs text-muted-foreground">上下文：{instance.context.project_id ?? instance.context.issue_id ?? instance.context.outcome_id ?? "未提供"} · 风险：{RISK_LABEL[definition?.risk ?? "standard"]}</div>
-                  <div className="mt-1 text-xs text-muted-foreground">阶段：{stageName(definition, instance.stage_index)} · {RISK_LABEL[definition?.risk ?? "standard"]}</div>
+                  <div className="mt-1 text-xs text-muted-foreground">阶段：{stageName(definition, instance.stage_index, instance.status)} · {RISK_LABEL[definition?.risk ?? "standard"]}</div>
                   <InstanceStageReadback instance={instance} definition={definition} runtime={runtime} />
                   {runtimesState === "loading" ? <p className="mt-2 text-[11px] text-muted-foreground">正在加载节点运行态…</p> : null}
                   {runtimesState === "error" ? <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-red-600 dark:text-red-300"><span>节点运行态加载失败：{runtimesError}</span>{onRetryRuntimes ? <button type="button" className="rounded border px-2 py-1 hover:bg-red-500/10" onClick={onRetryRuntimes}>重试读取</button> : null}</div> : null}

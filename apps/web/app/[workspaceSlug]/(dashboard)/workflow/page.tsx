@@ -13,6 +13,7 @@ import { useCurrentWorkspace, useWorkspacePaths } from "@multica/core/paths";
 import { projectListOptions } from "@multica/core/projects/queries";
 import {
   workflowDefinitionListOptions,
+  workflowInstanceEventListOptions,
   workflowInstanceListOptions,
   workflowKeys,
   workflowOperatingProgramListOptions,
@@ -21,7 +22,6 @@ import type {
   OperatingProgram,
   OperatingProject,
   WorkflowAgentBinding,
-  WorkflowReceiptView,
   WorkflowDefinitionDraft,
   WorkflowGraph,
 } from "@multica/core/workflow";
@@ -33,6 +33,7 @@ import {
 } from "@multica/views/workflow";
 import { outcomeArtifactLocationsOptions, outcomesListOptions } from "@multica/views/outcomes";
 import { scopeWorkflowOperations } from "./workflow-scope";
+import { toWorkflowReceiptViews, toWorkflowRuntimeReadback } from "./workflow-runtime-readback";
 
 const SECTIONS: WorkflowOperationsSection[] = [
   "overview",
@@ -203,7 +204,6 @@ export default function Page() {
   const [localDrafts, setLocalDrafts] = useState<WorkflowDefinitionDraft[]>([]);
   const [publishReceipt, setPublishReceipt] = useState<{ definitionId: string; version: number; changed: boolean } | null>(null);
   const [publishError, setPublishError] = useState<string | null>(null);
-  const [controlReceipts, setControlReceipts] = useState<WorkflowReceiptView[]>([]);
   const projectsQuery = useQuery({
     ...projectListOptions(workspace?.id ?? "workflow-workspace-unresolved"),
     enabled: Boolean(workspace?.id),
@@ -245,6 +245,32 @@ export default function Page() {
     () => scopeWorkflowOperations(selection, projection.projects, definitionsQuery.data ?? [], instancesQuery.data ?? []),
     [definitionsQuery.data, instancesQuery.data, projection.projects, selection],
   );
+  const instanceEventQueries = useQueries({
+    queries: scopedOperations.instances.map((instance) => ({
+      ...workflowInstanceEventListOptions(workspace?.id ?? "workflow-workspace-unresolved", instance.id),
+      enabled: Boolean(workspace?.id && selectedProject),
+    })),
+  });
+  const durableReceipts = useMemo(
+    () => instanceEventQueries.flatMap((query) => toWorkflowReceiptViews(query.data ?? [])),
+    [instanceEventQueries],
+  );
+  const runtimes = useMemo(
+    () => scopedOperations.instances.flatMap((instance) => {
+      const definition = scopedOperations.definitions.find((item) => item.definition_id === instance.definition_id && item.version === instance.definition_version);
+      const runtime = toWorkflowRuntimeReadback(instance, definition);
+      return runtime ? [runtime] : [];
+    }),
+    [scopedOperations.definitions, scopedOperations.instances],
+  );
+  const requestedInstanceId = searchParams.get("instance");
+  const selectedInstance = requestedInstanceId
+    ? scopedOperations.instances.find((instance) => instance.id === requestedInstanceId)
+    : scopedOperations.instances[0];
+  const selectedRuntime = selectedInstance ? runtimes.find((runtime) => runtime.instanceId === selectedInstance.id) : undefined;
+  const selectedRuntimeDefinition = selectedRuntime
+    ? definitionDrafts.find((definition) => definition.id === selectedRuntime.definitionId && definition.version === selectedRuntime.version)
+    : undefined;
   const outcomesQuery = useQuery({
     ...outcomesListOptions(workspace?.id ?? "workflow-workspace-unresolved", {
       project_id: selectedProject?.formalProjectId,
@@ -317,22 +343,10 @@ export default function Page() {
       });
     },
     onSuccess: (instance) => {
-      const receipt = instance.receipt;
-      if (receipt) {
-        setControlReceipts((current) => [
-          ...current.filter((currentReceipt) => currentReceipt.id !== `${instance.id}:${receipt.idempotency_key}`),
-          {
-            id: `${instance.id}:${receipt.idempotency_key}`,
-            instanceId: instance.id,
-            kind: "control",
-            status: receipt.accepted ? "accepted" : "rejected",
-            label: receipt.command,
-            idempotencyKey: receipt.idempotency_key,
-            reason: receipt.reason || undefined,
-          },
-        ]);
+      if (workspace?.id) {
+        void queryClient.invalidateQueries({ queryKey: workflowKeys.instances(workspace.id) });
+        void queryClient.invalidateQueries({ queryKey: workflowKeys.instanceEvents(workspace.id, instance.id) });
       }
-      if (workspace?.id) void queryClient.invalidateQueries({ queryKey: workflowKeys.instances(workspace.id) });
     },
   });
 
@@ -386,12 +400,17 @@ export default function Page() {
   if (requestedProjectId && !selectedProject) {
     return <WorkspaceSourceState title="项目未在当前工作区被观察到" detail="深链中的 project ID 不属于当前正式项目列表；系统没有自动替换为第一条项目。" />;
   }
+  if (requestedInstanceId && !selectedInstance) {
+    return <WorkspaceSourceState title="运行实例未在当前项目范围被观察到" detail="深链中的 instance ID 不属于当前 L4 项目的已持久化工作流实例；系统没有替换为另一条实例。" />;
+  }
 
   return (
     <WorkflowOperationsPage
       programs={projection.programs}
       projects={projection.projects}
       definitionDrafts={definitionDrafts}
+      runtime={selectedRuntime}
+      runtimeGraph={selectedRuntimeDefinition?.graph}
       definitions={scopedOperations.definitions.map(toLegacyDefinition)}
       instances={scopedOperations.instances}
       outcomes={outcomesQuery.data?.items ?? []}
@@ -458,8 +477,16 @@ export default function Page() {
         },
       }}
       workbench={{
-        receipts: controlReceipts,
-        receiptsState: "ready",
+        runtimes,
+        runtimesState: "ready",
+        selectedInstanceId: selectedInstance?.id,
+        onSelectInstance: (instanceId) => updateSearch({ instance: instanceId, section: "instances" }),
+        receipts: durableReceipts,
+        receiptsState: instanceEventQueries.some((query) => query.isError) ? "error" : instanceEventQueries.some((query) => query.isLoading) ? "loading" : "ready",
+        receiptsError: instanceEventQueries.find((query) => query.isError)?.error instanceof Error ? instanceEventQueries.find((query) => query.isError)?.error.message : undefined,
+        onRetryReceipts: () => {
+          void Promise.all(instanceEventQueries.map((query) => query.refetch()));
+        },
         onCreateInstance: selectedProject ? async (definition) => {
           await startPublishedGraphMutation.mutateAsync(definition);
         } : undefined,
