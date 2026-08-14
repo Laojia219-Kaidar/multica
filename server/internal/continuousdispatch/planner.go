@@ -42,6 +42,7 @@ const (
 	ReasonWIPUnknownEvidence          Reason = "wip_unknown_evidence"
 	ReasonCandidateWIPUnknown         Reason = "candidate_wip_unknown"
 	ReasonCandidateWIPExhausted       Reason = "candidate_wip_exhausted"
+	ReasonReviewSourceTaskMissing     Reason = "review_source_task_missing"
 	ReasonReviewAuthorEvidenceMissing Reason = "review_author_evidence_missing"
 	ReasonLeaseEvidenceMissing        Reason = "write_lease_evidence_missing"
 	ReasonLeaseUnavailable            Reason = "write_lease_unavailable"

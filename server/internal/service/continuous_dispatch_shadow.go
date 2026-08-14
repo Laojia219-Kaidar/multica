@@ -66,9 +66,13 @@ type ContinuousDispatchShadowSources struct {
 }
 
 type ContinuousDispatchShadowItem struct {
-	IssueID          string                                `json:"issue_id"`
-	IssueTitle       string                                `json:"issue_title"`
-	Status           string                                `json:"status"`
+	IssueID    string `json:"issue_id"`
+	IssueTitle string `json:"issue_title"`
+	Status     string `json:"status"`
+	// SourceTaskID is the completed implementation Task that produced the
+	// candidate under review. It is provenance only; clients cannot use it to
+	// choose a reviewer or bypass the server-side route planner.
+	SourceTaskID     string                                `json:"source_task_id,omitempty"`
 	DispatchIdentity continuousdispatch.DispatchIdentity   `json:"dispatch_identity"`
 	Generation       continuousdispatch.GenerationEvidence `json:"generation"`
 	NextAction       continuousdispatch.NextAction         `json:"next_action"`
@@ -230,6 +234,7 @@ func (s *ContinuousDispatchShadowService) InspectProject(
 		})
 		items = append(items, ContinuousDispatchShadowItem{
 			IssueID: shadowUUIDString(issue.ID), IssueTitle: issue.Title, Status: issue.Status,
+			SourceTaskID:     sourceTaskID(tasks),
 			DispatchIdentity: identity, Generation: generation, NextAction: next,
 		})
 	}
@@ -244,6 +249,18 @@ func (s *ContinuousDispatchShadowService) InspectProject(
 		},
 		Items: items, Total: int(total), Limit: limit, Offset: offset,
 	}, nil
+}
+
+// sourceTaskID returns the canonical completed implementation Task used as
+// review provenance. It deliberately does not infer provenance from an open
+// reviewer Task or from an Issue's assignee.
+func sourceTaskID(tasks []db.AgentTaskQueue) string {
+	for _, task := range tasks {
+		if task.Status == "completed" && task.ID.Valid {
+			return shadowUUIDString(task.ID)
+		}
+	}
+	return ""
 }
 
 func (s *ContinuousDispatchShadowService) buildCandidates(
