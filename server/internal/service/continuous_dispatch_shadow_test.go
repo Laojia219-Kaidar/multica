@@ -36,10 +36,10 @@ func (f *shadowStoreFixture) CountIssuesByProject(context.Context, pgtype.UUID) 
 	return int64(len(f.issues)), nil
 }
 
-func (f *shadowStoreFixture) CountIssuesByProjectAndStatus(_ context.Context, _ pgtype.UUID, status string) (int64, error) {
+func (f *shadowStoreFixture) CountIssuesByProjectAndStatus(_ context.Context, params db.CountIssuesByProjectAndStatusParams) (int64, error) {
 	var count int64
 	for _, issue := range f.issues {
-		if issue.Status == status {
+		if issue.Status == params.Status {
 			count++
 		}
 	}

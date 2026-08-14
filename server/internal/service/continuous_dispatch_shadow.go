@@ -43,8 +43,12 @@ type ContinuousDispatchShadowStore interface {
 // still use the general shadow inspector; review dispatch uses the filtered
 // path only when the adapter can provide a status-scoped count.
 type ContinuousDispatchReviewCountStore interface {
-	CountIssuesByProjectAndStatus(context.Context, pgtype.UUID, string) (int64, error)
+	CountIssuesByProjectAndStatus(context.Context, db.CountIssuesByProjectAndStatusParams) (int64, error)
 }
+
+// Keep the production query shape checked at compile time. This prevents a
+// test-only fixture signature from masking a generated SQLC API mismatch.
+var _ ContinuousDispatchReviewCountStore = (*db.Queries)(nil)
 
 type ContinuousDispatchEmployeeDirectory interface {
 	GetEmployees(context.Context, pgtype.UUID, string, string, int, int) (*EmployeesResult, error)
@@ -204,7 +208,10 @@ func (s *ContinuousDispatchShadowService) inspectProject(
 	}
 	var total int64
 	if status.Valid {
-		total, err = s.store.(ContinuousDispatchReviewCountStore).CountIssuesByProjectAndStatus(ctx, projectID, status.String)
+		total, err = s.store.(ContinuousDispatchReviewCountStore).CountIssuesByProjectAndStatus(ctx, db.CountIssuesByProjectAndStatusParams{
+			ProjectID: projectID,
+			Status:    status.String,
+		})
 	} else {
 		total, err = s.store.CountIssuesByProject(ctx, projectID)
 	}

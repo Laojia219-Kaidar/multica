@@ -44,6 +44,11 @@ const reviewDispatchPreviewSchema = "hivecrew.review-dispatch-preview/v1"
 
 const reviewDispatchScanPageSize = 200
 
+// A legacy adapter may return a non-empty page while reporting Total=0. Keep
+// the compatibility scan bounded and fail closed if it never exposes a
+// terminating total or empty page.
+const reviewDispatchMaxScanPages = 10000
+
 type reviewDispatchFilteredInspector interface {
 	InspectReviewProject(context.Context, pgtype.UUID, pgtype.UUID, int, int) (*ContinuousDispatchShadowResult, error)
 }
@@ -118,7 +123,9 @@ func (s *ReviewDispatchBatchService) inspectReviewPage(
 	var first *ContinuousDispatchShadowResult
 	reviewItems := make([]ContinuousDispatchShadowItem, 0, limit)
 	reviewTotal := 0
-	for scanOffset := 0; ; scanOffset += reviewDispatchScanPageSize {
+	terminated := false
+	for pageNumber := 0; pageNumber < reviewDispatchMaxScanPages; pageNumber++ {
+		scanOffset := pageNumber * reviewDispatchScanPageSize
 		page, err := s.inspector.InspectProject(ctx, workspaceID, projectID, reviewDispatchScanPageSize, scanOffset)
 		if err != nil {
 			return nil, err
@@ -141,10 +148,11 @@ func (s *ReviewDispatchBatchService) inspectReviewPage(
 			reviewItems = append(reviewItems, item)
 		}
 		if len(page.Items) == 0 || (page.Total > 0 && scanOffset+len(page.Items) >= page.Total) {
+			terminated = true
 			break
 		}
 	}
-	if first == nil {
+	if first == nil || !terminated {
 		return nil, ErrContinuousDispatchSourceGap
 	}
 	result := *first
