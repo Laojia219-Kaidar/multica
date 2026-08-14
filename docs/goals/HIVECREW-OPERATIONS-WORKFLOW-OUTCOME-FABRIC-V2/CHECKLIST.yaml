@@ -56,20 +56,21 @@ nodes:
     deliverables: [workflow-artifact-lineage, location-ledger, fixture-store]
     verification: [artifact-tests, checksum-and-recovery-fixture]
   - id: WO-40-INTEGRATION
-    status: running
+    status: completed
     owner: integrator
     depends_on: [WO-10-WORKFLOW-KERNEL, WO-20-OPERATIONS-UI, WO-30-OUTCOME-STORAGE]
     mutex: [shared-api-router-navigation, integration]
-    deliverables: [integrated-candidate]
-    verification: [typecheck, build, focused-tests]
+    deliverables: [integrated-candidate, guarded-linear-runtime, durable-control-receipts, outcome-location-read-model]
+    verification: [typecheck, build, focused-tests, race-tests, candidate-db-readback, artifact-location-route]
   - id: WO-50-CANARY-AND-REVIEW
     status: running
     owner: integrator
     depends_on: [WO-40-INTEGRATION]
     mutex: [candidate-acceptance]
-    deliverables: [wechat-canary, browser-evidence, handoff]
-    verification: [concurrency-canary, independent-review, candidate-handoff]
+    deliverables: [wechat-canary, browser-login-evidence, pending-authenticated-browser-journey, handoff]
+    verification: [restart-replay-canary, failure-path-canary, candidate-db-readback, login-component-regression, pending-authenticated-browser-review]
 resume_package:
   current_controller: codex
-  current_frontier: [WO-40-INTEGRATION, WO-50-CANARY-AND-REVIEW]
-  next_action: Complete an authenticated, owner-authorized browser review of the candidate workflow page. Browser localhost connectivity, API canaries, migrations and component checks are already source-backed; this is not a production-acceptance step.
+  current_frontier: [WO-50-CANARY-AND-REVIEW]
+  exact_candidate_revision: 897374606
+  next_action: Resolve or bypass only through a normal user interaction the in-app-browser controlled-input limitation, then complete an authenticated candidate workflow-page visual review. This is neither a production step nor Owner acceptance.

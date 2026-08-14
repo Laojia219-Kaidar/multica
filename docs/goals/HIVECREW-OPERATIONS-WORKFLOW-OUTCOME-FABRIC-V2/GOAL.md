@@ -68,16 +68,51 @@ handoff all exist. This is not production or Owner acceptance.
 
 ## Candidate implementation boundary (2026-08-14)
 
-- A published visual graph is immutable, workspace-scoped and versioned. It is
-  a design and governance artifact today; the existing stage engine remains the
-  only executor. Publishing a graph never silently creates Task, Run, Outcome,
+- A published visual graph is immutable, workspace-scoped and versioned. The
+  existing stage engine now executes only its guarded linear V1 subset: exactly
+  one root and sink, no fan-in, fan-out or conditional edge. Unsupported graph
+  semantics fail closed with `409`; they are never flattened or silently run.
+  A graph start creates the existing workspace-scoped WorkflowInstance/Event
+  records and control receipts, but never silently creates Task, Run, Outcome,
   platform publication, NAS write or cloud write.
+- Start and advance command idempotency replays from the persisted event ledger
+  after a server restart. A rejected approval or decision remains an explicit
+  receipt and append-only `workflow.advance_rejected` event rather than a
+  silent no-op. This ledger remains orchestration evidence, not a second
+  approval or Outcome authority.
 - An L4 Project may own multiple independent workflow definitions. The chosen
   definition identity is in the workflow page URL; L3/L4 never become action
   nodes.
 - The workflow `项目成果` tab is an L4-filtered read projection of the existing
   CompanyOps Outcome Center. It links back to that center for detail, review
   and promotion; it does not own a second artifact/status lifecycle.
-- Storage capability is candidate-only fixture coverage: local cache, NAS
-  primary, offline copy and cloud replica records are assessed by metadata.
-  No real Synology, removable disk or cloud object was mounted or written.
+- Storage placement is a workspace-scoped `artifact_replica_location` ledger
+  for an existing Outcome/candidate revision. The read-only
+  `/api/company-ops/outcomes/{commandId}/artifact-locations` route first
+  validates the Outcome Center authority, then returns registered placement
+  observations (or an explicit source error). It never moves bytes or changes
+  artifact lifecycle. Local cache, NAS primary, offline copy and cloud replica
+  are candidate location classes only; no real Synology, removable disk or
+  cloud object was mounted or written.
+
+## Current candidate evidence (2026-08-14)
+
+- Candidate tip: `897374606` on
+  `work/hivecrew-operations-workflow-v2`.
+- API canary, using an isolated candidate user/workspace/Project, published
+  and ran `content.wechat-production-package.v1`: valid start `201`, durable
+  start replay `200`, durable advance replay `200`, wrong Project `400`, and
+  a conditional graph `409`. After restart the run reached stage 4
+  `completed`, with seven events including two durable rejection events. The
+  terminal node was a simulated publication confirmation only.
+- Candidate DB readback confirmed that completed instance, seven events/two
+  rejections, the `artifact_replica_location` ledger, and migrations 357–361.
+- Focused Go, race, core API, views, login (34 tests), web typecheck and web
+  production build pass. The final build retains two pre-existing CSS
+  `::highlight` optimizer warnings but produces a build output.
+- The in-app browser reaches the candidate login page. Its automation input
+  currently fails to update this controlled React email field, while the
+  login component's 34-test suite passes. Therefore the authenticated browser
+  journey is still an explicit pending verification; this Goal is not yet
+  `CANDIDATE_READY_WAITING_OWNER_ACCEPTANCE` and no Owner acceptance is
+  implied.
