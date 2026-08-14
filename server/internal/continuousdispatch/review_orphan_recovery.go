@@ -100,6 +100,12 @@ type ReviewOrphanRecoveryDecision struct {
 // for use by a future ReviewCell/Drain adapter without inventing a database
 // state or scheduler.
 func EvaluateReviewOrphan(in ReviewOrphanRecoveryInput) ReviewOrphanRecoveryDecision {
+	if in.ReviewState != ReviewStateReviseRequested {
+		return blockedDecision("review_state_not_revise_requested")
+	}
+	if !in.Identity.Complete() {
+		return blockedDecision("candidate_identity_incomplete")
+	}
 	if in.OpenReview.Known && in.OpenReview.Found {
 		if validConfirmedOpenReview(in) {
 			return ReviewOrphanRecoveryDecision{
@@ -115,12 +121,6 @@ func EvaluateReviewOrphan(in ReviewOrphanRecoveryInput) ReviewOrphanRecoveryDeci
 	if !in.OpenReview.Known {
 		return blockedDecision("open_review_task_readback_unknown")
 	}
-	if in.ReviewState != ReviewStateReviseRequested {
-		return blockedDecision("review_state_not_revise_requested")
-	}
-	if !in.Identity.Complete() {
-		return blockedDecision("candidate_identity_incomplete")
-	}
 	if !validCompletedRepair(in) {
 		if in.RepairTask.Status != TaskStatusCompleted {
 			return ReviewOrphanRecoveryDecision{
@@ -131,10 +131,15 @@ func EvaluateReviewOrphan(in ReviewOrphanRecoveryInput) ReviewOrphanRecoveryDeci
 		}
 		return blockedDecision("completed_repair_identity_mismatch")
 	}
-	if strings.TrimSpace(in.ReviewerID) == "" {
+	reviewerID, reviewerOK := canonicalIdentifier(in.ReviewerID)
+	if !reviewerOK {
 		return blockedDecision("reviewer_identity_missing")
 	}
-	if in.ReviewerID == in.RepairTask.AgentID {
+	repairAuthorID, repairAuthorOK := canonicalIdentifier(in.RepairTask.AgentID)
+	if !repairAuthorOK {
+		return blockedDecision("completed_repair_identity_mismatch")
+	}
+	if reviewerID == repairAuthorID {
 		return blockedDecision("reviewer_is_repair_author")
 	}
 	if !in.CapacityKnown || !in.CapacityReconciled {
@@ -154,7 +159,7 @@ func EvaluateReviewOrphan(in ReviewOrphanRecoveryInput) ReviewOrphanRecoveryDeci
 	return ReviewOrphanRecoveryDecision{
 		State:          ReviewOrphanReady,
 		Retryable:      true,
-		ReviewerID:     in.ReviewerID,
+		ReviewerID:     reviewerID,
 		ReviewTargetID: in.RepairTask.ID,
 		Reasons:        []string{"completed_repair_ready_for_independent_review"},
 	}
@@ -162,8 +167,9 @@ func EvaluateReviewOrphan(in ReviewOrphanRecoveryInput) ReviewOrphanRecoveryDeci
 
 func validCompletedRepair(in ReviewOrphanRecoveryInput) bool {
 	task := in.RepairTask
+	_, agentOK := canonicalIdentifier(task.AgentID)
 	return task.Kind == TaskKindRepair && task.Status == TaskStatusCompleted &&
-		task.ID != "" && task.AgentID != "" &&
+		task.ID != "" && agentOK &&
 		task.WorkspaceID == in.Identity.WorkspaceID &&
 		task.IssueID == in.Identity.IssueID &&
 		task.CandidateRevision == in.Identity.CandidateRevision &&
@@ -172,11 +178,24 @@ func validCompletedRepair(in ReviewOrphanRecoveryInput) bool {
 
 func validConfirmedOpenReview(in ReviewOrphanRecoveryInput) bool {
 	task := in.OpenReview.Task
-	return validCompletedRepair(in) && task.Kind == TaskKindReview && task.ID != "" && isOpenReviewStatus(task.Status) &&
+	requestedReviewerID, requestedReviewerOK := canonicalIdentifier(in.ReviewerID)
+	evidenceReviewerID, evidenceReviewerOK := canonicalIdentifier(in.OpenReview.ReviewerID)
+	taskReviewerID, taskReviewerOK := canonicalIdentifier(task.AgentID)
+	repairAuthorID, repairAuthorOK := canonicalIdentifier(in.RepairTask.AgentID)
+	return validCompletedRepair(in) && requestedReviewerOK && evidenceReviewerOK && taskReviewerOK && repairAuthorOK &&
+		requestedReviewerID == evidenceReviewerID && taskReviewerID == evidenceReviewerID && taskReviewerID != repairAuthorID &&
+		task.Kind == TaskKindReview && task.ID != "" && isOpenReviewStatus(task.Status) &&
 		task.WorkspaceID == in.Identity.WorkspaceID && task.IssueID == in.Identity.IssueID &&
 		task.CandidateRevision == in.Identity.CandidateRevision && task.Generation == in.Identity.Generation &&
-		task.TargetTaskID == in.RepairTask.ID && strings.TrimSpace(in.OpenReview.ReviewerID) != "" &&
-		in.OpenReview.ReviewerID != in.RepairTask.AgentID
+		task.TargetTaskID == in.RepairTask.ID
+}
+
+// canonicalIdentifier rejects missing and padded identifiers. Agent IDs are
+// canonical task/authority identities, not display strings: silently trimming
+// them would let a padded reviewer bypass the reviewer != repair-author rule.
+func canonicalIdentifier(raw string) (string, bool) {
+	canonical := strings.TrimSpace(raw)
+	return canonical, canonical != "" && raw == canonical
 }
 
 func isOpenReviewStatus(status string) bool {

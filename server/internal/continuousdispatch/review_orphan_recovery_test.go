@@ -63,7 +63,7 @@ func TestEvaluateReviewOrphanRequiresOpenReviewReadbackBeforeProcessed(t *testin
 	in.OpenReview.Task = ReviewOrphanTask{
 		ID: "review-1", Kind: TaskKindReview, Status: TaskStatusQueued,
 		WorkspaceID: "ws-1", IssueID: "issue-1", CandidateRevision: "rev-7", Generation: "gen-3",
-		TargetTaskID: "repair-1",
+		AgentID: "reviewer-1", TargetTaskID: "repair-1",
 	}
 	decision = EvaluateReviewOrphan(in)
 	if decision.State != ReviewOrphanAlreadyConfirmed || !decision.Processed || decision.Retryable {
@@ -79,7 +79,7 @@ func TestEvaluateReviewOrphanAcceptsEveryOpenReviewStatus(t *testing.T) {
 		in.OpenReview.Task = ReviewOrphanTask{
 			ID: "review-1", Kind: TaskKindReview, Status: status,
 			WorkspaceID: "ws-1", IssueID: "issue-1", CandidateRevision: "rev-7", Generation: "gen-3",
-			TargetTaskID: "repair-1",
+			AgentID: "reviewer-1", TargetTaskID: "repair-1",
 		}
 		decision := EvaluateReviewOrphan(in)
 		if decision.State != ReviewOrphanAlreadyConfirmed || !decision.Processed {
@@ -96,11 +96,83 @@ func TestEvaluateReviewOrphanDoesNotTrustReviewReadbackWithoutValidRepair(t *tes
 	in.OpenReview.Task = ReviewOrphanTask{
 		ID: "review-1", Kind: TaskKindReview, Status: TaskStatusQueued,
 		WorkspaceID: "ws-1", IssueID: "issue-1", CandidateRevision: "rev-7", Generation: "gen-3",
-		TargetTaskID: "repair-1",
+		AgentID: "reviewer-1", TargetTaskID: "repair-1",
 	}
 	decision := EvaluateReviewOrphan(in)
 	if decision.State != ReviewOrphanBlocked || decision.Processed || decision.Reasons[0] != "open_review_task_readback_invalid" {
 		t.Fatalf("invalid repair readback decision = %+v, want blocked", decision)
+	}
+}
+
+func TestEvaluateReviewOrphanRejectsOpenReviewTaskWithoutExactReviewerBinding(t *testing.T) {
+	valid := func() ReviewOrphanRecoveryInput {
+		in := availableRecoveryInput()
+		in.OpenReview.Found = true
+		in.OpenReview.ReviewerID = "reviewer-1"
+		in.OpenReview.Task = ReviewOrphanTask{
+			ID: "review-1", Kind: TaskKindReview, Status: TaskStatusQueued,
+			WorkspaceID: "ws-1", IssueID: "issue-1", CandidateRevision: "rev-7", Generation: "gen-3",
+			AgentID: "reviewer-1", TargetTaskID: "repair-1",
+		}
+		return in
+	}
+	for _, mutate := range []struct {
+		name  string
+		apply func(*ReviewOrphanRecoveryInput)
+	}{
+		{"missing task agent", func(in *ReviewOrphanRecoveryInput) { in.OpenReview.Task.AgentID = "" }},
+		{"task agent differs from evidence", func(in *ReviewOrphanRecoveryInput) { in.OpenReview.Task.AgentID = "other-reviewer" }},
+		{"task agent is repair author", func(in *ReviewOrphanRecoveryInput) { in.OpenReview.Task.AgentID = "writer-1" }},
+		{"evidence differs from selected reviewer", func(in *ReviewOrphanRecoveryInput) { in.OpenReview.ReviewerID = "other-reviewer" }},
+	} {
+		t.Run(mutate.name, func(t *testing.T) {
+			in := valid()
+			mutate.apply(&in)
+			decision := EvaluateReviewOrphan(in)
+			if decision.State != ReviewOrphanBlocked || decision.Processed {
+				t.Fatalf("decision = %+v, want unprocessed blocked", decision)
+			}
+		})
+	}
+}
+
+func TestEvaluateReviewOrphanRejectsBlankAndPaddedReviewerIDs(t *testing.T) {
+	for _, reviewerID := range []string{"", "  ", " reviewer-1 ", "\treviewer-1"} {
+		in := availableRecoveryInput()
+		in.ReviewerID = reviewerID
+		decision := EvaluateReviewOrphan(in)
+		if decision.State != ReviewOrphanBlocked || decision.Processed {
+			t.Fatalf("reviewer %q decision = %+v, want unprocessed blocked", reviewerID, decision)
+		}
+	}
+
+	in := availableRecoveryInput()
+	in.OpenReview.Found = true
+	in.OpenReview.ReviewerID = " reviewer-1 "
+	in.OpenReview.Task = ReviewOrphanTask{
+		ID: "review-1", Kind: TaskKindReview, Status: TaskStatusQueued,
+		WorkspaceID: "ws-1", IssueID: "issue-1", CandidateRevision: "rev-7", Generation: "gen-3",
+		AgentID: "reviewer-1", TargetTaskID: "repair-1",
+	}
+	decision := EvaluateReviewOrphan(in)
+	if decision.State != ReviewOrphanBlocked || decision.Processed {
+		t.Fatalf("padded evidence reviewer decision = %+v, want unprocessed blocked", decision)
+	}
+}
+
+func TestEvaluateReviewOrphanNeverProcessesOpenTaskOutsideReviseRequested(t *testing.T) {
+	in := availableRecoveryInput()
+	in.ReviewState = "queued"
+	in.OpenReview.Found = true
+	in.OpenReview.ReviewerID = "reviewer-1"
+	in.OpenReview.Task = ReviewOrphanTask{
+		ID: "review-1", Kind: TaskKindReview, Status: TaskStatusQueued,
+		WorkspaceID: "ws-1", IssueID: "issue-1", CandidateRevision: "rev-7", Generation: "gen-3",
+		AgentID: "reviewer-1", TargetTaskID: "repair-1",
+	}
+	decision := EvaluateReviewOrphan(in)
+	if decision.State != ReviewOrphanBlocked || decision.Processed || decision.Reasons[0] != "review_state_not_revise_requested" {
+		t.Fatalf("decision = %+v, want unprocessed review-state block", decision)
 	}
 }
 
