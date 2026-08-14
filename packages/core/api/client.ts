@@ -1979,6 +1979,10 @@ export class ApiClient {
     return this.fetch("/api/ia/object-ownership");
   }
 
+  getCompanyBases(): Promise<{ id: string; code: string; name: string; device: string; machine_title: string; agents: number }[]> {
+    return this.fetch("/api/bases/company");
+  }
+
   listBases(): Promise<
     { machine_title: string; runtime_online: number; runtime_registered: number; employees: number; drained: boolean }[]
   > {

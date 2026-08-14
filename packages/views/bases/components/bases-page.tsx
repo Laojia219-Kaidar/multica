@@ -58,6 +58,10 @@ export function BasesPage() {
     queryKey: ["bases", wsId],
     queryFn: () => api.listBases(),
   });
+  const { data: companyBases = [] } = useQuery({
+    queryKey: ["bases-company", wsId],
+    queryFn: () => api.getCompanyBases(),
+  });
   const drainedMap = useMemo(
     () => new Map(baseList.map((b) => [b.machine_title, b.drained])),
     [baseList],
@@ -123,6 +127,20 @@ export function BasesPage() {
         title={t(($) => $.title)}
         description={t(($) => $.description)}
       />
+      {companyBases.length > 0 && (
+        <div className="px-4 pt-4">
+          <div className="rounded-lg border bg-card p-4 shadow-sm">
+            <h3 className="text-sm font-semibold">正式基地注册表（决策 A 迁移）</h3>
+            <div className="mt-2 flex flex-wrap gap-2">
+              {companyBases.map((b) => (
+                <span key={b.id} className="rounded-md border bg-surface-muted px-2 py-1 text-xs">
+                  {b.name} · {b.device} · <span className="font-medium">{b.agents}</span> 员工
+                </span>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
       {isLoading ? (
         <div className="p-4 text-sm text-muted-foreground">{t(($) => $.loading)}</div>
       ) : (
