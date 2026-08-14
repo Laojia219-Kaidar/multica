@@ -269,3 +269,25 @@ func TestPlanWorkConservingRejectsEmptyRuntimeAndQuotaEvenWithCurrentObservation
 		})
 	}
 }
+
+func TestPlanWorkConservingDuplicateEmployeeIDZeroesIdentityMismatch(t *testing.T) {
+	issue := workIssue("issue-duplicate-employee")
+	issue.WritePath.Key = ""
+	a := workEmployee("same-employee", "00000000-0000-0000-0000-000000000091", true, true)
+	b := workEmployee("same-employee", "00000000-0000-0000-0000-000000000092", true, true)
+	got := planner().PlanWorkConserving(WorkConservingInput{GoalID: workGoal, Issues: []WorkConservingIssue{issue}, Employees: []WorkConservingEmployee{a, b}})
+	if len(got.Suggestions) != 0 || len(got.BlockedBacklog) != 1 || got.Mismatch.HealthyIdleEmployees != 0 || got.Mismatch.UnmatchedHealthyIdleEmployees != 0 {
+		t.Fatalf("duplicate employee plan = %+v, want blocked and zero identity metrics", got)
+	}
+}
+
+func TestPlanWorkConservingDuplicateAgentIDZeroesIdentityMismatch(t *testing.T) {
+	issue := workIssue("issue-duplicate-agent")
+	issue.WritePath.Key = ""
+	a := workEmployee("employee-a", "00000000-0000-0000-0000-000000000093", true, true)
+	b := workEmployee("employee-b", "00000000-0000-0000-0000-000000000093", true, true)
+	got := planner().PlanWorkConserving(WorkConservingInput{GoalID: workGoal, Issues: []WorkConservingIssue{issue}, Employees: []WorkConservingEmployee{a, b}})
+	if len(got.Suggestions) != 0 || len(got.BlockedBacklog) != 1 || got.Mismatch.HealthyIdleEmployees != 0 || got.Mismatch.UnmatchedHealthyIdleEmployees != 0 {
+		t.Fatalf("duplicate agent plan = %+v, want blocked and zero identity metrics", got)
+	}
+}

@@ -141,12 +141,13 @@ type WorkConservingMismatch struct {
 
 // WorkConservingPlan is deterministic output for one read-only planning pass.
 type WorkConservingPlan struct {
-	GoalID            string                       `json:"goal_id"`
-	GlobalReasons     []Reason                     `json:"global_reasons,omitempty"`
-	Suggestions       []WorkConservingSuggestion   `json:"suggestions"`
-	BlockedBacklog    []WorkConservingBlockedIssue `json:"blocked_backlog"`
-	Mismatch          WorkConservingMismatch       `json:"mismatch"`
-	executableBacklog int
+	GoalID                  string                       `json:"goal_id"`
+	GlobalReasons           []Reason                     `json:"global_reasons,omitempty"`
+	Suggestions             []WorkConservingSuggestion   `json:"suggestions"`
+	BlockedBacklog          []WorkConservingBlockedIssue `json:"blocked_backlog"`
+	Mismatch                WorkConservingMismatch       `json:"mismatch"`
+	executableBacklog       int
+	invalidEmployeeIdentity bool
 }
 
 // PlanWorkConserving greedily computes a deterministic, one-to-one candidate
@@ -170,6 +171,7 @@ func (p *Planner) PlanWorkConserving(in WorkConservingInput) WorkConservingPlan 
 
 	employees, duplicate := indexWorkEmployees(in.Employees)
 	if duplicate {
+		plan.invalidEmployeeIdentity = true
 		plan.GlobalReasons = append(plan.GlobalReasons, ReasonEmployeeIdentityDuplicate)
 		for _, issue := range sortedWorkIssues(in.Issues) {
 			if issue.ID != "" && issue.GoalID == in.GoalID {
@@ -567,10 +569,12 @@ func workReceiverWake(reasons []Reason) (string, string) {
 func (p *Planner) workMismatch(in WorkConservingInput, plan WorkConservingPlan) WorkConservingMismatch {
 	m := plan.Mismatch
 	m.BlockedBacklog = len(plan.BlockedBacklog)
-	for _, employee := range in.Employees {
-		decision := workEmployeeDecision(employee, WorkConservingIssue{})
-		if decision.Eligible && !p.scorer.Score(employee.Candidate.Route, routescore.TaskRequirement{}).FailClosed {
-			m.HealthyIdleEmployees++
+	if !plan.invalidEmployeeIdentity {
+		for _, employee := range in.Employees {
+			decision := workEmployeeDecision(employee, WorkConservingIssue{})
+			if decision.Eligible && !p.scorer.Score(employee.Candidate.Route, routescore.TaskRequirement{}).FailClosed {
+				m.HealthyIdleEmployees++
+			}
 		}
 	}
 	m.UnmatchedHealthyIdleEmployees = m.HealthyIdleEmployees - len(plan.Suggestions)
