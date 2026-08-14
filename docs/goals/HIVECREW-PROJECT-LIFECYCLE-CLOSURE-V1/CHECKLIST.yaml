@@ -203,10 +203,10 @@ victory_conditions:
       3 review-cell (deferred)
   VC-08:
     title: Existing portfolio disposition
-    status: partial_accepted
+    status: owner_decisions_recorded_partial_applied
     evidence:
-    - EV-S1-05 (2 owner_decision, 2 source_gap, 1 duplicate surfaced)
-    - reports/W2-portfolio-disposition-preprocessing.md (11-project dry-run disposition)
+    - OWNER-DECISIONS.md (supersede + 补跑2名)
+    - W2-portfolio-disposition-preprocessing.md
   VC-09:
     title: Active/history UX
     status: w3_provided
@@ -341,3 +341,14 @@ authority_integration:
   receiver: HiveCosm Authority 建设/集成车道
   resume_trigger: Authority 候选独立验收 + 合入 + 部署后，由集成负责人回传 base URL / secret 引用 / tenant
     ID / 健康检查窗口
+owner_decisions:
+  PRJ-HCW-V2:
+    decision: supersede
+    target: HIVECREW-OWNER-OPERATING-WORKBENCH-V1 (3b0330e7)
+    receipt: OWNER-DECISIONS.md
+  Mac-Native-Canary:
+    decision: 补跑 2 名员工凑满 4/4 再关闭
+    created_issues:
+    - eb9eae40-1a44-4189-9643-4e90725cb7a2 (GLM)
+    - 32779f59-d6e2-49cb-bc60-5f75fbf1ba3d (Qwen)
+    closure_lead: TBD
