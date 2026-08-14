@@ -30,6 +30,7 @@ import {
   type WorkflowOperationsSection,
 } from "@multica/views/workflow";
 import { outcomesListOptions } from "@multica/views/outcomes";
+import { scopeWorkflowOperations } from "./workflow-scope";
 
 const SECTIONS: WorkflowOperationsSection[] = [
   "overview",
@@ -199,6 +200,10 @@ export default function Page() {
   const requestedSection = searchParams.get("section");
   const section: WorkflowOperationsSection = isSection(requestedSection) ? requestedSection : "overview";
   const selectedDefinitionId = searchParams.get("workflow") ?? undefined;
+  const scopedOperations = useMemo(
+    () => scopeWorkflowOperations(selection, projection.projects, definitionsQuery.data ?? [], instancesQuery.data ?? []),
+    [definitionsQuery.data, instancesQuery.data, projection.projects, selection],
+  );
   const outcomesQuery = useQuery({
     ...outcomesListOptions(workspace?.id ?? "workflow-workspace-unresolved", {
       project_id: selectedProject?.formalProjectId,
@@ -263,8 +268,8 @@ export default function Page() {
       programs={projection.programs}
       projects={projection.projects}
       definitionDrafts={definitionDrafts}
-      definitions={(definitionsQuery.data ?? []).map(toLegacyDefinition)}
-      instances={instancesQuery.data ?? []}
+      definitions={scopedOperations.definitions.map(toLegacyDefinition)}
+      instances={scopedOperations.instances}
       outcomes={outcomesQuery.data?.items ?? []}
       outcomesLoading={outcomesQuery.isLoading}
       outcomesError={outcomesQuery.isError}
