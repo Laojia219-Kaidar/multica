@@ -747,3 +747,16 @@ production_deploy_hard_constraint:
     commits: '3c51d4b5f(backend GetCompanyBases + sqlc) + 83ebb6819(frontend base registry display)'
     migration_already_fused: '404/405 -> 348/349 done'
     not_yet_joined: '/api/bases/company 端点 + 前端 base registry 展示（2 commits，可后续 JOIN）'
+
+w1_bases_join:
+  schema: BasesJoinV1
+  at: '2026-08-14T01:54:51.291763+00:00'
+  joined_commits:
+    - a849dfaad (backend GetCompanyBases + sqlc ListBases/CountAgentsByBase; migrations skipped=already 348/349)
+    - 62c438e1b (frontend formal base registry display, cherry-pick 83ebb6819)
+  conflict_resolved: models.go 保留 CanonicalWriteLease + Base 两个 struct
+  deploy: backend 44171426 二进制 docker cp + frontend standalone docker cp
+  verified:
+    backend: '/api/bases/company 200 → BASE-01..05 (6/15/6/4/2 agents, 合计33)'
+    frontend: '/bases 200，浏览器渲染「正式基地注册表（决策 A 迁移）」+ 5 基地'
+    healthz: ok
