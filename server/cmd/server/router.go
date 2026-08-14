@@ -323,12 +323,22 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	}
 	h := handler.New(queries, pool, hub, bus, emailSvc, store, cfSigner, analyticsClient, signupConfig, daemonHub)
 	configureCompanyOps(h, queries, pool)
-	h.ContinuousDispatchShadow = service.NewContinuousDispatchShadowService(
+	continuousDispatchShadow := service.NewContinuousDispatchShadowService(
 		queries,
 		h.CompanyOpsDirectory,
 		nil, // No backend-owned fresh quota truth exists yet; the shadow fails closed with quota_unknown.
 		service.NewWriteLeaseService(pool),
 	)
+	h.ContinuousDispatchShadow = continuousDispatchShadow
+	continuousDispatchBackend, continuousDispatchErr := service.NewProductionContinuousDispatchBackend(queries, pool, h.TaskService)
+	if continuousDispatchErr != nil {
+		slog.Warn("continuous dispatch writer disabled", "error", continuousDispatchErr)
+	} else {
+		h.ContinuousDispatchTrigger = service.NewContinuousDispatchTriggerService(
+			continuousDispatchShadow,
+			service.NewContinuousDispatchService(continuousDispatchBackend),
+		)
+	}
 	h.CompanyOpsOutcomeCenter = service.NewCompanyOpsOutcomeCenterService(queries)
 	h.Metrics = opts.BusinessMetrics
 	h.FeatureFlags = opts.FeatureFlags
@@ -1316,6 +1326,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Route("/{id}", func(r chi.Router) {
 					r.Get("/", h.GetProject)
 					r.Get("/next-actions", h.GetProjectNextActions)
+					r.Post("/next-actions/{issueId}/dispatch", h.DispatchProjectNextAction)
 					r.Put("/", h.UpdateProject)
 					r.Delete("/", h.DeleteProject)
 					r.Get("/resources", h.ListProjectResources)

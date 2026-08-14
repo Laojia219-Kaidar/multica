@@ -185,6 +185,12 @@ type Handler struct {
 	ContinuousDispatchShadow interface {
 		InspectProject(context.Context, pgtype.UUID, pgtype.UUID, int, int) (*service.ContinuousDispatchShadowResult, error)
 	}
+	// ContinuousDispatchTrigger is the Owner/Admin write command. The handler
+	// passes only workspace/project/issue/actor and handoff text; the service
+	// recomputes employee, Agent, Runtime, model, account and generation truth.
+	ContinuousDispatchTrigger interface {
+		DispatchIssue(context.Context, pgtype.UUID, pgtype.UUID, pgtype.UUID, pgtype.UUID, string) (service.ContinuousDispatchTriggerResult, error)
+	}
 	// CompanyOpsEnsureWorkOrderIssue projects an authoritative WorkOrder into
 	// one local Issue and provenance link. The concrete implementation lives in
 	// the service layer so HTTP handlers cannot bypass IssueService.
