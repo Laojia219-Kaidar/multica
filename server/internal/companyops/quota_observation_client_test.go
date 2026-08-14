@@ -157,6 +157,10 @@ func TestQuotaObservationClientFailsClosedForInvalidAuthorityResponses(t *testin
 		{name: "provider drift", status: http.StatusOK, content: "application/json", mutate: func(v *HiveCosmQuotaObservationResponse) { v.Observation.Provider = "other-provider" }},
 		{name: "stale observation", status: http.StatusOK, content: "application/json", mutate: func(v *HiveCosmQuotaObservationResponse) { v.Observation.ObservedAt = "2026-08-14T11:00:00Z" }},
 		{name: "expired observation", status: http.StatusOK, content: "application/json", mutate: func(v *HiveCosmQuotaObservationResponse) { v.Observation.ExpiresAt = "2026-08-14T11:59:59Z" }},
+		{name: "expires before observation", status: http.StatusOK, content: "application/json", mutate: func(v *HiveCosmQuotaObservationResponse) {
+			v.Observation.ObservedAt = "2026-08-14T12:00:04Z"
+			v.Observation.ExpiresAt = "2026-08-14T12:00:02Z"
+		}},
 		{name: "ratio mismatch", status: http.StatusOK, content: "application/json", mutate: func(v *HiveCosmQuotaObservationResponse) { v.Observation.Ratio = 0.5 }},
 		{name: "reset expired", status: http.StatusOK, content: "application/json", mutate: func(v *HiveCosmQuotaObservationResponse) { v.Observation.Window.ResetAt = "2026-08-14T11:59:00Z" }},
 		{name: "secret key value", status: http.StatusOK, content: "application/json", mutate: func(v *HiveCosmQuotaObservationResponse) { v.Observation.KeyRef = "keychain:Bearer super-secret-token" }, wantSecret: "super-secret-token"},
@@ -194,21 +198,67 @@ func TestQuotaObservationClientFailsClosedForInvalidAuthorityResponses(t *testin
 }
 
 func TestQuotaObservationClientRejectsLocalBindingDriftWithoutRequest(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*db.Agent, *db.AgentRuntime)
+	}{
+		{name: "workspace drift", mutate: func(_ *db.Agent, runtime *db.AgentRuntime) {
+			runtime.WorkspaceID = quotaTestUUID("44444444-4444-4444-8444-444444444444")
+		}},
+		{name: "model null", mutate: func(agent *db.Agent, _ *db.AgentRuntime) { agent.Model = pgtype.Text{} }},
+		{name: "model empty", mutate: func(agent *db.Agent, _ *db.AgentRuntime) { agent.Model = pgtype.Text{Valid: true} }},
+		{name: "model whitespace", mutate: func(agent *db.Agent, _ *db.AgentRuntime) { agent.Model = pgtype.Text{String: " ", Valid: true} }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			agent, runtime := quotaTestAgentRuntime()
+			tt.mutate(&agent, &runtime)
+			var calls atomic.Int32
+			client, closeServer := quotaTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls.Add(1)
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(quotaTestResponse())
+			}))
+			defer closeServer()
+			_, err := client.Lookup(context.Background(), agent, runtime)
+			if err == nil || !strings.Contains(err.Error(), string(HiveCosmAuthoritySourceGap)) {
+				t.Fatalf("error = %v, want source_gap", err)
+			}
+			if calls.Load() != 0 {
+				t.Fatalf("authority calls = %d, want zero on local binding drift", calls.Load())
+			}
+		})
+	}
+}
+
+func TestQuotaObservationClientRejectsRedirectWithoutLeavingConfiguredOrigin(t *testing.T) {
 	agent, runtime := quotaTestAgentRuntime()
-	var calls atomic.Int32
-	client, closeServer := quotaTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		calls.Add(1)
+	var redirectedCalls atomic.Int32
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		redirectedCalls.Add(1)
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(quotaTestResponse())
 	}))
-	defer closeServer()
-	runtime.WorkspaceID = quotaTestUUID("44444444-4444-4444-8444-444444444444")
-	_, err := client.Lookup(context.Background(), agent, runtime)
-	if err == nil || !strings.Contains(err.Error(), string(HiveCosmAuthoritySourceGap)) {
-		t.Fatalf("error = %v, want source_gap", err)
+	defer target.Close()
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL+HiveCosmQuotaObservationEndpoint, http.StatusTemporaryRedirect)
+	}))
+	defer origin.Close()
+	client, err := NewHiveCosmQuotaObservationClient(origin.URL, origin.Client(), "tenant-hivecosm-1")
+	if err != nil {
+		t.Fatalf("New client: %v", err)
 	}
-	if calls.Load() != 0 {
-		t.Fatalf("authority calls = %d, want zero on local binding drift", calls.Load())
+	client.now = quotaTestNow
+	_, err = client.Lookup(context.Background(), agent, runtime)
+	if err == nil {
+		t.Fatal("Lookup succeeded after cross-origin redirect")
+	}
+	var authorityErr *HiveCosmAuthorityError
+	if !errors.As(err, &authorityErr) || authorityErr.Kind != HiveCosmAuthoritySourceGap || authorityErr.StatusCode != http.StatusTemporaryRedirect {
+		t.Fatalf("error = %v, want source_gap 307", err)
+	}
+	if redirectedCalls.Load() != 0 {
+		t.Fatalf("redirect target calls = %d, want zero", redirectedCalls.Load())
 	}
 }
 

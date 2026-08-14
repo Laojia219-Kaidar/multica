@@ -113,7 +113,15 @@ func NewHiveCosmQuotaObservationClient(baseURL string, httpClient *http.Client, 
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: defaultHiveCosmAuthorityTimeout}
 	}
-	return &HiveCosmQuotaObservationClient{baseURL: u, httpClient: httpClient, tenantID: tenantID, now: time.Now}, nil
+	// Preserve the caller's origin-pinned transport and timeout, but never
+	// follow a Location header to a different host. A quota observation is an
+	// Authority fact for this configured origin only; redirect handling could
+	// otherwise leak the injected Authorization header across an origin change.
+	clientCopy := *httpClient
+	clientCopy.CheckRedirect = func(_ *http.Request, _ []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	return &HiveCosmQuotaObservationClient{baseURL: u, httpClient: &clientCopy, tenantID: tenantID, now: time.Now}, nil
 }
 
 // Lookup validates the local Agent -> Runtime binding, then reads the exact
@@ -210,12 +218,12 @@ func localQuotaBinding(agent db.Agent, runtime db.AgentRuntime) (QuotaObservatio
 	if !canonicalNonblank(provider) || len(provider) > 256 || strings.ContainsAny(provider, "\r\n") {
 		return QuotaObservationLookup{}, "", "", errors.New("runtime provider is invalid")
 	}
-	model := ""
-	if agent.Model.Valid {
-		model = agent.Model.String
-		if !canonicalNonblank(model) || len(model) > 256 || strings.ContainsAny(model, "\r\n") {
-			return QuotaObservationLookup{}, "", "", errors.New("agent model is invalid")
-		}
+	if !agent.Model.Valid {
+		return QuotaObservationLookup{}, "", "", errors.New("agent model is unavailable")
+	}
+	model := agent.Model.String
+	if !canonicalNonblank(model) || len(model) > 256 || strings.ContainsAny(model, "\r\n") {
+		return QuotaObservationLookup{}, "", "", errors.New("agent model is invalid")
 	}
 	return QuotaObservationLookup{WorkspaceID: workspaceID, AgentID: agentID, RuntimeID: runtimeID}, provider, model, nil
 }
@@ -262,7 +270,7 @@ func validateQuotaObservationEnvelope(response HiveCosmQuotaObservationResponse,
 		return errors.New("quota observation observed_at is invalid")
 	}
 	expiresAt, err := parseQuotaObservationTime(o.ExpiresAt, now, false)
-	if err != nil || !expiresAt.After(now) || expiresAt.After(resetAt) {
+	if err != nil || !expiresAt.After(now) || !expiresAt.After(observedAt) || expiresAt.After(resetAt) {
 		return errors.New("quota observation expires_at is invalid or expired")
 	}
 	if o.EvidenceState != "verified" || o.AuthorityState != "authoritative" {
