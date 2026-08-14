@@ -60,7 +60,10 @@
     "./i18n": "./i18n/index.ts",
     "./attachments": "./attachments/index.ts",
     "./locales": "./locales/index.ts",
-    "./locales/*": "./locales/*"
+    "./locales/*": "./locales/*",
+    "./workrooms": "./workrooms/index.ts",
+    "./employees": "./employees/index.ts",
+    "./datasets": "./datasets/index.ts"
   },
   "dependencies": {
     "@base-ui/react": "^1.3.0",

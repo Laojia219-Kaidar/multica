@@ -593,6 +593,30 @@ type DaemonToken struct {
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 }
 
+type Dataset struct {
+	ID                 pgtype.UUID        `json:"id"`
+	WorkspaceID        pgtype.UUID        `json:"workspace_id"`
+	Name               string             `json:"name"`
+	Domain             string             `json:"domain"`
+	Version            int32              `json:"version"`
+	AuthorizedAgentIds []pgtype.UUID      `json:"authorized_agent_ids"`
+	CreatedAt          pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
+	ProductType        string             `json:"product_type"`
+}
+
+type Employee struct {
+	ID          pgtype.UUID        `json:"id"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	Name        string             `json:"name"`
+	Position    pgtype.Text        `json:"position"`
+	Department  pgtype.Text        `json:"department"`
+	AgentID     pgtype.UUID        `json:"agent_id"`
+	Status      string             `json:"status"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
+}
+
 type ExecutionReceipt struct {
 	TaskID              pgtype.UUID        `json:"task_id"`
 	WorkspaceID         pgtype.UUID        `json:"workspace_id"`
