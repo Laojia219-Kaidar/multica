@@ -712,6 +712,18 @@ describe("AppConfigSchema cdn_signed drift", () => {
     expect(parsed.cdn_signed).toBe(true);
   });
 
+  it("only accepts an explicit local-operator capability bit", () => {
+    expect(AppConfigSchema.parse({}).local_operator_session_available).toBe(false);
+    expect(
+      AppConfigSchema.parse({ local_operator_session_available: true })
+        .local_operator_session_available,
+    ).toBe(true);
+    expect(
+      AppConfigSchema.parse({ local_operator_session_available: "true" })
+        .local_operator_session_available,
+    ).toBe(false);
+  });
+
   it("parses frontend feature flag decisions", () => {
     const parsed = AppConfigSchema.parse({
       feature_flags: {

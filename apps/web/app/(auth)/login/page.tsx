@@ -62,6 +62,10 @@ function LoginPageContent() {
   const qc = useQueryClient();
   const { t } = useT("auth");
   const googleClientId = useConfigStore((state) => state.googleClientId);
+  const localOperatorSessionAvailable = useConfigStore(
+    (state) => state.localOperatorSessionAvailable,
+  );
+  const authConfigLoaded = useConfigStore((state) => state.authConfigLoaded);
   const user = useAuthStore((s) => s.user);
   const isLoading = useAuthStore((s) => s.isLoading);
   const searchParams = useSearchParams();
@@ -79,12 +83,45 @@ function LoginPageContent() {
 
   const [desktopToken, setDesktopToken] = useState<string | null>(null);
   const [desktopError, setDesktopError] = useState("");
+  const [localSessionError, setLocalSessionError] = useState(false);
   const hasOnboarded = useHasOnboarded();
 
   // Latched once auth has been observed settled as logged-out on this page.
   // Any `user` that appears afterwards came from the login form in this
   // session — not from an existing session found on arrival.
   const settledLoggedOutRef = useRef(false);
+  const localSessionAttemptedRef = useRef(false);
+
+  const canStartLocalSession =
+    authConfigLoaded &&
+    localOperatorSessionAvailable &&
+    !cliCallbackRaw &&
+    !isDesktopHandoff &&
+    !isLoading &&
+    !user;
+
+  // The server only advertises this bit to a direct loopback client. It is
+  // still necessary to keep the browser behavior here explicit: never start a
+  // local owner session during a CLI or desktop handoff, and remove an old
+  // bearer token before reloading into the server-issued cookie session.
+  useEffect(() => {
+    if (!canStartLocalSession || localSessionAttemptedRef.current) return;
+    localSessionAttemptedRef.current = true;
+    api.setToken(null);
+    try {
+      window.localStorage.removeItem("multica_token");
+    } catch {
+      // Storage can be unavailable in hardened browser contexts; the server
+      // session remains valid and the reload still lets cookie mode recover it.
+    }
+    api
+      .startLocalOperatorSession()
+      .then(() => {
+        setLoggedInCookie();
+        window.location.reload();
+      })
+      .catch(() => setLocalSessionError(true));
+  }, [canStartLocalSession]);
 
   // Already authenticated ON ARRIVAL — honor ?next= or fall back to first
   // workspace (or /onboarding if the user has none). Skip this entire path
@@ -216,6 +253,22 @@ function LoginPageContent() {
     );
   }
 
+  if (canStartLocalSession && !localSessionError) {
+    return (
+      <div className="flex min-h-screen items-center justify-center">
+        <Card className="w-full max-w-sm">
+          <CardHeader className="text-center">
+            <CardTitle className="text-2xl">正在进入本地工作台</CardTitle>
+            <CardDescription>正在建立本机受控会话。</CardDescription>
+          </CardHeader>
+          <CardContent className="flex justify-center">
+            <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
   return (
     <LoginPage
       onSuccess={handleSuccess}
@@ -235,15 +288,22 @@ function LoginPageContent() {
       }
       onTokenObtained={setLoggedInCookie}
       extra={
-        <span className="text-xs text-muted-foreground">
-          {t(($) => $.web.prefer_desktop)}{" "}
-          <Link
-            href="/download"
-            className="font-medium text-foreground underline decoration-foreground/30 underline-offset-4 hover:decoration-foreground/70"
-          >
-            {t(($) => $.web.download)}
-          </Link>
-        </span>
+        <div className="space-y-2">
+          {localSessionError && (
+            <p className="text-xs text-muted-foreground">
+              本地工作台连接失败；可重试或使用现有登录方式。
+            </p>
+          )}
+          <span className="text-xs text-muted-foreground">
+            {t(($) => $.web.prefer_desktop)}{" "}
+            <Link
+              href="/download"
+              className="font-medium text-foreground underline decoration-foreground/30 underline-offset-4 hover:decoration-foreground/70"
+            >
+              {t(($) => $.web.download)}
+            </Link>
+          </span>
+        </div>
       }
     />
   );
