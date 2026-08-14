@@ -45,6 +45,9 @@ func candidate(employee, agent, base string, quota routescore.QuotaState) Candid
 		AccountRef: "fixture-account",
 		BaseID:     base,
 		BaseKnown:  true,
+		WIPKnown:   true,
+		ActiveWIP:  0,
+		MaxWIP:     1,
 		Route: routescore.Candidate{
 			AgentID:        uuid.MustParse(agent),
 			AgentName:      employee,
@@ -58,6 +61,33 @@ func candidate(employee, agent, base string, quota routescore.QuotaState) Candid
 			AvgLatencyMs:   100,
 			CostPerTaskUSD: 0.01,
 		},
+	}
+}
+
+func TestPlanCandidateWIPFailsClosedAndSelectsSpareFallback(t *testing.T) {
+	full := candidate("preferred", "00000000-0000-0000-0000-000000000001", "base-a", routescore.QuotaFresh)
+	full.ActiveWIP = 1
+	spare := candidate("fallback", "00000000-0000-0000-0000-000000000002", "base-a", routescore.QuotaFresh)
+	in := readyInput(full, spare)
+	in.PreferredEmployeeID = "preferred"
+
+	got := planner().Plan(in)
+	if got.State != StateFallback || got.Selected == nil || got.Selected.EmployeeID != "fallback" {
+		t.Fatalf("plan = %+v, want spare fallback", got)
+	}
+	if got.Candidates[1].Reasons[0] != ReasonCandidateWIPExhausted {
+		t.Fatalf("candidate explanations = %+v, want WIP exhausted", got.Candidates)
+	}
+}
+
+func TestPlanReviewWithoutAuthorEvidenceFailsClosed(t *testing.T) {
+	in := readyInput(candidate("reviewer", "00000000-0000-0000-0000-000000000001", "base-a", routescore.QuotaFresh))
+	in.Requirement.NeedsReview = true
+	in.ReviewAuthorKnown = false
+
+	got := planner().Plan(in)
+	if got.State != StateBlocked || got.Reasons[0] != ReasonReviewAuthorEvidenceMissing {
+		t.Fatalf("plan = %+v, want review author evidence failure", got)
 	}
 }
 

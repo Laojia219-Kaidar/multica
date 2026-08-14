@@ -40,6 +40,9 @@ const (
 	ReasonWIPReconciliationFailed     Reason = "wip_reconciliation_failed"
 	ReasonWorkerProjectionUnavailable Reason = "worker_projection_unavailable"
 	ReasonWIPUnknownEvidence          Reason = "wip_unknown_evidence"
+	ReasonCandidateWIPUnknown         Reason = "candidate_wip_unknown"
+	ReasonCandidateWIPExhausted       Reason = "candidate_wip_exhausted"
+	ReasonReviewAuthorEvidenceMissing Reason = "review_author_evidence_missing"
 	ReasonLeaseEvidenceMissing        Reason = "write_lease_evidence_missing"
 	ReasonLeaseUnavailable            Reason = "write_lease_unavailable"
 )
@@ -83,6 +86,9 @@ type Candidate struct {
 	AccountRef string               `json:"account_ref,omitempty"`
 	BaseID     string               `json:"base_id,omitempty"`
 	BaseKnown  bool                 `json:"base_known"`
+	WIPKnown   bool                 `json:"wip_known"`
+	ActiveWIP  int                  `json:"active_wip"`
+	MaxWIP     int                  `json:"max_wip"`
 	Route      routescore.Candidate `json:"-"`
 }
 
@@ -95,6 +101,8 @@ type CandidateDecision struct {
 	AccountRef string   `json:"account_ref,omitempty"`
 	BaseID     string   `json:"base_id,omitempty"`
 	Quota      string   `json:"quota"`
+	ActiveWIP  int      `json:"active_wip"`
+	MaxWIP     int      `json:"max_wip"`
 	Score      float64  `json:"score"`
 	Eligible   bool     `json:"eligible"`
 	Reasons    []Reason `json:"reasons,omitempty"`
@@ -110,6 +118,7 @@ type Input struct {
 	Generation          GenerationEvidence         `json:"generation"`
 	WIP                 WIPTruthEvidence           `json:"wip"`
 	Lease               LeaseEvidence              `json:"lease"`
+	ReviewAuthorKnown   bool                       `json:"review_author_known"`
 }
 
 // NextAction is the explainable shadow output consumed by a future dispatcher.
@@ -182,6 +191,9 @@ func (p *Planner) Plan(in Input) NextAction {
 			return NextAction{State: StateBlocked, Reasons: []Reason{ReasonWIPUnknownEvidence}}
 		}
 	}
+	if in.Requirement.NeedsReview && !in.ReviewAuthorKnown {
+		return NextAction{State: StateBlocked, Reasons: []Reason{ReasonReviewAuthorEvidenceMissing}}
+	}
 
 	if in.Lease.Required {
 		if !in.Lease.Known {
@@ -248,6 +260,18 @@ func (p *Planner) scoreCandidates(in Input) ([]CandidateDecision, bool) {
 			AccountRef: candidate.AccountRef,
 			BaseID:     candidate.BaseID,
 			Quota:      string(candidate.Route.Quota),
+			ActiveWIP:  candidate.ActiveWIP,
+			MaxWIP:     candidate.MaxWIP,
+		}
+		if !candidate.WIPKnown || candidate.MaxWIP <= 0 {
+			decision.Reasons = []Reason{ReasonCandidateWIPUnknown}
+			scored = append(scored, scoredCandidate{candidate: candidate, decision: decision})
+			continue
+		}
+		if candidate.ActiveWIP >= candidate.MaxWIP {
+			decision.Reasons = []Reason{ReasonCandidateWIPExhausted}
+			scored = append(scored, scoredCandidate{candidate: candidate, decision: decision})
+			continue
 		}
 		if in.RequiredBaseID != "" && !candidate.BaseKnown {
 			decision.Reasons = []Reason{ReasonBaseEvidenceMissing}

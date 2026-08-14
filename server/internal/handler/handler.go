@@ -179,6 +179,12 @@ type Handler struct {
 	// employee read model, then resolves executable HiveCrew-local Agents
 	// without becoming a second employee or organization authority.
 	CompanyOpsDirectory *service.CompanyOpsDirectoryService
+	// ContinuousDispatchShadow is a read-only projection over the existing
+	// Project/Issue/Task/Agent/Runtime and HiveCosm employee truths. It never
+	// dispatches work or acquires a writer lease.
+	ContinuousDispatchShadow interface {
+		InspectProject(context.Context, pgtype.UUID, pgtype.UUID, int, int) (*service.ContinuousDispatchShadowResult, error)
+	}
 	// CompanyOpsEnsureWorkOrderIssue projects an authoritative WorkOrder into
 	// one local Issue and provenance link. The concrete implementation lives in
 	// the service layer so HTTP handlers cannot bypass IssueService.

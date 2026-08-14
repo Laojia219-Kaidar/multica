@@ -323,6 +323,12 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	}
 	h := handler.New(queries, pool, hub, bus, emailSvc, store, cfSigner, analyticsClient, signupConfig, daemonHub)
 	configureCompanyOps(h, queries, pool)
+	h.ContinuousDispatchShadow = service.NewContinuousDispatchShadowService(
+		queries,
+		h.CompanyOpsDirectory,
+		nil, // No backend-owned fresh quota truth exists yet; the shadow fails closed with quota_unknown.
+		service.NewWriteLeaseService(pool),
+	)
 	h.CompanyOpsOutcomeCenter = service.NewCompanyOpsOutcomeCenterService(queries)
 	h.Metrics = opts.BusinessMetrics
 	h.FeatureFlags = opts.FeatureFlags
@@ -1309,6 +1315,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Post("/", h.CreateProject)
 				r.Route("/{id}", func(r chi.Router) {
 					r.Get("/", h.GetProject)
+					r.Get("/next-actions", h.GetProjectNextActions)
 					r.Put("/", h.UpdateProject)
 					r.Delete("/", h.DeleteProject)
 					r.Get("/resources", h.ListProjectResources)
