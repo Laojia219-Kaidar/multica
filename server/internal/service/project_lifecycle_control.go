@@ -2,7 +2,9 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
+	"fmt"
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/util"
@@ -507,14 +509,16 @@ func (s *ProjectLifecycleControlService) Supersede(ctx context.Context, workspac
 
 // ClosurePackagePreview is the read-only candidate closure package summary.
 type ClosurePackagePreview struct {
-	ProjectID            string   `json:"project_id"`
-	PackageDigest        string   `json:"package_digest"`
-	Version              int      `json:"version"`
-	IssueDisposition     map[string]int `json:"issue_disposition"`
-	NonterminalIssues    int      `json:"nonterminal_issues"`
-	ActiveTaskCount      int      `json:"active_task_count"`
-	ClosureReady         bool     `json:"closure_ready"`
-	Blockers             []string `json:"blockers"`
+	ProjectID         string         `json:"project_id"`
+	PackageDigest     string         `json:"package_digest"`
+	Version           int            `json:"version"`
+	IssueDisposition  map[string]int `json:"issue_disposition"`
+	TerminalIssues    int            `json:"terminal_issues"`
+	NonterminalIssues int            `json:"nonterminal_issues"`
+	ActiveTaskCount   int            `json:"active_task_count"`
+	ClosureReady      bool           `json:"closure_ready"`
+	ReviewRequired    bool           `json:"review_required"`
+	Blockers          []string       `json:"blockers"`
 }
 
 // GenerateClosurePackage builds a read-only candidate closure package summary.
@@ -540,6 +544,7 @@ func (s *ProjectLifecycleControlService) GenerateClosurePackage(ctx context.Cont
 	for _, is := range issues {
 		if is.Status == "done" || is.Status == "cancelled" {
 			preview.IssueDisposition[is.Status]++
+			preview.TerminalIssues++
 		} else {
 			preview.NonterminalIssues++
 		}
@@ -551,6 +556,13 @@ func (s *ProjectLifecycleControlService) GenerateClosurePackage(ctx context.Cont
 		}
 	}
 	preview.ClosureReady = len(preview.Blockers) == 0
-	preview.PackageDigest = util.UUIDToString(projectID) + ":closure:" + proj.Status
+	// Independent review is always required before close (reviewer != author).
+	preview.ReviewRequired = true
+	// Content-addressed digest: hash the package content so a changed package
+	// yields a different digest (audit + idempotency anchor).
+	digestSrc := fmt.Sprintf("%s|%s|terminal=%d|nonterminal=%d|active=%d|ready=%t",
+		util.UUIDToString(proj.ID), proj.Title, preview.TerminalIssues,
+		preview.NonterminalIssues, preview.ActiveTaskCount, preview.ClosureReady)
+	preview.PackageDigest = fmt.Sprintf("sha256:%x", sha256.Sum256([]byte(digestSrc)))
 	return preview, nil
 }
