@@ -40,19 +40,39 @@ func dispatchReceiptFixture(seed byte) ContinuousDispatchReceipt {
 	}
 }
 
+// isolatedTestPort is intentionally explicit so integration tests can only use
+// a loopback database selected for this test run. The historical 55432 default
+// remains unchanged; a non-default port requires an operator to opt in through
+// HIVECREW_ISOLATED_TEST_PORT instead of silently falling back to shared 5432.
+func isolatedTestPort() string {
+	if port := os.Getenv("HIVECREW_ISOLATED_TEST_PORT"); port != "" {
+		return port
+	}
+	return "55432"
+}
+
+func requireIsolatedLoopbackDatabaseURL(t *testing.T, databaseURL, testName string) {
+	t.Helper()
+	parsed, err := url.Parse(databaseURL)
+	if err != nil {
+		t.Fatalf("parse DATABASE_URL: %v", err)
+	}
+	expectedPort := isolatedTestPort()
+	if expectedPort == "5432" {
+		t.Fatal("HIVECREW_ISOLATED_TEST_PORT must not select shared port 5432")
+	}
+	if parsed.Port() != expectedPort || (parsed.Hostname() != "127.0.0.1" && parsed.Hostname() != "localhost" && parsed.Hostname() != "::1") {
+		t.Skipf("%s requires isolated loopback port %s, got %s", testName, expectedPort, parsed.Host)
+	}
+}
+
 func dispatchReceiptTestPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	databaseURL := os.Getenv("DATABASE_URL")
 	if databaseURL == "" {
 		t.Skip("DATABASE_URL not set; skipping continuous dispatch receipt integration test")
 	}
-	parsed, err := url.Parse(databaseURL)
-	if err != nil {
-		t.Fatalf("parse DATABASE_URL: %v", err)
-	}
-	if parsed.Port() != "55432" || (parsed.Hostname() != "127.0.0.1" && parsed.Hostname() != "localhost" && parsed.Hostname() != "::1") {
-		t.Skipf("continuous dispatch receipt test requires isolated loopback port 55432, got %s", parsed.Host)
-	}
+	requireIsolatedLoopbackDatabaseURL(t, databaseURL, "continuous dispatch receipt test")
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	pool, err := pgxpool.New(ctx, databaseURL)
 	if err != nil {

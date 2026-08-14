@@ -29,8 +29,9 @@ func newWriteLeaseTestPool(t *testing.T) *pgxpool.Pool {
 
 	dbURL := os.Getenv("DATABASE_URL")
 	if dbURL == "" {
-		dbURL = "postgres://multica:multica@127.0.0.1:5432/multica?sslmode=disable"
+		t.Skip("DATABASE_URL not set; skipping write-lease integration test")
 	}
+	requireIsolatedLoopbackDatabaseURL(t, dbURL, "write-lease integration test")
 
 	// TCP pre-check: avoid the pgxpool hang when the host is unreachable.
 	// Parse the DATABASE_URL host:port and try a 2-second TCP dial, so the

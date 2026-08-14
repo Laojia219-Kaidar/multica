@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/url"
 	"os"
 	"testing"
 	"time"
@@ -24,19 +23,7 @@ func newProductionCompanyOpsPool(t *testing.T) *pgxpool.Pool {
 	if databaseURL == "" {
 		t.Skip("DATABASE_URL not set; skipping production CompanyOps assignment integration test")
 	}
-	parsed, err := url.Parse(databaseURL)
-	if err != nil {
-		t.Fatalf("parse DATABASE_URL: %v", err)
-	}
-	if parsed.Port() == "5432" {
-		t.Skip("refusing to connect production CompanyOps assignment test to port 5432")
-	}
-	if parsed.Port() != "55432" {
-		t.Skipf("production CompanyOps assignment test requires isolated port 55432, got %q", parsed.Port())
-	}
-	if host := parsed.Hostname(); host != "127.0.0.1" && host != "localhost" && host != "::1" {
-		t.Skipf("production CompanyOps assignment test requires loopback database host, got %q", host)
-	}
+	requireIsolatedLoopbackDatabaseURL(t, databaseURL, "production CompanyOps assignment test")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
