@@ -191,8 +191,10 @@ victory_conditions:
     evidence: []
   VC-06:
     title: Outcome lineage
-    status: w3_outcomes_lineage_provided
-    evidence: []
+    status: code_proven_blocked_external_authority
+    evidence:
+    - TestOwnerToOutcomeMinimalSlice (5 ledger tables, stub authority)
+    - AUTHORITY-HANDOFF.md
   VC-07:
     title: Project closure
     status: partial_accepted
@@ -226,7 +228,8 @@ victory_conditions:
     - WAVE-5 reconciler diagnostic (4 detectors, 15 live findings)
 frontier:
   controller: Prime Agent
-  phase: WAVE-2 Slice 4 (closure package + close gate) -> WAVE-3 acceptance
+  phase: Authority BLOCKED; continue non-blocked goal work (browser journey VC-10,
+    W3 consume-verify VC-05/09, disposition VC-08)
   ready:
   - Closure Package generation + close gate (Slice 4 gap)
   - WAVE-4 candidate deploy + runtime acceptance
@@ -322,3 +325,19 @@ subagent_roster:
 contracts_accepted:
 - B-C-OPERATIONALIZATION.md (in_review->C accepted; BASES/ORCHESTRATION deviate C
   vs frozen B, visible via review_issue_count)
+authority_integration:
+  status: BLOCKED_EXTERNAL_AUTHORITY_NOT_DEPLOYED
+  decision: HiveCosm Authority 服务尚未正式部署；不提供/不臆造 URL/Token
+  candidate_complete:
+  - HiveCrew 消费端代码
+  - compose 接线
+  - 回滚点
+  - 本地/隔离测试
+  not_complete:
+  - 真实 Authority 联调
+  - Formal Artifact Promotion
+  - 生产验收
+  handoff: AUTHORITY-HANDOFF.md
+  receiver: HiveCosm Authority 建设/集成车道
+  resume_trigger: Authority 候选独立验收 + 合入 + 部署后，由集成负责人回传 base URL / secret 引用 / tenant
+    ID / 健康检查窗口
