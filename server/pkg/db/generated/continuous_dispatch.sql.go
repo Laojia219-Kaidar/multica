@@ -120,6 +120,41 @@ func (q *Queries) InsertContinuousDispatchReceipt(ctx context.Context, arg Inser
 	return i, err
 }
 
+const lockContinuousDispatchIdentity = `-- name: LockContinuousDispatchIdentity :exec
+SELECT pg_advisory_xact_lock(
+    hashtextextended(
+        concat_ws(
+            E'\x1f',
+            CAST($1 AS uuid)::text,
+            CAST($2 AS uuid)::text,
+            CAST($3 AS text),
+            CAST($4 AS text),
+            CAST($5 AS text)
+        ),
+        0
+    )
+)
+`
+
+type LockContinuousDispatchIdentityParams struct {
+	WorkspaceID       pgtype.UUID `json:"workspace_id"`
+	IssueID           pgtype.UUID `json:"issue_id"`
+	Stage             string      `json:"stage"`
+	CandidateRevision string      `json:"candidate_revision"`
+	Generation        string      `json:"generation"`
+}
+
+func (q *Queries) LockContinuousDispatchIdentity(ctx context.Context, arg LockContinuousDispatchIdentityParams) error {
+	_, err := q.db.Exec(ctx, lockContinuousDispatchIdentity,
+		arg.WorkspaceID,
+		arg.IssueID,
+		arg.Stage,
+		arg.CandidateRevision,
+		arg.Generation,
+	)
+	return err
+}
+
 const stampContinuousDispatchTaskIdentity = `-- name: StampContinuousDispatchTaskIdentity :one
 UPDATE agent_task_queue AS task
 SET context = COALESCE(task.context, '{}'::jsonb) || jsonb_build_object(

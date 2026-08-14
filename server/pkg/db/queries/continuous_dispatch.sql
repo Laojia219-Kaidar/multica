@@ -19,6 +19,21 @@ WHERE workspace_id = @workspace_id
   AND candidate_revision = @candidate_revision
   AND generation = @generation;
 
+-- name: LockContinuousDispatchIdentity :exec
+SELECT pg_advisory_xact_lock(
+    hashtextextended(
+        concat_ws(
+            E'\x1f',
+            CAST(@workspace_id AS uuid)::text,
+            CAST(@issue_id AS uuid)::text,
+            CAST(@stage AS text),
+            CAST(@candidate_revision AS text),
+            CAST(@generation AS text)
+        ),
+        0
+    )
+);
+
 -- name: StampContinuousDispatchTaskIdentity :one
 UPDATE agent_task_queue AS task
 SET context = COALESCE(task.context, '{}'::jsonb) || jsonb_build_object(
