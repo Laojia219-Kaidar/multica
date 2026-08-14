@@ -79,11 +79,12 @@ func versionDigest(v WorkflowDefinitionVersion, stages, graph []byte) string {
 	payload := struct {
 		DefinitionID string          `json:"definition_id"`
 		WorkspaceID  string          `json:"workspace_id"`
+		ProjectID    string          `json:"project_id"`
 		Version      int             `json:"version"`
 		Risk         RiskTier        `json:"risk"`
 		Stages       json.RawMessage `json:"stages"`
 		Graph        json.RawMessage `json:"graph"`
-	}{v.DefinitionID, v.WorkspaceID, v.Version, v.Risk, stages, graph}
+	}{v.DefinitionID, v.WorkspaceID, v.ProjectID, v.Version, v.Risk, stages, graph}
 	b, _ := json.Marshal(payload)
 	sum := sha256.Sum256(b)
 	return fmt.Sprintf("sha256:%x", sum[:])
@@ -101,6 +102,7 @@ func workflowVersionFromRow(row db.WorkflowDefinitionVersion) (WorkflowDefinitio
 	return WorkflowDefinitionVersion{
 		DefinitionID: row.DefinitionID,
 		WorkspaceID:  uuidString(row.WorkspaceID),
+		ProjectID:    row.ProjectID,
 		Version:      int(row.Version),
 		Risk:         RiskTier(row.Risk),
 		Stages:       stages,
@@ -147,7 +149,7 @@ func (r *Repository) PublishDefinitionVersion(ctx context.Context, v WorkflowDef
 	}
 	v.Digest = versionDigest(v, stages, graph)
 	row, err := r.Q.InsertWorkflowDefinitionVersion(ctx, db.InsertWorkflowDefinitionVersionParams{
-		DefinitionID: v.DefinitionID, WorkspaceID: ws, Version: int32(v.Version),
+		DefinitionID: v.DefinitionID, WorkspaceID: ws, ProjectID: v.ProjectID, Version: int32(v.Version),
 		Risk: string(v.Risk), Stages: stages, Graph: graph, Digest: v.Digest,
 		IdempotencyKey: idempotencyKey,
 	})

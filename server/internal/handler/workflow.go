@@ -34,6 +34,7 @@ func (h *Handler) workflowRepo() *workflow.Repository { return workflow.NewRepos
 type workflowDefinitionVersionDTO struct {
 	DefinitionID string                 `json:"definition_id"`
 	WorkspaceID  string                 `json:"workspace_id"`
+	ProjectID    string                 `json:"project_id,omitempty"`
 	Version      int                    `json:"version"`
 	Risk         workflow.RiskTier      `json:"risk"`
 	Stages       []workflow.Stage       `json:"stages"`
@@ -45,7 +46,7 @@ type workflowDefinitionVersionDTO struct {
 
 func toWorkflowDefinitionVersionDTO(v workflow.WorkflowDefinitionVersion) workflowDefinitionVersionDTO {
 	return workflowDefinitionVersionDTO{
-		DefinitionID: v.DefinitionID, WorkspaceID: v.WorkspaceID, Version: v.Version,
+		DefinitionID: v.DefinitionID, WorkspaceID: v.WorkspaceID, ProjectID: v.ProjectID, Version: v.Version,
 		Risk: v.Risk, Stages: v.Stages, Graph: v.Graph, Digest: v.Digest,
 		CreatedAt: v.CreatedAt.UTC().Format(time.RFC3339), PublishedAt: v.PublishedAt.UTC().Format(time.RFC3339),
 	}
@@ -73,6 +74,7 @@ func (h *Handler) ListWorkflowDefinitions(w http.ResponseWriter, r *http.Request
 }
 
 type publishWorkflowDefinitionVersionRequest struct {
+	ProjectID      string                `json:"project_id,omitempty"`
 	Risk           workflow.RiskTier      `json:"risk"`
 	Stages         []workflow.Stage       `json:"stages"`
 	Graph          workflow.WorkflowGraph `json:"graph"`
@@ -110,7 +112,7 @@ func (h *Handler) PublishWorkflowDefinitionVersion(w http.ResponseWriter, r *htt
 		return
 	}
 	v, changed, err := h.workflowRepo().PublishDefinitionVersion(r.Context(), workflow.WorkflowDefinitionVersion{
-		DefinitionID: r.PathValue("id"), WorkspaceID: workspaceID,
+		DefinitionID: r.PathValue("id"), WorkspaceID: workspaceID, ProjectID: req.ProjectID,
 		Risk: req.Risk, Stages: req.Stages, Graph: req.Graph,
 	}, key)
 	if err != nil {

@@ -6,8 +6,8 @@ vi.mock("@xyflow/react", () => ({
   Background: () => <div data-testid="flow-background" />,
   Controls: () => <div data-testid="flow-controls" />,
   ReactFlow: ({ nodes, onNodeClick }: { nodes: Array<{ id: string; data: { label: string } }>; onNodeClick?: (_event: unknown, node: { id: string }) => void }) => <div data-testid="react-flow">{nodes.map((node) => <button type="button" key={node.id} onClick={(event) => onNodeClick?.(event, node)}>{node.data.label}</button>)}</div>,
-  applyEdgeChanges: (changes: unknown[], edges: unknown[]) => edges,
-  applyNodeChanges: (changes: unknown[], nodes: unknown[]) => nodes,
+  applyEdgeChanges: (_changes: unknown[], edges: unknown[]) => edges,
+  applyNodeChanges: (_changes: unknown[], nodes: unknown[]) => nodes,
 }));
 
 const props = {

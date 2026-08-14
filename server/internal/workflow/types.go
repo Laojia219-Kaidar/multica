@@ -43,8 +43,8 @@ const (
 
 // Stage is one ordered step of a WorkflowDefinition.
 type Stage struct {
-	Name string
-	SLA  time.Duration // 0 = no SLA
+	Name string        `json:"name"`
+	SLA  time.Duration `json:"sla_ns,omitempty"` // 0 = no SLA
 }
 
 // WorkflowDefinition is a versioned workflow template.
@@ -80,6 +80,16 @@ type AgentBinding struct {
 	Mode         string   `json:"mode"` // fixed_employee, capability_pool, project_default, human
 	EmployeeID   string   `json:"employee_id,omitempty"`
 	Capabilities []string `json:"capabilities,omitempty"`
+	Role         string   `json:"role,omitempty"`
+	Capability   string   `json:"capability,omitempty"`
+}
+
+// GraphPosition is presentation metadata for a published graph. It is
+// persisted with the immutable version so the visual workflow can be reopened
+// without deriving its layout from node order.
+type GraphPosition struct {
+	X float64 `json:"x"`
+	Y float64 `json:"y"`
 }
 
 type GraphNode struct {
@@ -87,6 +97,7 @@ type GraphNode struct {
 	Kind         NodeKind      `json:"kind"`
 	Name         string        `json:"name"`
 	AgentBinding *AgentBinding `json:"agent_binding,omitempty"`
+	Position     *GraphPosition `json:"position,omitempty"`
 }
 
 type GraphEdge struct {
@@ -107,6 +118,7 @@ type WorkflowGraph struct {
 type WorkflowDefinitionVersion struct {
 	DefinitionID string        `json:"definition_id"`
 	WorkspaceID  string        `json:"workspace_id"`
+	ProjectID    string        `json:"project_id,omitempty"`
 	Version      int           `json:"version"`
 	Risk         RiskTier      `json:"risk"`
 	Stages       []Stage       `json:"stages"`
@@ -220,6 +232,10 @@ func validateAgentBinding(n GraphNode) error {
 	case "capability_pool":
 		if len(n.AgentBinding.Capabilities) == 0 {
 			return fmt.Errorf("capability_pool requires capabilities")
+		}
+	case "role_pool":
+		if n.AgentBinding.Role == "" {
+			return fmt.Errorf("role_pool requires role")
 		}
 	case "project_default":
 	default:

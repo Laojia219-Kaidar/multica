@@ -26,7 +26,10 @@ export interface WorkflowOperationsPageProps {
   onSelectContext?: (selection: WorkflowContextSelection) => void;
   onSelectSection?: (section: WorkflowOperationsSection) => void;
   onChangeDefinition?: (definition: WorkflowDefinitionDraft) => void;
+  onCreateDefinition?: (project: OperatingProject) => void;
   onPublishDefinition?: (definition: WorkflowDefinitionDraft) => void;
+  publishReceipt?: { definitionId: string; version: number; changed: boolean } | null;
+  publishError?: string | null;
 }
 
 const CONTEXT_TREE_COLLAPSED_KEY = "hivecrew.workflow.context-tree.collapsed.v1";
@@ -60,7 +63,10 @@ export function WorkflowOperationsPage({
   onSelectContext,
   onSelectSection,
   onChangeDefinition,
+  onCreateDefinition,
   onPublishDefinition,
+  publishReceipt,
+  publishError,
 }: WorkflowOperationsPageProps) {
   const [uncontrolledSelection, setUncontrolledSelection] = useState<WorkflowContextSelection | undefined>(initialSelection);
   const [uncontrolledSection, setUncontrolledSection] = useState<WorkflowOperationsSection>(initialSection);
@@ -77,7 +83,7 @@ export function WorkflowOperationsPage({
   const section = controlledSection ?? uncontrolledSection;
   const project = selection?.kind === "project" ? projects.find((item) => item.id === selection.id) : undefined;
   const program = selection?.kind === "program" ? programs.find((item) => item.id === selection.id) : project ? programs.find((item) => item.id === project.programId) : undefined;
-  const selectedDraft = useMemo(() => definitionDrafts.find((draft) => draft.projectId === project?.id) ?? definitionDrafts[0], [definitionDrafts, project?.id]);
+  const selectedDraft = useMemo(() => definitionDrafts.find((draft) => draft.projectId === project?.id), [definitionDrafts, project?.id]);
 
   const selectContext = (next: WorkflowContextSelection) => {
     if (!controlledSelection) setUncontrolledSelection(next);
@@ -110,7 +116,7 @@ export function WorkflowOperationsPage({
           <div className="mb-4 flex flex-wrap items-center gap-1 border-b pb-2" role="tablist" aria-label="项目工作区">
             {sectionLabels.map(({ id, label, icon: Icon }) => <button type="button" role="tab" aria-selected={section === id} key={id} onClick={() => selectSection(id)} className={`inline-flex items-center gap-1 rounded px-2 py-1.5 text-xs hover:bg-accent ${section === id ? "bg-accent font-medium" : "text-muted-foreground"}`}><Icon className="h-3.5 w-3.5" />{label}</button>)}
           </div>
-          {!selection ? <EmptyProjectState /> : section === "workflow" && selectedDraft ? <WorkflowDesigner definition={selectedDraft} onChange={onChangeDefinition} onPublish={onPublishDefinition} /> : section === "workflow" ? <div className="rounded-lg border border-dashed p-6 text-center text-xs text-muted-foreground">该项目暂无工作流草稿</div> : section === "instances" ? <WorkflowWorkbench instances={instances} definitions={definitions} /> : section === "artifacts" ? <ArtifactList artifacts={artifacts} /> : <ProjectSection section={section} project={project} program={program} />}
+          {!selection ? <EmptyProjectState /> : section === "workflow" && selectedDraft ? <><WorkflowDesigner definition={selectedDraft} onChange={onChangeDefinition} onPublish={onPublishDefinition} />{publishReceipt ? <p className="mt-3 rounded border border-emerald-500/30 bg-emerald-500/5 p-2 text-xs text-emerald-700">已持久化候选版本：{publishReceipt.definitionId} v{publishReceipt.version}{publishReceipt.changed ? "" : "（幂等重放）"}</p> : null}{publishError ? <p className="mt-3 rounded border border-destructive/40 bg-destructive/5 p-2 text-xs text-destructive">发布未完成：{publishError}。草稿仍保留在当前页面。</p> : null}</> : section === "workflow" && project && onCreateDefinition ? <div className="rounded-lg border border-dashed p-6 text-center"><p className="text-xs text-muted-foreground">该项目尚无已发布工作流版本。</p><button type="button" onClick={() => onCreateDefinition(project)} className="mt-3 rounded border px-3 py-1.5 text-xs hover:bg-accent">新建候选工作流草稿</button></div> : section === "workflow" ? <div className="rounded-lg border border-dashed p-6 text-center text-xs text-muted-foreground">该项目暂无工作流草稿</div> : section === "instances" ? <WorkflowWorkbench instances={instances} definitions={definitions} /> : section === "artifacts" ? <ArtifactList artifacts={artifacts} /> : <ProjectSection section={section} project={project} program={program} />}
           {runtime && section === "instances" ? <div className="mt-4"><WorkflowRuntimeGraph graph={selectedDraft?.graph ?? { nodes: [], edges: [] }} runtime={runtime} /></div> : null}
         </main>
         {runtime && section !== "instances" ? <aside className="hidden w-72 shrink-0 border-l p-3 xl:block" data-testid="workflow-inspector"><WorkflowRuntimeGraph graph={selectedDraft?.graph ?? { nodes: [], edges: [] }} runtime={runtime} /></aside> : null}

@@ -4,6 +4,7 @@
 CREATE TABLE IF NOT EXISTS workflow_definition_version (
     definition_id  text NOT NULL,
     workspace_id   uuid NOT NULL,
+    project_id     text NOT NULL DEFAULT '',
     version        integer NOT NULL CHECK (version > 0),
     risk           text NOT NULL CHECK (risk IN ('fast', 'standard', 'owner')),
     stages         jsonb NOT NULL DEFAULT '[]',

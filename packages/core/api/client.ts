@@ -205,7 +205,13 @@ import { getCurrentSlug } from "../platform/workspace-storage";
 import { parseWithFallback } from "./schema";
 import type { EmployeeLiveActivityV1 } from "./workwall";
 import type { MemoryCandidate, MemoryPromotion } from "./memory";
-import type { WorkflowEvent, WorkflowInstance } from "./workflow";
+import type {
+  PublishedWorkflowDefinitionVersion,
+  PublishedWorkflowGraph,
+  PublishWorkflowDefinitionVersionResponse,
+  WorkflowEvent,
+  WorkflowInstance,
+} from "./workflow";
 
 const CompanyOpsAuthoritySnapshotSchema = z.object({
   kind: z.string().min(1),
@@ -3544,6 +3550,28 @@ export class ApiClient {
   // Workflow kernel (Slice-W1/W2). Drives the W2 HIV-553 project lifecycle.
   async listWorkflowInstances(): Promise<WorkflowInstance[]> {
     return this.fetch("/api/workflow/instances");
+  }
+
+  async listPublishedWorkflowDefinitionVersions(latestOnly = true): Promise<PublishedWorkflowDefinitionVersion[]> {
+    const search = new URLSearchParams();
+    if (!latestOnly) search.set("latest_only", "false");
+    return this.fetch(`/api/workflow/definitions?${search}`);
+  }
+
+  async publishWorkflowDefinitionVersion(
+    definitionId: string,
+    body: {
+      project_id?: string;
+      risk: "fast" | "standard" | "owner";
+      stages: Array<{ name: string; sla_ns?: number }>;
+      graph: PublishedWorkflowGraph;
+      idempotency_key: string;
+    },
+  ): Promise<PublishWorkflowDefinitionVersionResponse> {
+    return this.fetch(`/api/workflow/definitions/${encodeURIComponent(definitionId)}/versions`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
   }
 
   async startWorkflowInstance(body: {

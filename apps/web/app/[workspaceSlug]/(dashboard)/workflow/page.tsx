@@ -1,12 +1,28 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { api } from "@multica/core/api";
+import type {
+  PublishedWorkflowDefinitionVersion,
+  PublishedWorkflowGraph,
+  WorkflowDefinition,
+} from "@multica/core/api/workflow";
 import { useCurrentWorkspace } from "@multica/core/paths";
 import { projectListOptions } from "@multica/core/projects/queries";
-import { workflowInstanceListOptions } from "@multica/core/workflow";
-import type { OperatingProgram, OperatingProject } from "@multica/core/workflow";
+import {
+  workflowDefinitionListOptions,
+  workflowInstanceListOptions,
+  workflowKeys,
+} from "@multica/core/workflow";
+import type {
+  OperatingProgram,
+  OperatingProject,
+  WorkflowAgentBinding,
+  WorkflowDefinitionDraft,
+  WorkflowGraph,
+} from "@multica/core/workflow";
 import type { Project } from "@multica/core/types";
 import {
   WorkflowOperationsPage,
@@ -61,11 +77,93 @@ function deriveOperatingProjection(workspaceId: string, projects: Project[]) {
   return { programs, projects: operatingProjects };
 }
 
+function toFrontendBinding(binding: PublishedWorkflowDefinitionVersion["graph"]["nodes"][number]["agent_binding"]): WorkflowAgentBinding | undefined {
+  if (!binding) return undefined;
+  switch (binding.mode) {
+    case "fixed_employee": return { mode: "fixed_employee", employeeId: binding.employee_id ?? "" };
+    case "role_pool": return { mode: "role_pool", role: binding.role ?? "", capability: binding.capability };
+    case "project_default": return { mode: "project_default" };
+    case "human": return { mode: "human" };
+    case "capability_pool": return { mode: "role_pool", role: "能力池", capability: binding.capabilities?.join(", ") };
+  }
+}
+
+function toDraft(version: PublishedWorkflowDefinitionVersion): WorkflowDefinitionDraft {
+  return {
+    id: version.definition_id,
+    name: version.definition_id,
+    version: version.version,
+    projectId: version.project_id || undefined,
+    graph: {
+      nodes: version.graph.nodes.map((node) => ({
+        id: node.id,
+        type: node.kind,
+        position: node.position ?? { x: 80, y: 80 },
+        data: { label: node.name, binding: toFrontendBinding(node.agent_binding), risk: version.risk, evidenceRequired: true },
+      })),
+      edges: version.graph.edges.map((edge) => ({ id: edge.id, source: edge.from, target: edge.to, condition: edge.when })),
+    },
+  };
+}
+
+function toPublishedGraph(graph: WorkflowGraph): PublishedWorkflowGraph {
+  return {
+    nodes: graph.nodes.map((node) => ({
+      id: node.id,
+      kind: node.type,
+      name: node.data.label,
+      position: node.position,
+      agent_binding: toPublishedBinding(node.type, node.data.binding),
+    })),
+    edges: graph.edges.map((edge) => ({ id: edge.id, from: edge.source, to: edge.target, when: edge.condition })),
+  };
+}
+
+function toPublishedBinding(kind: WorkflowGraph["nodes"][number]["type"], binding?: WorkflowAgentBinding): PublishedWorkflowGraph["nodes"][number]["agent_binding"] {
+  if (!binding || (kind !== "agent_task" && kind !== "human_task")) return undefined;
+  switch (binding.mode) {
+    case "fixed_employee": return { mode: "fixed_employee", employee_id: binding.employeeId };
+    case "role_pool": return { mode: "role_pool", role: binding.role, capability: binding.capability };
+    case "project_default": return { mode: "project_default" };
+    case "human": return { mode: "human" };
+  }
+}
+
+function toLegacyDefinition(version: PublishedWorkflowDefinitionVersion): WorkflowDefinition {
+  return {
+    id: version.definition_id,
+    version: version.version,
+    risk: version.risk,
+    stages: version.stages.map((stage) => ({
+      name: stage.name,
+      sla_seconds: stage.sla_ns ? Math.floor(stage.sla_ns / 1_000_000_000) : undefined,
+    })),
+  };
+}
+
+function candidateDraftForProject(project: OperatingProject): WorkflowDefinitionDraft {
+  return {
+    id: `candidate.workflow.${project.formalProjectId}`,
+    name: `${project.name} · 候选工作流`,
+    version: 1,
+    projectId: project.id,
+    graph: { nodes: [], edges: [] },
+  };
+}
+
+function newIdempotencyKey() {
+  return globalThis.crypto?.randomUUID?.() ?? `workflow-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
 export default function Page() {
   const workspace = useCurrentWorkspace();
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
+  const queryClient = useQueryClient();
+  const [localDrafts, setLocalDrafts] = useState<WorkflowDefinitionDraft[]>([]);
+  const [publishReceipt, setPublishReceipt] = useState<{ definitionId: string; version: number; changed: boolean } | null>(null);
+  const [publishError, setPublishError] = useState<string | null>(null);
   const projectsQuery = useQuery({
     ...projectListOptions(workspace?.id ?? "workflow-workspace-unresolved"),
     enabled: Boolean(workspace?.id),
@@ -74,11 +172,20 @@ export default function Page() {
     ...workflowInstanceListOptions(workspace?.id ?? "workflow-workspace-unresolved"),
     enabled: Boolean(workspace?.id),
   });
+  const definitionsQuery = useQuery({
+    ...workflowDefinitionListOptions(workspace?.id ?? "workflow-workspace-unresolved"),
+    enabled: Boolean(workspace?.id),
+  });
 
   const projection = useMemo(
     () => deriveOperatingProjection(workspace?.id ?? "unresolved", projectsQuery.data ?? []),
     [projectsQuery.data, workspace?.id],
   );
+  const publishedDrafts = useMemo(() => (definitionsQuery.data ?? []).map(toDraft), [definitionsQuery.data]);
+  const definitionDrafts = useMemo(() => [
+    ...publishedDrafts.filter((draft) => !localDrafts.some((local) => local.id === draft.id)),
+    ...localDrafts,
+  ], [localDrafts, publishedDrafts]);
   const requestedProjectId = searchParams.get("project");
   const requestedProgramId = searchParams.get("program");
   const selectedProject = projection.projects.find((project) => project.id === requestedProjectId);
@@ -88,6 +195,25 @@ export default function Page() {
       ? { kind: "program", id: requestedProgramId! }
       : undefined;
   const section = isSection(searchParams.get("section")) ? searchParams.get("section") : "overview";
+
+  const publishMutation = useMutation({
+    mutationFn: async (draft: WorkflowDefinitionDraft) => api.publishWorkflowDefinitionVersion(draft.id, {
+      project_id: draft.projectId,
+      risk: "standard",
+      // The current engine remains an explicit stage engine. Graph execution
+      // adapters are not silently implied by a published visual graph.
+      stages: [],
+      graph: toPublishedGraph(draft.graph),
+      idempotency_key: newIdempotencyKey(),
+    }),
+    onSuccess: (result, draft) => {
+      setPublishError(null);
+      setPublishReceipt({ definitionId: result.version.definition_id, version: result.version.version, changed: result.receipt.changed });
+      setLocalDrafts((current) => current.filter((item) => item.id !== draft.id));
+      if (workspace?.id) void queryClient.invalidateQueries({ queryKey: workflowKeys.definitions(workspace.id) });
+    },
+    onError: (error) => setPublishError(error instanceof Error ? error.message : "候选版本未被服务端接受"),
+  });
 
   const updateSearch = (updates: Record<string, string | null>) => {
     const next = new URLSearchParams(searchParams.toString());
@@ -111,10 +237,10 @@ export default function Page() {
   if (!workspace) {
     return <WorkspaceSourceState title="工作区来源不可用" detail="正在读取当前工作区；不会用名称或本地缓存猜测工作流所属范围。" />;
   }
-  if (projectsQuery.isLoading || instancesQuery.isLoading) {
-    return <WorkspaceSourceState title="正在读取正式项目与工作流实例" detail="项目列表和实例列表来自各自的权威读模型。" />;
+  if (projectsQuery.isLoading || instancesQuery.isLoading || definitionsQuery.isLoading) {
+    return <WorkspaceSourceState title="正在读取正式项目与工作流记录" detail="项目、工作流实例和已发布版本来自各自的权威读模型。" />;
   }
-  if (projectsQuery.isError || instancesQuery.isError) {
+  if (projectsQuery.isError || instancesQuery.isError || definitionsQuery.isError) {
     return <WorkspaceSourceState title="来源暂不可用" detail="工作流页面没有把读取失败伪装成空项目或零实例；请恢复来源后重试。" />;
   }
   if (requestedProjectId && !selectedProject) {
@@ -125,11 +251,26 @@ export default function Page() {
     <WorkflowOperationsPage
       programs={projection.programs}
       projects={projection.projects}
+      definitionDrafts={definitionDrafts}
+      definitions={(definitionsQuery.data ?? []).map(toLegacyDefinition)}
       instances={instancesQuery.data ?? []}
       selection={selection}
       section={section}
       onSelectContext={selectContext}
       onSelectSection={(next) => updateSearch({ section: next })}
+      onCreateDefinition={(project) => {
+        setPublishReceipt(null);
+        setPublishError(null);
+        setLocalDrafts((current) => current.some((draft) => draft.projectId === project.id) ? current : [...current, candidateDraftForProject(project)]);
+      }}
+      onChangeDefinition={(next) => {
+        setPublishReceipt(null);
+        setPublishError(null);
+        setLocalDrafts((current) => [...current.filter((draft) => draft.id !== next.id), next]);
+      }}
+      onPublishDefinition={(draft) => publishMutation.mutate(draft)}
+      publishReceipt={publishReceipt}
+      publishError={publishError}
     />
   );
 }

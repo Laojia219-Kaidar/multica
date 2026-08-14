@@ -1429,6 +1429,7 @@ type WorkflowDefinition struct {
 type WorkflowDefinitionVersion struct {
 	DefinitionID   string             `json:"definition_id"`
 	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
+	ProjectID      string             `json:"project_id"`
 	Version        int32              `json:"version"`
 	Risk           string             `json:"risk"`
 	Stages         []byte             `json:"stages"`

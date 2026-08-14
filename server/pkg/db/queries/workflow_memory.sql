@@ -37,8 +37,8 @@ ORDER BY definition_id ASC, version DESC;
 
 -- name: InsertWorkflowDefinitionVersion :one
 INSERT INTO workflow_definition_version
-    (definition_id, workspace_id, version, risk, stages, graph, digest, idempotency_key)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+    (definition_id, workspace_id, project_id, version, risk, stages, graph, digest, idempotency_key)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 ON CONFLICT (workspace_id, idempotency_key)
 DO UPDATE SET idempotency_key = EXCLUDED.idempotency_key
 RETURNING *;

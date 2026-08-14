@@ -12,7 +12,7 @@ import (
 )
 
 const getLatestWorkflowDefinitionVersion = `-- name: GetLatestWorkflowDefinitionVersion :one
-SELECT definition_id, workspace_id, version, risk, stages, graph, digest, idempotency_key, created_at, published_at FROM workflow_definition_version
+SELECT definition_id, workspace_id, project_id, version, risk, stages, graph, digest, idempotency_key, created_at, published_at FROM workflow_definition_version
 WHERE workspace_id = $1 AND definition_id = $2
 ORDER BY version DESC
 LIMIT 1
@@ -29,6 +29,7 @@ func (q *Queries) GetLatestWorkflowDefinitionVersion(ctx context.Context, arg Ge
 	err := row.Scan(
 		&i.DefinitionID,
 		&i.WorkspaceID,
+		&i.ProjectID,
 		&i.Version,
 		&i.Risk,
 		&i.Stages,
@@ -84,7 +85,7 @@ func (q *Queries) GetWorkflowDefinition(ctx context.Context, id string) (Workflo
 }
 
 const getWorkflowDefinitionVersion = `-- name: GetWorkflowDefinitionVersion :one
-SELECT definition_id, workspace_id, version, risk, stages, graph, digest, idempotency_key, created_at, published_at FROM workflow_definition_version
+SELECT definition_id, workspace_id, project_id, version, risk, stages, graph, digest, idempotency_key, created_at, published_at FROM workflow_definition_version
 WHERE workspace_id = $1 AND definition_id = $2 AND version = $3
 `
 
@@ -100,6 +101,7 @@ func (q *Queries) GetWorkflowDefinitionVersion(ctx context.Context, arg GetWorkf
 	err := row.Scan(
 		&i.DefinitionID,
 		&i.WorkspaceID,
+		&i.ProjectID,
 		&i.Version,
 		&i.Risk,
 		&i.Stages,
@@ -113,7 +115,7 @@ func (q *Queries) GetWorkflowDefinitionVersion(ctx context.Context, arg GetWorkf
 }
 
 const getWorkflowDefinitionVersionByIdempotency = `-- name: GetWorkflowDefinitionVersionByIdempotency :one
-SELECT definition_id, workspace_id, version, risk, stages, graph, digest, idempotency_key, created_at, published_at FROM workflow_definition_version
+SELECT definition_id, workspace_id, project_id, version, risk, stages, graph, digest, idempotency_key, created_at, published_at FROM workflow_definition_version
 WHERE workspace_id = $1 AND idempotency_key = $2
 `
 
@@ -128,6 +130,7 @@ func (q *Queries) GetWorkflowDefinitionVersionByIdempotency(ctx context.Context,
 	err := row.Scan(
 		&i.DefinitionID,
 		&i.WorkspaceID,
+		&i.ProjectID,
 		&i.Version,
 		&i.Risk,
 		&i.Stages,
@@ -290,16 +293,17 @@ func (q *Queries) InsertWorkflowDefinition(ctx context.Context, arg InsertWorkfl
 
 const insertWorkflowDefinitionVersion = `-- name: InsertWorkflowDefinitionVersion :one
 INSERT INTO workflow_definition_version
-    (definition_id, workspace_id, version, risk, stages, graph, digest, idempotency_key)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+    (definition_id, workspace_id, project_id, version, risk, stages, graph, digest, idempotency_key)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 ON CONFLICT (workspace_id, idempotency_key)
 DO UPDATE SET idempotency_key = EXCLUDED.idempotency_key
-RETURNING definition_id, workspace_id, version, risk, stages, graph, digest, idempotency_key, created_at, published_at
+RETURNING definition_id, workspace_id, project_id, version, risk, stages, graph, digest, idempotency_key, created_at, published_at
 `
 
 type InsertWorkflowDefinitionVersionParams struct {
 	DefinitionID   string      `json:"definition_id"`
 	WorkspaceID    pgtype.UUID `json:"workspace_id"`
+	ProjectID      string      `json:"project_id"`
 	Version        int32       `json:"version"`
 	Risk           string      `json:"risk"`
 	Stages         []byte      `json:"stages"`
@@ -312,6 +316,7 @@ func (q *Queries) InsertWorkflowDefinitionVersion(ctx context.Context, arg Inser
 	row := q.db.QueryRow(ctx, insertWorkflowDefinitionVersion,
 		arg.DefinitionID,
 		arg.WorkspaceID,
+		arg.ProjectID,
 		arg.Version,
 		arg.Risk,
 		arg.Stages,
@@ -323,6 +328,7 @@ func (q *Queries) InsertWorkflowDefinitionVersion(ctx context.Context, arg Inser
 	err := row.Scan(
 		&i.DefinitionID,
 		&i.WorkspaceID,
+		&i.ProjectID,
 		&i.Version,
 		&i.Risk,
 		&i.Stages,
@@ -425,7 +431,7 @@ func (q *Queries) InsertWorkflowInstanceInWorkspace(ctx context.Context, arg Ins
 }
 
 const listLatestWorkflowDefinitionVersions = `-- name: ListLatestWorkflowDefinitionVersions :many
-SELECT DISTINCT ON (definition_id) definition_id, workspace_id, version, risk, stages, graph, digest, idempotency_key, created_at, published_at
+SELECT DISTINCT ON (definition_id) definition_id, workspace_id, project_id, version, risk, stages, graph, digest, idempotency_key, created_at, published_at
 FROM workflow_definition_version
 WHERE workspace_id = $1
 ORDER BY definition_id ASC, version DESC
@@ -443,6 +449,7 @@ func (q *Queries) ListLatestWorkflowDefinitionVersions(ctx context.Context, work
 		if err := rows.Scan(
 			&i.DefinitionID,
 			&i.WorkspaceID,
+			&i.ProjectID,
 			&i.Version,
 			&i.Risk,
 			&i.Stages,
@@ -597,7 +604,7 @@ func (q *Queries) ListMemoryRevocations(ctx context.Context, candidateID string)
 }
 
 const listWorkflowDefinitionVersions = `-- name: ListWorkflowDefinitionVersions :many
-SELECT definition_id, workspace_id, version, risk, stages, graph, digest, idempotency_key, created_at, published_at FROM workflow_definition_version
+SELECT definition_id, workspace_id, project_id, version, risk, stages, graph, digest, idempotency_key, created_at, published_at FROM workflow_definition_version
 WHERE workspace_id = $1
 ORDER BY created_at DESC, definition_id ASC, version DESC
 `
@@ -614,6 +621,7 @@ func (q *Queries) ListWorkflowDefinitionVersions(ctx context.Context, workspaceI
 		if err := rows.Scan(
 			&i.DefinitionID,
 			&i.WorkspaceID,
+			&i.ProjectID,
 			&i.Version,
 			&i.Risk,
 			&i.Stages,
