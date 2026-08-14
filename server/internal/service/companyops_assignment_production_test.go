@@ -47,6 +47,13 @@ type productionCompanyOpsFixture struct {
 	issueID     pgtype.UUID
 }
 
+func cleanupProductionCompanyOps(t *testing.T, ctx context.Context, pool *pgxpool.Pool, statement string, args ...any) {
+	t.Helper()
+	if _, err := pool.Exec(ctx, statement, args...); err != nil {
+		t.Errorf("cleanup CompanyOps fixture: %v", err)
+	}
+}
+
 func seedProductionCompanyOpsFixture(
 	t *testing.T,
 	ctx context.Context,
@@ -59,17 +66,17 @@ func seedProductionCompanyOpsFixture(
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if fixture.workspaceID.Valid {
-			_, _ = pool.Exec(cleanupCtx, `DELETE FROM assignment_dispatch_receipt WHERE workspace_id = $1`, fixture.workspaceID)
-			_, _ = pool.Exec(cleanupCtx, `DELETE FROM execution_receipt WHERE workspace_id = $1`, fixture.workspaceID)
-			_, _ = pool.Exec(cleanupCtx, `DELETE FROM agent_task_queue WHERE issue_id IN (SELECT id FROM issue WHERE workspace_id = $1)`, fixture.workspaceID)
-			_, _ = pool.Exec(cleanupCtx, `DELETE FROM issue WHERE workspace_id = $1`, fixture.workspaceID)
-			_, _ = pool.Exec(cleanupCtx, `DELETE FROM agent WHERE workspace_id = $1`, fixture.workspaceID)
-			_, _ = pool.Exec(cleanupCtx, `DELETE FROM agent_runtime WHERE workspace_id = $1`, fixture.workspaceID)
-			_, _ = pool.Exec(cleanupCtx, `DELETE FROM member WHERE workspace_id = $1`, fixture.workspaceID)
-			_, _ = pool.Exec(cleanupCtx, `DELETE FROM workspace WHERE id = $1`, fixture.workspaceID)
+			cleanupProductionCompanyOps(t, cleanupCtx, pool, `DELETE FROM assignment_dispatch_receipt WHERE workspace_id = $1`, fixture.workspaceID)
+			cleanupProductionCompanyOps(t, cleanupCtx, pool, `DELETE FROM execution_receipt WHERE workspace_id = $1`, fixture.workspaceID)
+			cleanupProductionCompanyOps(t, cleanupCtx, pool, `DELETE FROM agent_task_queue WHERE issue_id IN (SELECT id FROM issue WHERE workspace_id = $1)`, fixture.workspaceID)
+			cleanupProductionCompanyOps(t, cleanupCtx, pool, `DELETE FROM issue WHERE workspace_id = $1`, fixture.workspaceID)
+			cleanupProductionCompanyOps(t, cleanupCtx, pool, `DELETE FROM agent WHERE workspace_id = $1`, fixture.workspaceID)
+			cleanupProductionCompanyOps(t, cleanupCtx, pool, `DELETE FROM agent_runtime WHERE workspace_id = $1`, fixture.workspaceID)
+			cleanupProductionCompanyOps(t, cleanupCtx, pool, `DELETE FROM member WHERE workspace_id = $1`, fixture.workspaceID)
+			cleanupProductionCompanyOps(t, cleanupCtx, pool, `DELETE FROM workspace WHERE id = $1`, fixture.workspaceID)
 		}
 		if fixture.userID.Valid {
-			_, _ = pool.Exec(cleanupCtx, `DELETE FROM "user" WHERE id = $1`, fixture.userID)
+			cleanupProductionCompanyOps(t, cleanupCtx, pool, `DELETE FROM "user" WHERE id = $1`, fixture.userID)
 		}
 	})
 

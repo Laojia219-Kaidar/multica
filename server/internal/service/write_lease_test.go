@@ -80,7 +80,9 @@ func cleanupLease(t *testing.T, pool *pgxpool.Pool, mutexKey string) {
 	t.Helper()
 	t.Cleanup(func() {
 		ctx := context.Background()
-		pool.Exec(ctx, `DELETE FROM write_lease WHERE mutex_key = $1`, mutexKey)
+		if _, err := pool.Exec(ctx, `DELETE FROM write_lease WHERE mutex_key = $1`, mutexKey); err != nil {
+			t.Errorf("cleanup write lease %s: %v", mutexKey, err)
+		}
 	})
 }
 

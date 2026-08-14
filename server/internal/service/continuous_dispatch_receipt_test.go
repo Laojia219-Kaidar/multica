@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	cryptorand "crypto/rand"
 	"errors"
 	"fmt"
 	"net/url"
@@ -35,6 +36,30 @@ func dispatchReceiptFixture(seed byte) ContinuousDispatchReceipt {
 		},
 		TaskID: dispatchReceiptUUID(seed + 2), EmployeeRef: "hivecosm://employees/EMP-001",
 		LocalAgentID: dispatchReceiptUUID(seed + 3), RuntimeID: dispatchReceiptUUID(seed + 4),
+		Model: "glm-5.2", AccountRef: "glm-capacity-1",
+		RequestDigest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+	}
+}
+
+func randomDispatchReceiptUUID(t *testing.T) pgtype.UUID {
+	t.Helper()
+	var value [16]byte
+	if _, err := cryptorand.Read(value[:]); err != nil {
+		t.Fatalf("random dispatch receipt UUID: %v", err)
+	}
+	return pgtype.UUID{Bytes: value, Valid: true}
+}
+
+func randomDispatchReceiptFixture(t *testing.T) ContinuousDispatchReceipt {
+	t.Helper()
+	return ContinuousDispatchReceipt{
+		Identity: continuousdispatch.DispatchIdentity{
+			WorkspaceID: shadowUUIDString(randomDispatchReceiptUUID(t)),
+			IssueID:     shadowUUIDString(randomDispatchReceiptUUID(t)),
+			Stage:       "implementation", CandidateRevision: "candidate-abc123", Generation: "generation-1",
+		},
+		TaskID: randomDispatchReceiptUUID(t), EmployeeRef: "hivecosm://employees/EMP-001",
+		LocalAgentID: randomDispatchReceiptUUID(t), RuntimeID: randomDispatchReceiptUUID(t),
 		Model: "glm-5.2", AccountRef: "glm-capacity-1",
 		RequestDigest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 	}
@@ -97,13 +122,15 @@ func dispatchReceiptTestPool(t *testing.T) *pgxpool.Pool {
 func cleanupDispatchReceipt(t *testing.T, pool *pgxpool.Pool, workspaceID string) {
 	t.Helper()
 	t.Cleanup(func() {
-		_, _ = pool.Exec(context.Background(), `DELETE FROM continuous_dispatch_receipt WHERE workspace_id = $1`, workspaceID)
+		if _, err := pool.Exec(context.Background(), `DELETE FROM continuous_dispatch_receipt WHERE workspace_id = $1`, workspaceID); err != nil {
+			t.Errorf("cleanup continuous dispatch receipt workspace %s: %v", workspaceID, err)
+		}
 	})
 }
 
 func TestContinuousDispatchReceiptRepositoryExactReplayAndConflict(t *testing.T) {
 	pool := dispatchReceiptTestPool(t)
-	receipt := dispatchReceiptFixture(byte(time.Now().UnixNano()))
+	receipt := randomDispatchReceiptFixture(t)
 	cleanupDispatchReceipt(t, pool, receipt.Identity.WorkspaceID)
 	repo := NewContinuousDispatchReceiptRepository(db.New(pool))
 
@@ -125,7 +152,7 @@ func TestContinuousDispatchReceiptRepositoryExactReplayAndConflict(t *testing.T)
 
 func TestContinuousDispatchReceiptRepositoryConcurrentExactReplayCreatesOneRow(t *testing.T) {
 	pool := dispatchReceiptTestPool(t)
-	receipt := dispatchReceiptFixture(byte(time.Now().UnixNano()))
+	receipt := randomDispatchReceiptFixture(t)
 	cleanupDispatchReceipt(t, pool, receipt.Identity.WorkspaceID)
 
 	const workers = 16
