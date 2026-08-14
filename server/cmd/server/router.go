@@ -1526,6 +1526,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			r.Get("/api/workflow/definitions", h.ListWorkflowDefinitions)
 			r.Post("/api/workflow/definitions/{id}/versions", h.PublishWorkflowDefinitionVersion)
 			r.Get("/api/workflow/definitions/{id}/versions/{version}", h.GetWorkflowDefinitionVersion)
+			r.Post("/api/workflow/definitions/{id}/versions/{version}/instances", h.StartPublishedWorkflowGraphInstance)
 			r.Get("/api/workflow/instances", h.ListWorkflowInstances)
 			r.Post("/api/workflow/instances", h.StartWorkflowInstance)
 			r.Get("/api/workflow/instances/{id}", h.GetWorkflowInstance)

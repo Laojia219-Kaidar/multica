@@ -3586,6 +3586,26 @@ export class ApiClient {
     });
   }
 
+  /**
+   * Starts the guarded linear-V1 execution plan for one immutable graph
+   * version. The server requires an exact formal Project context and returns
+   * the existing WorkflowInstance receipt; it does not publish or dispatch.
+   */
+  async startPublishedWorkflowGraphInstance(
+    definitionId: string,
+    version: number,
+    body: {
+      instance_id?: string;
+      context: { project_id: string; issue_id?: string; outcome_id?: string };
+      idempotency_key: string;
+    },
+  ): Promise<WorkflowInstance> {
+    return this.fetch(`/api/workflow/definitions/${encodeURIComponent(definitionId)}/versions/${version}/instances`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  }
+
   async getWorkflowInstance(id: string): Promise<WorkflowInstance> {
     return this.fetch(`/api/workflow/instances/${id}`);
   }
@@ -3595,6 +3615,7 @@ export class ApiClient {
     body: {
       review_passed?: boolean;
       owner_approved?: boolean;
+      decision_outcome?: string;
       task_id?: string;
       run_id?: string;
       notes?: string[];

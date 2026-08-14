@@ -131,12 +131,41 @@ function toPublishedBinding(kind: WorkflowGraph["nodes"][number]["type"], bindin
   }
 }
 
+function linearGraphStageProjection(version: PublishedWorkflowDefinitionVersion): WorkflowDefinition["stages"] {
+  // This is a read-only display adapter for the same linear V1 subset the
+  // server compiler accepts. It neither persists a second stage definition nor
+  // pretends a branching/conditional graph is executable.
+  const nodes = new Map(version.graph.nodes.map((node) => [node.id, node]));
+  const incoming = new Map<string, number>();
+  const outgoing = new Map<string, string>();
+  for (const node of version.graph.nodes) incoming.set(node.id, 0);
+  for (const edge of version.graph.edges) {
+    if (edge.when || !nodes.has(edge.from) || !nodes.has(edge.to) || outgoing.has(edge.from)) return [];
+    incoming.set(edge.to, (incoming.get(edge.to) ?? 0) + 1);
+    if ((incoming.get(edge.to) ?? 0) > 1) return [];
+    outgoing.set(edge.from, edge.to);
+  }
+  const roots = [...nodes.keys()].filter((nodeId) => (incoming.get(nodeId) ?? 0) === 0);
+  if (roots.length !== 1) return [];
+  const result: WorkflowDefinition["stages"] = [];
+  const seen = new Set<string>();
+  let nodeId: string | undefined = roots[0];
+  while (nodeId && !seen.has(nodeId)) {
+    const node = nodes.get(nodeId);
+    if (!node) return [];
+    seen.add(nodeId);
+    result.push({ name: node.name });
+    nodeId = outgoing.get(nodeId);
+  }
+  return seen.size === nodes.size ? result : [];
+}
+
 function toLegacyDefinition(version: PublishedWorkflowDefinitionVersion): WorkflowDefinition {
   return {
     id: version.definition_id,
     version: version.version,
     risk: version.risk,
-    stages: version.stages.map((stage) => ({
+    stages: linearGraphStageProjection(version).length > 0 ? linearGraphStageProjection(version) : version.stages.map((stage) => ({
       name: stage.name,
       sla_seconds: stage.sla_ns ? Math.floor(stage.sla_ns / 1_000_000_000) : undefined,
     })),
@@ -212,12 +241,27 @@ export default function Page() {
     enabled: Boolean(workspace?.id && selectedProject),
   });
 
+  const startPublishedGraphMutation = useMutation({
+    mutationFn: async (definition: WorkflowDefinition) => {
+      if (!selectedProject) throw new Error("请先选择 L4 正式 Project 后再启动工作流");
+      const version = scopedOperations.definitions.find((item) => item.definition_id === definition.id && item.version === definition.version);
+      if (!version) throw new Error("已发布工作流版本未在当前 Project 范围内回读");
+      return api.startPublishedWorkflowGraphInstance(version.definition_id, version.version, {
+        context: { project_id: selectedProject.formalProjectId },
+        idempotency_key: newIdempotencyKey(),
+      });
+    },
+    onSuccess: () => {
+      if (workspace?.id) void queryClient.invalidateQueries({ queryKey: workflowKeys.instances(workspace.id) });
+    },
+  });
+
   const publishMutation = useMutation({
     mutationFn: async (draft: WorkflowDefinitionDraft) => api.publishWorkflowDefinitionVersion(draft.id, {
       project_id: draft.projectId,
       risk: "standard",
-      // The current engine remains an explicit stage engine. Graph execution
-      // adapters are not silently implied by a published visual graph.
+      // The immutable graph is the source. The server compiles only the
+      // guarded linear V1 subset at start time; branching remains fail-closed.
       stages: [],
       graph: toPublishedGraph(draft.graph),
       idempotency_key: newIdempotencyKey(),
@@ -295,6 +339,13 @@ export default function Page() {
       onPublishDefinition={(draft) => publishMutation.mutate(draft)}
       publishReceipt={publishReceipt}
       publishError={publishError}
+      workbench={{
+        onCreateInstance: selectedProject ? async (definition) => {
+          await startPublishedGraphMutation.mutateAsync(definition);
+        } : undefined,
+        instanceCreationState: startPublishedGraphMutation.isPending ? "loading" : startPublishedGraphMutation.isError ? "error" : selectedProject ? "ready" : "unavailable",
+        instanceCreationError: startPublishedGraphMutation.error instanceof Error ? startPublishedGraphMutation.error.message : undefined,
+      }}
     />
   );
 }

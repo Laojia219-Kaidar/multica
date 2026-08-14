@@ -2,6 +2,7 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 	"sync"
@@ -257,6 +258,124 @@ type startWorkflowRequest struct {
 	IdempotencyKey string             `json:"idempotency_key,omitempty"`
 }
 
+// startPublishedWorkflowGraphRequest is the only HTTP command that turns an
+// immutable visual definition version into a candidate WorkflowInstance. The
+// Project context is intentionally required: a graph version is never run as
+// a workspace-wide or inferred operation.
+type startPublishedWorkflowGraphRequest struct {
+	InstanceID     string             `json:"instance_id,omitempty"`
+	Context        workflowContextDTO `json:"context"`
+	IdempotencyKey string             `json:"idempotency_key,omitempty"`
+}
+
+// StartPublishedWorkflowGraphInstance POST
+// /api/workflow/definitions/{id}/versions/{version}/instances.
+//
+// The command executes only the guarded linear V1 subset of a published graph.
+// It creates the existing WorkflowInstance/Event records; it does not dispatch
+// a real Task/Run, write an Outcome, publish to a platform, or move artifact
+// bytes to a storage location.
+func (h *Handler) StartPublishedWorkflowGraphInstance(w http.ResponseWriter, r *http.Request) {
+	workspaceID := h.resolveWorkspaceID(r)
+	if _, ok := h.workspaceMember(w, r, workspaceID); !ok {
+		return
+	}
+	versionNumber, err := strconv.Atoi(r.PathValue("version"))
+	if err != nil || versionNumber < 1 {
+		writeError(w, http.StatusBadRequest, "invalid version")
+		return
+	}
+	var req startPublishedWorkflowGraphRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	key := req.IdempotencyKey
+	if key == "" {
+		key = r.Header.Get("Idempotency-Key")
+	}
+	if key == "" {
+		writeError(w, http.StatusBadRequest, "idempotency_key is required")
+		return
+	}
+	if req.Context.ProjectID == "" {
+		writeError(w, http.StatusBadRequest, "context.project_id is required")
+		return
+	}
+
+	version, err := h.workflowRepo().LoadPublishedDefinitionVersion(r.Context(), workspaceID, r.PathValue("id"), versionNumber)
+	if err != nil {
+		// Do not distinguish another workspace's version from an absent version.
+		writeError(w, http.StatusNotFound, "workflow definition version not found")
+		return
+	}
+	if version.ProjectID == "" || version.ProjectID != req.Context.ProjectID {
+		writeError(w, http.StatusBadRequest, "context.project_id must match the published definition Project")
+		return
+	}
+	projectID, err := uuid.Parse(req.Context.ProjectID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "context.project_id must be a canonical UUID")
+		return
+	}
+	workspaceUUID, err := uuid.Parse(workspaceID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "workspace scope is invalid")
+		return
+	}
+	if _, err := h.Queries.GetProjectInWorkspace(r.Context(), db.GetProjectInWorkspaceParams{
+		ID:          pgtype.UUID{Bytes: projectID, Valid: true},
+		WorkspaceID: pgtype.UUID{Bytes: workspaceUUID, Valid: true},
+	}); err != nil {
+		writeError(w, http.StatusBadRequest, "context.project_id is not a Project in the current workspace")
+		return
+	}
+
+	instanceID := req.InstanceID
+	if instanceID == "" {
+		instanceID = uuid.NewString()
+	}
+	ctx := workflow.ContextRef{
+		ProjectID: req.Context.ProjectID,
+		IssueID:   req.Context.IssueID,
+		OutcomeID: req.Context.OutcomeID,
+	}
+	inst, receipt, _, err := workflowEngine().StartPublishedGraph(workflow.GraphExecutionCommand{
+		Definition: version,
+		Scope: workflow.GraphExecutionScope{
+			WorkspaceID: workspaceID,
+			ProjectID:   req.Context.ProjectID,
+		},
+		Context:        ctx,
+		InstanceID:     instanceID,
+		IdempotencyKey: key,
+	})
+	if err != nil {
+		if errors.Is(err, workflow.ErrGraphExecutionUnsupported) {
+			writeError(w, http.StatusConflict, "published graph requires runtime semantics not available in linear V1")
+			return
+		}
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	repo := h.workflowRepo()
+	if err := repo.SaveInstanceInWorkspace(r.Context(), workspaceID, inst); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to persist workflow instance")
+		return
+	}
+	for _, event := range workflowEngine().Events(inst.ID) {
+		if err := repo.AppendEvent(r.Context(), event); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to persist workflow event")
+			return
+		}
+	}
+	status := http.StatusCreated
+	if !receipt.Changed {
+		status = http.StatusOK
+	}
+	writeJSON(w, status, toWorkflowInstanceDTO(inst))
+}
+
 // StartWorkflowInstance POST /api/workflow/instances
 func (h *Handler) StartWorkflowInstance(w http.ResponseWriter, r *http.Request) {
 	workspaceID := h.resolveWorkspaceID(r)
@@ -339,12 +458,13 @@ func (h *Handler) GetWorkflowInstance(w http.ResponseWriter, r *http.Request) {
 }
 
 type advanceWorkflowRequest struct {
-	ReviewPassed   bool     `json:"review_passed"`
-	OwnerApproved  bool     `json:"owner_approved"`
-	TaskID         string   `json:"task_id,omitempty"`
-	RunID          string   `json:"run_id,omitempty"`
-	Notes          []string `json:"notes,omitempty"`
-	IdempotencyKey string   `json:"idempotency_key,omitempty"`
+	ReviewPassed    bool     `json:"review_passed"`
+	OwnerApproved   bool     `json:"owner_approved"`
+	DecisionOutcome string   `json:"decision_outcome,omitempty"`
+	TaskID          string   `json:"task_id,omitempty"`
+	RunID           string   `json:"run_id,omitempty"`
+	Notes           []string `json:"notes,omitempty"`
+	IdempotencyKey  string   `json:"idempotency_key,omitempty"`
 }
 
 // AdvanceWorkflowInstance POST /api/workflow/instances/{id}/advance
@@ -382,12 +502,13 @@ func (h *Handler) AdvanceWorkflowInstance(w http.ResponseWriter, r *http.Request
 	actorType, actorID := h.resolveActor(r, requestUserID(r), workspaceID)
 	_ = actorType
 	ev := workflow.AdvanceEvidence{
-		ReviewPassed:  req.ReviewPassed,
-		OwnerApproved: req.OwnerApproved,
-		TaskID:        req.TaskID,
-		RunID:         req.RunID,
-		ActorID:       actorID,
-		Notes:         req.Notes,
+		ReviewPassed:    req.ReviewPassed,
+		OwnerApproved:   req.OwnerApproved,
+		DecisionOutcome: req.DecisionOutcome,
+		TaskID:          req.TaskID,
+		RunID:           req.RunID,
+		ActorID:         actorID,
+		Notes:           req.Notes,
 	}
 	inst, _, err := workflowEngine().Advance(id, ev, key)
 	if err != nil {
