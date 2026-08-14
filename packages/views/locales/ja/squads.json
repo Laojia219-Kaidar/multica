@@ -73,6 +73,8 @@
     "make_leader_tooltip": "スクワッドリーダーに指定",
     "remove_member_tooltip": "スクワッドから削除",
     "status_working": "作業中",
+    "status_queued": "待機中",
+    "status_blocked": "ブロック中",
     "status_idle": "アイドル",
     "status_offline": "オフライン",
     "status_unstable": "不安定",
