@@ -3,6 +3,7 @@ package workflow
 import (
 	"errors"
 	"fmt"
+	"reflect"
 	"sync"
 	"time"
 )
@@ -21,23 +22,29 @@ var (
 type Engine struct {
 	mu          sync.Mutex
 	definitions map[string]WorkflowDefinition
-	instances   map[string]*WorkflowInstance
-	stageExecs  map[string][]StageExecution
-	enteredAt   map[string]time.Time
-	events      map[string][]Event
-	byKey       map[string]Receipt
-	now         func() time.Time
+	// Versioned definitions keep an already-running graph pinned to the
+	// immutable definition version that started it.
+	versionedDefinitions map[string]WorkflowDefinition
+	graphPlans           map[string]GraphExecutionPlan
+	instances            map[string]*WorkflowInstance
+	stageExecs           map[string][]StageExecution
+	enteredAt            map[string]time.Time
+	events               map[string][]Event
+	byKey                map[string]Receipt
+	now                  func() time.Time
 }
 
 func NewEngine() *Engine {
 	return &Engine{
-		definitions: map[string]WorkflowDefinition{},
-		instances:   map[string]*WorkflowInstance{},
-		stageExecs:  map[string][]StageExecution{},
-		enteredAt:   map[string]time.Time{},
-		events:      map[string][]Event{},
-		byKey:       map[string]Receipt{},
-		now:         time.Now,
+		definitions:          map[string]WorkflowDefinition{},
+		versionedDefinitions: map[string]WorkflowDefinition{},
+		graphPlans:           map[string]GraphExecutionPlan{},
+		instances:            map[string]*WorkflowInstance{},
+		stageExecs:           map[string][]StageExecution{},
+		enteredAt:            map[string]time.Time{},
+		events:               map[string][]Event{},
+		byKey:                map[string]Receipt{},
+		now:                  time.Now,
 	}
 }
 
@@ -138,7 +145,53 @@ func (e *Engine) Register(d WorkflowDefinition) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.definitions[d.ID] = d
+	// Legacy definitions have no workspace scope. Published graph definitions
+	// are registered separately with their explicit workspace key.
+	e.versionedDefinitions[definitionVersionKey("", d.ID, d.Version)] = d
 	return nil
+}
+
+func definitionVersionKey(workspaceID, definitionID string, version int) string {
+	return fmt.Sprintf("%s\x00%s\x00%d", workspaceID, definitionID, version)
+}
+
+func (e *Engine) registerGraphPlan(plan GraphExecutionPlan) error {
+	if err := ValidateDefinition(plan.Definition); err != nil {
+		return err
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	key := definitionVersionKey(plan.WorkspaceID, plan.Definition.ID, plan.Definition.Version)
+	if existing, ok := e.versionedDefinitions[key]; ok && len(existing.Stages) != len(plan.Definition.Stages) {
+		return fmt.Errorf("%w: definition version already registered with different stage plan", ErrIllegalTransition)
+	}
+	if existing, ok := e.graphPlans[key]; ok && !reflect.DeepEqual(existing, plan) {
+		return fmt.Errorf("%w: published graph version is immutable", ErrIllegalTransition)
+	}
+	e.versionedDefinitions[key] = plan.Definition
+	e.graphPlans[key] = plan
+	return nil
+}
+
+func (e *Engine) definitionForInstance(inst *WorkflowInstance) (WorkflowDefinition, bool) {
+	if inst.WorkspaceID != "" {
+		if def, ok := e.versionedDefinitions[definitionVersionKey(inst.WorkspaceID, inst.DefinitionID, inst.DefinitionVersion)]; ok {
+			return def, true
+		}
+		// A legacy definition may still be attached to a workspace-scoped
+		// instance. It is safe to use the legacy ID map only after the scoped
+		// published lookup misses; never use another workspace's graph key.
+		if def, ok := e.definitions[inst.DefinitionID]; ok {
+			return def, true
+		}
+		return WorkflowDefinition{}, false
+	}
+	def, ok := e.versionedDefinitions[definitionVersionKey("", inst.DefinitionID, inst.DefinitionVersion)]
+	if ok {
+		return def, true
+	}
+	def, ok = e.definitions[inst.DefinitionID]
+	return def, ok
 }
 
 // AttachWorkspace records the workspace reference on an in-memory instance
@@ -209,6 +262,33 @@ func (e *Engine) start(defID, instanceID string, ctx ContextRef, workspaceID, ke
 	return *inst, receipt, nil
 }
 
+func (e *Engine) startVersionForWorkspace(defID string, version int, instanceID string, ctx ContextRef, workspaceID, key string) (WorkflowInstance, Receipt, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if r, ok := e.replay(key); ok {
+		if inst, found := e.instances[r.InstanceID]; found {
+			if workspaceID != "" && inst.WorkspaceID != "" && inst.WorkspaceID != workspaceID {
+				return WorkflowInstance{}, Receipt{}, fmt.Errorf("%w: idempotency key belongs to another workspace", ErrIllegalTransition)
+			}
+			return *inst, r, nil
+		}
+	}
+	def, ok := e.versionedDefinitions[definitionVersionKey(workspaceID, defID, version)]
+	if !ok {
+		return WorkflowInstance{}, Receipt{}, ErrDefinitionNotFound
+	}
+	inst := &WorkflowInstance{
+		ID: instanceID, WorkspaceID: workspaceID, DefinitionID: def.ID,
+		DefinitionVersion: def.Version, Context: ctx, StageIndex: 0, Status: StatusRunning,
+	}
+	e.instances[instanceID] = inst
+	e.enteredAt[instanceID] = e.clock()
+	receipt := Receipt{Command: "start", InstanceID: instanceID, IdempotencyKey: key, Accepted: true, Changed: true}
+	e.byKey[key] = receipt
+	e.append(instanceID, "workflow.started", "definition://"+def.ID+"/versions/"+fmt.Sprint(def.Version), "system", key)
+	return *inst, receipt, nil
+}
+
 // Advance moves to the next stage, enforcing the risk gate. Idempotent by key.
 func (e *Engine) Advance(instanceID string, ev AdvanceEvidence, key string) (WorkflowInstance, Receipt, error) {
 	e.mu.Lock()
@@ -222,13 +302,29 @@ func (e *Engine) Advance(instanceID string, ev AdvanceEvidence, key string) (Wor
 	if !ok {
 		return WorkflowInstance{}, Receipt{}, ErrInstanceNotFound
 	}
-	def := e.definitions[inst.DefinitionID]
+	def, ok := e.definitionForInstance(inst)
+	if !ok {
+		return *inst, Receipt{Command: "advance", InstanceID: instanceID, IdempotencyKey: key, Reason: "definition not registered"}, ErrDefinitionNotFound
+	}
 
 	if inst.Status != StatusRunning {
 		return *inst, Receipt{Command: "advance", InstanceID: instanceID, IdempotencyKey: key, Reason: fmt.Sprintf("instance is %s", inst.Status)}, ErrIllegalTransition
 	}
 	if inst.StageIndex >= len(def.Stages) {
 		return *inst, Receipt{Command: "advance", InstanceID: instanceID, IdempotencyKey: key, Reason: "already completed"}, ErrIllegalTransition
+	}
+	if plan, graph := e.graphPlans[definitionVersionKey(inst.WorkspaceID, inst.DefinitionID, inst.DefinitionVersion)]; graph && inst.StageIndex < len(plan.Stages) {
+		gate := plan.Stages[inst.StageIndex]
+		if gate.RequiresReviewEvidence && !ev.ReviewPassed {
+			receipt := Receipt{Command: "advance", InstanceID: instanceID, IdempotencyKey: key, Accepted: false, Reason: "graph stage requires explicit review evidence"}
+			e.byKey[key] = receipt
+			return *inst, receipt, nil
+		}
+		if gate.RequiresDecisionEvidence && ev.DecisionOutcome == "" {
+			receipt := Receipt{Command: "advance", InstanceID: instanceID, IdempotencyKey: key, Accepted: false, Reason: "graph stage requires explicit decision evidence"}
+			e.byKey[key] = receipt
+			return *inst, receipt, nil
+		}
 	}
 
 	// Risk gate. FAST auto-advances; STANDARD needs independent review;
@@ -254,15 +350,16 @@ func (e *Engine) Advance(instanceID string, ev AdvanceEvidence, key string) (Wor
 		entered = e.clock()
 	}
 	e.stageExecs[instanceID] = append(e.stageExecs[instanceID], StageExecution{
-		InstanceID: instanceID,
-		StageIndex: inst.StageIndex,
-		StageName:  cur.Name,
-		EnteredAt:  entered,
-		TaskID:     ev.TaskID,
-		RunID:      ev.RunID,
-		ActorID:    ev.ActorID,
-		RuntimeID:  ev.RuntimeID,
-		Evidence:   ev.Notes,
+		InstanceID:      instanceID,
+		StageIndex:      inst.StageIndex,
+		StageName:       cur.Name,
+		EnteredAt:       entered,
+		TaskID:          ev.TaskID,
+		RunID:           ev.RunID,
+		ActorID:         ev.ActorID,
+		RuntimeID:       ev.RuntimeID,
+		DecisionOutcome: ev.DecisionOutcome,
+		Evidence:        ev.Notes,
 	})
 
 	inst.StageIndex++
@@ -334,7 +431,10 @@ func (e *Engine) Recover(instanceID string, stageIndex int, key string) (Workflo
 	if !ok {
 		return WorkflowInstance{}, Receipt{}, ErrInstanceNotFound
 	}
-	def := e.definitions[inst.DefinitionID]
+	def, ok := e.definitionForInstance(inst)
+	if !ok {
+		return *inst, Receipt{Command: "recover", InstanceID: instanceID, IdempotencyKey: key, Reason: "definition not registered"}, ErrDefinitionNotFound
+	}
 	if inst.Status != StatusFailed {
 		return *inst, Receipt{Command: "recover", InstanceID: instanceID, IdempotencyKey: key, Reason: "not failed"}, ErrIllegalTransition
 	}
@@ -381,7 +481,10 @@ func (e *Engine) Overdue(instanceID string, now time.Time) (stage string, overdu
 	if !found || inst.Status != StatusRunning {
 		return "", 0, false
 	}
-	def := e.definitions[inst.DefinitionID]
+	def, ok := e.definitionForInstance(inst)
+	if !ok {
+		return "", 0, false
+	}
 	if inst.StageIndex >= len(def.Stages) {
 		return "", 0, false
 	}

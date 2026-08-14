@@ -2,8 +2,38 @@ package workflow
 
 import (
 	"context"
+	"errors"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
+
+func (e *Engine) hydratePublishedGraphDefinition(version WorkflowDefinitionVersion, scope GraphExecutionScope, ctx ContextRef) (WorkflowDefinition, error) {
+	plan, err := CompileDefinitionVersion(version, scope, ctx)
+	if err != nil {
+		return WorkflowDefinition{}, err
+	}
+	if err := e.registerGraphPlan(plan); err != nil {
+		return WorkflowDefinition{}, err
+	}
+	return plan.Definition, nil
+}
+
+func (e *Engine) hydrateDefinition(ctx context.Context, repo *Repository, workspaceID string, inst WorkflowInstance) (WorkflowDefinition, error) {
+	if workspaceID != "" && inst.DefinitionVersion > 0 {
+		version, err := repo.LoadPublishedDefinitionVersion(ctx, workspaceID, inst.DefinitionID, inst.DefinitionVersion)
+		if err == nil {
+			return e.hydratePublishedGraphDefinition(version, GraphExecutionScope{
+				WorkspaceID: workspaceID,
+				ProjectID:   inst.Context.ProjectID,
+			}, inst.Context)
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return WorkflowDefinition{}, err
+		}
+	}
+	return repo.LoadDefinition(ctx, inst.DefinitionID)
+}
 
 // Hydrate reconstructs the engine's in-memory state for one instance from the
 // persistence repository. It is the resume-after-restart path: definition,
@@ -15,7 +45,7 @@ func (e *Engine) Hydrate(ctx context.Context, repo *Repository, instanceID strin
 	if err != nil {
 		return err
 	}
-	def, err := repo.LoadDefinition(ctx, inst.DefinitionID)
+	def, err := e.hydrateDefinition(ctx, repo, inst.WorkspaceID, inst)
 	if err != nil {
 		return err
 	}
@@ -46,7 +76,7 @@ func (e *Engine) HydrateInWorkspace(ctx context.Context, repo *Repository, works
 	if err != nil {
 		return err
 	}
-	def, err := repo.LoadDefinition(ctx, inst.DefinitionID)
+	def, err := e.hydrateDefinition(ctx, repo, workspaceID, inst)
 	if err != nil {
 		return err
 	}

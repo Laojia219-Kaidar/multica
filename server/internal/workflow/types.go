@@ -93,10 +93,10 @@ type GraphPosition struct {
 }
 
 type GraphNode struct {
-	ID           string        `json:"id"`
-	Kind         NodeKind      `json:"kind"`
-	Name         string        `json:"name"`
-	AgentBinding *AgentBinding `json:"agent_binding,omitempty"`
+	ID           string         `json:"id"`
+	Kind         NodeKind       `json:"kind"`
+	Name         string         `json:"name"`
+	AgentBinding *AgentBinding  `json:"agent_binding,omitempty"`
 	Position     *GraphPosition `json:"position,omitempty"`
 }
 
@@ -269,15 +269,16 @@ type WorkflowInstance struct {
 // StageExecution records one stage execution with exact Task/Run/actor/runtime
 // and evidence references.
 type StageExecution struct {
-	InstanceID string
-	StageIndex int
-	StageName  string
-	EnteredAt  time.Time
-	TaskID     string
-	RunID      string
-	ActorID    string
-	RuntimeID  string
-	Evidence   []string
+	InstanceID      string
+	StageIndex      int
+	StageName       string
+	EnteredAt       time.Time
+	TaskID          string
+	RunID           string
+	ActorID         string
+	RuntimeID       string
+	DecisionOutcome string
+	Evidence        []string
 }
 
 // Event is an append-only fact event with an idempotency key.
@@ -306,11 +307,12 @@ type Receipt struct {
 // AdvanceEvidence is the caller-supplied proof for a stage advance. The engine
 // only enforces the risk gate; it does not invent business conditions.
 type AdvanceEvidence struct {
-	ReviewPassed  bool // required for STANDARD
-	OwnerApproved bool // required for OWNER
-	TaskID        string
-	RunID         string
-	ActorID       string
-	RuntimeID     string
-	Notes         []string
+	ReviewPassed    bool // required for STANDARD
+	OwnerApproved   bool // required for OWNER
+	TaskID          string
+	RunID           string
+	ActorID         string
+	RuntimeID       string
+	DecisionOutcome string // required for a graph decision stage
+	Notes           []string
 }
