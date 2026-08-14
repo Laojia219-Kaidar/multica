@@ -17,6 +17,7 @@ import (
 type ReviewDispatchPreviewItem struct {
 	IssueID      string                                `json:"issue_id"`
 	IssueTitle   string                                `json:"issue_title"`
+	SourceRef    string                                `json:"source_ref,omitempty"`
 	SourceTaskID string                                `json:"source_task_id,omitempty"`
 	State        continuousdispatch.State              `json:"state"`
 	Reasons      []continuousdispatch.Reason           `json:"reasons,omitempty"`
@@ -76,11 +77,11 @@ func (s *ReviewDispatchBatchService) PreviewProject(
 			continue
 		}
 		proposal := ReviewDispatchPreviewItem{
-			IssueID: item.IssueID, IssueTitle: item.IssueTitle, SourceTaskID: item.SourceTaskID,
+			IssueID: item.IssueID, IssueTitle: item.IssueTitle, SourceRef: item.SourceRef, SourceTaskID: item.SourceTaskID,
 			State: item.NextAction.State, Reasons: append([]continuousdispatch.Reason(nil), item.NextAction.Reasons...),
 			Selected: item.NextAction.Selected,
 		}
-		if strings.TrimSpace(item.SourceTaskID) == "" && proposal.Selected != nil {
+		if (strings.TrimSpace(item.SourceRef) == "" || strings.TrimSpace(item.SourceTaskID) == "") && proposal.Selected != nil {
 			proposal.State = continuousdispatch.StateBlocked
 			proposal.Reasons = []continuousdispatch.Reason{continuousdispatch.ReasonReviewSourceTaskMissing}
 			proposal.Selected = nil
@@ -116,7 +117,7 @@ func (s *ReviewDispatchBatchService) DispatchProject(
 			continue
 		}
 		dispatch, dispatchErr := s.trigger.DispatchReviewIssue(
-			ctx, workspaceID, projectID, parseDispatchUUID(item.IssueID), actorUserID, parseDispatchUUID(item.SourceTaskID),
+			ctx, workspaceID, projectID, parseDispatchUUID(item.IssueID), actorUserID, item.SourceRef, parseDispatchUUID(item.SourceTaskID),
 		)
 		if dispatchErr != nil {
 			return result, dispatchErr

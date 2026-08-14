@@ -70,6 +70,10 @@ type ContinuousDispatchShadowItem struct {
 	IssueID    string `json:"issue_id"`
 	IssueTitle string `json:"issue_title"`
 	Status     string `json:"status"`
+	// SourceRef is the canonical ref for the exact agent Comment whose
+	// source_task_id proves the current implementation result. It is evidence
+	// returned by the read model, never a browser-controlled dispatch input.
+	SourceRef string `json:"source_ref,omitempty"`
 	// SourceTaskID is the completed implementation Task that produced the
 	// candidate under review. It is provenance only; clients cannot use it to
 	// choose a reviewer or bypass the server-side route planner.
@@ -245,6 +249,7 @@ func (s *ContinuousDispatchShadowService) InspectProject(
 		})
 		items = append(items, ContinuousDispatchShadowItem{
 			IssueID: shadowUUIDString(issue.ID), IssueTitle: issue.Title, Status: issue.Status,
+			SourceRef:        lineage.SourceRef,
 			SourceTaskID:     lineage.TaskID,
 			DispatchIdentity: identity, Generation: generation, NextAction: next,
 		})
@@ -263,9 +268,10 @@ func (s *ContinuousDispatchShadowService) InspectProject(
 }
 
 type reviewSourceLineage struct {
-	TaskID   string
-	AuthorID string
-	Proven   bool
+	SourceRef string
+	TaskID    string
+	AuthorID  string
+	Proven    bool
 }
 
 // resolveReviewSourceLineage accepts only a current agent Comment that points
@@ -292,7 +298,7 @@ func resolveReviewSourceLineage(
 	}
 	for i := len(comments) - 1; i >= 0; i-- {
 		comment := comments[i]
-		if comment.AuthorType != "agent" || !comment.SourceTaskID.Valid || !comment.AuthorID.Valid ||
+		if !comment.ID.Valid || comment.AuthorType != "agent" || !comment.SourceTaskID.Valid || !comment.AuthorID.Valid ||
 			comment.IssueID != issue.ID || comment.WorkspaceID != issue.WorkspaceID {
 			continue
 		}
@@ -311,7 +317,12 @@ func resolveReviewSourceLineage(
 			contextValue.ContinuousDispatch.Generation != identity.Generation {
 			continue
 		}
-		return reviewSourceLineage{TaskID: shadowUUIDString(task.ID), AuthorID: shadowUUIDString(task.AgentID), Proven: true}
+		return reviewSourceLineage{
+			SourceRef: continuousDispatchReviewCommentRef(comment.ID),
+			TaskID:    shadowUUIDString(task.ID),
+			AuthorID:  shadowUUIDString(task.AgentID),
+			Proven:    true,
+		}
 	}
 	return reviewSourceLineage{}
 }
@@ -409,6 +420,7 @@ func parseShadowMetadata(raw []byte) shadowIssueMetadata {
 
 type shadowTaskContext struct {
 	ContinuousDispatch continuousdispatch.DispatchIdentity `json:"continuous_dispatch"`
+	ReviewDispatch     *ContinuousDispatchReviewProvenance `json:"review_dispatch,omitempty"`
 }
 
 func composeGeneration(identity continuousdispatch.DispatchIdentity, tasks []db.AgentTaskQueue) continuousdispatch.GenerationEvidence {

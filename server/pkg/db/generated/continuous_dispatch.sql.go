@@ -155,6 +155,127 @@ func (q *Queries) LockContinuousDispatchIdentity(ctx context.Context, arg LockCo
 	return err
 }
 
+const lockContinuousDispatchIssue = `-- name: LockContinuousDispatchIssue :one
+SELECT id, workspace_id, title, description, status, priority, assignee_type, assignee_id, creator_type, creator_id, parent_issue_id, acceptance_criteria, context_refs, position, due_date, created_at, updated_at, number, project_id, origin_type, origin_id, first_executed_at, start_date, metadata, stage, properties FROM issue
+WHERE id = $1 AND workspace_id = $2
+FOR SHARE
+`
+
+type LockContinuousDispatchIssueParams struct {
+	IssueID     pgtype.UUID `json:"issue_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+// The dispatch transaction keeps the exact Issue row stable through Task and
+// receipt creation. A review command must not survive a concurrent lifecycle
+// or candidate-generation change after its server-side preview.
+func (q *Queries) LockContinuousDispatchIssue(ctx context.Context, arg LockContinuousDispatchIssueParams) (Issue, error) {
+	row := q.db.QueryRow(ctx, lockContinuousDispatchIssue, arg.IssueID, arg.WorkspaceID)
+	var i Issue
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.Title,
+		&i.Description,
+		&i.Status,
+		&i.Priority,
+		&i.AssigneeType,
+		&i.AssigneeID,
+		&i.CreatorType,
+		&i.CreatorID,
+		&i.ParentIssueID,
+		&i.AcceptanceCriteria,
+		&i.ContextRefs,
+		&i.Position,
+		&i.DueDate,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Number,
+		&i.ProjectID,
+		&i.OriginType,
+		&i.OriginID,
+		&i.FirstExecutedAt,
+		&i.StartDate,
+		&i.Metadata,
+		&i.Stage,
+		&i.Properties,
+	)
+	return i, err
+}
+
+const lockReviewSourceCommentForContinuousDispatch = `-- name: LockReviewSourceCommentForContinuousDispatch :one
+SELECT id, issue_id, author_type, author_id, workspace_id, source_task_id
+FROM comment
+WHERE id = $1
+  AND issue_id = $2
+  AND workspace_id = $3
+FOR SHARE
+`
+
+type LockReviewSourceCommentForContinuousDispatchParams struct {
+	SourceCommentID pgtype.UUID `json:"source_comment_id"`
+	IssueID         pgtype.UUID `json:"issue_id"`
+	WorkspaceID     pgtype.UUID `json:"workspace_id"`
+}
+
+type LockReviewSourceCommentForContinuousDispatchRow struct {
+	ID           pgtype.UUID `json:"id"`
+	IssueID      pgtype.UUID `json:"issue_id"`
+	AuthorType   string      `json:"author_type"`
+	AuthorID     pgtype.UUID `json:"author_id"`
+	WorkspaceID  pgtype.UUID `json:"workspace_id"`
+	SourceTaskID pgtype.UUID `json:"source_task_id"`
+}
+
+// A review source is a specific immutable agent Comment, not merely a Task.
+// FOR SHARE prevents an update or deletion from racing past final lineage
+// validation before the review Task+receipt transaction commits.
+func (q *Queries) LockReviewSourceCommentForContinuousDispatch(ctx context.Context, arg LockReviewSourceCommentForContinuousDispatchParams) (LockReviewSourceCommentForContinuousDispatchRow, error) {
+	row := q.db.QueryRow(ctx, lockReviewSourceCommentForContinuousDispatch, arg.SourceCommentID, arg.IssueID, arg.WorkspaceID)
+	var i LockReviewSourceCommentForContinuousDispatchRow
+	err := row.Scan(
+		&i.ID,
+		&i.IssueID,
+		&i.AuthorType,
+		&i.AuthorID,
+		&i.WorkspaceID,
+		&i.SourceTaskID,
+	)
+	return i, err
+}
+
+const lockReviewSourceTaskForContinuousDispatch = `-- name: LockReviewSourceTaskForContinuousDispatch :one
+SELECT id, agent_id, issue_id, status, context, handoff_note
+FROM agent_task_queue
+WHERE id = $1
+FOR SHARE
+`
+
+type LockReviewSourceTaskForContinuousDispatchRow struct {
+	ID          pgtype.UUID `json:"id"`
+	AgentID     pgtype.UUID `json:"agent_id"`
+	IssueID     pgtype.UUID `json:"issue_id"`
+	Status      string      `json:"status"`
+	Context     []byte      `json:"context"`
+	HandoffNote pgtype.Text `json:"handoff_note"`
+}
+
+// Lock the completed implementation Task together with the source Comment so
+// its completion state and stamped generation cannot change mid-dispatch.
+func (q *Queries) LockReviewSourceTaskForContinuousDispatch(ctx context.Context, sourceTaskID pgtype.UUID) (LockReviewSourceTaskForContinuousDispatchRow, error) {
+	row := q.db.QueryRow(ctx, lockReviewSourceTaskForContinuousDispatch, sourceTaskID)
+	var i LockReviewSourceTaskForContinuousDispatchRow
+	err := row.Scan(
+		&i.ID,
+		&i.AgentID,
+		&i.IssueID,
+		&i.Status,
+		&i.Context,
+		&i.HandoffNote,
+	)
+	return i, err
+}
+
 const stampContinuousDispatchTaskIdentity = `-- name: StampContinuousDispatchTaskIdentity :one
 UPDATE agent_task_queue AS task
 SET context = COALESCE(task.context, '{}'::jsonb) || jsonb_build_object(
@@ -166,9 +287,20 @@ SET context = COALESCE(task.context, '{}'::jsonb) || jsonb_build_object(
         'candidate_revision', $4::text,
         'generation', $5::text
     )
-)
+) || CASE
+    WHEN $6::uuid IS NULL THEN '{}'::jsonb
+    ELSE jsonb_build_object(
+        'review_dispatch',
+        jsonb_build_object(
+            'source_ref', $7::text,
+            'source_issue_id', $8::uuid,
+            'source_task_id', $6::uuid,
+            'initiator_source', $9::text
+        )
+    )
+END
 FROM issue
-WHERE task.id = $6
+WHERE task.id = $10
   AND task.issue_id = $2
   AND issue.id = task.issue_id
   AND issue.workspace_id = $1
@@ -177,12 +309,16 @@ RETURNING task.id, task.agent_id, task.issue_id, task.status, task.priority, tas
 `
 
 type StampContinuousDispatchTaskIdentityParams struct {
-	WorkspaceID       pgtype.UUID `json:"workspace_id"`
-	IssueID           pgtype.UUID `json:"issue_id"`
-	Stage             string      `json:"stage"`
-	CandidateRevision string      `json:"candidate_revision"`
-	Generation        string      `json:"generation"`
-	TaskID            pgtype.UUID `json:"task_id"`
+	WorkspaceID           pgtype.UUID `json:"workspace_id"`
+	IssueID               pgtype.UUID `json:"issue_id"`
+	Stage                 string      `json:"stage"`
+	CandidateRevision     string      `json:"candidate_revision"`
+	Generation            string      `json:"generation"`
+	ReviewSourceTaskID    pgtype.UUID `json:"review_source_task_id"`
+	ReviewSourceRef       pgtype.Text `json:"review_source_ref"`
+	ReviewSourceIssueID   pgtype.UUID `json:"review_source_issue_id"`
+	ReviewInitiatorSource pgtype.Text `json:"review_initiator_source"`
+	TaskID                pgtype.UUID `json:"task_id"`
 }
 
 func (q *Queries) StampContinuousDispatchTaskIdentity(ctx context.Context, arg StampContinuousDispatchTaskIdentityParams) (AgentTaskQueue, error) {
@@ -192,6 +328,10 @@ func (q *Queries) StampContinuousDispatchTaskIdentity(ctx context.Context, arg S
 		arg.Stage,
 		arg.CandidateRevision,
 		arg.Generation,
+		arg.ReviewSourceTaskID,
+		arg.ReviewSourceRef,
+		arg.ReviewSourceIssueID,
+		arg.ReviewInitiatorSource,
 		arg.TaskID,
 	)
 	var i AgentTaskQueue

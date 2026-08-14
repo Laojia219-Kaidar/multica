@@ -34,6 +34,33 @@ SELECT pg_advisory_xact_lock(
     )
 );
 
+-- name: LockContinuousDispatchIssue :one
+-- The dispatch transaction keeps the exact Issue row stable through Task and
+-- receipt creation. A review command must not survive a concurrent lifecycle
+-- or candidate-generation change after its server-side preview.
+SELECT * FROM issue
+WHERE id = @issue_id AND workspace_id = @workspace_id
+FOR SHARE;
+
+-- name: LockReviewSourceCommentForContinuousDispatch :one
+-- A review source is a specific immutable agent Comment, not merely a Task.
+-- FOR SHARE prevents an update or deletion from racing past final lineage
+-- validation before the review Task+receipt transaction commits.
+SELECT id, issue_id, author_type, author_id, workspace_id, source_task_id
+FROM comment
+WHERE id = @source_comment_id
+  AND issue_id = @issue_id
+  AND workspace_id = @workspace_id
+FOR SHARE;
+
+-- name: LockReviewSourceTaskForContinuousDispatch :one
+-- Lock the completed implementation Task together with the source Comment so
+-- its completion state and stamped generation cannot change mid-dispatch.
+SELECT id, agent_id, issue_id, status, context, handoff_note
+FROM agent_task_queue
+WHERE id = @source_task_id
+FOR SHARE;
+
 -- name: StampContinuousDispatchTaskIdentity :one
 UPDATE agent_task_queue AS task
 SET context = COALESCE(task.context, '{}'::jsonb) || jsonb_build_object(
@@ -45,7 +72,18 @@ SET context = COALESCE(task.context, '{}'::jsonb) || jsonb_build_object(
         'candidate_revision', @candidate_revision::text,
         'generation', @generation::text
     )
-)
+) || CASE
+    WHEN sqlc.narg('review_source_task_id')::uuid IS NULL THEN '{}'::jsonb
+    ELSE jsonb_build_object(
+        'review_dispatch',
+        jsonb_build_object(
+            'source_ref', sqlc.narg('review_source_ref')::text,
+            'source_issue_id', sqlc.narg('review_source_issue_id')::uuid,
+            'source_task_id', sqlc.narg('review_source_task_id')::uuid,
+            'initiator_source', sqlc.narg('review_initiator_source')::text
+        )
+    )
+END
 FROM issue
 WHERE task.id = @task_id
   AND task.issue_id = @issue_id

@@ -2,8 +2,10 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -108,13 +110,80 @@ func (tx *productionContinuousDispatchTx) LoadIssue(
 	ctx context.Context,
 	identity continuousdispatch.DispatchIdentity,
 ) (db.Issue, error) {
-	issue, err := tx.queries.GetIssueInWorkspace(ctx, db.GetIssueInWorkspaceParams{
-		ID: parseDispatchUUID(identity.IssueID), WorkspaceID: parseDispatchUUID(identity.WorkspaceID),
+	issue, err := tx.queries.LockContinuousDispatchIssue(ctx, db.LockContinuousDispatchIssueParams{
+		IssueID: parseDispatchUUID(identity.IssueID), WorkspaceID: parseDispatchUUID(identity.WorkspaceID),
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return db.Issue{}, ErrContinuousDispatchIssueDrift
 	}
 	return issue, err
+}
+
+func (tx *productionContinuousDispatchTx) LoadTask(
+	ctx context.Context,
+	taskID pgtype.UUID,
+) (db.AgentTaskQueue, error) {
+	return tx.queries.GetAgentTask(ctx, taskID)
+}
+
+// VerifyReviewSource is deliberately transaction-local. It locks the exact
+// source Comment and completed implementation Task after the Issue is locked,
+// then proves the complete lineage before any review Task or receipt exists.
+// A changed/deleted Comment, source-task swap, or candidate drift therefore
+// leaves the transaction with zero writes.
+func (tx *productionContinuousDispatchTx) VerifyReviewSource(
+	ctx context.Context,
+	req ContinuousDispatchRequest,
+) error {
+	if req.reviewProvenance == nil {
+		return nil
+	}
+	provenance := *req.reviewProvenance
+	commentID, ok := parseContinuousDispatchReviewCommentRef(provenance.SourceRef)
+	if !ok {
+		return ErrContinuousDispatchReviewLineageDrift
+	}
+	issueID := parseDispatchUUID(provenance.SourceIssueID)
+	taskID := parseDispatchUUID(provenance.SourceTaskID)
+	if !issueID.Valid || !taskID.Valid {
+		return ErrContinuousDispatchReviewLineageDrift
+	}
+	comment, err := tx.queries.LockReviewSourceCommentForContinuousDispatch(ctx, db.LockReviewSourceCommentForContinuousDispatchParams{
+		SourceCommentID: commentID,
+		IssueID:         issueID,
+		WorkspaceID:     parseDispatchUUID(req.Identity.WorkspaceID),
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrContinuousDispatchReviewLineageDrift
+	}
+	if err != nil {
+		return fmt.Errorf("lock review source comment: %w", err)
+	}
+	if !comment.SourceTaskID.Valid || comment.SourceTaskID != taskID || comment.AuthorType != "agent" || !comment.AuthorID.Valid {
+		return ErrContinuousDispatchReviewLineageDrift
+	}
+	sourceTask, err := tx.queries.LockReviewSourceTaskForContinuousDispatch(ctx, taskID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrContinuousDispatchReviewLineageDrift
+	}
+	if err != nil {
+		return fmt.Errorf("lock review source task: %w", err)
+	}
+	if sourceTask.Status != "completed" || !sourceTask.IssueID.Valid || sourceTask.IssueID != issueID ||
+		!sourceTask.AgentID.Valid || sourceTask.AgentID != comment.AuthorID ||
+		(sourceTask.HandoffNote.Valid && strings.HasPrefix(sourceTask.HandoffNote.String, "review_dispatch ")) {
+		return ErrContinuousDispatchReviewLineageDrift
+	}
+	var contextValue shadowTaskContext
+	if len(sourceTask.Context) == 0 || json.Unmarshal(sourceTask.Context, &contextValue) != nil ||
+		!contextValue.ContinuousDispatch.Complete() || contextValue.ContinuousDispatch.Stage != "implementation" ||
+		contextValue.ContinuousDispatch.WorkspaceID != req.Identity.WorkspaceID ||
+		contextValue.ContinuousDispatch.IssueID != req.Identity.IssueID ||
+		contextValue.ContinuousDispatch.CandidateRevision != req.Identity.CandidateRevision ||
+		contextValue.ContinuousDispatch.Generation != req.Identity.Generation {
+		return ErrContinuousDispatchReviewLineageDrift
+	}
+	return nil
 }
 
 func (tx *productionContinuousDispatchTx) PrepareTask(
@@ -154,12 +223,20 @@ func (tx *productionContinuousDispatchTx) StampTaskIdentity(
 	ctx context.Context,
 	task db.AgentTaskQueue,
 	identity continuousdispatch.DispatchIdentity,
+	reviewProvenance *ContinuousDispatchReviewProvenance,
 ) (db.AgentTaskQueue, error) {
-	stamped, err := tx.queries.StampContinuousDispatchTaskIdentity(ctx, db.StampContinuousDispatchTaskIdentityParams{
+	params := db.StampContinuousDispatchTaskIdentityParams{
 		WorkspaceID: parseDispatchUUID(identity.WorkspaceID), IssueID: parseDispatchUUID(identity.IssueID),
 		Stage: identity.Stage, CandidateRevision: identity.CandidateRevision, Generation: identity.Generation,
 		TaskID: task.ID,
-	})
+	}
+	if reviewProvenance != nil {
+		params.ReviewSourceRef = pgtype.Text{String: reviewProvenance.SourceRef, Valid: true}
+		params.ReviewSourceIssueID = parseDispatchUUID(reviewProvenance.SourceIssueID)
+		params.ReviewSourceTaskID = parseDispatchUUID(reviewProvenance.SourceTaskID)
+		params.ReviewInitiatorSource = pgtype.Text{String: reviewProvenance.InitiatorSource, Valid: true}
+	}
+	stamped, err := tx.queries.StampContinuousDispatchTaskIdentity(ctx, params)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return db.AgentTaskQueue{}, ErrContinuousDispatchConflict
 	}

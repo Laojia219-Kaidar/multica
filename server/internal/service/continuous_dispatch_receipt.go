@@ -27,6 +27,10 @@ type ContinuousDispatchReceipt struct {
 	Model         string
 	AccountRef    string
 	RequestDigest string
+	// ReviewProvenance is sourced from the stamped Task context. The receipt
+	// table remains unchanged; exact replay hydrates this immutable evidence
+	// from its Task rather than creating a duplicate receipt registry.
+	ReviewProvenance *ContinuousDispatchReviewProvenance
 }
 
 type ContinuousDispatchReceiptRepository struct {
@@ -144,5 +148,6 @@ func continuousDispatchReceiptFromDB(row db.ContinuousDispatchReceipt) Continuou
 func continuousDispatchReceiptsEqual(left, right ContinuousDispatchReceipt) bool {
 	return left.Identity == right.Identity && left.TaskID == right.TaskID && left.EmployeeRef == right.EmployeeRef &&
 		left.LocalAgentID == right.LocalAgentID && left.RuntimeID == right.RuntimeID && left.Model == right.Model &&
-		left.AccountRef == right.AccountRef && left.RequestDigest == right.RequestDigest
+		left.AccountRef == right.AccountRef && left.RequestDigest == right.RequestDigest &&
+		continuousDispatchReviewProvenanceEqual(left.ReviewProvenance, right.ReviewProvenance)
 }

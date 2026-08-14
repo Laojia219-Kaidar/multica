@@ -291,7 +291,8 @@ func TestContinuousDispatchShadowReviewRequiresStrictCommentTaskLineage(t *testi
 		t.Fatalf("InspectProject with source comment: %v", err)
 	}
 	item := withLineage.Items[0]
-	if item.SourceTaskID != uuidString(source.ID) || item.NextAction.Selected == nil || item.NextAction.Selected.AgentID != uuidString(reviewerID) {
+	if item.SourceRef != continuousDispatchReviewCommentRef(fixture.comments[uuidString(issueID)][0].ID) ||
+		item.SourceTaskID != uuidString(source.ID) || item.NextAction.Selected == nil || item.NextAction.Selected.AgentID != uuidString(reviewerID) {
 		t.Fatalf("strict lineage item = %+v, want source task and independent reviewer", item)
 	}
 	for _, candidate := range item.NextAction.Candidates {

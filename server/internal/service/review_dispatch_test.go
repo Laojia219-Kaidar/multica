@@ -20,11 +20,13 @@ func TestReviewDispatchPreviewFiltersAndRequiresSourceTask(t *testing.T) {
 	issueReady := reviewDispatchUUID(3)
 	issueMissingSource := reviewDispatchUUID(4)
 	issueNotReview := reviewDispatchUUID(5)
+	sourceCommentID := reviewDispatchUUID(6)
+	sourceTaskID := reviewDispatchUUID(7)
 	inspector := &triggerInspectorFixture{pages: map[int]*ContinuousDispatchShadowResult{0: {
 		SchemaVersion: ContinuousDispatchShadowSchemaV1,
 		WorkspaceID:   shadowUUIDString(workspaceID), ProjectID: shadowUUIDString(projectID), Total: 3,
 		Items: []ContinuousDispatchShadowItem{
-			{IssueID: shadowUUIDString(issueReady), IssueTitle: "ready", Status: "in_review", SourceTaskID: shadowUUIDString(reviewDispatchUUID(6)), NextAction: continuousdispatch.NextAction{
+			{IssueID: shadowUUIDString(issueReady), IssueTitle: "ready", Status: "in_review", SourceRef: continuousDispatchReviewCommentRef(sourceCommentID), SourceTaskID: shadowUUIDString(sourceTaskID), NextAction: continuousdispatch.NextAction{
 				State:    continuousdispatch.StateReady,
 				Selected: &continuousdispatch.CandidateDecision{EmployeeID: "EMP-1", Eligible: true},
 			}},
@@ -51,9 +53,11 @@ func TestReviewDispatchPreviewFiltersAndRequiresSourceTask(t *testing.T) {
 func TestReviewDispatchBatchReplansAndCarriesProvenance(t *testing.T) {
 	workspaceID, projectID, issueID := reviewDispatchUUID(11), reviewDispatchUUID(12), reviewDispatchUUID(13)
 	sourceTaskID := reviewDispatchUUID(14)
+	sourceCommentID := reviewDispatchUUID(19)
 	agentID, runtimeID, actorID := reviewDispatchUUID(15), reviewDispatchUUID(16), reviewDispatchUUID(17)
 	item := triggerShadowItem(workspaceID, issueID, agentID, runtimeID)
 	item.Status = "in_review"
+	item.SourceRef = continuousDispatchReviewCommentRef(sourceCommentID)
 	item.SourceTaskID = shadowUUIDString(sourceTaskID)
 	inspector := &triggerInspectorFixture{pages: map[int]*ContinuousDispatchShadowResult{0: {
 		SchemaVersion: ContinuousDispatchShadowSchemaV1, WorkspaceID: shadowUUIDString(workspaceID),
@@ -69,8 +73,14 @@ func TestReviewDispatchBatchReplansAndCarriesProvenance(t *testing.T) {
 	if len(result.Receipts) != 1 || len(dispatcher.requests) != 1 {
 		t.Fatalf("result = %+v requests=%d, want one receipt/request", result, len(dispatcher.requests))
 	}
-	if got := dispatcher.requests[0].HandoffNote; got != "review_dispatch source_issue_id="+shadowUUIDString(issueID)+" source_task_id="+shadowUUIDString(sourceTaskID) {
+	if got := dispatcher.requests[0].HandoffNote; got != "review_dispatch source_ref="+continuousDispatchReviewCommentRef(sourceCommentID)+" source_issue_id="+shadowUUIDString(issueID)+" source_task_id="+shadowUUIDString(sourceTaskID)+" initiator_source="+continuousDispatchReviewInitiatorSourceV1 {
 		t.Fatalf("handoff note = %q, want stable source provenance", got)
+	}
+	provenance := dispatcher.requests[0].reviewProvenance
+	if provenance == nil || provenance.SourceRef != continuousDispatchReviewCommentRef(sourceCommentID) ||
+		provenance.SourceIssueID != shadowUUIDString(issueID) || provenance.SourceTaskID != shadowUUIDString(sourceTaskID) ||
+		provenance.InitiatorSource != continuousDispatchReviewInitiatorSourceV1 {
+		t.Fatalf("review provenance = %+v, want server-built structured lineage", provenance)
 	}
 	if dispatcher.requests[0].Route.LocalAgentID != agentID || dispatcher.requests[0].Route.RuntimeID != runtimeID {
 		t.Fatalf("route = %+v, want server-selected route", dispatcher.requests[0].Route)

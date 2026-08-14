@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -14,15 +15,19 @@ import (
 )
 
 type fakeContinuousDispatchBackend struct {
-	mu          sync.Mutex
-	issue       db.Issue
-	receipt     ContinuousDispatchReceipt
-	hasReceipt  bool
-	prepareN    int
-	appendN     int
-	notifyN     int
-	nextTaskID  pgtype.UUID
-	preparedRun pgtype.UUID
+	mu                       sync.Mutex
+	issue                    db.Issue
+	receipt                  ContinuousDispatchReceipt
+	hasReceipt               bool
+	prepareN                 int
+	appendN                  int
+	notifyN                  int
+	nextTaskID               pgtype.UUID
+	preparedRun              pgtype.UUID
+	stampedTask              db.AgentTaskQueue
+	verifyN                  int
+	verifyErr                error
+	verifiedReviewProvenance *ContinuousDispatchReviewProvenance
 }
 
 func (b *fakeContinuousDispatchBackend) RunInContinuousDispatchTx(
@@ -60,6 +65,19 @@ func (tx *fakeContinuousDispatchTx) LoadIssue(
 	return tx.issue, nil
 }
 
+func (tx *fakeContinuousDispatchTx) LoadTask(_ context.Context, taskID pgtype.UUID) (db.AgentTaskQueue, error) {
+	if tx.stampedTask.ID.Valid && tx.stampedTask.ID == taskID {
+		return tx.stampedTask, nil
+	}
+	return db.AgentTaskQueue{}, errors.New("task not found")
+}
+
+func (tx *fakeContinuousDispatchTx) VerifyReviewSource(_ context.Context, req ContinuousDispatchRequest) error {
+	tx.verifyN++
+	tx.verifiedReviewProvenance = cloneContinuousDispatchReviewProvenance(req.reviewProvenance)
+	return tx.verifyErr
+}
+
 func (tx *fakeContinuousDispatchTx) PrepareTask(
 	_ context.Context,
 	issue db.Issue,
@@ -77,11 +95,17 @@ func (tx *fakeContinuousDispatchTx) StampTaskIdentity(
 	_ context.Context,
 	task db.AgentTaskQueue,
 	identity continuousdispatch.DispatchIdentity,
+	reviewProvenance *ContinuousDispatchReviewProvenance,
 ) (db.AgentTaskQueue, error) {
 	if task.ID != tx.preparedRun || !identity.Complete() {
 		return db.AgentTaskQueue{}, fmt.Errorf("unexpected stamp input")
 	}
-	task.Context = []byte(`{"continuous_dispatch":{"stage":"implementation"}}`)
+	contextValue, err := json.Marshal(shadowTaskContext{ContinuousDispatch: identity, ReviewDispatch: cloneContinuousDispatchReviewProvenance(reviewProvenance)})
+	if err != nil {
+		return db.AgentTaskQueue{}, err
+	}
+	task.Context = contextValue
+	tx.stampedTask = task
 	return task, nil
 }
 
@@ -199,7 +223,10 @@ func TestContinuousDispatchRejectsIssueDriftAndTerminalState(t *testing.T) {
 
 func TestContinuousDispatchReviewPreconditionRejectsStatusChangedAfterPreview(t *testing.T) {
 	req, issue := continuousDispatchRequestFixture(150)
-	req.RequireInReview = true
+	req.Identity.Stage = "review"
+	req.requireInReview = true
+	req.reviewProvenance = reviewDispatchProvenanceFixture(req, dispatchReceiptUUID(155), dispatchReceiptUUID(156))
+	issue.Metadata = []byte(`{"stage":"review","candidate_revision":"candidate-abc123","generation":"generation-1"}`)
 	issue.Status = "in_progress"
 	backend := &fakeContinuousDispatchBackend{issue: issue, nextTaskID: dispatchReceiptUUID(151)}
 	if _, err := NewContinuousDispatchService(backend).Dispatch(context.Background(), req); !errors.Is(err, ErrContinuousDispatchIssueDrift) {
@@ -207,6 +234,74 @@ func TestContinuousDispatchReviewPreconditionRejectsStatusChangedAfterPreview(t 
 	}
 	if backend.prepareN != 0 || backend.appendN != 0 || backend.notifyN != 0 {
 		t.Fatalf("review status drift mutated counts: %d/%d/%d", backend.prepareN, backend.appendN, backend.notifyN)
+	}
+}
+
+func reviewDispatchProvenanceFixture(req ContinuousDispatchRequest, sourceCommentID, sourceTaskID pgtype.UUID) *ContinuousDispatchReviewProvenance {
+	return &ContinuousDispatchReviewProvenance{
+		SourceRef:       continuousDispatchReviewCommentRef(sourceCommentID),
+		SourceIssueID:   req.Identity.IssueID,
+		SourceTaskID:    shadowUUIDString(sourceTaskID),
+		InitiatorSource: continuousDispatchReviewInitiatorSourceV1,
+	}
+}
+
+func TestContinuousDispatchReviewPersistsStructuredProvenanceInReceiptAndTaskContext(t *testing.T) {
+	req, issue := continuousDispatchRequestFixture(160)
+	req.Identity.Stage = "review"
+	req.requireInReview = true
+	req.reviewProvenance = reviewDispatchProvenanceFixture(req, dispatchReceiptUUID(165), dispatchReceiptUUID(166))
+	issue.Status = "in_review"
+	issue.Metadata = []byte(`{"stage":"review","candidate_revision":"candidate-abc123","generation":"generation-1"}`)
+	backend := &fakeContinuousDispatchBackend{issue: issue, nextTaskID: dispatchReceiptUUID(167)}
+	receipt, err := NewContinuousDispatchService(backend).Dispatch(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	if !continuousDispatchReviewProvenanceEqual(receipt.ReviewProvenance, req.reviewProvenance) ||
+		!continuousDispatchReviewProvenanceEqual(backend.verifiedReviewProvenance, req.reviewProvenance) || backend.verifyN != 1 {
+		t.Fatalf("receipt/verified provenance = %+v/%+v calls=%d", receipt.ReviewProvenance, backend.verifiedReviewProvenance, backend.verifyN)
+	}
+	var contextValue shadowTaskContext
+	if err := json.Unmarshal(backend.stampedTask.Context, &contextValue); err != nil {
+		t.Fatalf("decode stamped task context: %v", err)
+	}
+	if !continuousDispatchReviewProvenanceEqual(contextValue.ReviewDispatch, req.reviewProvenance) {
+		t.Fatalf("task context review provenance = %+v, want %+v", contextValue.ReviewDispatch, req.reviewProvenance)
+	}
+	replayed, err := NewContinuousDispatchService(backend).Dispatch(context.Background(), req)
+	if err != nil {
+		t.Fatalf("exact review replay: %v", err)
+	}
+	if !continuousDispatchReviewProvenanceEqual(replayed.ReviewProvenance, req.reviewProvenance) ||
+		backend.prepareN != 1 || backend.appendN != 1 || backend.notifyN != 1 || backend.verifyN != 1 {
+		t.Fatalf("replayed receipt/counters = %+v/%d/%d/%d/%d, want provenance and 1/1/1/1", replayed.ReviewProvenance, backend.prepareN, backend.appendN, backend.notifyN, backend.verifyN)
+	}
+}
+
+func TestContinuousDispatchReviewRejectsChangedOrDeletedSourceCommentWithoutWrites(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{name: "source comment changed", err: ErrContinuousDispatchReviewLineageDrift},
+		{name: "source comment deleted", err: ErrContinuousDispatchReviewLineageDrift},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req, issue := continuousDispatchRequestFixture(170)
+			req.Identity.Stage = "review"
+			req.requireInReview = true
+			req.reviewProvenance = reviewDispatchProvenanceFixture(req, dispatchReceiptUUID(175), dispatchReceiptUUID(176))
+			issue.Status = "in_review"
+			issue.Metadata = []byte(`{"stage":"review","candidate_revision":"candidate-abc123","generation":"generation-1"}`)
+			backend := &fakeContinuousDispatchBackend{issue: issue, nextTaskID: dispatchReceiptUUID(177), verifyErr: tc.err}
+			if _, err := NewContinuousDispatchService(backend).Dispatch(context.Background(), req); !errors.Is(err, ErrContinuousDispatchReviewLineageDrift) {
+				t.Fatalf("Dispatch error = %v, want review lineage drift", err)
+			}
+			if backend.verifyN != 1 || backend.prepareN != 0 || backend.appendN != 0 || backend.notifyN != 0 {
+				t.Fatalf("changed/deleted source writes = verify=%d prepare=%d append=%d notify=%d, want 1/0/0/0", backend.verifyN, backend.prepareN, backend.appendN, backend.notifyN)
+			}
+		})
 	}
 }
 

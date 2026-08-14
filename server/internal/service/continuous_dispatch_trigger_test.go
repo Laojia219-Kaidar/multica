@@ -102,8 +102,10 @@ func TestContinuousDispatchReviewTriggerRejectsSourceOrStatusDrift(t *testing.T)
 	projectID := dispatchReceiptUUID(157)
 	issueID := dispatchReceiptUUID(158)
 	sourceTaskID := dispatchReceiptUUID(159)
+	sourceCommentID := dispatchReceiptUUID(165)
 	item := triggerShadowItem(workspaceID, issueID, dispatchReceiptUUID(160), dispatchReceiptUUID(161))
 	item.Status = "in_review"
+	item.SourceRef = continuousDispatchReviewCommentRef(sourceCommentID)
 	item.SourceTaskID = shadowUUIDString(sourceTaskID)
 	inspector := &triggerInspectorFixture{pages: map[int]*ContinuousDispatchShadowResult{0: {
 		SchemaVersion: ContinuousDispatchShadowSchemaV1, WorkspaceID: shadowUUIDString(workspaceID),
@@ -111,7 +113,7 @@ func TestContinuousDispatchReviewTriggerRejectsSourceOrStatusDrift(t *testing.T)
 	}}}
 	dispatcher := &triggerDispatcherFixture{}
 	trigger := NewContinuousDispatchTriggerService(inspector, dispatcher)
-	if _, err := trigger.DispatchReviewIssue(context.Background(), workspaceID, projectID, issueID, dispatchReceiptUUID(162), dispatchReceiptUUID(163)); !errors.Is(err, ErrContinuousDispatchIssueDrift) {
+	if _, err := trigger.DispatchReviewIssue(context.Background(), workspaceID, projectID, issueID, dispatchReceiptUUID(162), item.SourceRef, dispatchReceiptUUID(163)); !errors.Is(err, ErrContinuousDispatchIssueDrift) {
 		t.Fatalf("source drift error = %v, want issue drift", err)
 	}
 	if len(dispatcher.requests) != 0 {
@@ -119,7 +121,7 @@ func TestContinuousDispatchReviewTriggerRejectsSourceOrStatusDrift(t *testing.T)
 	}
 	item.Status = "in_progress"
 	inspector.pages[0].Items = []ContinuousDispatchShadowItem{item}
-	if _, err := trigger.DispatchReviewIssue(context.Background(), workspaceID, projectID, issueID, dispatchReceiptUUID(162), sourceTaskID); !errors.Is(err, ErrContinuousDispatchIssueDrift) {
+	if _, err := trigger.DispatchReviewIssue(context.Background(), workspaceID, projectID, issueID, dispatchReceiptUUID(162), item.SourceRef, sourceTaskID); !errors.Is(err, ErrContinuousDispatchIssueDrift) {
 		t.Fatalf("status drift error = %v, want issue drift", err)
 	}
 }
@@ -127,19 +129,20 @@ func TestContinuousDispatchReviewTriggerRejectsSourceOrStatusDrift(t *testing.T)
 func TestContinuousDispatchReviewTriggerMarksAtomicReviewPrecondition(t *testing.T) {
 	workspaceID, projectID, issueID := dispatchReceiptUUID(164), dispatchReceiptUUID(165), dispatchReceiptUUID(166)
 	sourceTaskID := dispatchReceiptUUID(167)
+	sourceCommentID := dispatchReceiptUUID(172)
 	item := triggerShadowItem(workspaceID, issueID, dispatchReceiptUUID(168), dispatchReceiptUUID(169))
-	item.Status, item.SourceTaskID = "in_review", shadowUUIDString(sourceTaskID)
+	item.Status, item.SourceRef, item.SourceTaskID = "in_review", continuousDispatchReviewCommentRef(sourceCommentID), shadowUUIDString(sourceTaskID)
 	inspector := &triggerInspectorFixture{pages: map[int]*ContinuousDispatchShadowResult{0: {
 		SchemaVersion: ContinuousDispatchShadowSchemaV1, WorkspaceID: shadowUUIDString(workspaceID),
 		ProjectID: shadowUUIDString(projectID), Items: []ContinuousDispatchShadowItem{item}, Total: 1,
 	}}}
 	dispatcher := &triggerDispatcherFixture{receipt: dispatchReceiptFixture(170)}
 	if _, err := NewContinuousDispatchTriggerService(inspector, dispatcher).DispatchReviewIssue(
-		context.Background(), workspaceID, projectID, issueID, dispatchReceiptUUID(171), sourceTaskID,
+		context.Background(), workspaceID, projectID, issueID, dispatchReceiptUUID(171), item.SourceRef, sourceTaskID,
 	); err != nil {
 		t.Fatalf("DispatchReviewIssue: %v", err)
 	}
-	if len(dispatcher.requests) != 1 || !dispatcher.requests[0].RequireInReview {
+	if len(dispatcher.requests) != 1 || !dispatcher.requests[0].requireInReview {
 		t.Fatalf("review dispatch request = %+v, want atomic in_review precondition", dispatcher.requests)
 	}
 }

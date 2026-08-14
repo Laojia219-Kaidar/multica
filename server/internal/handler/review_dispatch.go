@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"io"
@@ -47,8 +48,8 @@ func (h *Handler) GetProjectReviewDispatchPreview(w http.ResponseWriter, r *http
 }
 
 // DispatchProjectReviewBatch is an explicit Owner/Admin command. It defaults
-// to one Issue and caps each request at 25. The request body must be empty or
-// `{}`: a browser cannot nominate reviewer, Agent, Runtime, model, account,
+// to one Issue and caps each request at 25. The request body must be exactly
+// an empty JSON object (`{}`): a browser cannot nominate reviewer, Agent, Runtime, model, account,
 // generation, source Task, or handoff text.
 func (h *Handler) DispatchProjectReviewBatch(w http.ResponseWriter, r *http.Request) {
 	workspaceID, projectID, limit, offset, ok := h.reviewDispatchRequestScope(w, r, 1)
@@ -116,14 +117,24 @@ func (h *Handler) reviewDispatchRequestScope(w http.ResponseWriter, r *http.Requ
 }
 
 func decodeEmptyReviewDispatchBody(r *http.Request) error {
+	if r == nil || r.Body == nil {
+		return errors.New("review dispatch body must be an empty JSON object")
+	}
 	decoder := json.NewDecoder(io.LimitReader(r.Body, maxReviewDispatchBodySize+1))
-	decoder.DisallowUnknownFields()
-	var body struct{}
-	if err := decoder.Decode(&body); err != nil {
-		if errors.Is(err, io.EOF) {
-			return nil
-		}
+	var raw json.RawMessage
+	if err := decoder.Decode(&raw); err != nil {
 		return err
+	}
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) < 2 || trimmed[0] != '{' || trimmed[len(trimmed)-1] != '}' {
+		return errors.New("review dispatch body must be an empty JSON object")
+	}
+	var body map[string]json.RawMessage
+	if err := json.Unmarshal(trimmed, &body); err != nil || body == nil || len(body) != 0 {
+		if err != nil {
+			return err
+		}
+		return errors.New("review dispatch body must be an empty JSON object")
 	}
 	var extra any
 	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
@@ -139,7 +150,7 @@ func writeReviewDispatchError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, service.ErrContinuousDispatchProjectAbsent), errors.Is(err, service.ErrContinuousDispatchIssueAbsent):
 		writeContinuousDispatchShadowError(w, http.StatusNotFound, "not_found", "review dispatch source was not found")
-	case errors.Is(err, service.ErrContinuousDispatchIssueDrift), errors.Is(err, service.ErrContinuousDispatchRouteDrift), errors.Is(err, service.ErrContinuousDispatchConflict):
+	case errors.Is(err, service.ErrContinuousDispatchIssueDrift), errors.Is(err, service.ErrContinuousDispatchReviewLineageDrift), errors.Is(err, service.ErrContinuousDispatchRouteDrift), errors.Is(err, service.ErrContinuousDispatchConflict):
 		writeContinuousDispatchShadowError(w, http.StatusConflict, "dispatch_conflict", "review dispatch truth changed; recompute and retry")
 	case errors.Is(err, service.ErrContinuousDispatchNotReady), errors.Is(err, service.ErrContinuousDispatchIssueNotReady):
 		writeContinuousDispatchShadowError(w, http.StatusConflict, "not_ready", "review issue has no executable next action")

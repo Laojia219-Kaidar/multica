@@ -93,7 +93,9 @@ func (s *ContinuousDispatchTriggerService) DispatchIssue(
 // caller.
 func (s *ContinuousDispatchTriggerService) DispatchReviewIssue(
 	ctx context.Context,
-	workspaceID, projectID, issueID, actorUserID, sourceTaskID pgtype.UUID,
+	workspaceID, projectID, issueID, actorUserID pgtype.UUID,
+	sourceRef string,
+	sourceTaskID pgtype.UUID,
 ) (ContinuousDispatchTriggerResult, error) {
 	if s == nil || s.inspector == nil || s.dispatcher == nil {
 		return ContinuousDispatchTriggerResult{}, fmt.Errorf("continuous dispatch trigger dependencies are required")
@@ -106,6 +108,9 @@ func (s *ContinuousDispatchTriggerService) DispatchReviewIssue(
 		}
 	}
 	if !sourceTaskID.Valid || sourceTaskID.Bytes == ([16]byte{}) {
+		return ContinuousDispatchTriggerResult{}, ErrContinuousDispatchNotReady
+	}
+	if _, ok := parseContinuousDispatchReviewCommentRef(sourceRef); !ok {
 		return ContinuousDispatchTriggerResult{}, ErrContinuousDispatchNotReady
 	}
 	wantedIssueID := shadowUUIDString(issueID)
@@ -122,11 +127,17 @@ func (s *ContinuousDispatchTriggerService) DispatchReviewIssue(
 			if item.IssueID != wantedIssueID {
 				continue
 			}
-			if item.Status != "in_review" || item.SourceTaskID != shadowUUIDString(sourceTaskID) {
+			if item.Status != "in_review" || item.SourceRef != sourceRef || item.SourceTaskID != shadowUUIDString(sourceTaskID) {
 				return ContinuousDispatchTriggerResult{}, ErrContinuousDispatchIssueDrift
 			}
-			note := fmt.Sprintf("review_dispatch source_issue_id=%s source_task_id=%s", item.IssueID, item.SourceTaskID)
-			return s.dispatchReviewShadowItem(ctx, item, actorUserID, note)
+			provenance := &ContinuousDispatchReviewProvenance{
+				SourceRef:       item.SourceRef,
+				SourceIssueID:   item.IssueID,
+				SourceTaskID:    item.SourceTaskID,
+				InitiatorSource: continuousDispatchReviewInitiatorSourceV1,
+			}
+			note := fmt.Sprintf("review_dispatch source_ref=%s source_issue_id=%s source_task_id=%s initiator_source=%s", item.SourceRef, item.IssueID, item.SourceTaskID, provenance.InitiatorSource)
+			return s.dispatchReviewShadowItem(ctx, item, actorUserID, note, provenance)
 		}
 		if len(page.Items) == 0 || offset+len(page.Items) >= page.Total {
 			return ContinuousDispatchTriggerResult{}, ErrContinuousDispatchIssueAbsent
@@ -140,7 +151,7 @@ func (s *ContinuousDispatchTriggerService) dispatchShadowItem(
 	actorUserID pgtype.UUID,
 	handoffNote string,
 ) (ContinuousDispatchTriggerResult, error) {
-	return s.dispatchShadowItemWithPrecondition(ctx, item, actorUserID, handoffNote, false)
+	return s.dispatchShadowItemWithPrecondition(ctx, item, actorUserID, handoffNote, false, nil)
 }
 
 func (s *ContinuousDispatchTriggerService) dispatchReviewShadowItem(
@@ -148,8 +159,9 @@ func (s *ContinuousDispatchTriggerService) dispatchReviewShadowItem(
 	item ContinuousDispatchShadowItem,
 	actorUserID pgtype.UUID,
 	handoffNote string,
+	provenance *ContinuousDispatchReviewProvenance,
 ) (ContinuousDispatchTriggerResult, error) {
-	return s.dispatchShadowItemWithPrecondition(ctx, item, actorUserID, handoffNote, true)
+	return s.dispatchShadowItemWithPrecondition(ctx, item, actorUserID, handoffNote, true, provenance)
 }
 
 func (s *ContinuousDispatchTriggerService) dispatchShadowItemWithPrecondition(
@@ -158,6 +170,7 @@ func (s *ContinuousDispatchTriggerService) dispatchShadowItemWithPrecondition(
 	actorUserID pgtype.UUID,
 	handoffNote string,
 	requireInReview bool,
+	reviewProvenance *ContinuousDispatchReviewProvenance,
 ) (ContinuousDispatchTriggerResult, error) {
 	action := item.NextAction
 	if (action.State != continuousdispatch.StateReady && action.State != continuousdispatch.StateFallback) || action.Selected == nil {
@@ -184,9 +197,10 @@ func (s *ContinuousDispatchTriggerService) dispatchShadowItemWithPrecondition(
 			Model:        selected.Model,
 			AccountRef:   selected.AccountRef,
 		},
-		ActorUserID:     actorUserID,
-		HandoffNote:     handoffNote,
-		RequireInReview: requireInReview,
+		ActorUserID:      actorUserID,
+		HandoffNote:      handoffNote,
+		requireInReview:  requireInReview,
+		reviewProvenance: cloneContinuousDispatchReviewProvenance(reviewProvenance),
 	})
 	if err != nil {
 		return ContinuousDispatchTriggerResult{}, err

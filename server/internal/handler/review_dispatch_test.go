@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
@@ -84,6 +85,10 @@ func TestProjectReviewDispatchRejectsRouteChoiceAndOversizedBatch(t *testing.T) 
 			"/api/projects/"+projectID+"/review-dispatch/dispatch?workspace_id="+testWorkspaceID, map[string]any{"agent_id": "client-selected"}), projectID),
 		withReviewDispatchProjectParam(newRequest(http.MethodPost,
 			"/api/projects/"+projectID+"/review-dispatch/dispatch?workspace_id="+testWorkspaceID+"&limit=26", map[string]any{}), projectID),
+		withReviewDispatchProjectParam(httptest.NewRequest(http.MethodPost,
+			"/api/projects/"+projectID+"/review-dispatch/dispatch?workspace_id="+testWorkspaceID, strings.NewReader("null")), projectID),
+		withReviewDispatchProjectParam(httptest.NewRequest(http.MethodPost,
+			"/api/projects/"+projectID+"/review-dispatch/dispatch?workspace_id="+testWorkspaceID, strings.NewReader("")), projectID),
 	} {
 		w := httptest.NewRecorder()
 		h.DispatchProjectReviewBatch(w, request)
@@ -93,6 +98,20 @@ func TestProjectReviewDispatchRejectsRouteChoiceAndOversizedBatch(t *testing.T) 
 	}
 	if fixture.dispatchCall != 0 {
 		t.Fatalf("rejected browser input dispatched %d batches", fixture.dispatchCall)
+	}
+}
+
+func TestProjectReviewDispatchReturnsConflictForSourceLineageDrift(t *testing.T) {
+	projectID := "00000000-0000-0000-0000-000000000603"
+	fixture := &reviewDispatchHandlerFixture{err: service.ErrContinuousDispatchReviewLineageDrift}
+	h := *testHandler
+	h.ReviewDispatch = fixture
+	req := withReviewDispatchProjectParam(newRequest(http.MethodPost,
+		"/api/projects/"+projectID+"/review-dispatch/dispatch?workspace_id="+testWorkspaceID, map[string]any{}), projectID)
+	w := httptest.NewRecorder()
+	h.DispatchProjectReviewBatch(w, req)
+	if w.Code != http.StatusConflict || fixture.dispatchCall != 1 {
+		t.Fatalf("status/calls = %d/%d body=%s, want 409/1", w.Code, fixture.dispatchCall, w.Body.String())
 	}
 }
 
