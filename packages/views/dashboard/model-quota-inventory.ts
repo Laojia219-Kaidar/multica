@@ -1,5 +1,8 @@
-import type { Agent, AgentRuntime } from "@multica/core/types";
-import type { AgentCostRow } from "./utils";
+import type {
+  Agent,
+  AgentRuntime,
+  DashboardUsageByAgent,
+} from "@multica/core/types";
 
 export type InventoryEvidence = "model_and_runtime" | "model_only" | "runtime_only";
 
@@ -16,6 +19,17 @@ export interface ModelUsageItem {
   employeeCount: number;
 }
 
+export interface ModelPlanQuotaSnapshot {
+  windowDays: number;
+  totalTokens: number;
+  usedTokens: number;
+  remainingTokens: number;
+  usedRatio: number;
+  resetAt: string | null;
+  observedAt: string;
+  evidence: "owner_confirmed_exhaustion_and_workspace_observation";
+}
+
 export interface ModelPlanUsageRow {
   id: string;
   provider: string;
@@ -25,6 +39,7 @@ export interface ModelPlanUsageRow {
   models: ModelUsageItem[];
   observedTokens: number;
   evidence: InventoryEvidence;
+  quota: ModelPlanQuotaSnapshot | null;
 }
 
 export interface ModelProviderUsageGroup {
@@ -49,34 +64,79 @@ interface ModelPlanClassification {
   account: string;
 }
 
+interface PlanAccumulator {
+  id: string;
+  provider: string;
+  plan: string;
+  account: string;
+  employees: Map<string, EmployeeUsageItem>;
+  modelTokens: Map<string, number>;
+  modelEmployees: Map<string, Set<string>>;
+  evidenceParts: Set<InventoryEvidence>;
+  quota: ModelPlanQuotaSnapshot | null;
+}
+
+const BAILIAN_PERSONAL_PLAN_KEY = "阿里云百炼:bailian-token-plan-personal";
+
+// William confirmed that this personal Bailian window was exhausted on
+// 2026-08-14. The token figure is the matching HiveCrew execution-receipt
+// total observed at that boundary (input + output + cache tokens), so it is
+// an empirical calibration rather than a provider-published contractual cap.
+const CONFIRMED_QUOTA_SNAPSHOTS: Readonly<
+  Record<string, ModelPlanQuotaSnapshot>
+> = {
+  [BAILIAN_PERSONAL_PLAN_KEY]: {
+    windowDays: 7,
+    totalTokens: 415_592_437,
+    usedTokens: 415_592_437,
+    remainingTokens: 0,
+    usedRatio: 1,
+    resetAt: null,
+    observedAt: "2026-08-14T13:28:05+08:00",
+    evidence: "owner_confirmed_exhaustion_and_workspace_observation",
+  },
+};
+
 function classifyAgentPlan(
   agent: Pick<Agent, "model" | "runtime_id">,
   runtime: AgentRuntime | null,
+  observedModel?: string,
 ): ModelPlanClassification {
-  const model = agent.model?.trim() ?? "";
+  const configuredModel = agent.model?.trim() ?? "";
+  const model = observedModel?.trim() || configuredModel;
   const modelLower = model.toLowerCase();
   const runtimeName = runtime?.name.trim() ?? "";
   const runtimeLower = runtimeName.toLowerCase();
-  const accountKey = runtime?.id ?? (modelLower || "unbound");
+  const accountKey =
+    runtime?.profile_id?.trim() || runtime?.id || modelLower || "unbound";
 
   const classified = (
     provider: string,
     plan: string,
     account = runtimeName || plan,
+    stableAccountKey = accountKey,
   ): ModelPlanClassification => ({
-    key: `${provider}:${accountKey}`,
+    key: `${provider}:${stableAccountKey}`,
     provider,
     plan,
     account,
   });
 
+  // A Bailian plan is encoded in the configured/observed model route. It is
+  // stronger evidence than the qwen-compatible carrier label on the Runtime.
+  if (modelLower.startsWith("bailian-token-plan-personal/")) {
+    return classified(
+      "阿里云百炼",
+      "Token Plan Personal",
+      "bailian-token-plan-personal",
+      "bailian-token-plan-personal",
+    );
+  }
+
   // The configured model is stronger than its qwen-compatible carrier here:
   // Atlas points at a local DGX checkpoint, not a Qwen cloud billing plan.
   if (modelLower.includes("qwen3.6-27b-nvfp4")) {
     return classified("本地模型 · DGX", "qwen3.6-27B NVFP4");
-  }
-  if (modelLower.startsWith("bailian-token-plan-personal/")) {
-    return classified("阿里云百炼", "Token Plan Personal");
   }
   if (runtimeLower.includes("volcengine-agent")) {
     return classified("火山引擎 · Doubao", "Volcengine Agent Plan");
@@ -149,18 +209,80 @@ function classifyAgentPlan(
   return classified(provider, plan);
 }
 
-function aggregateModels(employees: readonly EmployeeUsageItem[]): ModelUsageItem[] {
+function usageTokens(row: DashboardUsageByAgent) {
+  return (
+    row.input_tokens +
+    row.output_tokens +
+    row.cache_read_tokens +
+    row.cache_write_tokens
+  );
+}
+
+function inventoryEvidence(agent: Agent, runtime: AgentRuntime | null) {
+  return agent.model?.trim()
+    ? runtime
+      ? ("model_and_runtime" as const)
+      : ("model_only" as const)
+    : ("runtime_only" as const);
+}
+
+function ensurePlan(
+  groupedPlans: Map<string, PlanAccumulator>,
+  classification: ModelPlanClassification,
+) {
+  const existing = groupedPlans.get(classification.key);
+  if (existing) return existing;
+  const created: PlanAccumulator = {
+    id: classification.key,
+    provider: classification.provider,
+    plan: classification.plan,
+    account: classification.account,
+    employees: new Map(),
+    modelTokens: new Map(),
+    modelEmployees: new Map(),
+    evidenceParts: new Set(),
+    quota: CONFIRMED_QUOTA_SNAPSHOTS[classification.key] ?? null,
+  };
+  groupedPlans.set(classification.key, created);
+  return created;
+}
+
+function addEmployee(
+  plan: PlanAccumulator,
+  agent: Agent,
+  model: string,
+  tokens: number,
+) {
+  const current = plan.employees.get(agent.id) ?? {
+    id: agent.id,
+    name: agent.name,
+    model,
+    observedTokens: 0,
+  };
+  current.observedTokens += tokens;
+  plan.employees.set(agent.id, current);
+
+  const modelName = model || "未标记模型";
+  plan.modelTokens.set(
+    modelName,
+    (plan.modelTokens.get(modelName) ?? 0) + tokens,
+  );
+  const employeeIds = plan.modelEmployees.get(modelName) ?? new Set<string>();
+  employeeIds.add(agent.id);
+  plan.modelEmployees.set(modelName, employeeIds);
+}
+
+function aggregateModelRows(rows: readonly ModelUsageItem[]) {
   const models = new Map<string, ModelUsageItem>();
-  for (const employee of employees) {
-    const model = employee.model || "未标记模型";
-    const current = models.get(model) ?? {
-      model,
+  for (const row of rows) {
+    const current = models.get(row.model) ?? {
+      model: row.model,
       observedTokens: 0,
       employeeCount: 0,
     };
-    current.observedTokens += employee.observedTokens;
-    current.employeeCount += 1;
-    models.set(model, current);
+    current.observedTokens += row.observedTokens;
+    current.employeeCount += row.employeeCount;
+    models.set(row.model, current);
   }
   return Array.from(models.values()).toSorted(
     (a, b) => b.observedTokens - a.observedTokens || a.model.localeCompare(b.model),
@@ -170,79 +292,95 @@ function aggregateModels(employees: readonly EmployeeUsageItem[]): ModelUsageIte
 export function buildModelQuotaUsageInventory(
   agents: readonly Agent[],
   runtimes: readonly AgentRuntime[],
-  tokenRows: readonly AgentCostRow[],
+  usageRows: readonly DashboardUsageByAgent[],
 ): ModelQuotaUsageInventory {
   const runtimeById = new Map(runtimes.map((runtime) => [runtime.id, runtime]));
-  const tokensByAgent = new Map(tokenRows.map((row) => [row.agentId, row.tokens]));
-  const groupedPlans = new Map<
-    string,
-    Omit<ModelPlanUsageRow, "models" | "evidence"> & {
-      evidenceParts: Set<InventoryEvidence>;
-    }
-  >();
+  const agentById = new Map(agents.map((agent) => [agent.id, agent]));
+  const groupedPlans = new Map<string, PlanAccumulator>();
 
+  // Every current employee remains visible even before it produces usage.
   for (const agent of agents) {
     const runtime = agent.runtime_id
       ? (runtimeById.get(agent.runtime_id) ?? null)
       : null;
     const classification = classifyAgentPlan(agent, runtime);
-    const evidence: InventoryEvidence = agent.model?.trim()
-      ? runtime
-        ? "model_and_runtime"
-        : "model_only"
-      : "runtime_only";
-    const current = groupedPlans.get(classification.key) ?? {
-      id: classification.key,
-      provider: classification.provider,
-      plan: classification.plan,
-      account: classification.account,
-      employees: [],
-      observedTokens: 0,
-      evidenceParts: new Set<InventoryEvidence>(),
-    };
-    const observedTokens = tokensByAgent.get(agent.id) ?? 0;
-    current.employees.push({
-      id: agent.id,
-      name: agent.name,
-      model: agent.model?.trim() ?? "",
-      observedTokens,
-    });
-    current.observedTokens += observedTokens;
-    current.evidenceParts.add(evidence);
-    groupedPlans.set(classification.key, current);
+    const plan = ensurePlan(groupedPlans, classification);
+    plan.evidenceParts.add(inventoryEvidence(agent, runtime));
+    addEmployee(plan, agent, agent.model?.trim() ?? "", 0);
   }
 
-  const plans: ModelPlanUsageRow[] = Array.from(groupedPlans.values()).map(
-    ({ evidenceParts, ...row }): ModelPlanUsageRow => ({
-      ...row,
-      employees: row.employees.toSorted(
-        (a, b) => b.observedTokens - a.observedTokens || a.name.localeCompare(b.name),
-      ),
-      models: aggregateModels(row.employees),
-      evidence: evidenceParts.has("model_and_runtime")
+  // Usage is classified by the model recorded on the execution receipt, not
+  // by the employee's current model field. This prevents a model switch from
+  // relabelling historical Qwen Tokens as Bailian DeepSeek usage.
+  for (const usage of usageRows) {
+    const agent = agentById.get(usage.agent_id);
+    if (!agent) continue;
+    const runtime = agent.runtime_id
+      ? (runtimeById.get(agent.runtime_id) ?? null)
+      : null;
+    const classification = classifyAgentPlan(agent, runtime, usage.model);
+    const plan = ensurePlan(groupedPlans, classification);
+    plan.evidenceParts.add(inventoryEvidence(agent, runtime));
+    addEmployee(plan, agent, usage.model, usageTokens(usage));
+  }
+
+  const plans = Array.from(groupedPlans.values()).map(
+    (plan): ModelPlanUsageRow => {
+      const models = Array.from(plan.modelTokens, ([model, observedTokens]) => ({
+        model,
+        observedTokens,
+        employeeCount: plan.modelEmployees.get(model)?.size ?? 0,
+      })).toSorted(
+        (a, b) =>
+          b.observedTokens - a.observedTokens || a.model.localeCompare(b.model),
+      );
+      const employees = Array.from(plan.employees.values()).toSorted(
+        (a, b) =>
+          b.observedTokens - a.observedTokens || a.name.localeCompare(b.name),
+      );
+      const evidence = plan.evidenceParts.has("model_and_runtime")
         ? "model_and_runtime"
-        : evidenceParts.has("model_only")
+        : plan.evidenceParts.has("model_only")
           ? "model_only"
-          : "runtime_only",
-    }),
+          : "runtime_only";
+      return {
+        id: plan.id,
+        provider: plan.provider,
+        plan: plan.plan,
+        account: plan.account,
+        employees,
+        models,
+        observedTokens: models.reduce(
+          (total, model) => total + model.observedTokens,
+          0,
+        ),
+        evidence,
+        quota: plan.quota,
+      };
+    },
   );
 
-  const providerMap = new Map<string, ModelProviderUsageGroup>();
+  const providerMap = new Map<
+    string,
+    ModelProviderUsageGroup & { employeeIds: Set<string> }
+  >();
   for (const plan of plans) {
     const provider = providerMap.get(plan.provider) ?? {
       provider: plan.provider,
       plans: [],
       observedTokens: 0,
       employeeCount: 0,
+      employeeIds: new Set<string>(),
     };
     provider.plans.push(plan);
     provider.observedTokens += plan.observedTokens;
-    provider.employeeCount += plan.employees.length;
+    for (const employee of plan.employees) provider.employeeIds.add(employee.id);
+    provider.employeeCount = provider.employeeIds.size;
     providerMap.set(plan.provider, provider);
   }
 
   const providers = Array.from(providerMap.values())
-    .map((provider) => ({
+    .map(({ employeeIds: _employeeIds, ...provider }) => ({
       ...provider,
       plans: provider.plans.toSorted(
         (a, b) => b.observedTokens - a.observedTokens || a.plan.localeCompare(b.plan),
@@ -252,16 +390,15 @@ export function buildModelQuotaUsageInventory(
       (a, b) =>
         b.observedTokens - a.observedTokens || a.provider.localeCompare(b.provider),
     );
-  const allEmployees = plans.flatMap((plan) => plan.employees);
 
   return {
-    totalObservedTokens: allEmployees.reduce(
-      (total, employee) => total + employee.observedTokens,
+    totalObservedTokens: plans.reduce(
+      (total, plan) => total + plan.observedTokens,
       0,
     ),
     employeeCount: agents.length,
     planCount: plans.length,
     providers,
-    models: aggregateModels(allEmployees),
+    models: aggregateModelRows(plans.flatMap((plan) => plan.models)),
   };
 }

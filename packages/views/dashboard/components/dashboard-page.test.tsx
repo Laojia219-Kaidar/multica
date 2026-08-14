@@ -14,6 +14,7 @@ import type { NavigationAdapter } from "../../navigation";
 // dashboard options builders runs for real, so the key is the production key.
 const queryKeys = vi.hoisted(() => [] as unknown[][]);
 const dashboardDataRef = vi.hoisted(() => ({ current: false }));
+const bailianQuotaRef = vi.hoisted(() => ({ current: false }));
 // Swaps the per-agent fixtures for ones with enough agents to exercise the
 // top-offenders and leaderboard caps. Kept off by default so the other tests
 // keep their exact 4-of-10 arithmetic.
@@ -68,18 +69,33 @@ vi.mock("@tanstack/react-query", async () => {
       if (dashboardDataRef.current) {
         if (opts.queryKey[0] === "runtimes") {
           return {
-            data: [
-              {
-                id: "runtime-glm",
-                name: "HiveCosm Secure zhipu",
-                provider: "qwen",
-              },
-              {
-                id: "runtime-claude",
-                name: "Claude",
-                provider: "claude",
-              },
-            ],
+            data: bailianQuotaRef.current
+              ? [
+                  {
+                    id: "runtime-bailian-a",
+                    name: "HiveCosm Secure qwen-token A",
+                    provider: "qwen",
+                    profile_id: "profile-bailian",
+                  },
+                  {
+                    id: "runtime-bailian-b",
+                    name: "HiveCosm Secure qwen-token B",
+                    provider: "qwen",
+                    profile_id: "profile-bailian",
+                  },
+                ]
+              : [
+                  {
+                    id: "runtime-glm",
+                    name: "HiveCosm Secure zhipu",
+                    provider: "qwen",
+                  },
+                  {
+                    id: "runtime-claude",
+                    name: "Claude",
+                    provider: "claude",
+                  },
+                ],
             isLoading: false,
             isSuccess: true,
           };
@@ -88,7 +104,22 @@ vi.mock("@tanstack/react-query", async () => {
         // resolve agent-1 to a name and render its drill-down link.
         if (opts.queryKey[0] === "workspaces" && opts.queryKey[2] === "agents") {
           return {
-            data: manyAgentsRef.current
+            data: bailianQuotaRef.current
+              ? [
+                  {
+                    id: "atelier",
+                    name: "Atelier",
+                    model: "bailian-token-plan-personal/deepseek-v4-flash-0731",
+                    runtime_id: "runtime-bailian-a",
+                  },
+                  {
+                    id: "finn",
+                    name: "Finn",
+                    model: "bailian-token-plan-personal/deepseek-v4-flash-0731",
+                    runtime_id: "runtime-bailian-b",
+                  },
+                ]
+              : manyAgentsRef.current
               ? Array.from({ length: 12 }, (_, i) => ({
                   id: `bulk-${i}`,
                   name: `Bulk Agent ${i}`,
@@ -150,6 +181,39 @@ vi.mock("@tanstack/react-query", async () => {
                   : null;
         if (bulkRows) {
           return { data: bulkRows, isLoading: false, isSuccess: true };
+        }
+        if (bailianQuotaRef.current) {
+          return {
+            data:
+              kind === "by-agent"
+                ? [
+                    {
+                      agent_id: "atelier",
+                      provider: "opencode",
+                      model:
+                        "bailian-token-plan-personal/deepseek-v4-flash-0731",
+                      input_tokens: 100,
+                      output_tokens: 0,
+                      cache_read_tokens: 0,
+                      cache_write_tokens: 0,
+                      task_count: 1,
+                    },
+                    {
+                      agent_id: "finn",
+                      provider: "opencode",
+                      model:
+                        "bailian-token-plan-personal/deepseek-v4-flash-0731",
+                      input_tokens: 200,
+                      output_tokens: 0,
+                      cache_read_tokens: 0,
+                      cache_write_tokens: 0,
+                      task_count: 1,
+                    },
+                  ]
+                : [],
+            isLoading: false,
+            isSuccess: true,
+          };
         }
         const data =
           kind === "daily"
@@ -397,8 +461,13 @@ describe("DashboardPage — provider and plan inventory", () => {
   beforeEach(() => {
     queryKeys.length = 0;
     dashboardDataRef.current = true;
+    bailianQuotaRef.current = false;
     tzRef.current = "UTC";
     cleanup();
+  });
+
+  afterEach(() => {
+    bailianQuotaRef.current = false;
   });
 
   it("lists observed bindings while leaving unconfirmed quota fields empty", () => {
@@ -456,6 +525,20 @@ describe("DashboardPage — provider and plan inventory", () => {
     expect(
       screen.getByRole("heading", { name: "Leaderboard" }),
     ).toBeInTheDocument();
+  });
+
+  it("renders the owner-confirmed Bailian seven-day exhaustion snapshot", () => {
+    bailianQuotaRef.current = true;
+    renderDashboard();
+
+    expect(screen.getByText("阿里云百炼")).toBeInTheDocument();
+    expect(screen.getByText("Token Plan Personal")).toBeInTheDocument();
+    expect(screen.getByText("bailian-token-plan-personal")).toBeInTheDocument();
+    expect(screen.getByText("Owner confirmed")).toBeInTheDocument();
+    expect(screen.getByText("7 days")).toBeInTheDocument();
+    expect(screen.getAllByText("415.6M")).toHaveLength(2);
+    expect(screen.getAllByText("100%").length).toBeGreaterThan(0);
+    expect(screen.getByText("Not provided by provider")).toBeInTheDocument();
   });
 });
 
