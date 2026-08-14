@@ -353,26 +353,22 @@ func TestRuntimeDegraded_NotFailClosed(t *testing.T) {
 	t.Error("runtime_health dimension not found")
 }
 
-func TestQuotaExhausted_NotFailClosed(t *testing.T) {
+func TestQuotaExhausted_FailsClosed(t *testing.T) {
 	s := newTestScorer(nil)
 	c := FixtureCandidateHealthy()
 	c.Quota = QuotaExhausted
 	req := FixtureTaskImplementation()
 
 	r := s.Score(c, req)
-	if r.FailClosed {
-		t.Fatal("exhausted (but verified) quota must NOT fail closed")
+	if !r.FailClosed {
+		t.Fatal("exhausted quota must fail closed")
 	}
-
-	for _, ds := range r.Dimensions {
-		if ds.Dimension == DimQuotaFresh {
-			if ds.Score != 0.1 {
-				t.Errorf("exhausted quota score: got %f, want 0.1", ds.Score)
-			}
-			return
-		}
+	if r.FailReason != "quota_exhausted" {
+		t.Fatalf("fail reason = %q, want quota_exhausted", r.FailReason)
 	}
-	t.Error("quota_freshness dimension not found")
+	if r.TotalScore != 0 {
+		t.Fatalf("total score = %f, want 0", r.TotalScore)
+	}
 }
 
 func TestIdentityStability(t *testing.T) {

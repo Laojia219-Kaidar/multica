@@ -35,7 +35,7 @@ func TestPlanForClassPolicies(t *testing.T) {
 			wantBackoff: 0,
 		},
 		{
-			name:        "quota_exhausted escalates",
+			name:        "quota_exhausted fails closed without alternate",
 			signals:     Signals{TaskID: "t3", FailureReason: "agent_error.provider_quota_limit"},
 			wantAction:  ActionEscalateManual,
 			wantRetry:   false,
@@ -43,9 +43,9 @@ func TestPlanForClassPolicies(t *testing.T) {
 			wantBackoff: 0,
 		},
 		{
-			name:        "reviewer_missing reassigns",
+			name:        "reviewer_missing fails closed without alternate",
 			signals:     Signals{TaskID: "t4", TaskKind: "review", ReviewerConfigured: false},
-			wantAction:  ActionReassignEmployee,
+			wantAction:  ActionEscalateManual,
 			wantRetry:   false,
 			wantMax:     1,
 			wantBackoff: 0,
@@ -228,6 +228,22 @@ func TestPlanForAlternateEmployee(t *testing.T) {
 	if p.AlternateEmployee.EmployeeID != "emp-2" {
 		t.Errorf("alternate = %q, want emp-2 (failed employee excluded)", p.AlternateEmployee.EmployeeID)
 	}
+	if p.Action != ActionReassignEmployee {
+		t.Errorf("quota action = %q, want %q", p.Action, ActionReassignEmployee)
+	}
+
+	// Missing reviewer follows the same rule: reassignment is executable only
+	// when a verified alternate reviewer exists.
+	p = PlanFor(
+		Signals{TaskID: "review", TaskKind: "review", ReviewerConfigured: false},
+		Options{Attempt: 1, HealthyEmployees: healthy, FailedEmployeeID: "emp-failed"},
+	)
+	if p.AlternateEmployee == nil || p.AlternateEmployee.EmployeeID != "emp-2" {
+		t.Fatalf("reviewer plan alternate = %+v, want emp-2", p.AlternateEmployee)
+	}
+	if p.Action != ActionReassignEmployee {
+		t.Errorf("reviewer action = %q, want %q", p.Action, ActionReassignEmployee)
+	}
 
 	// A retryable class with budget remaining does not reassign.
 	p = PlanFor(
@@ -245,6 +261,9 @@ func TestPlanForAlternateEmployee(t *testing.T) {
 	)
 	if p.AlternateEmployee != nil {
 		t.Errorf("no healthy employees should yield nil alternate")
+	}
+	if p.Action != ActionEscalateManual {
+		t.Errorf("missing alternate action = %q, want %q", p.Action, ActionEscalateManual)
 	}
 }
 

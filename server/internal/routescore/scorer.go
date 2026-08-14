@@ -96,15 +96,20 @@ func (s *Scorer) Score(c Candidate, req TaskRequirement) Result {
 	return r
 }
 
-// hardGate checks the three fail-closed conditions. Returns (reason,
+// hardGate checks the fail-closed conditions. Returns (reason,
 // true) if the candidate must be rejected.
 func (s *Scorer) hardGate(c Candidate, req TaskRequirement) (string, bool) {
-	// Quota unknown or stale → fail closed.
+	// Quota unknown, stale, or exhausted → fail closed. An exhausted account
+	// is not a merely lower-quality route: dispatching it creates a known
+	// failure and can falsely consume the issue generation.
 	if c.Quota == QuotaUnknown {
 		return "quota_unknown", true
 	}
 	if c.Quota == QuotaStale {
 		return "quota_stale", true
+	}
+	if c.Quota == QuotaExhausted {
+		return "quota_exhausted", true
 	}
 	if s.clock.Now().Sub(c.QuotaCheckedAt) > QuotaStalenessThreshold {
 		return "quota_check_expired", true
@@ -198,9 +203,9 @@ func scoreRuntimeHealth(c Candidate) DimensionScore {
 	}
 }
 
-// scoreQuotaFreshness maps quota state to a [0, 1] score. Unknown
-// and stale are handled by the hard gate; this scores the remaining
-// states.
+// scoreQuotaFreshness maps quota state to a [0, 1] score. Unknown, stale, and
+// exhausted are handled by the hard gate; the exhausted branch remains
+// explicit for defensive callers and explanation stability.
 func scoreQuotaFreshness(c Candidate) DimensionScore {
 	switch c.Quota {
 	case QuotaFresh:

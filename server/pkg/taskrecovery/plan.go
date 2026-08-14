@@ -134,10 +134,10 @@ var classPolicies = map[Class]classPolicy{
 		reason:      "task parked on a local-directory lock; retry after the lock clears",
 	},
 	ClassQuotaExhausted: {
-		action:      ActionEscalateManual,
+		action:      ActionReassignEmployee,
 		retryable:   false,
 		maxAttempts: 1,
-		reason:      "provider quota exhausted; no automatic retry until the account is topped up",
+		reason:      "provider quota exhausted; route to a healthy employee on a different available account",
 	},
 	ClassReviewerMissing: {
 		action:      ActionReassignEmployee,
@@ -237,6 +237,11 @@ func PlanFor(s Signals, o Options) Plan {
 	var alt *EmployeeRef
 	if !retryable && (cls == ClassReviewerMissing || cls == ClassQuotaExhausted || cls == ClassCrash) {
 		alt = pickAlternate(o.HealthyEmployees, o.FailedEmployeeID)
+	}
+	// A reassignment without a verified alternate is not executable. Fail
+	// closed to manual escalation instead of returning a route with no target.
+	if action == ActionReassignEmployee && alt == nil {
+		action = ActionEscalateManual
 	}
 
 	return Plan{
