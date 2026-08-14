@@ -213,10 +213,12 @@ victory_conditions:
     evidence: []
   VC-10:
     title: Runtime acceptance
-    status: live_applied_api_verified
+    status: runtime_accepted_api_build_test_evidence
     evidence:
     - EV-W4-01 (candidate :18090 full-stack API, 401/200, honest portfolio + reconciler
       + closure + control)
+    - 'Owner option (b): API live + prod build + unit tests = sufficient; real-browser
+      optional'
   VC-11:
     title: Provenance
     status: not_started
@@ -228,8 +230,8 @@ victory_conditions:
     - WAVE-5 reconciler diagnostic (4 detectors, 15 live findings)
 frontier:
   controller: Prime Agent
-  phase: Authority BLOCKED; continue non-blocked goal work (browser journey VC-10,
-    W3 consume-verify VC-05/09, disposition VC-08)
+  phase: GOAL-STATE-SNAPSHOT frozen; waiting on HiveCosm Authority lane (receiver)
+    + Mac Canary 4/4 completion
   ready:
   - Closure Package generation + close gate (Slice 4 gap)
   - WAVE-4 candidate deploy + runtime acceptance
@@ -346,9 +348,11 @@ owner_decisions:
     decision: supersede
     target: HIVECREW-OWNER-OPERATING-WORKBENCH-V1 (3b0330e7)
     receipt: OWNER-DECISIONS.md
+    issue_migration: deferred to Slice 4/5 disposition mechanism (schema lacks disposition
+      column)
   Mac-Native-Canary:
     decision: 补跑 2 名员工凑满 4/4 再关闭
     created_issues:
     - eb9eae40-1a44-4189-9643-4e90725cb7a2 (GLM)
     - 32779f59-d6e2-49cb-bc60-5f75fbf1ba3d (Qwen)
-    closure_lead: TBD
+    closure_lead: Coco (agent 67903491) — set on project
