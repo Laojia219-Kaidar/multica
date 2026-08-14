@@ -176,6 +176,43 @@ func TestEvaluateReviewOrphanNeverProcessesOpenTaskOutsideReviseRequested(t *tes
 	}
 }
 
+func TestEvaluateReviewOrphanRejectsPaddedCanonicalIdentityFields(t *testing.T) {
+	valid := func() ReviewOrphanRecoveryInput {
+		in := availableRecoveryInput()
+		in.OpenReview.Found = true
+		in.OpenReview.ReviewerID = "reviewer-1"
+		in.OpenReview.Task = ReviewOrphanTask{
+			ID: "review-1", Kind: TaskKindReview, Status: TaskStatusQueued,
+			WorkspaceID: "ws-1", IssueID: "issue-1", CandidateRevision: "rev-7", Generation: "gen-3",
+			AgentID: "reviewer-1", TargetTaskID: "repair-1",
+		}
+		return in
+	}
+	for _, mutate := range []struct {
+		name  string
+		apply func(*ReviewOrphanRecoveryInput)
+	}{
+		{"identity workspace", func(in *ReviewOrphanRecoveryInput) { in.Identity.WorkspaceID = " ws-1 " }},
+		{"identity issue", func(in *ReviewOrphanRecoveryInput) { in.Identity.IssueID = " issue-1 " }},
+		{"identity candidate revision", func(in *ReviewOrphanRecoveryInput) { in.Identity.CandidateRevision = " rev-7 " }},
+		{"identity generation", func(in *ReviewOrphanRecoveryInput) { in.Identity.Generation = " gen-3 " }},
+		{"task id", func(in *ReviewOrphanRecoveryInput) { in.OpenReview.Task.ID = " review-1 " }},
+		{"task workspace", func(in *ReviewOrphanRecoveryInput) { in.OpenReview.Task.WorkspaceID = " ws-1 " }},
+		{"task issue", func(in *ReviewOrphanRecoveryInput) { in.OpenReview.Task.IssueID = " issue-1 " }},
+		{"task candidate revision", func(in *ReviewOrphanRecoveryInput) { in.OpenReview.Task.CandidateRevision = " rev-7 " }},
+		{"task generation", func(in *ReviewOrphanRecoveryInput) { in.OpenReview.Task.Generation = " gen-3 " }},
+	} {
+		t.Run(mutate.name, func(t *testing.T) {
+			in := valid()
+			mutate.apply(&in)
+			decision := EvaluateReviewOrphan(in)
+			if decision.State != ReviewOrphanBlocked || decision.Processed {
+				t.Fatalf("decision = %+v, want unprocessed blocked", decision)
+			}
+		})
+	}
+}
+
 func TestEvaluateReviewOrphanRejectsAuthorAsReviewerAndIdentityDrift(t *testing.T) {
 	in := availableRecoveryInput()
 	in.ReviewerID = in.RepairTask.AgentID

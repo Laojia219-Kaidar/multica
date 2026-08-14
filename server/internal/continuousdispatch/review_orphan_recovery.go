@@ -37,10 +37,7 @@ type ReviewOrphanIdentity struct {
 }
 
 func (i ReviewOrphanIdentity) Complete() bool {
-	return strings.TrimSpace(i.WorkspaceID) != "" &&
-		strings.TrimSpace(i.IssueID) != "" &&
-		strings.TrimSpace(i.CandidateRevision) != "" &&
-		strings.TrimSpace(i.Generation) != ""
+	return identifiersCanonical(i.WorkspaceID, i.IssueID, i.CandidateRevision, i.Generation)
 }
 
 // ReviewOrphanTask is the minimum read model required by the recovery
@@ -167,9 +164,8 @@ func EvaluateReviewOrphan(in ReviewOrphanRecoveryInput) ReviewOrphanRecoveryDeci
 
 func validCompletedRepair(in ReviewOrphanRecoveryInput) bool {
 	task := in.RepairTask
-	_, agentOK := canonicalIdentifier(task.AgentID)
 	return task.Kind == TaskKindRepair && task.Status == TaskStatusCompleted &&
-		task.ID != "" && agentOK &&
+		identifiersCanonical(task.ID, task.WorkspaceID, task.IssueID, task.CandidateRevision, task.Generation, task.AgentID) &&
 		task.WorkspaceID == in.Identity.WorkspaceID &&
 		task.IssueID == in.Identity.IssueID &&
 		task.CandidateRevision == in.Identity.CandidateRevision &&
@@ -184,18 +180,27 @@ func validConfirmedOpenReview(in ReviewOrphanRecoveryInput) bool {
 	repairAuthorID, repairAuthorOK := canonicalIdentifier(in.RepairTask.AgentID)
 	return validCompletedRepair(in) && requestedReviewerOK && evidenceReviewerOK && taskReviewerOK && repairAuthorOK &&
 		requestedReviewerID == evidenceReviewerID && taskReviewerID == evidenceReviewerID && taskReviewerID != repairAuthorID &&
-		task.Kind == TaskKindReview && task.ID != "" && isOpenReviewStatus(task.Status) &&
+		task.Kind == TaskKindReview && identifiersCanonical(task.ID, task.WorkspaceID, task.IssueID, task.CandidateRevision, task.Generation) && isOpenReviewStatus(task.Status) &&
 		task.WorkspaceID == in.Identity.WorkspaceID && task.IssueID == in.Identity.IssueID &&
 		task.CandidateRevision == in.Identity.CandidateRevision && task.Generation == in.Identity.Generation &&
 		task.TargetTaskID == in.RepairTask.ID
 }
 
-// canonicalIdentifier rejects missing and padded identifiers. Agent IDs are
-// canonical task/authority identities, not display strings: silently trimming
-// them would let a padded reviewer bypass the reviewer != repair-author rule.
+// canonicalIdentifier rejects missing and padded dispatch identities. These
+// values are canonical task/authority identifiers, not display strings:
+// silently trimming them would let a padded reviewer bypass identity checks.
 func canonicalIdentifier(raw string) (string, bool) {
 	canonical := strings.TrimSpace(raw)
 	return canonical, canonical != "" && raw == canonical
+}
+
+func identifiersCanonical(values ...string) bool {
+	for _, value := range values {
+		if _, ok := canonicalIdentifier(value); !ok {
+			return false
+		}
+	}
+	return true
 }
 
 func isOpenReviewStatus(status string) bool {
