@@ -4,9 +4,13 @@
 
 - Route: `/{workspaceSlug}/workflow`.
 - Selection is URL-backed: `program`, `project`, `workflow`, `section`.
-- L3 is an explicit read-only OperatingProgram projection only until a formal
-  program registry exists. L4 is always an existing Project ID; actions are
-  graph nodes, never navigation entries.
+- L3 is the workspace-scoped `workflow_operating_program` registry. It stores
+  only a name, description and membership references to existing formal L4
+  Projects; it is not a second Project store. L4 is always an existing Project
+  ID; actions are graph nodes, never navigation entries.
+- A formal Project with no L3 membership is visibly `未归类正式项目`, not placed
+  into a synthetic holding program. One L4 may have one L3 membership within
+  its workspace; assignment from another workspace fails closed.
 - The route does not substitute an invalid Project deep link with a first
   project. It renders a source-state instead.
 
@@ -14,6 +18,7 @@
 
 | Page concern | Read source | Writer / authority | Page behavior |
 | --- | --- | --- | --- |
+| L3 operating program | `workflow_operating_program` + membership ledger | guarded workflow operating-program endpoint | create/edit/delete L3 and classify existing L4; never owns Project lifecycle |
 | L4 operating project | existing Project API | Project authority | read-only projection |
 | workflow version | `workflow_definition_version` | workflow publish endpoint | immutable version receipt |
 | runtime instance | existing workflow instance store | existing stage engine | read-only runtime projection |
@@ -40,6 +45,13 @@
 - Graph execution records no real Agent Task/Run dispatch. `project_default`
   and other bindings are retained as graph configuration only until a governed
   Task/Run adapter is separately authorized.
+- L3 create carries an idempotency key; update and delete remain explicit,
+  workspace-scoped guarded commands. L3 deletion removes only its membership
+  ledger rows. The UI requires a second explicit confirmation and says that
+  formal Projects, workflows, Outcomes and files are retained.
+- Program assignment/unassignment and Program deletion serialize the Program
+  row; assignment then locks the native Project. The native Project-delete
+  transaction removes only its membership mapping before Project deletion.
 
 ## Failure behavior
 
@@ -51,6 +63,10 @@
   locations. An absent authoritative Outcome is `404`; an authoritative
   Outcome with no placement rows is an explicit empty location list.
 - Publish failure preserves the local draft and shows no success receipt.
+- L3 registry read failure is explicit; the page never recreates the old
+  synthetic “运营科目待建档” projection. A stale or invalid mapping is cleaned by
+  migrations 369–370 and native Project deletion handling, rather than shown
+  as a phantom L4 project.
 - Codex In-app Browser independently reached the candidate login page on
   2026-08-14 (`127.0.0.1:13512`, HiveCrew title and login form observed), but
   its automation input did not update the controlled React email field. The
@@ -69,3 +85,8 @@
   stage 4/completed with seven events and two rejections.
 - No main merge, production deployment, real platform post, trading action,
   NAS mount/write or cloud storage write occurred.
+- Candidate service health on `18592`, database migrations 362–370 and zero
+  L3/L4 orphan mappings were independently read back. Authenticated browser
+  interaction remains pending because the in-app browser automation cannot
+  currently change the controlled login email field; this is not treated as a
+  passed visual review.

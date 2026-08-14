@@ -60,17 +60,19 @@ nodes:
     owner: integrator
     depends_on: [WO-10-WORKFLOW-KERNEL, WO-20-OPERATIONS-UI, WO-30-OUTCOME-STORAGE]
     mutex: [shared-api-router-navigation, integration]
-    deliverables: [integrated-candidate, guarded-linear-runtime, durable-control-receipts, outcome-location-read-model]
-    verification: [typecheck, build, focused-tests, race-tests, candidate-db-readback, artifact-location-route]
+    deliverables: [integrated-candidate, guarded-linear-runtime, durable-control-receipts, outcome-location-read-model, persistent-l3-registry]
+    verification: [typecheck, build, focused-tests, race-tests, candidate-db-readback, artifact-location-route, l3-concurrency-and-native-project-delete-tests]
   - id: WO-50-CANARY-AND-REVIEW
     status: running
     owner: integrator
     depends_on: [WO-40-INTEGRATION]
     mutex: [candidate-acceptance]
-    deliverables: [wechat-canary, browser-login-evidence, pending-authenticated-browser-journey, handoff]
-    verification: [restart-replay-canary, failure-path-canary, candidate-db-readback, login-component-regression, pending-authenticated-browser-review]
+    deliverables: [wechat-canary, browser-login-evidence, pending-authenticated-browser-journey, pending-l3-browser-management-review, handoff]
+    verification: [restart-replay-canary, failure-path-canary, candidate-db-readback, login-component-regression, l3-api-concurrency-and-cleanup, pending-authenticated-browser-review]
 resume_package:
   current_controller: codex
   current_frontier: [WO-50-CANARY-AND-REVIEW]
-  exact_candidate_revision: 897374606
-  next_action: Resolve or bypass only through a normal user interaction the in-app-browser controlled-input limitation, then complete an authenticated candidate workflow-page visual review. This is neither a production step nor Owner acceptance.
+  exact_implementation_revision: 3ab41e5e7
+  current_candidate_db: multica_hivecrew_operations_workflow_v2_512
+  verified_migrations: [362, 363, 364, 365, 366, 367, 368, 369, 370]
+  next_action: Resolve only through normal user interaction the in-app-browser controlled-input limitation, then complete an authenticated candidate workflow-page visual review of persistent L3 create/edit/delete and L4 assignment. This is neither a production step nor Owner acceptance.

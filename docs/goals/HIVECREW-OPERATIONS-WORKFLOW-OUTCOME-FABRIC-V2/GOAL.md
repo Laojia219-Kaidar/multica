@@ -83,6 +83,23 @@ handoff all exist. This is not production or Owner acceptance.
 - An L4 Project may own multiple independent workflow definitions. The chosen
   definition identity is in the workflow page URL; L3/L4 never become action
   nodes.
+- L3 is now a durable, workspace-scoped `workflow_operating_program` registry,
+  not a placeholder navigation projection. Its separate membership ledger
+  classifies existing formal L4 Projects without copying Project lifecycle
+  fields. One L4 Project has at most one L3 membership in a workspace;
+  cross-workspace assignment, duplicate assignment and invalid UUIDs fail
+  closed. Deleting an L3 removes only its membership rows, never the Project.
+- The candidate workflow route now reads the formal Project source and the L3
+  registry independently. It renders genuinely unclassified Projects as such,
+  rather than assigning every Project to a synthetic holding program. It
+  permits create/edit/delete L3 and assign/unassign L4 through the guarded
+  candidate API; L3 deletion has an explicit warning that formal Projects,
+  workflow versions, Outcomes and files remain.
+- Migrations 362–370 establish this registry and its indexes, and clean old
+  Program/Project orphan mappings. Mapping mutation serializes `Program →
+  Project` row locks. Native Project deletion clears only its membership in the
+  same transaction before deleting the Project, so an L3 mapping cannot outlive
+  its native authority.
 - The workflow `项目成果` tab is an L4-filtered read projection of the existing
   CompanyOps Outcome Center. It links back to that center for detail, review
   and promotion; it does not own a second artifact/status lifecycle.
@@ -97,7 +114,7 @@ handoff all exist. This is not production or Owner acceptance.
 
 ## Current candidate evidence (2026-08-14)
 
-- Candidate tip: `897374606` on
+- Current implementation revision: `3ab41e5e7` on
   `work/hivecrew-operations-workflow-v2`.
 - API canary, using an isolated candidate user/workspace/Project, published
   and ran `content.wechat-production-package.v1`: valid start `201`, durable
@@ -105,14 +122,18 @@ handoff all exist. This is not production or Owner acceptance.
   a conditional graph `409`. After restart the run reached stage 4
   `completed`, with seven events including two durable rejection events. The
   terminal node was a simulated publication confirmation only.
-- Candidate DB readback confirmed that completed instance, seven events/two
-  rejections, the `artifact_replica_location` ledger, and migrations 357–361.
-- Focused Go, race, core API, views, login (34 tests), web typecheck and web
-  production build pass. The final build retains two pre-existing CSS
-  `::highlight` optimizer warnings but produces a build output.
+- Candidate DB readback confirmed the completed instance, seven events/two
+  rejections, the `artifact_replica_location` ledger, migrations 357–370, and
+  zero L3/L4 orphan mappings. Independent candidate integration tests cover
+  cross-workspace rejection, assignment-versus-delete concurrency, two
+  concurrent deletes, and native Project deletion cleanup.
+- Focused Go/race/integration tests, core API (8 tests), views (55 tests), web
+  typecheck and Web production build pass. Candidate backend was restarted and
+  serves health on `18592`; no main or production service was restarted.
 - The in-app browser reaches the candidate login page. Its automation input
   currently fails to update this controlled React email field, while the
-  login component's 34-test suite passes. Therefore the authenticated browser
-  journey is still an explicit pending verification; this Goal is not yet
+  login component regression suite passes. Therefore the authenticated browser
+  journey, including live L3 create/edit/assignment/delete visual review, is
+  still an explicit pending verification; this Goal is not yet
   `CANDIDATE_READY_WAITING_OWNER_ACCEPTANCE` and no Owner acceptance is
   implied.
