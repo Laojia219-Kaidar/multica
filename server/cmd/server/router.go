@@ -9,6 +9,7 @@ import (
 	"net/netip"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -123,12 +124,16 @@ type companyOpsRuntimeClients struct {
 // origin/tenant/token configuration never leaves a partially enabled source.
 func configureCompanyOps(h *handler.Handler, queries *db.Queries, pool *pgxpool.Pool) companyOpsRuntimeSources {
 	var runtimeSources companyOpsRuntimeSources
-	baseURL := strings.TrimSpace(os.Getenv("HIVECOSM_AUTHORITY_BASE_URL"))
+	baseURL := os.Getenv("HIVECOSM_AUTHORITY_BASE_URL")
 	if baseURL == "" {
 		return runtimeSources
 	}
-	token := strings.TrimSpace(os.Getenv("HIVECOSM_AUTHORITY_BEARER_TOKEN"))
-	if token == "" {
+	if !strictCompanyOpsConfigText(baseURL) {
+		slog.Warn("companyops authority adapter disabled", "error", "HIVECOSM_AUTHORITY_BASE_URL is invalid")
+		return runtimeSources
+	}
+	token := os.Getenv("HIVECOSM_AUTHORITY_BEARER_TOKEN")
+	if !strictCompanyOpsBearerToken(token) {
 		slog.Warn("companyops authority adapter disabled", "error", "HIVECOSM_AUTHORITY_BEARER_TOKEN is unavailable")
 		return runtimeSources
 	}
@@ -152,7 +157,7 @@ func configureCompanyOps(h *handler.Handler, queries *db.Queries, pool *pgxpool.
 		slog.Warn("companyops authority adapter disabled", "error", err)
 		return runtimeSources
 	}
-	tenantID := strings.TrimSpace(os.Getenv("HIVECOSM_TENANT_ID"))
+	tenantID := os.Getenv("HIVECOSM_TENANT_ID")
 	// Dispatch authorization and quota observation are one runtime source
 	// boundary. Neither client is created without the tenant selector.
 	runtimeClients, runtimeErr := newCompanyOpsRuntimeClients(baseURL, token, tenantID, transport)
@@ -217,6 +222,30 @@ func isSafeCompanyOpsAuthorityURL(u *url.URL) bool {
 	if u == nil || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
 		return false
 	}
+	hostname := u.Hostname()
+	if hostname == "" || strings.TrimSpace(hostname) != hostname || strings.ContainsAny(hostname, "\r\n") {
+		return false
+	}
+	port := u.Port()
+	if port != "" {
+		value, err := strconv.ParseUint(port, 10, 16)
+		if err != nil || value == 0 {
+			return false
+		}
+	}
+	canonicalHost := hostname
+	if strings.Contains(hostname, ":") {
+		canonicalHost = "[" + hostname + "]"
+	}
+	if port != "" {
+		canonicalHost += ":" + port
+	}
+	// net/url accepts some malformed Host spellings. Reconstructing the exact
+	// authority component closes those forms (for example https://:443,
+	// a trailing colon, or a non-numeric port) before a bearer transport exists.
+	if u.Host != canonicalHost {
+		return false
+	}
 	if u.Scheme == "https" {
 		return true
 	}
@@ -231,13 +260,16 @@ func isSafeCompanyOpsAuthorityURL(u *url.URL) bool {
 }
 
 func newCompanyOpsRuntimeClients(baseURL, token, tenantID string, base http.RoundTripper) (companyOpsRuntimeClients, error) {
-	if strings.TrimSpace(token) == "" || strings.ContainsAny(token, "\r\n") {
+	if !strictCompanyOpsBearerToken(token) {
 		return companyOpsRuntimeClients{}, fmt.Errorf("authority bearer configuration is unavailable")
 	}
-	if strings.TrimSpace(tenantID) == "" || strings.ContainsAny(tenantID, "\r\n") {
+	if !strictCompanyOpsConfigText(tenantID) {
 		return companyOpsRuntimeClients{}, fmt.Errorf("authority tenant configuration is unavailable")
 	}
-	u, err := url.Parse(strings.TrimSpace(baseURL))
+	if !strictCompanyOpsConfigText(baseURL) {
+		return companyOpsRuntimeClients{}, fmt.Errorf("authority base URL is invalid")
+	}
+	u, err := url.Parse(baseURL)
 	if err != nil || !isSafeCompanyOpsAuthorityURL(u) {
 		return companyOpsRuntimeClients{}, fmt.Errorf("authority base URL is invalid")
 	}
@@ -264,6 +296,17 @@ func newCompanyOpsRuntimeClients(baseURL, token, tenantID string, base http.Roun
 		quota:    quota,
 		source:   service.NewCompanyOpsQuotaObservationSource(quota),
 	}, nil
+}
+
+func strictCompanyOpsConfigText(value string) bool {
+	return value != "" && strings.TrimSpace(value) == value && !strings.ContainsAny(value, "\r\n")
+}
+
+func strictCompanyOpsBearerToken(value string) bool {
+	// Bearer values are opaque. Interior bytes remain untouched, but accepting
+	// leading/trailing Unicode whitespace or line breaks would silently change
+	// the configured secret when HTTP normalizes a header. Reject it instead.
+	return strictCompanyOpsConfigText(value)
 }
 
 // parseTrustedProxies parses a comma-separated list of CIDR prefixes from the
