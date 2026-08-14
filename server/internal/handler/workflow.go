@@ -181,13 +181,30 @@ type workflowContextDTO struct {
 }
 
 type workflowInstanceDTO struct {
-	ID                string             `json:"id"`
-	WorkspaceID       string             `json:"workspace_id,omitempty"`
-	DefinitionID      string             `json:"definition_id"`
-	DefinitionVersion int                `json:"definition_version"`
-	Context           workflowContextDTO `json:"context"`
-	StageIndex        int                `json:"stage_index"`
-	Status            string             `json:"status"`
+	ID                string                     `json:"id"`
+	WorkspaceID       string                     `json:"workspace_id,omitempty"`
+	DefinitionID      string                     `json:"definition_id"`
+	DefinitionVersion int                        `json:"definition_version"`
+	Context           workflowContextDTO         `json:"context"`
+	StageIndex        int                        `json:"stage_index"`
+	Status            string                     `json:"status"`
+	Receipt           *workflowControlReceiptDTO `json:"receipt,omitempty"`
+}
+
+type workflowControlReceiptDTO struct {
+	Command        string `json:"command"`
+	InstanceID     string `json:"instance_id"`
+	IdempotencyKey string `json:"idempotency_key"`
+	Accepted       bool   `json:"accepted"`
+	Changed        bool   `json:"changed"`
+	Reason         string `json:"reason"`
+}
+
+func toWorkflowControlReceiptDTO(r workflow.Receipt) *workflowControlReceiptDTO {
+	return &workflowControlReceiptDTO{
+		Command: r.Command, InstanceID: r.InstanceID, IdempotencyKey: r.IdempotencyKey,
+		Accepted: r.Accepted, Changed: r.Changed, Reason: r.Reason,
+	}
 }
 
 func toWorkflowInstanceDTO(i workflow.WorkflowInstance) workflowInstanceDTO {
@@ -204,6 +221,12 @@ func toWorkflowInstanceDTO(i workflow.WorkflowInstance) workflowInstanceDTO {
 		StageIndex: i.StageIndex,
 		Status:     string(i.Status),
 	}
+}
+
+func toWorkflowInstanceDTOWithReceipt(i workflow.WorkflowInstance, receipt workflow.Receipt) workflowInstanceDTO {
+	dto := toWorkflowInstanceDTO(i)
+	dto.Receipt = toWorkflowControlReceiptDTO(receipt)
+	return dto
 }
 
 // ListWorkflowInstances GET /api/workflow/instances. The database query is
@@ -373,7 +396,7 @@ func (h *Handler) StartPublishedWorkflowGraphInstance(w http.ResponseWriter, r *
 	if !receipt.Changed {
 		status = http.StatusOK
 	}
-	writeJSON(w, status, toWorkflowInstanceDTO(inst))
+	writeJSON(w, status, toWorkflowInstanceDTOWithReceipt(inst, receipt))
 }
 
 // StartWorkflowInstance POST /api/workflow/instances
@@ -422,8 +445,7 @@ func (h *Handler) StartWorkflowInstance(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 	}
-	_ = receipt
-	writeJSON(w, http.StatusOK, toWorkflowInstanceDTO(inst))
+	writeJSON(w, http.StatusOK, toWorkflowInstanceDTOWithReceipt(inst, receipt))
 }
 
 // GetWorkflowInstance GET /api/workflow/instances/{id}
@@ -510,7 +532,7 @@ func (h *Handler) AdvanceWorkflowInstance(w http.ResponseWriter, r *http.Request
 		ActorID:         actorID,
 		Notes:           req.Notes,
 	}
-	inst, _, err := workflowEngine().Advance(id, ev, key)
+	inst, receipt, err := workflowEngine().Advance(id, ev, key)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -527,7 +549,7 @@ func (h *Handler) AdvanceWorkflowInstance(w http.ResponseWriter, r *http.Request
 			return
 		}
 	}
-	writeJSON(w, http.StatusOK, toWorkflowInstanceDTO(inst))
+	writeJSON(w, http.StatusOK, toWorkflowInstanceDTOWithReceipt(inst, receipt))
 }
 
 // WorkflowInstanceEvents GET /api/workflow/instances/{id}/events

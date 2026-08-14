@@ -102,6 +102,17 @@ export const ContextRefSchema = z.object({
   outcome_id: z.string().optional(),
 });
 
+export const ControlReceiptSchema = z
+  .object({
+    command: z.string(),
+    instance_id: z.string(),
+    idempotency_key: z.string(),
+    accepted: z.boolean(),
+    changed: z.boolean(),
+    reason: z.string(),
+  })
+  .strict();
+
 export const WorkflowInstanceSchema = z
   .object({
     id: z.string(),
@@ -111,6 +122,7 @@ export const WorkflowInstanceSchema = z
     context: ContextRefSchema,
     stage_index: z.number().int().nonnegative(),
     status: InstanceStatusSchema,
+    receipt: ControlReceiptSchema.optional(),
   })
   .strict();
 
@@ -124,17 +136,6 @@ export const WorkflowEventSchema = z
     occurred_at: z.string(),
     observed_at: z.string(),
     idempotency_key: z.string(),
-  })
-  .strict();
-
-export const ControlReceiptSchema = z
-  .object({
-    command: z.string(),
-    instance_id: z.string(),
-    idempotency_key: z.string(),
-    accepted: z.boolean(),
-    changed: z.boolean(),
-    reason: z.string(),
   })
   .strict();
 

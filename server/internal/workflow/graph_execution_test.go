@@ -159,6 +159,10 @@ func TestStartPublishedGraphAndAdvanceFailClosed(t *testing.T) {
 	if rejected.Accepted || inst.StageIndex != 1 || rejected.Reason == "" {
 		t.Fatalf("approval must fail closed: inst=%+v receipt=%+v", inst, rejected)
 	}
+	events := e.Events(inst.ID)
+	if len(events) == 0 || events[len(events)-1].Kind != "workflow.advance_rejected" || events[len(events)-1].IdempotencyKey != "advance-2" {
+		t.Fatalf("rejected approval must append a visible control event: %+v", events)
+	}
 	inst, accepted, err := e.Advance(inst.ID, AdvanceEvidence{ReviewPassed: true}, "advance-3")
 	if err != nil || !accepted.Accepted || inst.StageIndex != 2 {
 		t.Fatalf("review evidence should advance approval: inst=%+v receipt=%+v err=%v", inst, accepted, err)

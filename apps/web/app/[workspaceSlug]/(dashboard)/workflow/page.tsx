@@ -20,6 +20,7 @@ import type {
   OperatingProgram,
   OperatingProject,
   WorkflowAgentBinding,
+  WorkflowReceiptView,
   WorkflowDefinitionDraft,
   WorkflowGraph,
 } from "@multica/core/workflow";
@@ -196,6 +197,7 @@ export default function Page() {
   const [localDrafts, setLocalDrafts] = useState<WorkflowDefinitionDraft[]>([]);
   const [publishReceipt, setPublishReceipt] = useState<{ definitionId: string; version: number; changed: boolean } | null>(null);
   const [publishError, setPublishError] = useState<string | null>(null);
+  const [controlReceipts, setControlReceipts] = useState<WorkflowReceiptView[]>([]);
   const projectsQuery = useQuery({
     ...projectListOptions(workspace?.id ?? "workflow-workspace-unresolved"),
     enabled: Boolean(workspace?.id),
@@ -251,7 +253,22 @@ export default function Page() {
         idempotency_key: newIdempotencyKey(),
       });
     },
-    onSuccess: () => {
+    onSuccess: (instance) => {
+      const receipt = instance.receipt;
+      if (receipt) {
+        setControlReceipts((current) => [
+          ...current.filter((currentReceipt) => currentReceipt.id !== `${instance.id}:${receipt.idempotency_key}`),
+          {
+            id: `${instance.id}:${receipt.idempotency_key}`,
+            instanceId: instance.id,
+            kind: "control",
+            status: receipt.accepted ? "accepted" : "rejected",
+            label: receipt.command,
+            idempotencyKey: receipt.idempotency_key,
+            reason: receipt.reason || undefined,
+          },
+        ]);
+      }
       if (workspace?.id) void queryClient.invalidateQueries({ queryKey: workflowKeys.instances(workspace.id) });
     },
   });
@@ -340,6 +357,8 @@ export default function Page() {
       publishReceipt={publishReceipt}
       publishError={publishError}
       workbench={{
+        receipts: controlReceipts,
+        receiptsState: "ready",
         onCreateInstance: selectedProject ? async (definition) => {
           await startPublishedGraphMutation.mutateAsync(definition);
         } : undefined,

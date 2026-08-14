@@ -316,13 +316,11 @@ func (e *Engine) Advance(instanceID string, ev AdvanceEvidence, key string) (Wor
 	if plan, graph := e.graphPlans[definitionVersionKey(inst.WorkspaceID, inst.DefinitionID, inst.DefinitionVersion)]; graph && inst.StageIndex < len(plan.Stages) {
 		gate := plan.Stages[inst.StageIndex]
 		if gate.RequiresReviewEvidence && !ev.ReviewPassed {
-			receipt := Receipt{Command: "advance", InstanceID: instanceID, IdempotencyKey: key, Accepted: false, Reason: "graph stage requires explicit review evidence"}
-			e.byKey[key] = receipt
+			receipt := e.rejectAdvance(instanceID, ev.ActorID, key, "graph stage requires explicit review evidence")
 			return *inst, receipt, nil
 		}
 		if gate.RequiresDecisionEvidence && ev.DecisionOutcome == "" {
-			receipt := Receipt{Command: "advance", InstanceID: instanceID, IdempotencyKey: key, Accepted: false, Reason: "graph stage requires explicit decision evidence"}
-			e.byKey[key] = receipt
+			receipt := e.rejectAdvance(instanceID, ev.ActorID, key, "graph stage requires explicit decision evidence")
 			return *inst, receipt, nil
 		}
 	}
@@ -332,14 +330,12 @@ func (e *Engine) Advance(instanceID string, ev AdvanceEvidence, key string) (Wor
 	switch def.Risk {
 	case RiskStandard:
 		if !ev.ReviewPassed {
-			receipt := Receipt{Command: "advance", InstanceID: instanceID, IdempotencyKey: key, Accepted: false, Reason: "independent review required"}
-			e.byKey[key] = receipt
+			receipt := e.rejectAdvance(instanceID, ev.ActorID, key, "independent review required")
 			return *inst, receipt, nil
 		}
 	case RiskOwner:
 		if !ev.OwnerApproved {
-			receipt := Receipt{Command: "advance", InstanceID: instanceID, IdempotencyKey: key, Accepted: false, Reason: "owner approval required"}
-			e.byKey[key] = receipt
+			receipt := e.rejectAdvance(instanceID, ev.ActorID, key, "owner approval required")
 			return *inst, receipt, nil
 		}
 	}
@@ -372,6 +368,17 @@ func (e *Engine) Advance(instanceID string, ev AdvanceEvidence, key string) (Wor
 	e.byKey[key] = receipt
 	e.append(instanceID, "workflow.stage_advanced", "instance://"+instanceID, ev.ActorID, key)
 	return *inst, receipt, nil
+}
+
+// rejectAdvance records a durable, read-only-visible control fact in the
+// existing workflow event stream. It does not advance the instance or create a
+// parallel approval registry. The detailed reason is returned in the control
+// receipt; the event persists the accepted/rejected transition for refreshes.
+func (e *Engine) rejectAdvance(instanceID, actorID, key, reason string) Receipt {
+	receipt := Receipt{Command: "advance", InstanceID: instanceID, IdempotencyKey: key, Accepted: false, Reason: reason}
+	e.byKey[key] = receipt
+	e.append(instanceID, "workflow.advance_rejected", "control://advance", actorID, key)
+	return receipt
 }
 
 // Pause pauses a running instance. Idempotent by key.
