@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@multica/core/api";
 import type {
   PublishedWorkflowDefinitionVersion,
@@ -30,7 +30,7 @@ import {
   type WorkflowContextSelection,
   type WorkflowOperationsSection,
 } from "@multica/views/workflow";
-import { outcomesListOptions } from "@multica/views/outcomes";
+import { outcomeArtifactLocationsOptions, outcomesListOptions } from "@multica/views/outcomes";
 import { scopeWorkflowOperations } from "./workflow-scope";
 
 const SECTIONS: WorkflowOperationsSection[] = [
@@ -242,6 +242,22 @@ export default function Page() {
     }),
     enabled: Boolean(workspace?.id && selectedProject),
   });
+  const artifactLocationQueries = useQueries({
+    queries: (outcomesQuery.data?.items ?? []).map((outcome) => outcomeArtifactLocationsOptions(
+      workspace?.id ?? "workflow-workspace-unresolved",
+      outcome.id,
+    )),
+  });
+  const artifactLocationsByOutcome = useMemo(() => Object.fromEntries(
+    (outcomesQuery.data?.items ?? []).map((outcome, index) => {
+      const locationQuery = artifactLocationQueries[index];
+      return [outcome.id, {
+        items: locationQuery?.data?.items ?? [],
+        loading: locationQuery?.isLoading,
+        error: locationQuery?.isError,
+      }];
+    }),
+  ), [artifactLocationQueries, outcomesQuery.data?.items]);
 
   const startPublishedGraphMutation = useMutation({
     mutationFn: async (definition: WorkflowDefinition) => {
@@ -335,6 +351,7 @@ export default function Page() {
       outcomesLoading={outcomesQuery.isLoading}
       outcomesError={outcomesQuery.isError}
       outcomeHref={(outcomeId) => `${workspacePaths.outcomes()}?outcome=${encodeURIComponent(outcomeId)}`}
+      artifactLocationsByOutcome={artifactLocationsByOutcome}
       selection={selection}
       section={section}
       selectedDefinitionId={selectedDefinitionId}
