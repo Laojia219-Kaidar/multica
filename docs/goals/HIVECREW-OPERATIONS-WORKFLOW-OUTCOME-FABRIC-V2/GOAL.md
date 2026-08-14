@@ -137,3 +137,36 @@ handoff all exist. This is not production or Owner acceptance.
   still an explicit pending verification; this Goal is not yet
   `CANDIDATE_READY_WAITING_OWNER_ACCEPTANCE` and no Owner acceptance is
   implied.
+
+## Candidate acceptance update (2026-08-15)
+
+- Implementation revision `9249b3e00` closes the authenticated candidate
+  browser gap. A real host-browser session opened `127.0.0.1:13512/login`,
+  redirected only to the matching loopback hostname used by the API, and then
+  reached the existing candidate workspace without email, SMTP, or a manual
+  verification code. The redirect exists only to keep strict cookie site
+  semantics consistent between `127.0.0.1` and `localhost`; it does not add a
+  non-loopback bypass or loosen auth controls.
+- Browser review created and edited the candidate-only L3 subject
+  `验收：公众号内容生产`, classified the existing candidate L4 Project beneath
+  it, and showed the persisted completed canary. The run centre displayed the
+  immutable four-node graph, `4/4` terminal completion, and seven durable
+  event receipts, including two explicit rejection receipts. An unassigned
+  temporary L3 was created, shown the second deletion warning, deleted, and
+  read back as absent. The retained L3/L4 mapping was independently present
+  in the candidate database.
+- The workbench now reads each scoped instance's existing event ledger into
+  durable read-only receipts and derives node progress only from the persisted
+  instance plus immutable graph version. It writes neither Task/Run dispatch
+  nor Outcome/Artifact state. The result page correctly showed the selected
+  Project had no Outcome Center result instead of inventing an artifact or
+  storage location.
+- Focused browser, web, core, views and Go checks passed, as did a production
+  web build. One full `packages/views` run still reports four untriaged
+  failures in unrelated sidebar-resize, agent-activity-hover-content, and
+  tab-presentation tests; these were not changed or waived by this Goal and
+  must be independently triaged before any merge or deployment.
+- This candidate remains isolated to the candidate worktree, candidate ports
+  and candidate database. No main merge, production deployment, platform
+  publication, trading, NAS/cloud write, or real file move occurred. It is
+  `CANDIDATE_READY_WAITING_OWNER_ACCEPTANCE`, not Owner acceptance.

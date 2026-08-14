@@ -5,7 +5,7 @@ meta:
   title: HiveCrew production operations workflow and outcome fabric
   owner: William
   parent_goal: HIVECREW-OWNER-OPERATING-WORKBENCH-V1
-  state: activated_candidate_only
+  state: candidate_ready_waiting_owner_acceptance
 truth_contract:
   progress_truth: docs/goals/HIVECREW-OPERATIONS-WORKFLOW-OUTCOME-FABRIC-V2/CHECKLIST.yaml
   code_truth:
@@ -63,16 +63,16 @@ nodes:
     deliverables: [integrated-candidate, guarded-linear-runtime, durable-control-receipts, outcome-location-read-model, persistent-l3-registry]
     verification: [typecheck, build, focused-tests, race-tests, candidate-db-readback, artifact-location-route, l3-concurrency-and-native-project-delete-tests]
   - id: WO-50-CANARY-AND-REVIEW
-    status: running
+    status: completed
     owner: integrator
     depends_on: [WO-40-INTEGRATION]
     mutex: [candidate-acceptance]
-    deliverables: [wechat-canary, browser-login-evidence, pending-authenticated-browser-journey, pending-l3-browser-management-review, handoff]
-    verification: [restart-replay-canary, failure-path-canary, candidate-db-readback, login-component-regression, l3-api-concurrency-and-cleanup, pending-authenticated-browser-review]
+    deliverables: [wechat-canary, authenticated-browser-login-evidence, l3-browser-management-review, candidate-handoff]
+    verification: [restart-replay-canary, failure-path-canary, candidate-db-readback, login-component-regression, canonical-loopback-login-regression, authenticated-browser-review]
 resume_package:
   current_controller: codex
-  current_frontier: [WO-50-CANARY-AND-REVIEW]
-  exact_implementation_revision: 3ab41e5e7
+  current_frontier: []
+  exact_implementation_revision: 9249b3e00
   current_candidate_db: multica_hivecrew_operations_workflow_v2_512
   verified_migrations: [362, 363, 364, 365, 366, 367, 368, 369, 370]
-  next_action: Resolve only through normal user interaction the in-app-browser controlled-input limitation, then complete an authenticated candidate workflow-page visual review of persistent L3 create/edit/delete and L4 assignment. This is neither a production step nor Owner acceptance.
+  next_action: Owner reviews this candidate-only revision. Before any merge or deployment, independently rerun the full views suite and triage the four unscoped failures observed on 2026-08-15; this state is not production or Owner acceptance.
