@@ -10,6 +10,39 @@ ON CONFLICT (id) DO UPDATE SET version = $2, risk = $3, stages = $4, updated_at 
 -- name: GetWorkflowDefinition :one
 SELECT * FROM workflow_definition WHERE id = $1;
 
+-- name: GetWorkflowDefinitionVersionByIdempotency :one
+SELECT * FROM workflow_definition_version
+WHERE workspace_id = $1 AND idempotency_key = $2;
+
+-- name: GetWorkflowDefinitionVersion :one
+SELECT * FROM workflow_definition_version
+WHERE workspace_id = $1 AND definition_id = $2 AND version = $3;
+
+-- name: GetLatestWorkflowDefinitionVersion :one
+SELECT * FROM workflow_definition_version
+WHERE workspace_id = $1 AND definition_id = $2
+ORDER BY version DESC
+LIMIT 1;
+
+-- name: ListWorkflowDefinitionVersions :many
+SELECT * FROM workflow_definition_version
+WHERE workspace_id = $1
+ORDER BY created_at DESC, definition_id ASC, version DESC;
+
+-- name: ListLatestWorkflowDefinitionVersions :many
+SELECT DISTINCT ON (definition_id) *
+FROM workflow_definition_version
+WHERE workspace_id = $1
+ORDER BY definition_id ASC, version DESC;
+
+-- name: InsertWorkflowDefinitionVersion :one
+INSERT INTO workflow_definition_version
+    (definition_id, workspace_id, version, risk, stages, graph, digest, idempotency_key)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+ON CONFLICT (workspace_id, idempotency_key)
+DO UPDATE SET idempotency_key = EXCLUDED.idempotency_key
+RETURNING *;
+
 -- name: InsertWorkflowInstance :exec
 INSERT INTO workflow_instance (id, definition_id, definition_version, context, stage_index, status)
 VALUES ($1, $2, $3, $4, $5, $6)

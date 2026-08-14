@@ -3,6 +3,7 @@ package handler
 import (
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
 
@@ -29,6 +30,122 @@ func workflowEngine() *workflow.Engine {
 }
 
 func (h *Handler) workflowRepo() *workflow.Repository { return workflow.NewRepository(h.Queries) }
+
+type workflowDefinitionVersionDTO struct {
+	DefinitionID string                 `json:"definition_id"`
+	WorkspaceID  string                 `json:"workspace_id"`
+	Version      int                    `json:"version"`
+	Risk         workflow.RiskTier      `json:"risk"`
+	Stages       []workflow.Stage       `json:"stages"`
+	Graph        workflow.WorkflowGraph `json:"graph"`
+	Digest       string                 `json:"digest"`
+	CreatedAt    string                 `json:"created_at"`
+	PublishedAt  string                 `json:"published_at"`
+}
+
+func toWorkflowDefinitionVersionDTO(v workflow.WorkflowDefinitionVersion) workflowDefinitionVersionDTO {
+	return workflowDefinitionVersionDTO{
+		DefinitionID: v.DefinitionID, WorkspaceID: v.WorkspaceID, Version: v.Version,
+		Risk: v.Risk, Stages: v.Stages, Graph: v.Graph, Digest: v.Digest,
+		CreatedAt: v.CreatedAt.UTC().Format(time.RFC3339), PublishedAt: v.PublishedAt.UTC().Format(time.RFC3339),
+	}
+}
+
+// ListWorkflowDefinitions GET /api/workflow/definitions. The default is one
+// latest immutable version per definition; latest_only=false is available for
+// the version history view.
+func (h *Handler) ListWorkflowDefinitions(w http.ResponseWriter, r *http.Request) {
+	workspaceID := h.resolveWorkspaceID(r)
+	if _, ok := h.workspaceMember(w, r, workspaceID); !ok {
+		return
+	}
+	latestOnly := r.URL.Query().Get("latest_only") != "false"
+	versions, err := h.workflowRepo().ListPublishedDefinitionVersions(r.Context(), workspaceID, latestOnly)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list workflow definitions")
+		return
+	}
+	result := make([]workflowDefinitionVersionDTO, 0, len(versions))
+	for _, version := range versions {
+		result = append(result, toWorkflowDefinitionVersionDTO(version))
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+type publishWorkflowDefinitionVersionRequest struct {
+	Risk           workflow.RiskTier      `json:"risk"`
+	Stages         []workflow.Stage       `json:"stages"`
+	Graph          workflow.WorkflowGraph `json:"graph"`
+	IdempotencyKey string                 `json:"idempotency_key,omitempty"`
+}
+
+type publishWorkflowDefinitionVersionResponse struct {
+	Version workflowDefinitionVersionDTO `json:"version"`
+	Receipt struct {
+		IdempotencyKey string `json:"idempotency_key"`
+		Changed        bool   `json:"changed"`
+		Accepted       bool   `json:"accepted"`
+	} `json:"receipt"`
+}
+
+// PublishWorkflowDefinitionVersion POST /api/workflow/definitions/{id}/versions.
+// It creates the next immutable version and returns the durable receipt. A
+// repeated idempotency key returns the original version with changed=false.
+func (h *Handler) PublishWorkflowDefinitionVersion(w http.ResponseWriter, r *http.Request) {
+	workspaceID := h.resolveWorkspaceID(r)
+	if _, ok := h.workspaceMember(w, r, workspaceID); !ok {
+		return
+	}
+	var req publishWorkflowDefinitionVersionRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	key := req.IdempotencyKey
+	if key == "" {
+		key = r.Header.Get("Idempotency-Key")
+	}
+	if key == "" {
+		writeError(w, http.StatusBadRequest, "idempotency_key is required")
+		return
+	}
+	v, changed, err := h.workflowRepo().PublishDefinitionVersion(r.Context(), workflow.WorkflowDefinitionVersion{
+		DefinitionID: r.PathValue("id"), WorkspaceID: workspaceID,
+		Risk: req.Risk, Stages: req.Stages, Graph: req.Graph,
+	}, key)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	resp := publishWorkflowDefinitionVersionResponse{Version: toWorkflowDefinitionVersionDTO(v)}
+	resp.Receipt.IdempotencyKey = key
+	resp.Receipt.Changed = changed
+	resp.Receipt.Accepted = true
+	status := http.StatusCreated
+	if !changed {
+		status = http.StatusOK
+	}
+	writeJSON(w, status, resp)
+}
+
+// GetWorkflowDefinitionVersion GET /api/workflow/definitions/{id}/versions/{version}.
+func (h *Handler) GetWorkflowDefinitionVersion(w http.ResponseWriter, r *http.Request) {
+	workspaceID := h.resolveWorkspaceID(r)
+	if _, ok := h.workspaceMember(w, r, workspaceID); !ok {
+		return
+	}
+	version, err := strconv.Atoi(r.PathValue("version"))
+	if err != nil || version < 1 {
+		writeError(w, http.StatusBadRequest, "invalid version")
+		return
+	}
+	result, err := h.workflowRepo().LoadPublishedDefinitionVersion(r.Context(), workspaceID, r.PathValue("id"), version)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "workflow definition version not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, toWorkflowDefinitionVersionDTO(result))
+}
 
 type workflowContextDTO struct {
 	ProjectID string `json:"project_id,omitempty"`

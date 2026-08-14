@@ -7,7 +7,10 @@
 // is gated on the Owner migration-counter decision.
 package workflow
 
-import "time"
+import (
+	"fmt"
+	"time"
+)
 
 // RiskTier is the workflow risk classification (FAST/STANDARD/OWNER).
 type RiskTier string
@@ -103,9 +106,126 @@ type WorkflowGraph struct {
 // designer can evolve without creating a second runtime engine.
 type WorkflowDefinitionVersion struct {
 	DefinitionID string        `json:"definition_id"`
+	WorkspaceID  string        `json:"workspace_id"`
 	Version      int           `json:"version"`
 	Risk         RiskTier      `json:"risk"`
+	Stages       []Stage       `json:"stages"`
 	Graph        WorkflowGraph `json:"graph"`
+	Digest       string        `json:"digest"`
+	CreatedAt    time.Time     `json:"created_at"`
+	PublishedAt  time.Time     `json:"published_at"`
+}
+
+// ValidatePublishedGraph enforces the closed graph contract at the publish
+// boundary. A published graph is immutable, so accepting an invalid graph
+// here would permanently create an unusable workflow definition version.
+func (v WorkflowDefinitionVersion) ValidatePublishedGraph() error {
+	if v.DefinitionID == "" || v.WorkspaceID == "" {
+		return fmt.Errorf("definition_id and workspace_id are required")
+	}
+	if v.Version < 1 {
+		return fmt.Errorf("version must be positive")
+	}
+	if !v.Risk.Valid() {
+		return fmt.Errorf("invalid risk %q", v.Risk)
+	}
+	if len(v.Graph.Nodes) == 0 {
+		return fmt.Errorf("graph must contain at least one node")
+	}
+	nodes := make(map[string]GraphNode, len(v.Graph.Nodes))
+	for _, n := range v.Graph.Nodes {
+		if n.ID == "" || n.Name == "" {
+			return fmt.Errorf("graph nodes require id and name")
+		}
+		if _, exists := nodes[n.ID]; exists {
+			return fmt.Errorf("duplicate graph node %q", n.ID)
+		}
+		if !n.Kind.Valid() {
+			return fmt.Errorf("invalid graph node kind %q", n.Kind)
+		}
+		if err := validateAgentBinding(n); err != nil {
+			return fmt.Errorf("node %q: %w", n.ID, err)
+		}
+		nodes[n.ID] = n
+	}
+	indegree := make(map[string]int, len(nodes))
+	adj := make(map[string][]string, len(nodes))
+	seenEdges := make(map[string]struct{}, len(v.Graph.Edges))
+	for _, e := range v.Graph.Edges {
+		if e.ID == "" || e.From == "" || e.To == "" {
+			return fmt.Errorf("graph edges require id, from and to")
+		}
+		if e.From == e.To {
+			return fmt.Errorf("graph edge %q is self-referential", e.ID)
+		}
+		if _, ok := nodes[e.From]; !ok {
+			return fmt.Errorf("graph edge %q references unknown from node %q", e.ID, e.From)
+		}
+		if _, ok := nodes[e.To]; !ok {
+			return fmt.Errorf("graph edge %q references unknown to node %q", e.ID, e.To)
+		}
+		key := e.From + "\x00" + e.To
+		if _, exists := seenEdges[key]; exists {
+			return fmt.Errorf("duplicate graph edge %q -> %q", e.From, e.To)
+		}
+		seenEdges[key] = struct{}{}
+		adj[e.From] = append(adj[e.From], e.To)
+		indegree[e.To]++
+	}
+	queue := make([]string, 0, len(nodes))
+	for id := range nodes {
+		if indegree[id] == 0 {
+			queue = append(queue, id)
+		}
+	}
+	visited := 0
+	for len(queue) > 0 {
+		id := queue[0]
+		queue = queue[1:]
+		visited++
+		for _, next := range adj[id] {
+			indegree[next]--
+			if indegree[next] == 0 {
+				queue = append(queue, next)
+			}
+		}
+	}
+	if visited != len(nodes) {
+		return fmt.Errorf("graph must be acyclic")
+	}
+	return nil
+}
+
+func validateAgentBinding(n GraphNode) error {
+	if n.Kind == NodeHumanTask {
+		if n.AgentBinding != nil && n.AgentBinding.Mode != "human" {
+			return fmt.Errorf("human_task binding must use human mode")
+		}
+		return nil
+	}
+	if n.Kind != NodeAgentTask {
+		if n.AgentBinding != nil {
+			return fmt.Errorf("agent binding is only allowed on task nodes")
+		}
+		return nil
+	}
+	if n.AgentBinding == nil {
+		return fmt.Errorf("agent_task requires agent_binding")
+	}
+	switch n.AgentBinding.Mode {
+	case "fixed_employee":
+		if n.AgentBinding.EmployeeID == "" {
+			return fmt.Errorf("fixed_employee requires employee_id")
+		}
+	case "capability_pool":
+		if len(n.AgentBinding.Capabilities) == 0 {
+			return fmt.Errorf("capability_pool requires capabilities")
+		}
+	case "project_default":
+	default:
+		return fmt.Errorf("invalid agent binding mode %q", n.AgentBinding.Mode)
+	}
+	return nil
 }
 
 // ContextRef references the business objects a workflow instance is about,

@@ -1,0 +1,3 @@
+DROP INDEX CONCURRENTLY IF EXISTS workflow_definition_version_workspace_created_idx;
+DROP INDEX CONCURRENTLY IF EXISTS workflow_definition_version_workspace_idempotency_uidx;
+DROP INDEX CONCURRENTLY IF EXISTS workflow_definition_version_definition_version_uidx;

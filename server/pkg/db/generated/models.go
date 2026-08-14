@@ -1426,6 +1426,19 @@ type WorkflowDefinition struct {
 	WorkspaceID pgtype.UUID        `json:"workspace_id"`
 }
 
+type WorkflowDefinitionVersion struct {
+	DefinitionID   string             `json:"definition_id"`
+	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
+	Version        int32              `json:"version"`
+	Risk           string             `json:"risk"`
+	Stages         []byte             `json:"stages"`
+	Graph          []byte             `json:"graph"`
+	Digest         string             `json:"digest"`
+	IdempotencyKey string             `json:"idempotency_key"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+	PublishedAt    pgtype.Timestamptz `json:"published_at"`
+}
+
 type WorkflowEvent struct {
 	ID             int64              `json:"id"`
 	InstanceID     string             `json:"instance_id"`
