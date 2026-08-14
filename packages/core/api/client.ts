@@ -210,6 +210,9 @@ import type {
   PublishedWorkflowDefinitionVersion,
   PublishedWorkflowGraph,
   PublishWorkflowDefinitionVersionResponse,
+  WorkflowOperatingProgram,
+  WorkflowOperatingProgramCommandResponse,
+  WorkflowOperatingProgramProjectCommandResponse,
   WorkflowEvent,
   WorkflowInstance,
 } from "./workflow";
@@ -3598,6 +3601,61 @@ export class ApiClient {
     const search = new URLSearchParams();
     if (!latestOnly) search.set("latest_only", "false");
     return this.fetch(`/api/workflow/definitions?${search}`);
+  }
+
+  /**
+   * L3 workflow organization is a workspace-scoped classification ledger for
+   * existing Projects. These methods never create, update, or delete Project
+   * authority; the server verifies every Project mapping in the workspace.
+   */
+  async listWorkflowOperatingPrograms(): Promise<WorkflowOperatingProgram[]> {
+    return this.fetch("/api/workflow/operating-programs");
+  }
+
+  async createWorkflowOperatingProgram(body: {
+    name: string;
+    description?: string;
+    idempotency_key: string;
+  }): Promise<WorkflowOperatingProgramCommandResponse> {
+    return this.fetch("/api/workflow/operating-programs", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  }
+
+  async updateWorkflowOperatingProgram(
+    programId: string,
+    body: { name: string; description?: string },
+  ): Promise<WorkflowOperatingProgramCommandResponse> {
+    return this.fetch(`/api/workflow/operating-programs/${encodeURIComponent(programId)}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    });
+  }
+
+  async deleteWorkflowOperatingProgram(programId: string): Promise<void> {
+    return this.fetch(`/api/workflow/operating-programs/${encodeURIComponent(programId)}`, {
+      method: "DELETE",
+    });
+  }
+
+  async assignWorkflowOperatingProgramProject(
+    programId: string,
+    projectId: string,
+  ): Promise<WorkflowOperatingProgramProjectCommandResponse> {
+    return this.fetch(`/api/workflow/operating-programs/${encodeURIComponent(programId)}/projects`, {
+      method: "POST",
+      body: JSON.stringify({ project_id: projectId }),
+    });
+  }
+
+  async unassignWorkflowOperatingProgramProject(
+    programId: string,
+    projectId: string,
+  ): Promise<WorkflowOperatingProgramProjectCommandResponse> {
+    return this.fetch(`/api/workflow/operating-programs/${encodeURIComponent(programId)}/projects/${encodeURIComponent(projectId)}`, {
+      method: "DELETE",
+    });
   }
 
   async publishWorkflowDefinitionVersion(

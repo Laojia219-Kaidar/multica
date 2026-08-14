@@ -139,6 +139,38 @@ export const WorkflowEventSchema = z
   })
   .strict();
 
+/**
+ * L3 operating subject persisted by the workflow organization registry.  It
+ * only classifies existing formal Projects; it does not copy Project lifecycle
+ * fields or own Outcome/Artifact data.
+ */
+export const WorkflowOperatingProgramSchema = z.object({
+  id: z.string().uuid(),
+  workspace_id: z.string().uuid(),
+  name: z.string().min(1),
+  description: z.string(),
+  project_ids: z.array(z.string().uuid()),
+  created_at: z.string().datetime(),
+  updated_at: z.string().datetime(),
+}).strict();
+
+export const WorkflowOperatingProgramReceiptSchema = z.object({
+  changed: z.boolean(),
+  accepted: z.boolean(),
+  replayed: z.boolean().optional(),
+}).strict();
+
+export const WorkflowOperatingProgramCommandResponseSchema = z.object({
+  program: WorkflowOperatingProgramSchema,
+  receipt: WorkflowOperatingProgramReceiptSchema,
+}).strict();
+
+export const WorkflowOperatingProgramProjectCommandResponseSchema = z.object({
+  program_id: z.string().uuid(),
+  project_id: z.string().uuid(),
+  receipt: WorkflowOperatingProgramReceiptSchema,
+}).strict();
+
 export type RiskTier = z.infer<typeof RiskTierSchema>;
 export type InstanceStatus = z.infer<typeof InstanceStatusSchema>;
 export type WorkflowDefinition = z.infer<typeof WorkflowDefinitionSchema>;
@@ -148,3 +180,7 @@ export type PublishWorkflowDefinitionVersionResponse = z.infer<typeof PublishWor
 export type WorkflowInstance = z.infer<typeof WorkflowInstanceSchema>;
 export type WorkflowEvent = z.infer<typeof WorkflowEventSchema>;
 export type ControlReceipt = z.infer<typeof ControlReceiptSchema>;
+export type WorkflowOperatingProgram = z.infer<typeof WorkflowOperatingProgramSchema>;
+export type WorkflowOperatingProgramReceipt = z.infer<typeof WorkflowOperatingProgramReceiptSchema>;
+export type WorkflowOperatingProgramCommandResponse = z.infer<typeof WorkflowOperatingProgramCommandResponseSchema>;
+export type WorkflowOperatingProgramProjectCommandResponse = z.infer<typeof WorkflowOperatingProgramProjectCommandResponseSchema>;

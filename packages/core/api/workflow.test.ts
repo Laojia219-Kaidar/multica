@@ -4,6 +4,7 @@ import {
   WorkflowDefinitionSchema,
   WorkflowEventSchema,
   WorkflowInstanceSchema,
+  WorkflowOperatingProgramCommandResponseSchema,
 } from "./workflow";
 
 const def = {
@@ -64,5 +65,25 @@ describe("workflow wire contract", () => {
       reason: "",
     };
     expect(ControlReceiptSchema.parse(receipt).accepted).toBe(true);
+  });
+
+  it("keeps an operating subject scoped and explicit about Project membership", () => {
+    const response = WorkflowOperatingProgramCommandResponseSchema.parse({
+      program: {
+        id: "11111111-1111-4111-8111-111111111111",
+        workspace_id: "22222222-2222-4222-8222-222222222222",
+        name: "公众号运营",
+        description: "候选内容生产项目",
+        project_ids: ["33333333-3333-4333-8333-333333333333"],
+        created_at: "2026-08-14T12:00:00.000Z",
+        updated_at: "2026-08-14T12:00:00.000Z",
+      },
+      receipt: { changed: true, accepted: true },
+    });
+    expect(response.program.project_ids).toEqual(["33333333-3333-4333-8333-333333333333"]);
+    expect(() => WorkflowOperatingProgramCommandResponseSchema.parse({
+      ...response,
+      program: { ...response.program, project_ids: ["not-a-project-id"] },
+    })).toThrow();
   });
 });

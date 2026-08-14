@@ -15,6 +15,7 @@ import {
   workflowDefinitionListOptions,
   workflowInstanceListOptions,
   workflowKeys,
+  workflowOperatingProgramListOptions,
 } from "@multica/core/workflow";
 import type {
   OperatingProgram,
@@ -54,30 +55,35 @@ function projectStatus(status: Project["status"]): OperatingProject["status"] {
 }
 
 /**
- * There is not yet an authority-managed OperatingProgram registry. This is an
- * explicit UI projection of the formal Project list, not a new registry: all
- * L4 selections remain the native Project ID and this one holding program is
- * visibly marked as awaiting operating-program registration.
+ * Combines the two authoritative reads without manufacturing either layer:
+ * native Project remains L4 authority; the workflow registry contributes only
+ * the optional L3 membership relation. A stale relation to a no-longer-visible
+ * Project is intentionally not rendered as a replacement Project.
  */
-function deriveOperatingProjection(workspaceId: string, projects: Project[]) {
-  const programId = `formal-projects-awaiting-program-registration:${workspaceId}`;
+function toOperatingProjection(
+  programs: Array<{ id: string; name: string; description: string; project_ids: string[] }>,
+  projects: Project[],
+) {
+  const programIdByProjectId = new Map<string, string>();
+  for (const program of programs) {
+    for (const projectId of program.project_ids) programIdByProjectId.set(projectId, program.id);
+  }
   const operatingProjects: OperatingProject[] = projects.map((project) => ({
     id: project.id,
     formalProjectId: project.id,
-    programId,
+    programId: programIdByProjectId.get(project.id) ?? "",
+    programClassification: programIdByProjectId.has(project.id) ? "assigned" : "unassigned",
     name: project.title,
     platform: "正式项目",
     status: projectStatus(project.status),
   }));
-  const programs: OperatingProgram[] = operatingProjects.length === 0
-    ? []
-    : [{
-      id: programId,
-      name: "运营科目待建档",
-      description: "来自正式 Project 的临时只读投影；请先在现有项目权威中完成运营科目登记。",
-      projectIds: operatingProjects.map((project) => project.id),
-    }];
-  return { programs, projects: operatingProjects };
+  const operatingPrograms: OperatingProgram[] = programs.map((program) => ({
+    id: program.id,
+    name: program.name,
+    description: program.description || undefined,
+    projectIds: program.project_ids,
+  }));
+  return { programs: operatingPrograms, projects: operatingProjects };
 }
 
 function toFrontendBinding(binding: PublishedWorkflowDefinitionVersion["graph"]["nodes"][number]["agent_binding"]): WorkflowAgentBinding | undefined {
@@ -210,10 +216,14 @@ export default function Page() {
     ...workflowDefinitionListOptions(workspace?.id ?? "workflow-workspace-unresolved"),
     enabled: Boolean(workspace?.id),
   });
+  const operatingProgramsQuery = useQuery({
+    ...workflowOperatingProgramListOptions(workspace?.id ?? "workflow-workspace-unresolved"),
+    enabled: Boolean(workspace?.id),
+  });
 
   const projection = useMemo(
-    () => deriveOperatingProjection(workspace?.id ?? "unresolved", projectsQuery.data ?? []),
-    [projectsQuery.data, workspace?.id],
+    () => toOperatingProjection(operatingProgramsQuery.data ?? [], projectsQuery.data ?? []),
+    [operatingProgramsQuery.data, projectsQuery.data],
   );
   const publishedDrafts = useMemo(() => (definitionsQuery.data ?? []).map(toDraft), [definitionsQuery.data]);
   const definitionDrafts = useMemo(() => [
@@ -258,6 +268,43 @@ export default function Page() {
       }];
     }),
   ), [artifactLocationQueries, outcomesQuery.data?.items]);
+
+  const createOperatingProgramMutation = useMutation({
+    mutationFn: async (input: { name: string; description?: string }) => api.createWorkflowOperatingProgram({
+      ...input,
+      idempotency_key: newIdempotencyKey(),
+    }),
+    onSuccess: async () => {
+      if (workspace?.id) await queryClient.invalidateQueries({ queryKey: workflowKeys.operatingPrograms(workspace.id) });
+    },
+  });
+  const updateOperatingProgramMutation = useMutation({
+    mutationFn: async (input: { programId: string; name: string; description?: string }) => api.updateWorkflowOperatingProgram(input.programId, {
+      name: input.name,
+      description: input.description,
+    }),
+    onSuccess: async () => {
+      if (workspace?.id) await queryClient.invalidateQueries({ queryKey: workflowKeys.operatingPrograms(workspace.id) });
+    },
+  });
+  const deleteOperatingProgramMutation = useMutation({
+    mutationFn: async (programId: string) => api.deleteWorkflowOperatingProgram(programId),
+    onSuccess: async () => {
+      if (workspace?.id) await queryClient.invalidateQueries({ queryKey: workflowKeys.operatingPrograms(workspace.id) });
+    },
+  });
+  const assignOperatingProgramProjectMutation = useMutation({
+    mutationFn: async (input: { programId: string; projectId: string }) => api.assignWorkflowOperatingProgramProject(input.programId, input.projectId),
+    onSuccess: async () => {
+      if (workspace?.id) await queryClient.invalidateQueries({ queryKey: workflowKeys.operatingPrograms(workspace.id) });
+    },
+  });
+  const unassignOperatingProgramProjectMutation = useMutation({
+    mutationFn: async (input: { programId: string; projectId: string }) => api.unassignWorkflowOperatingProgramProject(input.programId, input.projectId),
+    onSuccess: async () => {
+      if (workspace?.id) await queryClient.invalidateQueries({ queryKey: workflowKeys.operatingPrograms(workspace.id) });
+    },
+  });
 
   const startPublishedGraphMutation = useMutation({
     mutationFn: async (definition: WorkflowDefinition) => {
@@ -330,11 +377,11 @@ export default function Page() {
   if (!workspace) {
     return <WorkspaceSourceState title="工作区来源不可用" detail="正在读取当前工作区；不会用名称或本地缓存猜测工作流所属范围。" />;
   }
-  if (projectsQuery.isLoading || instancesQuery.isLoading || definitionsQuery.isLoading) {
-    return <WorkspaceSourceState title="正在读取正式项目与工作流记录" detail="项目、工作流实例和已发布版本来自各自的权威读模型。" />;
+  if (projectsQuery.isLoading || instancesQuery.isLoading || definitionsQuery.isLoading || operatingProgramsQuery.isLoading) {
+    return <WorkspaceSourceState title="正在读取正式项目、运营科目与工作流记录" detail="L4 项目、L3 运营科目、工作流实例和已发布版本来自各自的权威读模型。" />;
   }
-  if (projectsQuery.isError || instancesQuery.isError || definitionsQuery.isError) {
-    return <WorkspaceSourceState title="来源暂不可用" detail="工作流页面没有把读取失败伪装成空项目或零实例；请恢复来源后重试。" />;
+  if (projectsQuery.isError || instancesQuery.isError || definitionsQuery.isError || operatingProgramsQuery.isError) {
+    return <WorkspaceSourceState title="来源暂不可用" detail="工作流页面没有把读取失败伪装成空项目、零实例或临时运营科目；请恢复来源后重试。" />;
   }
   if (requestedProjectId && !selectedProject) {
     return <WorkspaceSourceState title="项目未在当前工作区被观察到" detail="深链中的 project ID 不属于当前正式项目列表；系统没有自动替换为第一条项目。" />;
@@ -373,6 +420,43 @@ export default function Page() {
       onPublishDefinition={(draft) => publishMutation.mutate(draft)}
       publishReceipt={publishReceipt}
       publishError={publishError}
+      programManagement={{
+        onCreateProgram: async (input) => {
+          const result = await createOperatingProgramMutation.mutateAsync(input);
+          updateSearch({ program: result.program.id, project: null, workflow: null, section: "settings" });
+        },
+        programCreationState: createOperatingProgramMutation.isPending ? "loading" : createOperatingProgramMutation.isError ? "error" : "ready",
+        programCreationError: createOperatingProgramMutation.error instanceof Error ? createOperatingProgramMutation.error.message : undefined,
+        onUpdateProgram: async (programId, input) => {
+          await updateOperatingProgramMutation.mutateAsync({ programId, ...input });
+        },
+        programUpdateState: updateOperatingProgramMutation.isPending ? "loading" : updateOperatingProgramMutation.isError ? "error" : "ready",
+        programUpdateError: updateOperatingProgramMutation.error instanceof Error ? updateOperatingProgramMutation.error.message : undefined,
+        onDeleteProgram: async (programId) => {
+          await deleteOperatingProgramMutation.mutateAsync(programId);
+          updateSearch({ program: null, project: null, workflow: null, section: "overview" });
+        },
+        programDeletionState: deleteOperatingProgramMutation.isPending ? "loading" : deleteOperatingProgramMutation.isError ? "error" : "ready",
+        programDeletionError: deleteOperatingProgramMutation.error instanceof Error ? deleteOperatingProgramMutation.error.message : undefined,
+        onAssignProject: async (programId, projectId) => {
+          await assignOperatingProgramProjectMutation.mutateAsync({ programId, projectId });
+        },
+        onUnassignProject: async (programId, projectId) => {
+          await unassignOperatingProgramProjectMutation.mutateAsync({ programId, projectId });
+        },
+        projectMutationState: ({ programId, projectId, mutation }) => {
+          const active = mutation === "assign" ? assignOperatingProgramProjectMutation : unassignOperatingProgramProjectMutation;
+          return active.isPending && active.variables?.programId === programId && active.variables.projectId === projectId
+            ? "loading"
+            : "ready";
+        },
+        projectMutationError: ({ programId, projectId, mutation }) => {
+          const active = mutation === "assign" ? assignOperatingProgramProjectMutation : unassignOperatingProgramProjectMutation;
+          return active.isError && active.variables?.programId === programId && active.variables.projectId === projectId && active.error instanceof Error
+            ? active.error.message
+            : undefined;
+        },
+      }}
       workbench={{
         receipts: controlReceipts,
         receiptsState: "ready",
