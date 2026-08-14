@@ -1336,6 +1336,8 @@ const SquadMemberStatusSchema = z.object({
   member_type: z.string(),
   member_id: z.string(),
   status: z.string().nullable().optional().transform((v) => v ?? null),
+  execution_state: z.string().nullable().optional().transform((v) => v ?? null),
+  active_task_count: z.number().int().nonnegative().optional(),
   active_issues: z.array(SquadActiveIssueBriefSchema).default([]),
   last_active_at: z.string().nullable().optional().transform((v) => v ?? null),
 }).loose();

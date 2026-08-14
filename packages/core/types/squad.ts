@@ -92,6 +92,8 @@ export interface CreateSquadActivityLogRequest {
 // snapshot / runtime list. `archived` wins over every runtime/task signal.
 export type SquadMemberStatusValue =
   | "working"
+  | "queued"
+  | "blocked"
   | "idle"
   | "offline"
   | "unstable"
@@ -111,6 +113,9 @@ export interface SquadMemberStatus {
   // them in the same list without showing a status pill (v1 has no
   // presence signal for humans).
   status: SquadMemberStatusValue | null;
+  /** Observed state derived from current Task rows, not Agent.status config. */
+  execution_state?: "working" | "queued" | "blocked" | "idle" | "offline" | "unstable" | "archived" | null;
+  active_task_count?: number;
   active_issues: SquadActiveIssueBrief[];
   last_active_at: string | null;
 }

@@ -73,6 +73,8 @@
     "make_leader_tooltip": "设为部门负责人",
     "remove_member_tooltip": "从组织部门移除",
     "status_working": "工作中",
+    "status_queued": "排队中",
+    "status_blocked": "阻塞中",
     "status_idle": "空闲",
     "status_offline": "离线",
     "status_unstable": "不稳定",

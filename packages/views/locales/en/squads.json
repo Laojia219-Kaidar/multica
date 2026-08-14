@@ -74,6 +74,8 @@
     "make_leader_tooltip": "Make squad leader",
     "remove_member_tooltip": "Remove from squad",
     "status_working": "Working",
+    "status_queued": "Queued",
+    "status_blocked": "Blocked",
     "status_idle": "Idle",
     "status_offline": "Offline",
     "status_unstable": "Unstable",

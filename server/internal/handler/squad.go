@@ -515,11 +515,14 @@ func (h *Handler) ListSquadMembers(w http.ResponseWriter, r *http.Request) {
 // only so the front-end can render them in the same list without
 // reordering.
 type SquadMemberStatusResponse struct {
-	MemberType   string                  `json:"member_type"`
-	MemberID     string                  `json:"member_id"`
-	Status       *string                 `json:"status"`
-	ActiveIssues []SquadActiveIssueBrief `json:"active_issues"`
-	LastActiveAt *string                 `json:"last_active_at"`
+	MemberType string  `json:"member_type"`
+	MemberID   string  `json:"member_id"`
+	Status     *string `json:"status"`
+	// ExecutionState is derived from current Task rows, not Agent.status.
+	ExecutionState  *string                 `json:"execution_state"`
+	ActiveTaskCount int                     `json:"active_task_count"`
+	ActiveIssues    []SquadActiveIssueBrief `json:"active_issues"`
+	LastActiveAt    *string                 `json:"last_active_at"`
 }
 
 type SquadActiveIssueBrief struct {
@@ -579,6 +582,30 @@ func deriveSquadMemberStatus(
 	return "offline"
 }
 
+// deriveSquadExecutionState is the observed execution projection. Agent.status
+// is persisted configuration and may say "working" after all tasks are done.
+func deriveSquadExecutionState(taskStatuses []string, archived bool, runtimeStatus pgtype.Text, lastSeen pgtype.Timestamptz, now time.Time) string {
+	if archived {
+		return "archived"
+	}
+	for _, status := range taskStatuses {
+		if status == "running" {
+			return "working"
+		}
+	}
+	for _, status := range taskStatuses {
+		if status == "waiting_local_directory" {
+			return "blocked"
+		}
+	}
+	for _, status := range taskStatuses {
+		if status == "queued" || status == "dispatched" {
+			return "queued"
+		}
+	}
+	return deriveSquadMemberStatus(false, runtimeStatus, lastSeen, false, now)
+}
+
 // ListSquadMemberStatus returns one entry per squad member with derived
 // status, the issues each agent member is currently running, and the last
 // observed runtime activity. The endpoint is read-only and inherits the
@@ -606,6 +633,7 @@ func (h *Handler) ListSquadMemberStatus(w http.ResponseWriter, r *http.Request) 
 		response       SquadMemberStatusResponse
 		archived       bool
 		hasActiveTask  bool
+		taskStatuses   []string
 		runtimeStatus  pgtype.Text
 		runtimeSeenAt  pgtype.Timestamptz
 		latestActiveAt pgtype.Timestamptz
@@ -642,6 +670,7 @@ func (h *Handler) ListSquadMemberStatus(w http.ResponseWriter, r *http.Request) 
 		// issue link, so flag the agent here regardless of issue_id.
 		if row.TaskID.Valid {
 			entry.hasActiveTask = true
+			entry.taskStatuses = append(entry.taskStatuses, row.TaskStatus.String)
 
 			if row.TaskIssueID.Valid {
 				brief := SquadActiveIssueBrief{
@@ -679,6 +708,9 @@ func (h *Handler) ListSquadMemberStatus(w http.ResponseWriter, r *http.Request) 
 				now,
 			)
 			entry.response.Status = &status
+			executionState := deriveSquadExecutionState(entry.taskStatuses, entry.archived, entry.runtimeStatus, entry.runtimeSeenAt, now)
+			entry.response.ExecutionState = &executionState
+			entry.response.ActiveTaskCount = len(entry.taskStatuses)
 			// last_active_at prefers the freshest active-task dispatch
 			// over the runtime heartbeat: a working agent should not
 			// look stale because the runtime heartbeat is a few seconds
