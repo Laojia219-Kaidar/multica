@@ -4,11 +4,13 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/url"
 	"strconv"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/workflow"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -229,6 +231,34 @@ func toWorkflowInstanceDTOWithReceipt(i workflow.WorkflowInstance, receipt workf
 	return dto
 }
 
+func workflowReplayReceipt(event workflow.Event) workflow.Receipt {
+	receipt := workflow.Receipt{
+		InstanceID:     event.InstanceID,
+		IdempotencyKey: event.IdempotencyKey,
+		Changed:        false,
+	}
+	switch event.Kind {
+	case "workflow.started":
+		receipt.Command = "start"
+		receipt.Accepted = true
+	case "workflow.stage_advanced":
+		receipt.Command = "advance"
+		receipt.Accepted = true
+	case "workflow.advance_rejected":
+		receipt.Command = "advance"
+		if parsed, err := url.Parse(event.SourceRef); err == nil {
+			receipt.Reason = parsed.Query().Get("reason")
+		}
+		if receipt.Reason == "" {
+			receipt.Reason = "workflow control was previously rejected"
+		}
+	default:
+		receipt.Command = "workflow"
+		receipt.Reason = "workflow command was previously recorded"
+	}
+	return receipt
+}
+
 // ListWorkflowInstances GET /api/workflow/instances. The database query is
 // intentionally the source of truth; the process-global engine is only a
 // runtime cache and must not determine which instances are visible after a
@@ -353,6 +383,23 @@ func (h *Handler) StartPublishedWorkflowGraphInstance(w http.ResponseWriter, r *
 		writeError(w, http.StatusBadRequest, "context.project_id is not a Project in the current workspace")
 		return
 	}
+	// A graph start must replay from the durable event ledger after a process
+	// restart. The existing instance/event tables are the one receipt source;
+	// this does not create a second command registry in the handler.
+	repo := h.workflowRepo()
+	if existing, lookupErr := repo.LoadStartedInstanceByIdempotencyInWorkspace(r.Context(), workspaceID, key); lookupErr == nil {
+		if existing.DefinitionID != version.DefinitionID || existing.DefinitionVersion != version.Version || existing.Context.ProjectID != req.Context.ProjectID {
+			writeError(w, http.StatusConflict, "idempotency_key was already used for another workflow start")
+			return
+		}
+		writeJSON(w, http.StatusOK, toWorkflowInstanceDTOWithReceipt(existing, workflow.Receipt{
+			Command: "start", InstanceID: existing.ID, IdempotencyKey: key, Accepted: true, Changed: false,
+		}))
+		return
+	} else if !errors.Is(lookupErr, pgx.ErrNoRows) {
+		writeError(w, http.StatusInternalServerError, "failed to read workflow start receipt")
+		return
+	}
 
 	instanceID := req.InstanceID
 	if instanceID == "" {
@@ -381,7 +428,6 @@ func (h *Handler) StartPublishedWorkflowGraphInstance(w http.ResponseWriter, r *
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	repo := h.workflowRepo()
 	if err := repo.SaveInstanceInWorkspace(r.Context(), workspaceID, inst); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to persist workflow instance")
 		return
@@ -521,6 +567,21 @@ func (h *Handler) AdvanceWorkflowInstance(w http.ResponseWriter, r *http.Request
 	if key == "" {
 		key = uuid.NewString()
 	}
+	// Check the persisted command ledger before hydrating/advancing. A process
+	// restart must not turn a retry into another stage transition.
+	repo := h.workflowRepo()
+	if recorded, lookupErr := repo.LoadEventByIdempotencyInWorkspace(r.Context(), workspaceID, id, key); lookupErr == nil {
+		inst, loadErr := repo.LoadInstanceInWorkspace(r.Context(), workspaceID, id)
+		if loadErr != nil {
+			writeError(w, http.StatusInternalServerError, "failed to read workflow replay instance")
+			return
+		}
+		writeJSON(w, http.StatusOK, toWorkflowInstanceDTOWithReceipt(inst, workflowReplayReceipt(recorded)))
+		return
+	} else if !errors.Is(lookupErr, pgx.ErrNoRows) {
+		writeError(w, http.StatusInternalServerError, "failed to read workflow control receipt")
+		return
+	}
 	actorType, actorID := h.resolveActor(r, requestUserID(r), workspaceID)
 	_ = actorType
 	ev := workflow.AdvanceEvidence{
@@ -537,7 +598,6 @@ func (h *Handler) AdvanceWorkflowInstance(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	repo := h.workflowRepo()
 	inst.WorkspaceID = workspaceID
 	if err := repo.UpdateInstanceInWorkspace(r.Context(), workspaceID, inst); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to persist workflow advance")

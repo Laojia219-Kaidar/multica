@@ -345,6 +345,24 @@ func (r *Repository) LoadInstanceInWorkspace(ctx context.Context, workspaceID, i
 	return workflowInstanceFromRow(row)
 }
 
+// LoadStartedInstanceByIdempotencyInWorkspace returns the persisted start
+// receipt's instance. It is deliberately constrained by the owning workspace
+// and the workflow.started event kind, rather than trusting process memory.
+func (r *Repository) LoadStartedInstanceByIdempotencyInWorkspace(ctx context.Context, workspaceID, key string) (WorkflowInstance, error) {
+	ws, err := workspaceUUID(workspaceID)
+	if err != nil {
+		return WorkflowInstance{}, err
+	}
+	row, err := r.Q.GetWorkflowStartedInstanceByIdempotencyInWorkspace(ctx, db.GetWorkflowStartedInstanceByIdempotencyInWorkspaceParams{
+		WorkspaceID:    ws,
+		IdempotencyKey: key,
+	})
+	if err != nil {
+		return WorkflowInstance{}, err
+	}
+	return workflowInstanceFromRow(row)
+}
+
 func (r *Repository) ListInstances(ctx context.Context, workspaceID string) ([]WorkflowInstance, error) {
 	ws, err := workspaceUUID(workspaceID)
 	if err != nil {
@@ -401,6 +419,25 @@ func (r *Repository) ListEventsInWorkspace(ctx context.Context, workspaceID, ins
 		return nil, err
 	}
 	return workflowEventsFromRows(rows), nil
+}
+
+// LoadEventByIdempotencyInWorkspace is the durable receipt lookup for one
+// command on one instance. Callers must still validate their command scope;
+// the database read only tells them whether that exact command already won.
+func (r *Repository) LoadEventByIdempotencyInWorkspace(ctx context.Context, workspaceID, instanceID, key string) (Event, error) {
+	ws, err := workspaceUUID(workspaceID)
+	if err != nil {
+		return Event{}, err
+	}
+	row, err := r.Q.GetWorkflowEventByIdempotencyInWorkspace(ctx, db.GetWorkflowEventByIdempotencyInWorkspaceParams{
+		WorkspaceID:    ws,
+		InstanceID:     instanceID,
+		IdempotencyKey: key,
+	})
+	if err != nil {
+		return Event{}, err
+	}
+	return workflowEventsFromRows([]db.WorkflowEvent{row})[0], nil
 }
 
 func workflowEventsFromRows(rows []db.WorkflowEvent) []Event {

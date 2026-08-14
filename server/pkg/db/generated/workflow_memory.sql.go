@@ -143,6 +143,41 @@ func (q *Queries) GetWorkflowDefinitionVersionByIdempotency(ctx context.Context,
 	return i, err
 }
 
+const getWorkflowEventByIdempotencyInWorkspace = `-- name: GetWorkflowEventByIdempotencyInWorkspace :one
+SELECT e.id, e.instance_id, e.kind, e.source_ref, e.actor, e.occurred_at, e.observed_at, e.idempotency_key
+FROM workflow_event e
+JOIN workflow_instance i ON i.id = e.instance_id
+WHERE i.workspace_id = $1
+  AND e.instance_id = $2
+  AND e.idempotency_key = $3
+LIMIT 1
+`
+
+type GetWorkflowEventByIdempotencyInWorkspaceParams struct {
+	WorkspaceID    pgtype.UUID `json:"workspace_id"`
+	InstanceID     string      `json:"instance_id"`
+	IdempotencyKey string      `json:"idempotency_key"`
+}
+
+// This is the durable replay receipt for one instance control command. The
+// instance id remains part of the predicate, preventing a caller-selected
+// idempotency key from affecting another workflow instance.
+func (q *Queries) GetWorkflowEventByIdempotencyInWorkspace(ctx context.Context, arg GetWorkflowEventByIdempotencyInWorkspaceParams) (WorkflowEvent, error) {
+	row := q.db.QueryRow(ctx, getWorkflowEventByIdempotencyInWorkspace, arg.WorkspaceID, arg.InstanceID, arg.IdempotencyKey)
+	var i WorkflowEvent
+	err := row.Scan(
+		&i.ID,
+		&i.InstanceID,
+		&i.Kind,
+		&i.SourceRef,
+		&i.Actor,
+		&i.OccurredAt,
+		&i.ObservedAt,
+		&i.IdempotencyKey,
+	)
+	return i, err
+}
+
 const getWorkflowInstance = `-- name: GetWorkflowInstance :one
 SELECT id, definition_id, definition_version, context, stage_index, status, created_at, updated_at, workspace_id FROM workflow_instance WHERE id = $1
 `
@@ -176,6 +211,41 @@ type GetWorkflowInstanceInWorkspaceParams struct {
 
 func (q *Queries) GetWorkflowInstanceInWorkspace(ctx context.Context, arg GetWorkflowInstanceInWorkspaceParams) (WorkflowInstance, error) {
 	row := q.db.QueryRow(ctx, getWorkflowInstanceInWorkspace, arg.WorkspaceID, arg.ID)
+	var i WorkflowInstance
+	err := row.Scan(
+		&i.ID,
+		&i.DefinitionID,
+		&i.DefinitionVersion,
+		&i.Context,
+		&i.StageIndex,
+		&i.Status,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.WorkspaceID,
+	)
+	return i, err
+}
+
+const getWorkflowStartedInstanceByIdempotencyInWorkspace = `-- name: GetWorkflowStartedInstanceByIdempotencyInWorkspace :one
+SELECT i.id, i.definition_id, i.definition_version, i.context, i.stage_index, i.status, i.created_at, i.updated_at, i.workspace_id
+FROM workflow_instance i
+JOIN workflow_event e ON e.instance_id = i.id
+WHERE i.workspace_id = $1
+  AND e.idempotency_key = $2
+  AND e.kind = 'workflow.started'
+ORDER BY e.id ASC
+LIMIT 1
+`
+
+type GetWorkflowStartedInstanceByIdempotencyInWorkspaceParams struct {
+	WorkspaceID    pgtype.UUID `json:"workspace_id"`
+	IdempotencyKey string      `json:"idempotency_key"`
+}
+
+// A started event is the durable receipt for the graph-start command. Scope
+// through the owning instance so a key can never replay across workspaces.
+func (q *Queries) GetWorkflowStartedInstanceByIdempotencyInWorkspace(ctx context.Context, arg GetWorkflowStartedInstanceByIdempotencyInWorkspaceParams) (WorkflowInstance, error) {
+	row := q.db.QueryRow(ctx, getWorkflowStartedInstanceByIdempotencyInWorkspace, arg.WorkspaceID, arg.IdempotencyKey)
 	var i WorkflowInstance
 	err := row.Scan(
 		&i.ID,

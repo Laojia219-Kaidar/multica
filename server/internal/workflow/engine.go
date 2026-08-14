@@ -3,6 +3,7 @@ package workflow
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"reflect"
 	"sync"
 	"time"
@@ -377,7 +378,11 @@ func (e *Engine) Advance(instanceID string, ev AdvanceEvidence, key string) (Wor
 func (e *Engine) rejectAdvance(instanceID, actorID, key, reason string) Receipt {
 	receipt := Receipt{Command: "advance", InstanceID: instanceID, IdempotencyKey: key, Accepted: false, Reason: reason}
 	e.byKey[key] = receipt
-	e.append(instanceID, "workflow.advance_rejected", "control://advance", actorID, key)
+	// The control reason is one of the engine's closed, non-secret gate
+	// reasons. Persist it in the existing event source reference so a restart
+	// can replay the same operator-facing rejection receipt without inventing
+	// a parallel command ledger.
+	e.append(instanceID, "workflow.advance_rejected", "control://advance?reason="+url.QueryEscape(reason), actorID, key)
 	return receipt
 }
 

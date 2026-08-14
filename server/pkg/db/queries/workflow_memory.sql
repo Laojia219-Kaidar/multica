@@ -60,6 +60,18 @@ ORDER BY created_at DESC, id DESC;
 SELECT * FROM workflow_instance
 WHERE workspace_id = $1 AND id = $2;
 
+-- name: GetWorkflowStartedInstanceByIdempotencyInWorkspace :one
+-- A started event is the durable receipt for the graph-start command. Scope
+-- through the owning instance so a key can never replay across workspaces.
+SELECT i.*
+FROM workflow_instance i
+JOIN workflow_event e ON e.instance_id = i.id
+WHERE i.workspace_id = $1
+  AND e.idempotency_key = $2
+  AND e.kind = 'workflow.started'
+ORDER BY e.id ASC
+LIMIT 1;
+
 -- name: InsertWorkflowInstanceInWorkspace :exec
 INSERT INTO workflow_instance (workspace_id, id, definition_id, definition_version, context, stage_index, status)
 VALUES ($1, $2, $3, $4, $5, $6, $7)
@@ -91,6 +103,18 @@ FROM workflow_event e
 JOIN workflow_instance i ON i.id = e.instance_id
 WHERE i.workspace_id = $1 AND e.instance_id = $2
 ORDER BY e.id ASC;
+
+-- name: GetWorkflowEventByIdempotencyInWorkspace :one
+-- This is the durable replay receipt for one instance control command. The
+-- instance id remains part of the predicate, preventing a caller-selected
+-- idempotency key from affecting another workflow instance.
+SELECT e.*
+FROM workflow_event e
+JOIN workflow_instance i ON i.id = e.instance_id
+WHERE i.workspace_id = $1
+  AND e.instance_id = $2
+  AND e.idempotency_key = $3
+LIMIT 1;
 
 -- name: InsertMemoryCandidate :exec
 INSERT INTO memory_candidate (id, employee_id, position_id, kind, content, evidence, source_refs, author_id, status)
