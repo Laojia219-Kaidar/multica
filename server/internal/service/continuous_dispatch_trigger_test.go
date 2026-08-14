@@ -34,6 +34,16 @@ type triggerDispatcherFixture struct {
 	err      error
 }
 
+type triggerRecoveryVerifierFixture struct {
+	calls int
+	err   error
+}
+
+func (f *triggerRecoveryVerifierFixture) VerifyReviewOrphanRecoveryPrecondition(_ context.Context, _ ReviewOrphanRecoveryPrecondition) error {
+	f.calls++
+	return f.err
+}
+
 func (f *triggerDispatcherFixture) Dispatch(
 	_ context.Context,
 	req ContinuousDispatchRequest,
@@ -144,6 +154,79 @@ func TestContinuousDispatchReviewTriggerMarksAtomicReviewPrecondition(t *testing
 	}
 	if len(dispatcher.requests) != 1 || !dispatcher.requests[0].requireInReview {
 		t.Fatalf("review dispatch request = %+v, want atomic in_review precondition", dispatcher.requests)
+	}
+}
+
+func recoveryTriggerPrecondition(workspaceID, projectID, issueID, repairTaskID, repairCommentID pgtype.UUID) ReviewOrphanRecoveryPrecondition {
+	return ReviewOrphanRecoveryPrecondition{
+		WorkspaceID: shadowUUIDString(workspaceID), ProjectID: shadowUUIDString(projectID), IssueID: shadowUUIDString(issueID),
+		IssueStatus: "in_review", IssueStage: "review", ReviewState: continuousdispatch.ReviewStateReviseRequested,
+		CandidateRevision: "candidate-trigger", Generation: "generation-trigger-1", RepairTaskID: shadowUUIDString(repairTaskID), RepairTaskAgentID: shadowUUIDString(dispatchReceiptUUID(221)),
+		RepairComment:  ReviewOrphanRepairComment{SourceTaskID: shadowUUIDString(repairTaskID), AuthorID: shadowUUIDString(dispatchReceiptUUID(221)), WorkspaceID: shadowUUIDString(workspaceID), IssueID: shadowUUIDString(issueID)},
+		RepairEvidence: ReviewOrphanRepairEvidence{Kind: continuousdispatch.TaskKindRepair, ContextRef: "issue-context:trigger", EvidenceRef: "receipt:trigger"},
+		SourceRef:      continuousDispatchReviewCommentRef(repairCommentID),
+	}
+}
+
+func TestContinuousDispatchRecoveryTriggerRechecksImmutablePreconditionBeforeDispatch(t *testing.T) {
+	workspaceID, projectID, issueID := dispatchReceiptUUID(210), dispatchReceiptUUID(211), dispatchReceiptUUID(212)
+	repairTaskID, commentID := dispatchReceiptUUID(213), dispatchReceiptUUID(214)
+	precondition := recoveryTriggerPrecondition(workspaceID, projectID, issueID, repairTaskID, commentID)
+	item := triggerShadowItem(workspaceID, issueID, dispatchReceiptUUID(215), dispatchReceiptUUID(216))
+	item.Status, item.SourceRef, item.SourceTaskID, item.DispatchIdentity.Stage = "in_review", precondition.SourceRef, precondition.RepairTaskID, "review"
+
+	for _, tc := range []struct {
+		name   string
+		mutate func(*ContinuousDispatchShadowItem)
+	}{
+		{"status", func(i *ContinuousDispatchShadowItem) { i.Status = "in_progress" }},
+		{"stage", func(i *ContinuousDispatchShadowItem) { i.DispatchIdentity.Stage = "implementation" }},
+		{"revision", func(i *ContinuousDispatchShadowItem) { i.DispatchIdentity.CandidateRevision = "candidate-other" }},
+		{"generation", func(i *ContinuousDispatchShadowItem) { i.DispatchIdentity.Generation = "generation-trigger-2" }},
+		{"source task", func(i *ContinuousDispatchShadowItem) { i.SourceTaskID = shadowUUIDString(dispatchReceiptUUID(219)) }},
+		{"source ref", func(i *ContinuousDispatchShadowItem) {
+			i.SourceRef = continuousDispatchReviewCommentRef(dispatchReceiptUUID(220))
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			drifted := item
+			tc.mutate(&drifted)
+			inspector := &triggerInspectorFixture{pages: map[int]*ContinuousDispatchShadowResult{0: {SchemaVersion: ContinuousDispatchShadowSchemaV1, WorkspaceID: shadowUUIDString(workspaceID), ProjectID: shadowUUIDString(projectID), Items: []ContinuousDispatchShadowItem{drifted}, Total: 1}}}
+			dispatcher := &triggerDispatcherFixture{}
+			verifier := &triggerRecoveryVerifierFixture{}
+			_, err := NewContinuousDispatchTriggerService(inspector, dispatcher).WithReviewOrphanRecoveryPreconditionVerifier(verifier).DispatchReviewIssueWithRecoveryPrecondition(context.Background(), workspaceID, projectID, issueID, dispatchReceiptUUID(217), precondition)
+			if !errors.Is(err, ErrContinuousDispatchIssueDrift) || len(dispatcher.requests) != 0 {
+				t.Fatalf("err=%v dispatches=%d", err, len(dispatcher.requests))
+			}
+		})
+	}
+}
+
+func TestContinuousDispatchRecoveryTriggerRequiresCanonicalVerifier(t *testing.T) {
+	workspaceID, projectID, issueID := dispatchReceiptUUID(230), dispatchReceiptUUID(231), dispatchReceiptUUID(232)
+	repairTaskID, commentID := dispatchReceiptUUID(233), dispatchReceiptUUID(234)
+	precondition := recoveryTriggerPrecondition(workspaceID, projectID, issueID, repairTaskID, commentID)
+	item := triggerShadowItem(workspaceID, issueID, dispatchReceiptUUID(235), dispatchReceiptUUID(236))
+	item.Status, item.SourceRef, item.SourceTaskID, item.DispatchIdentity.Stage = "in_review", precondition.SourceRef, precondition.RepairTaskID, "review"
+	inspector := &triggerInspectorFixture{pages: map[int]*ContinuousDispatchShadowResult{0: {SchemaVersion: ContinuousDispatchShadowSchemaV1, WorkspaceID: shadowUUIDString(workspaceID), ProjectID: shadowUUIDString(projectID), Items: []ContinuousDispatchShadowItem{item}, Total: 1}}}
+	dispatcher := &triggerDispatcherFixture{}
+	if _, err := NewContinuousDispatchTriggerService(inspector, dispatcher).DispatchReviewIssueWithRecoveryPrecondition(context.Background(), workspaceID, projectID, issueID, dispatchReceiptUUID(237), precondition); !errors.Is(err, ErrContinuousDispatchSourceGap) || len(dispatcher.requests) != 0 {
+		t.Fatalf("missing verifier err=%v dispatches=%d", err, len(dispatcher.requests))
+	}
+}
+
+func TestContinuousDispatchRecoveryTriggerRejectsVerifierReportedReviewStateDrift(t *testing.T) {
+	workspaceID, projectID, issueID := dispatchReceiptUUID(240), dispatchReceiptUUID(241), dispatchReceiptUUID(242)
+	repairTaskID, commentID := dispatchReceiptUUID(243), dispatchReceiptUUID(244)
+	precondition := recoveryTriggerPrecondition(workspaceID, projectID, issueID, repairTaskID, commentID)
+	item := triggerShadowItem(workspaceID, issueID, dispatchReceiptUUID(245), dispatchReceiptUUID(246))
+	item.Status, item.SourceRef, item.SourceTaskID, item.DispatchIdentity.Stage = "in_review", precondition.SourceRef, precondition.RepairTaskID, "review"
+	inspector := &triggerInspectorFixture{pages: map[int]*ContinuousDispatchShadowResult{0: {SchemaVersion: ContinuousDispatchShadowSchemaV1, WorkspaceID: shadowUUIDString(workspaceID), ProjectID: shadowUUIDString(projectID), Items: []ContinuousDispatchShadowItem{item}, Total: 1}}}
+	dispatcher := &triggerDispatcherFixture{}
+	verifier := &triggerRecoveryVerifierFixture{err: errors.New("review_state drifted after adapter read")}
+	_, err := NewContinuousDispatchTriggerService(inspector, dispatcher).WithReviewOrphanRecoveryPreconditionVerifier(verifier).DispatchReviewIssueWithRecoveryPrecondition(context.Background(), workspaceID, projectID, issueID, dispatchReceiptUUID(247), precondition)
+	if !errors.Is(err, ErrContinuousDispatchIssueDrift) || verifier.calls != 1 || len(dispatcher.requests) != 0 {
+		t.Fatalf("err=%v verifier=%d dispatches=%d", err, verifier.calls, len(dispatcher.requests))
 	}
 }
 

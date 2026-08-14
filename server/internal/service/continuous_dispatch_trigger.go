@@ -26,6 +26,14 @@ type ContinuousDispatchExactDispatcher interface {
 	Dispatch(context.Context, ContinuousDispatchRequest) (ContinuousDispatchReceipt, error)
 }
 
+// ContinuousDispatchRecoveryPreconditionVerifier must re-read canonical
+// Issue/Task/Comment evidence immediately before a recovery dispatch. It is
+// deliberately separate from the Shadow projection because review_state and
+// repair-comment lineage are not safe to infer from a route decision.
+type ContinuousDispatchRecoveryPreconditionVerifier interface {
+	VerifyReviewOrphanRecoveryPrecondition(context.Context, ReviewOrphanRecoveryPrecondition) error
+}
+
 // ContinuousDispatchTriggerResult carries the exact server-recomputed action
 // and committed receipt. It is a response projection, not a new Task state.
 type ContinuousDispatchTriggerResult struct {
@@ -37,8 +45,9 @@ type ContinuousDispatchTriggerResult struct {
 // employee, Agent, Runtime, model, account, or generation. It recomputes the
 // current shadow decision and only dispatches a ready/fallback server result.
 type ContinuousDispatchTriggerService struct {
-	inspector  ContinuousDispatchProjectInspector
-	dispatcher ContinuousDispatchExactDispatcher
+	inspector             ContinuousDispatchProjectInspector
+	dispatcher            ContinuousDispatchExactDispatcher
+	recoveryPreconditions ContinuousDispatchRecoveryPreconditionVerifier
 }
 
 func NewContinuousDispatchTriggerService(
@@ -46,6 +55,18 @@ func NewContinuousDispatchTriggerService(
 	dispatcher ContinuousDispatchExactDispatcher,
 ) *ContinuousDispatchTriggerService {
 	return &ContinuousDispatchTriggerService{inspector: inspector, dispatcher: dispatcher}
+}
+
+// WithReviewOrphanRecoveryPreconditionVerifier is intentionally opt-in. The
+// ordinary bounded review drain remains unchanged; the orphan-recovery adapter
+// fails closed unless this canonical re-read verifier is explicitly wired.
+func (s *ContinuousDispatchTriggerService) WithReviewOrphanRecoveryPreconditionVerifier(verifier ContinuousDispatchRecoveryPreconditionVerifier) *ContinuousDispatchTriggerService {
+	if s == nil {
+		return nil
+	}
+	cp := *s
+	cp.recoveryPreconditions = verifier
+	return &cp
 }
 
 func (s *ContinuousDispatchTriggerService) DispatchIssue(
@@ -97,6 +118,31 @@ func (s *ContinuousDispatchTriggerService) DispatchReviewIssue(
 	sourceRef string,
 	sourceTaskID pgtype.UUID,
 ) (ContinuousDispatchTriggerResult, error) {
+	return s.dispatchReviewIssue(ctx, workspaceID, projectID, issueID, actorUserID, sourceRef, sourceTaskID, nil)
+}
+
+// DispatchReviewIssueWithRecoveryPrecondition is the orphan-recovery-only
+// path. It re-reads the standard Shadow, validates its immutable identity, and
+// then invokes the canonical provenance verifier before any Task/receipt write
+// is delegated. A missing verifier is a source gap, never a permissive mode.
+func (s *ContinuousDispatchTriggerService) DispatchReviewIssueWithRecoveryPrecondition(
+	ctx context.Context,
+	workspaceID, projectID, issueID, actorUserID pgtype.UUID,
+	precondition ReviewOrphanRecoveryPrecondition,
+) (ContinuousDispatchTriggerResult, error) {
+	if err := validateRecoveryPreconditionRequest(workspaceID, projectID, issueID, precondition); err != nil {
+		return ContinuousDispatchTriggerResult{}, err
+	}
+	return s.dispatchReviewIssue(ctx, workspaceID, projectID, issueID, actorUserID, precondition.SourceRef, parseDispatchUUID(precondition.RepairTaskID), &precondition)
+}
+
+func (s *ContinuousDispatchTriggerService) dispatchReviewIssue(
+	ctx context.Context,
+	workspaceID, projectID, issueID, actorUserID pgtype.UUID,
+	sourceRef string,
+	sourceTaskID pgtype.UUID,
+	recoveryPrecondition *ReviewOrphanRecoveryPrecondition,
+) (ContinuousDispatchTriggerResult, error) {
 	if s == nil || s.inspector == nil || s.dispatcher == nil {
 		return ContinuousDispatchTriggerResult{}, fmt.Errorf("continuous dispatch trigger dependencies are required")
 	}
@@ -130,6 +176,11 @@ func (s *ContinuousDispatchTriggerService) DispatchReviewIssue(
 			if item.Status != "in_review" || item.SourceRef != sourceRef || item.SourceTaskID != shadowUUIDString(sourceTaskID) {
 				return ContinuousDispatchTriggerResult{}, ErrContinuousDispatchIssueDrift
 			}
+			if recoveryPrecondition != nil {
+				if err := s.verifyReviewOrphanRecoveryPrecondition(ctx, item, *recoveryPrecondition); err != nil {
+					return ContinuousDispatchTriggerResult{}, err
+				}
+			}
 			provenance := &ContinuousDispatchReviewProvenance{
 				SourceRef:       item.SourceRef,
 				SourceIssueID:   item.IssueID,
@@ -143,6 +194,38 @@ func (s *ContinuousDispatchTriggerService) DispatchReviewIssue(
 			return ContinuousDispatchTriggerResult{}, ErrContinuousDispatchIssueAbsent
 		}
 	}
+}
+
+func validateRecoveryPreconditionRequest(workspaceID, projectID, issueID pgtype.UUID, p ReviewOrphanRecoveryPrecondition) error {
+	if !canonicalEqual(p.WorkspaceID, shadowUUIDString(workspaceID)) || !canonicalEqual(p.ProjectID, shadowUUIDString(projectID)) || !canonicalEqual(p.IssueID, shadowUUIDString(issueID)) ||
+		p.IssueStatus != "in_review" || p.IssueStage != "review" || p.ReviewState != continuousdispatch.ReviewStateReviseRequested ||
+		!canonicalNonEmpty(p.CandidateRevision, p.Generation, p.RepairTaskID, p.RepairTaskAgentID, p.SourceRef) ||
+		!canonicalEqual(p.RepairEvidence.Kind, continuousdispatch.TaskKindRepair) || !canonicalNonEmpty(p.RepairEvidence.ContextRef, p.RepairEvidence.EvidenceRef) ||
+		!canonicalEqual(p.RepairComment.SourceTaskID, p.RepairTaskID) || !canonicalEqual(p.RepairComment.AuthorID, p.RepairTaskAgentID) ||
+		!canonicalEqual(p.RepairComment.WorkspaceID, p.WorkspaceID) || !canonicalEqual(p.RepairComment.IssueID, p.IssueID) ||
+		!parseDispatchUUID(p.RepairTaskID).Valid {
+		return ErrContinuousDispatchSourceGap
+	}
+	return nil
+}
+
+func (s *ContinuousDispatchTriggerService) verifyReviewOrphanRecoveryPrecondition(
+	ctx context.Context,
+	item ContinuousDispatchShadowItem,
+	p ReviewOrphanRecoveryPrecondition,
+) error {
+	if s.recoveryPreconditions == nil {
+		return ErrContinuousDispatchSourceGap
+	}
+	if item.Status != p.IssueStatus || item.DispatchIdentity.Stage != p.IssueStage ||
+		item.DispatchIdentity.CandidateRevision != p.CandidateRevision || item.DispatchIdentity.Generation != p.Generation ||
+		item.SourceRef != p.SourceRef || item.SourceTaskID != p.RepairTaskID {
+		return ErrContinuousDispatchIssueDrift
+	}
+	if err := s.recoveryPreconditions.VerifyReviewOrphanRecoveryPrecondition(ctx, p); err != nil {
+		return fmt.Errorf("%w: %v", ErrContinuousDispatchIssueDrift, err)
+	}
+	return nil
 }
 
 func (s *ContinuousDispatchTriggerService) dispatchShadowItem(

@@ -37,7 +37,7 @@ type recoveryDispatcherFake struct {
 	err   error
 }
 
-func (f *recoveryDispatcherFake) DispatchReviewIssue(context.Context, pgtype.UUID, pgtype.UUID, pgtype.UUID, pgtype.UUID, string, pgtype.UUID) (ContinuousDispatchTriggerResult, error) {
+func (f *recoveryDispatcherFake) DispatchReviewIssueWithRecoveryPrecondition(context.Context, pgtype.UUID, pgtype.UUID, pgtype.UUID, pgtype.UUID, ReviewOrphanRecoveryPrecondition) (ContinuousDispatchTriggerResult, error) {
 	f.calls++
 	if f.err != nil {
 		return ContinuousDispatchTriggerResult{}, f.err
@@ -48,12 +48,12 @@ func (f *recoveryDispatcherFake) DispatchReviewIssue(context.Context, pgtype.UUI
 func validRecoverySnapshot() ReviewOrphanRecoverySnapshot {
 	identity := continuousdispatch.ReviewOrphanIdentity{WorkspaceID: recoveryWorkspace, IssueID: recoveryIssue, CandidateRevision: "sha256:candidate-1", Generation: "generation-1"}
 	return ReviewOrphanRecoverySnapshot{
-		IssueWorkspaceID: recoveryWorkspace, IssueStatus: "in_review", IssueStage: "review", ReviewState: continuousdispatch.ReviewStateReviseRequested,
+		IssueWorkspaceID: recoveryWorkspace, IssueProjectID: recoveryProject, IssueID: recoveryIssue, IssueStatus: "in_review", IssueStage: "review", ReviewState: continuousdispatch.ReviewStateReviseRequested,
 		Identity:       identity,
 		RepairTask:     continuousdispatch.ReviewOrphanTask{ID: recoveryRepair, Kind: continuousdispatch.TaskKindRepair, Status: continuousdispatch.TaskStatusCompleted, WorkspaceID: recoveryWorkspace, IssueID: recoveryIssue, CandidateRevision: identity.CandidateRevision, Generation: identity.Generation, AgentID: "00000000-0000-0000-0000-000000000007"},
 		RepairEvidence: ReviewOrphanRepairEvidence{Kind: continuousdispatch.TaskKindRepair, ContextRef: "issue-context:1", EvidenceRef: "receipt:1"},
 		RepairComment:  ReviewOrphanRepairComment{SourceTaskID: recoveryRepair, AuthorID: "00000000-0000-0000-0000-000000000007", WorkspaceID: recoveryWorkspace, IssueID: recoveryIssue},
-		OpenReview:     continuousdispatch.ReviewOpenTaskEvidence{Known: true, Found: false}, CapacityKnown: true, CapacityReconciled: true, ActiveReviewWIP: 1, MaxReviewWIP: 3, ReviewerID: recoveryReviewer, SourceRef: "comment:review-source-1",
+		OpenReview:     continuousdispatch.ReviewOpenTaskEvidence{Known: true, Found: false}, CapacityKnown: true, CapacityReconciled: true, ActiveReviewWIP: 1, MaxReviewWIP: 3, ReviewerID: recoveryReviewer, SourceRef: continuousDispatchReviewCommentRef(parseDispatchUUID("00000000-0000-0000-0000-000000000009")),
 	}
 }
 
@@ -77,6 +77,8 @@ func TestReviewOrphanRecoveryAdapterFailsClosedBeforeDispatch(t *testing.T) {
 		mutate func(*ReviewOrphanRecoverySnapshot)
 	}{
 		{"workspace drift", func(s *ReviewOrphanRecoverySnapshot) { s.IssueWorkspaceID = "00000000-0000-0000-0000-000000000099" }},
+		{"project drift", func(s *ReviewOrphanRecoverySnapshot) { s.IssueProjectID = "00000000-0000-0000-0000-000000000099" }},
+		{"issue drift", func(s *ReviewOrphanRecoverySnapshot) { s.IssueID = "00000000-0000-0000-0000-000000000099" }},
 		{"missing repair kind", func(s *ReviewOrphanRecoverySnapshot) { s.RepairEvidence.Kind = "" }},
 		{"comment identity mismatch", func(s *ReviewOrphanRecoverySnapshot) { s.RepairComment.AuthorID = recoveryReviewer }},
 		{"revision drift", func(s *ReviewOrphanRecoverySnapshot) { s.RepairTask.CandidateRevision = "sha256:other" }},

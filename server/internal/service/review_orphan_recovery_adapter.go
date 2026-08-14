@@ -22,7 +22,7 @@ type ReviewOrphanRecoveryReader interface {
 // production implementation is *ContinuousDispatchTriggerService; tests can
 // inject a fake that records delegation without writing a database.
 type ReviewOrphanRecoveryDispatcher interface {
-	DispatchReviewIssue(context.Context, pgtype.UUID, pgtype.UUID, pgtype.UUID, pgtype.UUID, string, pgtype.UUID) (ContinuousDispatchTriggerResult, error)
+	DispatchReviewIssueWithRecoveryPrecondition(context.Context, pgtype.UUID, pgtype.UUID, pgtype.UUID, pgtype.UUID, ReviewOrphanRecoveryPrecondition) (ContinuousDispatchTriggerResult, error)
 }
 
 // ReviewOrphanRecoveryKey is the only caller input. Reviewer, route, runtime,
@@ -58,6 +58,8 @@ type ReviewOrphanRepairComment struct {
 // hidden by copying one field into another.
 type ReviewOrphanRecoverySnapshot struct {
 	IssueWorkspaceID   string
+	IssueProjectID     string
+	IssueID            string
 	IssueStatus        string
 	IssueStage         string
 	ReviewState        string
@@ -72,6 +74,25 @@ type ReviewOrphanRecoverySnapshot struct {
 	MaxReviewWIP       int
 	ReviewerID         string
 	SourceRef          string
+}
+
+// ReviewOrphanRecoveryPrecondition freezes the exact evidence observed by the
+// adapter. The trigger must re-read and verify every field immediately before
+// delegating a write. It is not a browser command and cannot select a route.
+type ReviewOrphanRecoveryPrecondition struct {
+	WorkspaceID       string
+	ProjectID         string
+	IssueID           string
+	IssueStatus       string
+	IssueStage        string
+	ReviewState       string
+	CandidateRevision string
+	Generation        string
+	RepairTaskID      string
+	RepairTaskAgentID string
+	RepairComment     ReviewOrphanRepairComment
+	RepairEvidence    ReviewOrphanRepairEvidence
+	SourceRef         string
 }
 
 type ReviewOrphanRecoveryResult struct {
@@ -109,7 +130,7 @@ func (a *ReviewOrphanRecoveryAdapter) Recover(ctx context.Context, key ReviewOrp
 	if err != nil {
 		return ReviewOrphanRecoveryResult{}, fmt.Errorf("read review orphan: %w", err)
 	}
-	if err := validateRecoverySnapshot(snapshot); err != nil {
+	if err := validateRecoverySnapshot(key, snapshot); err != nil {
 		return ReviewOrphanRecoveryResult{}, err
 	}
 	decision := continuousdispatch.EvaluateReviewOrphan(continuousdispatch.ReviewOrphanRecoveryInput{
@@ -123,11 +144,10 @@ func (a *ReviewOrphanRecoveryAdapter) Recover(ctx context.Context, key ReviewOrp
 	if snapshot.SourceRef == "" {
 		return ReviewOrphanRecoveryResult{}, fmt.Errorf("%w: source_ref is required", ErrReviewOrphanSourceGap)
 	}
-	repairTaskID := parseDispatchUUID(snapshot.RepairTask.ID)
-	if !repairTaskID.Valid {
+	if !parseDispatchUUID(snapshot.RepairTask.ID).Valid {
 		return ReviewOrphanRecoveryResult{}, fmt.Errorf("%w: repair task id is not a UUID", ErrReviewOrphanSourceGap)
 	}
-	dispatch, err := a.dispatcher.DispatchReviewIssue(ctx, workspaceID, projectID, issueID, actorUserID, snapshot.SourceRef, repairTaskID)
+	dispatch, err := a.dispatcher.DispatchReviewIssueWithRecoveryPrecondition(ctx, workspaceID, projectID, issueID, actorUserID, recoveryPrecondition(key, snapshot))
 	if err != nil {
 		return ReviewOrphanRecoveryResult{}, fmt.Errorf("%w: %v", ErrReviewOrphanDispatchFailed, err)
 	}
@@ -147,8 +167,10 @@ func (a *ReviewOrphanRecoveryAdapter) Recover(ctx context.Context, key ReviewOrp
 	return ReviewOrphanRecoveryResult{Decision: post, Receipt: &dispatch.Receipt}, nil
 }
 
-func validateRecoverySnapshot(s ReviewOrphanRecoverySnapshot) error {
-	if !canonicalEqual(s.IssueWorkspaceID, s.Identity.WorkspaceID) || s.IssueStatus != "in_review" || s.IssueStage != "review" || s.ReviewState != continuousdispatch.ReviewStateReviseRequested {
+func validateRecoverySnapshot(key ReviewOrphanRecoveryKey, s ReviewOrphanRecoverySnapshot) error {
+	if !canonicalEqual(s.IssueWorkspaceID, s.Identity.WorkspaceID) || !canonicalEqual(s.IssueWorkspaceID, key.WorkspaceID) ||
+		!canonicalEqual(s.IssueProjectID, key.ProjectID) || !canonicalEqual(s.IssueID, key.IssueID) ||
+		s.IssueStatus != "in_review" || s.IssueStage != "review" || s.ReviewState != continuousdispatch.ReviewStateReviseRequested {
 		return fmt.Errorf("%w: issue status/stage/review state/workspace drift", ErrReviewOrphanSourceGap)
 	}
 	if !s.Identity.Complete() {
@@ -168,6 +190,16 @@ func validateRecoverySnapshot(s ReviewOrphanRecoverySnapshot) error {
 		return fmt.Errorf("%w: repair comment source_task_id/author/scope mismatch", ErrReviewOrphanSourceGap)
 	}
 	return nil
+}
+
+func recoveryPrecondition(key ReviewOrphanRecoveryKey, s ReviewOrphanRecoverySnapshot) ReviewOrphanRecoveryPrecondition {
+	return ReviewOrphanRecoveryPrecondition{
+		WorkspaceID: key.WorkspaceID, ProjectID: key.ProjectID, IssueID: key.IssueID,
+		IssueStatus: s.IssueStatus, IssueStage: s.IssueStage, ReviewState: s.ReviewState,
+		CandidateRevision: s.Identity.CandidateRevision, Generation: s.Identity.Generation,
+		RepairTaskID: s.RepairTask.ID, RepairTaskAgentID: s.RepairTask.AgentID,
+		RepairComment: s.RepairComment, RepairEvidence: s.RepairEvidence, SourceRef: s.SourceRef,
+	}
 }
 
 func parseRecoveryKey(k ReviewOrphanRecoveryKey) (pgtype.UUID, pgtype.UUID, pgtype.UUID, pgtype.UUID, error) {
