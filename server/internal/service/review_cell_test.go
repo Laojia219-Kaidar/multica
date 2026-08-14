@@ -286,6 +286,51 @@ func TestReviewCell_FullChain(t *testing.T) {
 	}
 }
 
+// TestReviewCell_ReviseRequestedReentryDoesNotPreemptRepair guards the
+// production regression where an IssueUpdated re-entry fired while an issue was
+// in revise_requested (repair pending), and handleReentry overwrote
+// revise_requested -> queued with a review of the in-progress repair. That
+// orphaned the issue: when the repair completed, OnRepairTaskCompleted saw
+// queued (not revise_requested) and skipped the independent re-review.
+func TestReviewCell_ReviseRequestedReentryDoesNotPreemptRepair(t *testing.T) {
+	f := newReviewCellFixture(t, true)
+	ctx := context.Background()
+	svc := newReviewCellServiceForFixture(f, cfgWithReviewerAndCoordinator(f))
+
+	// 1. Enter review.
+	if err := svc.OnIssueEnteredReview(ctx, f.issueID); err != nil {
+		t.Fatalf("OnIssueEnteredReview: %v", err)
+	}
+	// 2. REVISE -> revise_requested + repair task.
+	if _, err := svc.WriteVerdict(ctx, f.issueID, ReviewActor{ActorType: "agent", ActorID: f.reviewer}, VerdictInput{
+		Verdict:            "revise",
+		Notes:              "needs rework",
+		RepairRequirements: []string{"fix the bug"},
+	}); err != nil {
+		t.Fatalf("WriteVerdict(revise): %v", err)
+	}
+	issue := mustGetIssue(t, ctx, f)
+	if issue.ReviewState.String != ReviewStateReviseRequested {
+		t.Fatalf("review_state after revise = %q, want revise_requested", issue.ReviewState.String)
+	}
+	// 3. A spurious IssueUpdated re-entry must NOT create a review task nor
+	// overwrite revise_requested while repair is pending.
+	if err := svc.OnIssueEnteredReview(ctx, f.issueID); err != nil {
+		t.Fatalf("OnIssueEnteredReview re-entry: %v", err)
+	}
+	issue = mustGetIssue(t, ctx, f)
+	if issue.ReviewState.String != ReviewStateReviseRequested {
+		t.Fatalf("review_state after re-entry = %q, want revise_requested (unchanged)", issue.ReviewState.String)
+	}
+	var openReviewCount int
+	if err := f.pool.QueryRow(ctx, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND task_kind = 'review' AND status IN ('queued','in_progress')`, f.issueID).Scan(&openReviewCount); err != nil {
+		t.Fatalf("count open review tasks: %v", err)
+	}
+	if openReviewCount != 0 {
+		t.Fatalf("open review tasks after revise_requested re-entry = %d, want 0", openReviewCount)
+	}
+}
+
 func TestReviewCell_ReviewerIsImplementerFailsClosed(t *testing.T) {
 	f := newReviewCellFixture(t, true)
 	ctx := context.Background()

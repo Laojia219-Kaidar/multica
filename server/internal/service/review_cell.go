@@ -198,7 +198,14 @@ func (s *ReviewCellService) OnIssueEnteredReview(ctx context.Context, issueID pg
 		switch {
 		case !issue.ReviewState.Valid:
 			return s.handleFreshEntry(ctx, qtx, issue)
-		case isOpenReviewState(issue.ReviewState.String) || issue.ReviewState.String == ReviewStateReviseRequested:
+		case issue.ReviewState.String == ReviewStateReviseRequested:
+			// Repair pending: keep revise_requested. OnRepairTaskCompleted
+			// creates the fresh independent review round after the repair
+			// completes. Do not pre-create a review of an in-progress repair
+			// (it would overwrite revise_requested and orphan the issue when
+			// the repair finishes).
+			return nil
+		case isOpenReviewState(issue.ReviewState.String):
 			return s.handleReentry(ctx, qtx, issue)
 		default:
 			return nil
