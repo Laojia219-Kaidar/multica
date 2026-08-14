@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
 
@@ -36,6 +37,37 @@ func (f *workConservingProjectionFixture) ProjectWorkConserving(_ context.Contex
 func (f *shadowInspectorFixture) InspectProject(_ context.Context, _, _ pgtype.UUID, limit, offset int) (*service.ContinuousDispatchShadowResult, error) {
 	f.limit, f.offset = limit, offset
 	return f.result, f.err
+}
+
+func validWorkConservingAuthoritySnapshot() service.WorkConservingAuthoritySnapshot {
+	now := time.Now().UTC().Truncate(time.Second)
+	return service.WorkConservingAuthoritySnapshot{
+		WorkspaceID: testWorkspaceID,
+		ProjectID:   "00000000-0000-0000-0000-000000000201",
+		SourceRef:   "hivecosm://company-ops/goal/goal-global-1",
+		Revision:    "authority-rev-1",
+		ObservedAt:  now.Add(-time.Minute).Format(time.RFC3339),
+		ExpiresAt:   now.Add(14 * time.Minute).Format(time.RFC3339),
+	}
+}
+
+func validWorkConservingProjection() service.WorkConservingProjection {
+	return service.WorkConservingProjection{
+		SchemaVersion: service.WorkConservingProjectionSchemaV1,
+		State:         service.WorkConservingProjectionReady,
+		GoalID:        "goal-global-1",
+		Authority:     validWorkConservingAuthoritySnapshot(),
+		Suggestions: []continuousdispatch.WorkConservingSuggestion{{
+			IssueID: "issue-global-1", GoalID: "goal-global-1", EmployeeID: "DE-1", AgentID: "agent-1", RuntimeID: "runtime-1",
+			Score: 42, Receiver: "dispatch-coordinator", WakeCondition: "fresh evidence",
+		}},
+		BlockedBacklog: []continuousdispatch.WorkConservingBlockedIssue{{
+			IssueID: "issue-blocked-1", GoalID: "goal-global-1", Receiver: "authority-operator", WakeCondition: "authority available",
+			Reasons: []continuousdispatch.Reason{continuousdispatch.ReasonIssueAuthorityMissing},
+		}},
+		Mismatch: continuousdispatch.WorkConservingMismatch{OpenIssues: 2, PlannedIssues: 1, BlockedBacklog: 1},
+		Total:    2, Limit: 50, Offset: 0,
+	}
 }
 
 func TestGetProjectNextActionsReturnsStrictReadOnlyEnvelope(t *testing.T) {
@@ -141,6 +173,7 @@ func TestGetProjectNextActionsWorkConservingProviderRoundTripsGlobalTotal(t *tes
 		SchemaVersion: service.WorkConservingProjectionSchemaV1,
 		State:         service.WorkConservingProjectionReady,
 		GoalID:        "goal-global-1",
+		Authority:     validWorkConservingAuthoritySnapshot(),
 		Suggestions: []continuousdispatch.WorkConservingSuggestion{{
 			IssueID: "issue-global-1", GoalID: "goal-global-1", EmployeeID: "DE-1", AgentID: "agent-1", RuntimeID: "runtime-1",
 			Score: 42, Receiver: "dispatch-coordinator", WakeCondition: "fresh evidence",
@@ -149,8 +182,8 @@ func TestGetProjectNextActionsWorkConservingProviderRoundTripsGlobalTotal(t *tes
 			IssueID: "issue-blocked-1", GoalID: "goal-global-1", Receiver: "authority-operator", WakeCondition: "authority available",
 			Reasons: []continuousdispatch.Reason{continuousdispatch.ReasonIssueAuthorityMissing},
 		}},
-		Mismatch: continuousdispatch.WorkConservingMismatch{OpenIssues: 99, PlannedIssues: 1, BlockedBacklog: 98},
-		Total:    99, Limit: 1, Offset: 0,
+		Mismatch: continuousdispatch.WorkConservingMismatch{OpenIssues: 2, PlannedIssues: 1, BlockedBacklog: 1},
+		Total:    2, Limit: 1, Offset: 0,
 	}}
 	inspector := &shadowInspectorFixture{result: &service.ContinuousDispatchShadowResult{
 		SchemaVersion: service.ContinuousDispatchShadowSchemaV1,
@@ -177,11 +210,68 @@ func TestGetProjectNextActionsWorkConservingProviderRoundTripsGlobalTotal(t *tes
 		t.Fatal("missing work_conserving projection")
 	}
 	p := body.WorkConserving
-	if p.State != service.WorkConservingProjectionReady || p.GoalID != "goal-global-1" || p.Total != 99 || len(p.Suggestions) != 1 || len(p.BlockedBacklog) != 1 || !p.NoWrite {
+	if p.State != service.WorkConservingProjectionReady || p.GoalID != "goal-global-1" || p.Total != 2 || len(p.Suggestions) != 1 || len(p.BlockedBacklog) != 1 || !p.NoWrite {
 		t.Fatalf("projection = %+v, want provider plan with enforced no-write", *p)
 	}
 	if provider.req.Limit != 1 || provider.req.Offset != 0 || !provider.req.WorkspaceID.Valid || !provider.req.ProjectID.Valid {
 		t.Fatalf("provider request = %+v", provider.req)
+	}
+}
+
+func TestGetProjectNextActionsWorkConservingAuthorityAndPlanContractFailsClosed(t *testing.T) {
+	base := validWorkConservingProjection()
+	mutations := map[string]func(*service.WorkConservingProjection){
+		"total_99_for_two_entries": func(p *service.WorkConservingProjection) { p.Total = 99 },
+		"open_issues_mismatch":     func(p *service.WorkConservingProjection) { p.Mismatch.OpenIssues = 99 },
+		"planned_mismatch":         func(p *service.WorkConservingProjection) { p.Mismatch.PlannedIssues = 99 },
+		"blocked_mismatch":         func(p *service.WorkConservingProjection) { p.Mismatch.BlockedBacklog = 99 },
+		"cross_workspace": func(p *service.WorkConservingProjection) {
+			p.Authority.WorkspaceID = "00000000-0000-0000-0000-000000000999"
+		},
+		"cross_project": func(p *service.WorkConservingProjection) {
+			p.Authority.ProjectID = "00000000-0000-0000-0000-000000000999"
+		},
+		"empty_source_ref":    func(p *service.WorkConservingProjection) { p.Authority.SourceRef = "" },
+		"empty_revision":      func(p *service.WorkConservingProjection) { p.Authority.Revision = "" },
+		"invalid_observed_at": func(p *service.WorkConservingProjection) { p.Authority.ObservedAt = "not-a-time" },
+		"invalid_expires_at":  func(p *service.WorkConservingProjection) { p.Authority.ExpiresAt = "not-a-time" },
+		"expired": func(p *service.WorkConservingProjection) {
+			now := time.Now().UTC().Truncate(time.Second)
+			p.Authority.ObservedAt = now.Add(-16 * time.Minute).Format(time.RFC3339)
+			p.Authority.ExpiresAt = now.Add(-time.Minute).Format(time.RFC3339)
+		},
+		"future_snapshot": func(p *service.WorkConservingProjection) {
+			now := time.Now().UTC().Truncate(time.Second)
+			p.Authority.ObservedAt = now.Add(time.Minute).Format(time.RFC3339)
+			p.Authority.ExpiresAt = now.Add(16 * time.Minute).Format(time.RFC3339)
+		},
+	}
+	for name, mutate := range mutations {
+		t.Run(name, func(t *testing.T) {
+			candidate := base
+			mutate(&candidate)
+			provider := &workConservingProjectionFixture{result: candidate}
+			h := &Handler{ContinuousDispatchShadow: &shadowInspectorFixture{result: &service.ContinuousDispatchShadowResult{
+				SchemaVersion: service.ContinuousDispatchShadowSchemaV1,
+				WorkspaceID:   testWorkspaceID, ProjectID: "00000000-0000-0000-0000-000000000201",
+				Items: []service.ContinuousDispatchShadowItem{{IssueID: "issue-page-only"}}, Total: 1, Limit: 50, Offset: 0,
+			}}, WorkConservingProjection: provider}
+			req := newRequest(http.MethodGet, "/api/projects/00000000-0000-0000-0000-000000000201/next-actions?workspace_id="+testWorkspaceID+"&projection=work_conserving", nil)
+			req = withURLParam(req, "id", "00000000-0000-0000-0000-000000000201")
+			w := httptest.NewRecorder()
+			h.GetProjectNextActions(w, req)
+			if w.Code != http.StatusOK {
+				t.Fatalf("status = %d body=%s", w.Code, w.Body.String())
+			}
+			var body service.ContinuousDispatchShadowResult
+			if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+				t.Fatal(err)
+			}
+			p := body.WorkConserving
+			if p == nil || p.State != service.WorkConservingProjectionSourceGap || !p.Blocked || !p.NoWrite || len(p.Suggestions) != 0 || len(p.BlockedBacklog) != 0 {
+				t.Fatalf("projection = %+v, want source_gap blocked no-write empty plan", p)
+			}
+		})
 	}
 }
 

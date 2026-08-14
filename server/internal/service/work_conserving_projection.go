@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/multica-ai/multica/server/internal/continuousdispatch"
@@ -26,6 +28,18 @@ const (
 )
 
 var ErrWorkConservingProjectionSourceGap = errors.New("work-conserving projection source gap")
+
+// WorkConservingAuthoritySnapshot binds the plan to the exact company
+// authority read that produced it. It is a read receipt, not a second
+// authority and not a browser-controlled route selector.
+type WorkConservingAuthoritySnapshot struct {
+	WorkspaceID string `json:"workspace_id"`
+	ProjectID   string `json:"project_id"`
+	SourceRef   string `json:"source_ref"`
+	Revision    string `json:"revision"`
+	ObservedAt  string `json:"observed_at"`
+	ExpiresAt   string `json:"expires_at"`
+}
 
 // WorkConservingProjectionRequest is intentionally Goal-scoped and contains
 // no route selector. A future Authority-backed provider resolves the exact
@@ -56,6 +70,7 @@ type WorkConservingProjection struct {
 	ReasonCode     string                                          `json:"reason_code,omitempty"`
 	Blocked        bool                                            `json:"blocked"`
 	GoalID         string                                          `json:"goal_id,omitempty"`
+	Authority      WorkConservingAuthoritySnapshot                 `json:"authority"`
 	Suggestions    []continuousdispatch.WorkConservingSuggestion   `json:"suggestions"`
 	BlockedBacklog []continuousdispatch.WorkConservingBlockedIssue `json:"blocked_backlog"`
 	Mismatch       continuousdispatch.WorkConservingMismatch       `json:"mismatch"`
@@ -94,14 +109,43 @@ func validWorkConservingProjectionRequest(req WorkConservingProjectionRequest) b
 // supplied total. Empty plans are valid only when the provider explicitly
 // reports blocked; source_gap is reserved for missing/invalid evidence.
 func ValidateWorkConservingProjection(p WorkConservingProjection, req WorkConservingProjectionRequest) error {
+	return ValidateWorkConservingProjectionAt(p, req, time.Now().UTC())
+}
+
+// ValidateWorkConservingProjectionAt validates a provider response at a
+// caller-supplied clock. The explicit clock keeps freshness and clock-skew
+// behavior deterministic in tests and prevents an old/foreign Authority
+// snapshot from being presented as a current plan.
+func ValidateWorkConservingProjectionAt(p WorkConservingProjection, req WorkConservingProjectionRequest, now time.Time) error {
 	if !validWorkConservingProjectionRequest(req) {
 		return fmt.Errorf("%w: invalid request scope", ErrWorkConservingProjectionSourceGap)
+	}
+	now = now.UTC()
+	if now.IsZero() {
+		return fmt.Errorf("%w: validation clock is invalid", ErrWorkConservingProjectionSourceGap)
 	}
 	if p.SchemaVersion != WorkConservingProjectionSchemaV1 {
 		return fmt.Errorf("%w: schema version is missing or unsupported", ErrWorkConservingProjectionSourceGap)
 	}
 	if strings.TrimSpace(p.GoalID) == "" {
 		return fmt.Errorf("%w: goal identity is missing", ErrWorkConservingProjectionSourceGap)
+	}
+	if p.Authority.WorkspaceID != uuid.UUID(req.WorkspaceID.Bytes).String() || p.Authority.ProjectID != uuid.UUID(req.ProjectID.Bytes).String() ||
+		strings.TrimSpace(p.Authority.SourceRef) == "" || strings.TrimSpace(p.Authority.Revision) == "" {
+		return fmt.Errorf("%w: authority snapshot binding is incomplete or out of scope", ErrWorkConservingProjectionSourceGap)
+	}
+	observedAt, err := time.Parse(time.RFC3339, p.Authority.ObservedAt)
+	if err != nil {
+		return fmt.Errorf("%w: authority observed_at is invalid", ErrWorkConservingProjectionSourceGap)
+	}
+	expiresAt, err := time.Parse(time.RFC3339, p.Authority.ExpiresAt)
+	if err != nil {
+		return fmt.Errorf("%w: authority expires_at is invalid", ErrWorkConservingProjectionSourceGap)
+	}
+	observedAt = observedAt.UTC()
+	expiresAt = expiresAt.UTC()
+	if observedAt.After(now) || !expiresAt.After(now) || expiresAt.Before(observedAt) || now.Sub(observedAt) > 15*time.Minute {
+		return fmt.Errorf("%w: authority snapshot is stale, expired, or clock-drifted", ErrWorkConservingProjectionSourceGap)
 	}
 	if p.State != WorkConservingProjectionReady && p.State != WorkConservingProjectionBlocked {
 		return fmt.Errorf("%w: provider state is incomplete", ErrWorkConservingProjectionSourceGap)
@@ -117,6 +161,12 @@ func ValidateWorkConservingProjection(p WorkConservingProjection, req WorkConser
 	}
 	if p.Total < len(p.Suggestions)+len(p.BlockedBacklog) {
 		return fmt.Errorf("%w: plan entries exceed global total", ErrWorkConservingProjectionSourceGap)
+	}
+	if p.Total != len(p.Suggestions)+len(p.BlockedBacklog) ||
+		p.Mismatch.OpenIssues != p.Total ||
+		p.Mismatch.PlannedIssues != len(p.Suggestions) ||
+		p.Mismatch.BlockedBacklog != len(p.BlockedBacklog) {
+		return fmt.Errorf("%w: global plan counts are inconsistent", ErrWorkConservingProjectionSourceGap)
 	}
 	seen := make(map[string]struct{}, len(p.Suggestions)+len(p.BlockedBacklog))
 	for _, suggestion := range p.Suggestions {

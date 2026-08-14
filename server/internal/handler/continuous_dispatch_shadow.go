@@ -3,6 +3,7 @@ package handler
 import (
 	"errors"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -86,12 +87,12 @@ func (h *Handler) GetProjectNextActions(w http.ResponseWriter, r *http.Request) 
 				Limit:       limit,
 				Offset:      offset,
 			})
-			if providerErr == nil && service.ValidateWorkConservingProjection(candidate, service.WorkConservingProjectionRequest{
+			if providerErr == nil && service.ValidateWorkConservingProjectionAt(candidate, service.WorkConservingProjectionRequest{
 				WorkspaceID: workspaceUUID,
 				ProjectID:   projectUUID,
 				Limit:       limit,
 				Offset:      offset,
-			}) == nil {
+			}, time.Now().UTC()) == nil {
 				// Read-only is enforced by the service boundary, not delegated to a
 				// provider or a browser-controlled response field.
 				candidate.NoWrite = true
