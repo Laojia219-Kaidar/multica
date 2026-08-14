@@ -515,6 +515,15 @@ type ClientUsageDaily struct {
 	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
 }
 
+type ClosurePackageReview struct {
+	ID             pgtype.UUID        `json:"id"`
+	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
+	ProjectID      pgtype.UUID        `json:"project_id"`
+	ReviewerUserID pgtype.UUID        `json:"reviewer_user_id"`
+	Decision       string             `json:"decision"`
+	ReviewedAt     pgtype.Timestamptz `json:"reviewed_at"`
+}
+
 type Comment struct {
 	ID             pgtype.UUID        `json:"id"`
 	IssueID        pgtype.UUID        `json:"issue_id"`
@@ -971,6 +980,23 @@ type Project struct {
 	Priority    string             `json:"priority"`
 	StartDate   pgtype.Date        `json:"start_date"`
 	DueDate     pgtype.Date        `json:"due_date"`
+}
+
+type ProjectLifecycleReceipt struct {
+	ID             pgtype.UUID        `json:"id"`
+	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
+	ProjectID      pgtype.UUID        `json:"project_id"`
+	Action         string             `json:"action"`
+	IdempotencyKey string             `json:"idempotency_key"`
+	PayloadDigest  string             `json:"payload_digest"`
+	BeforeStatus   string             `json:"before_status"`
+	AfterStatus    string             `json:"after_status"`
+	TaskID         pgtype.UUID        `json:"task_id"`
+	IssueID        pgtype.UUID        `json:"issue_id"`
+	Blockers       []byte             `json:"blockers"`
+	Applied        bool               `json:"applied"`
+	Replayed       bool               `json:"replayed"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
 }
 
 type ProjectResource struct {
