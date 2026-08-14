@@ -32,6 +32,7 @@ const (
 	ReasonEmployeeWritePathMismatch Reason = "employee_write_path_mismatch"
 	ReasonWorkPathAlreadyPlanned    Reason = "write_path_already_planned"
 	ReasonNoHealthyIdleEmployee     Reason = "no_healthy_idle_employee"
+	ReasonIssueIdentityDuplicate    Reason = "issue_identity_duplicate"
 )
 
 // WorkConservingWritePath is the caller's read-only observation of the
@@ -153,9 +154,10 @@ func (p *Planner) PlanWorkConserving(in WorkConservingInput) WorkConservingPlan 
 	if in.GoalID == "" {
 		plan.GlobalReasons = []Reason{ReasonPlanGoalMissing}
 		for _, issue := range sortedWorkIssues(in.Issues) {
-			if issue.ID == "" {
+			if issue.ID == "" || workConservingFrontier(issue).State == readyfrontier.StateSuperseded {
 				continue
 			}
+			plan.Mismatch.OpenIssues++
 			plan.BlockedBacklog = append(plan.BlockedBacklog, blockedWorkIssue(issue, []Reason{ReasonPlanGoalMissing}, 0))
 		}
 		plan.Mismatch = workMismatch(in, plan)
@@ -177,15 +179,25 @@ func (p *Planner) PlanWorkConserving(in WorkConservingInput) WorkConservingPlan 
 	locks := activeWorkLocks(in.ActiveLocks)
 	usedEmployees := make(map[string]struct{}, len(employees))
 	usedPaths := make(map[string]string)
+	duplicateIssues := duplicateWorkIssueIDs(in.Issues)
+	seenIssues := make(map[string]struct{}, len(in.Issues))
 
 	for _, issue := range sortedWorkIssues(in.Issues) {
-		plan.Mismatch.OpenIssues++
 		if issue.ID == "" {
 			continue
 		}
 		frontier := workConservingFrontier(issue)
 		if frontier.State == readyfrontier.StateSuperseded {
-			plan.Mismatch.OpenIssues--
+			continue
+		}
+		plan.Mismatch.OpenIssues++
+		if _, seen := seenIssues[issue.ID]; seen {
+			plan.addBlocked(issue, []Reason{ReasonIssueIdentityDuplicate}, 0)
+			continue
+		}
+		seenIssues[issue.ID] = struct{}{}
+		if _, duplicate := duplicateIssues[issue.ID]; duplicate {
+			plan.addBlocked(issue, []Reason{ReasonIssueIdentityDuplicate}, 0)
 			continue
 		}
 		if issue.GoalID == "" || issue.GoalID != in.GoalID {
@@ -227,13 +239,24 @@ func (p *Planner) PlanWorkConserving(in WorkConservingInput) WorkConservingPlan 
 			plan.addBlocked(issue, frontierReasons(frontier.Reasons), 0)
 			continue
 		}
+		if gate := p.Plan(Input{
+			Frontier: workConservingFrontierInput(issue), Requirement: issue.Requirement,
+			Generation: issue.Generation, WIP: issue.WIP, Lease: issue.Lease,
+			ReviewAuthorKnown: issue.ReviewAuthorKnown,
+		}); !workConservingGatePassed(gate) {
+			plan.addBlocked(issue, gate.Reasons, 0)
+			continue
+		}
 		plan.executableBacklog++
 
-		best, count := p.bestWorkCandidate(issue, in.Employees, employees, usedEmployees)
+		best, count, candidateBlock := p.bestWorkCandidate(issue, in.Employees, employees, usedEmployees, usedPaths, locks)
 		if best == nil {
 			reasons := []Reason{ReasonNoEligibleCandidate}
 			if count == 0 {
 				reasons = []Reason{ReasonNoHealthyIdleEmployee}
+			}
+			if candidateBlock != "" {
+				reasons = []Reason{candidateBlock}
 			}
 			plan.addBlocked(issue, reasons, count)
 			continue
@@ -252,6 +275,9 @@ func (p *Planner) PlanWorkConserving(in WorkConservingInput) WorkConservingPlan 
 		if issue.WritePath.Key != "" {
 			usedPaths[issue.WritePath.Key] = issue.ID
 		}
+		if best.employee.WritePath.Key != "" {
+			usedPaths[best.employee.WritePath.Key] = issue.ID
+		}
 		plan.Mismatch.PlannedIssues++
 	}
 
@@ -264,9 +290,22 @@ type workCandidateResult struct {
 	decision CandidateDecision
 }
 
-func (p *Planner) bestWorkCandidate(issue WorkConservingIssue, all []WorkConservingEmployee, byID map[string]WorkConservingEmployee, used map[string]struct{}) (*workCandidateResult, int) {
+func workConservingGatePassed(gate NextAction) bool {
+	if gate.State == StateAlreadyDispatched || gate.State == StateRunning || gate.State == StateWaiting || gate.State == StateBlocked || gate.State == StateSuperseded {
+		for _, reason := range gate.Reasons {
+			if reason == ReasonNoEligibleCandidate {
+				return true
+			}
+		}
+		return false
+	}
+	return gate.State == StateReady || gate.State == StateFallback
+}
+
+func (p *Planner) bestWorkCandidate(issue WorkConservingIssue, all []WorkConservingEmployee, byID map[string]WorkConservingEmployee, used map[string]struct{}, usedPaths map[string]string, locks map[string]string) (*workCandidateResult, int, Reason) {
 	var best *workCandidateResult
 	eligible := 0
+	pathBlocked := false
 	for _, employee := range all {
 		if _, ok := used[employee.Candidate.EmployeeID]; ok {
 			continue
@@ -277,6 +316,16 @@ func (p *Planner) bestWorkCandidate(issue WorkConservingIssue, all []WorkConserv
 		}
 		if _, ok := byID[employee.Candidate.EmployeeID]; !ok {
 			continue
+		}
+		if pathKey := employee.WritePath.Key; pathKey != "" {
+			if lockIssue, ok := locks[pathKey]; ok && lockIssue != issue.ID {
+				pathBlocked = true
+				continue
+			}
+			if _, ok := usedPaths[pathKey]; ok {
+				pathBlocked = true
+				continue
+			}
 		}
 		decision := workEmployeeDecision(employee, issue)
 		if !decision.Eligible {
@@ -295,7 +344,10 @@ func (p *Planner) bestWorkCandidate(issue WorkConservingIssue, all []WorkConserv
 			best = candidate
 		}
 	}
-	return best, eligible
+	if best == nil && pathBlocked {
+		return nil, eligible, ReasonWorkPathAlreadyPlanned
+	}
+	return best, eligible, ""
 }
 
 func workEmployeeDecision(employee WorkConservingEmployee, issue WorkConservingIssue) CandidateDecision {
@@ -333,8 +385,20 @@ func workEmployeeDecision(employee WorkConservingEmployee, issue WorkConservingI
 		d.Reasons = []Reason{ReasonEmployeeModelMissing}
 		return d
 	}
+	if !c.WIPKnown || c.MaxWIP <= 0 {
+		d.Reasons = []Reason{ReasonCandidateWIPUnknown}
+		return d
+	}
+	if c.ActiveWIP >= c.MaxWIP {
+		d.Reasons = []Reason{ReasonCandidateWIPExhausted}
+		return d
+	}
 	if !c.BaseKnown {
 		d.Reasons = []Reason{ReasonBaseEvidenceMissing}
+		return d
+	}
+	if issue.RequiredBaseID != "" && c.BaseID != issue.RequiredBaseID {
+		d.Reasons = []Reason{ReasonRuntimeBaseMismatch}
 		return d
 	}
 	if !employee.WritePath.Known {
@@ -366,6 +430,10 @@ func betterWorkCandidate(a, b *workCandidateResult, preferred string) bool {
 }
 
 func workConservingFrontier(issue WorkConservingIssue) readyfrontier.Classification {
+	return readyfrontier.ClassifyIssue(workConservingFrontierInput(issue))
+}
+
+func workConservingFrontierInput(issue WorkConservingIssue) readyfrontier.IssueInput {
 	frontier := issue.Frontier
 	// Assignment/runtime/capacity describe the preferred route, not the
 	// issue's intrinsic readiness. Allow the candidate pool to provide a
@@ -378,7 +446,7 @@ func workConservingFrontier(issue WorkConservingIssue) readyfrontier.Classificat
 	if frontier.CapacityKnown {
 		frontier.CapacityFree = true
 	}
-	return readyfrontier.ClassifyIssue(frontier)
+	return frontier
 }
 
 func indexWorkEmployees(in []WorkConservingEmployee) (map[string]WorkConservingEmployee, bool) {
@@ -411,6 +479,22 @@ func indexWorkEmployees(in []WorkConservingEmployee) (map[string]WorkConservingE
 func sortedWorkIssues(in []WorkConservingIssue) []WorkConservingIssue {
 	out := append([]WorkConservingIssue(nil), in...)
 	sort.SliceStable(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
+}
+
+func duplicateWorkIssueIDs(in []WorkConservingIssue) map[string]struct{} {
+	counts := make(map[string]int, len(in))
+	for _, issue := range in {
+		if issue.ID != "" {
+			counts[issue.ID]++
+		}
+	}
+	out := make(map[string]struct{})
+	for id, count := range counts {
+		if count > 1 {
+			out[id] = struct{}{}
+		}
+	}
 	return out
 }
 

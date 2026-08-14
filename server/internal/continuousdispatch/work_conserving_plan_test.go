@@ -122,3 +122,111 @@ func TestPlanWorkConservingAllBlockedDoesNotInventAvailability(t *testing.T) {
 		t.Fatalf("receiver = %q, want authority-operator", got.BlockedBacklog[0].Receiver)
 	}
 }
+
+func TestPlanWorkConservingConsumesIssueGenerationWIPLeaseAndBaseEvidence(t *testing.T) {
+	employee := workEmployee("worker", "00000000-0000-0000-0000-000000000041", true, true)
+	tests := []struct {
+		name   string
+		mutate func(*WorkConservingIssue)
+		want   Reason
+	}{
+		{"generation", func(issue *WorkConservingIssue) { issue.Generation.Known = false }, ReasonGenerationEvidenceMissing},
+		{"wip", func(issue *WorkConservingIssue) { issue.WIP.Known = false }, ReasonWIPTruthMissing},
+		{"lease", func(issue *WorkConservingIssue) { issue.Lease.Known = false }, ReasonLeaseEvidenceMissing},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			issue := workIssue("issue-" + tc.name)
+			issue.WritePath.Key = ""
+			tc.mutate(&issue)
+			got := planner().PlanWorkConserving(WorkConservingInput{GoalID: workGoal, Issues: []WorkConservingIssue{issue}, Employees: []WorkConservingEmployee{employee}})
+			if len(got.Suggestions) != 0 || len(got.BlockedBacklog) != 1 || got.BlockedBacklog[0].Reasons[0] != tc.want {
+				t.Fatalf("plan = %+v, want blocked %q", got, tc.want)
+			}
+		})
+	}
+
+	baseIssue := workIssue("issue-base")
+	baseIssue.RequiredBaseID = "base-required"
+	baseIssue.WritePath.Key = ""
+	got := planner().PlanWorkConserving(WorkConservingInput{GoalID: workGoal, Issues: []WorkConservingIssue{baseIssue}, Employees: []WorkConservingEmployee{employee}})
+	if len(got.Suggestions) != 0 || len(got.BlockedBacklog) != 1 || got.Mismatch.ExecutableBacklog != 1 {
+		t.Fatalf("required base plan = %+v, want no candidate but executable backlog", got)
+	}
+}
+
+func TestPlanWorkConservingRejectsUnknownOrExhaustedEmployeeWIP(t *testing.T) {
+	issue := workIssue("issue-a")
+	issue.WritePath.Key = ""
+	tests := []struct {
+		name   string
+		mutate func(*WorkConservingEmployee)
+	}{
+		{"unknown", func(employee *WorkConservingEmployee) { employee.Candidate.WIPKnown = false }},
+		{"zero_max", func(employee *WorkConservingEmployee) { employee.Candidate.MaxWIP = 0 }},
+		{"full", func(employee *WorkConservingEmployee) { employee.Candidate.ActiveWIP = 1 }},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			agentIDs := map[string]string{
+				"unknown":  "00000000-0000-0000-0000-000000000051",
+				"zero_max": "00000000-0000-0000-0000-000000000052",
+				"full":     "00000000-0000-0000-0000-000000000053",
+			}
+			employee := workEmployee("worker", agentIDs[tc.name], true, true)
+			tc.mutate(&employee)
+			got := planner().PlanWorkConserving(WorkConservingInput{GoalID: workGoal, Issues: []WorkConservingIssue{issue}, Employees: []WorkConservingEmployee{employee}})
+			if len(got.Suggestions) != 0 || len(got.BlockedBacklog) != 1 {
+				t.Fatalf("plan = %+v, want blocked", got)
+			}
+		})
+	}
+}
+
+func TestPlanWorkConservingRejectsDuplicateIssues(t *testing.T) {
+	a := workIssue("issue-duplicate")
+	a.WritePath.Key = ""
+	b := a
+	employee := workEmployee("worker", "00000000-0000-0000-0000-000000000061", true, true)
+	got := planner().PlanWorkConserving(WorkConservingInput{GoalID: workGoal, Issues: []WorkConservingIssue{a, b}, Employees: []WorkConservingEmployee{employee}})
+	if len(got.Suggestions) != 0 || len(got.BlockedBacklog) != 2 || got.Mismatch.OpenIssues != 2 || got.Mismatch.BlockedBacklog != 2 {
+		t.Fatalf("duplicate issue plan = %+v, want both duplicate rows blocked", got)
+	}
+	for _, blocked := range got.BlockedBacklog {
+		if blocked.Reasons[0] != ReasonIssueIdentityDuplicate {
+			t.Fatalf("blocked = %+v, want duplicate reason", blocked)
+		}
+	}
+}
+
+func TestPlanWorkConservingEmployeePathCollisionWhenIssuePathIsEmpty(t *testing.T) {
+	a := workIssue("issue-a")
+	a.WritePath.Key = ""
+	b := workIssue("issue-b")
+	b.WritePath.Key = ""
+	employeeA := workEmployee("worker-a", "00000000-0000-0000-0000-000000000071", true, true)
+	employeeA.WritePath.Key = "shared-worktree"
+	employeeB := workEmployee("worker-b", "00000000-0000-0000-0000-000000000072", true, true)
+	employeeB.WritePath.Key = "shared-worktree"
+	got := planner().PlanWorkConserving(WorkConservingInput{GoalID: workGoal, Issues: []WorkConservingIssue{b, a}, Employees: []WorkConservingEmployee{employeeB, employeeA}})
+	if len(got.Suggestions) != 1 || got.Suggestions[0].IssueID != "issue-a" || len(got.BlockedBacklog) != 1 {
+		t.Fatalf("path collision plan = %+v, want one deterministic suggestion", got)
+	}
+	if got.BlockedBacklog[0].Reasons[0] != ReasonWorkPathAlreadyPlanned {
+		t.Fatalf("blocked = %+v, want work path already planned", got.BlockedBacklog[0])
+	}
+}
+
+func TestPlanWorkConservingGoalMissingMetrics(t *testing.T) {
+	issue := workIssue("issue-a")
+	issue.GoalID = ""
+	issue.WritePath.Key = ""
+	employee := workEmployee("worker", "00000000-0000-0000-0000-000000000081", true, true)
+	got := planner().PlanWorkConserving(WorkConservingInput{Issues: []WorkConservingIssue{issue}, Employees: []WorkConservingEmployee{employee}})
+	if len(got.Suggestions) != 0 || len(got.BlockedBacklog) != 1 {
+		t.Fatalf("goal missing plan = %+v, want one blocked issue", got)
+	}
+	if got.Mismatch.OpenIssues != 1 || got.Mismatch.BlockedBacklog != 1 || got.Mismatch.ExecutableBacklog != 0 {
+		t.Fatalf("goal missing mismatch = %+v, want open=1 blocked=1 executable=0", got.Mismatch)
+	}
+}
