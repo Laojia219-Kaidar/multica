@@ -1511,6 +1511,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 
 			// Runtimes
 			r.Get("/api/bases", h.ListBases)
+			r.Get("/api/bases/company", h.GetCompanyBases)
 			r.Post("/api/bases/operational-mode", h.SetBaseOperationalMode)
 			r.Get("/api/work-wall/snapshot", h.GetWorkWallSnapshot)
 			r.Get("/api/work-wall/stream", h.GetWorkWallStream)

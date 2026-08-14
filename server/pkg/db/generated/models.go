@@ -53,6 +53,8 @@ type Agent struct {
 	DisabledRuntimeSkills []byte      `json:"disabled_runtime_skills"`
 	ServiceTier           pgtype.Text `json:"service_tier"`
 	OperationalMode       string      `json:"operational_mode"`
+	HomeBaseID            pgtype.UUID `json:"home_base_id"`
+	FallbackBaseID        pgtype.UUID `json:"fallback_base_id"`
 }
 
 // Allow-list of who may invoke a public_to agent (MUL-3963). One row per (agent, target_type, target); targets stack and canInvokeAgent OR-matches. workspace rows store the agent workspace_id in target_id; member rows store the user id; team rows are reserved and inert in V1. Rows only matter when agent.permission_mode = public_to. No DB foreign keys: agent_id / created_by / member target_id relationships are maintained in the application layer (see migration comment).
@@ -358,6 +360,18 @@ type CanonicalWriteLease struct {
 	ExpiresAt   pgtype.Timestamptz `json:"expires_at"`
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
+}
+
+type Base struct {
+	ID           pgtype.UUID        `json:"id"`
+	WorkspaceID  pgtype.UUID        `json:"workspace_id"`
+	Code         string             `json:"code"`
+	Name         string             `json:"name"`
+	Device       string             `json:"device"`
+	MachineTitle string             `json:"machine_title"`
+	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt    pgtype.Timestamptz `json:"updated_at"`
+} (feat(bases): decision A base migration — formal base table + agent home/fallback FK + seed 5 bases + company bases endpoint)
 }
 
 type ChannelBindingToken struct {

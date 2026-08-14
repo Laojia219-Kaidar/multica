@@ -178,3 +178,42 @@ func machineTitle(deviceInfo string) string {
 	}
 	return machine
 }
+
+// CompanyBase is the formal, company-owned base assignment (决策 A: formal
+// base table + agent FK, migrated from custom_env). Distinct from the observed
+// execution-base projection returned by ListBases.
+type CompanyBase struct {
+	ID           string `json:"id"`
+	Code         string `json:"code"`
+	Name         string `json:"name"`
+	Device       string `json:"device"`
+	MachineTitle string `json:"machine_title"`
+	Agents       int    `json:"agents"`
+}
+
+// GetCompanyBases returns the formal company base registry with agent counts.
+// Read-only governance read model; single writer is the base migration (405).
+func (h *Handler) GetCompanyBases(w http.ResponseWriter, r *http.Request) {
+	workspaceID := h.resolveWorkspaceID(r)
+	bases, err := h.Queries.ListBases(r.Context(), parseUUID(workspaceID))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list bases"); return
+	}
+	counts, err := h.Queries.CountAgentsByBase(r.Context(), parseUUID(workspaceID))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to count agents"); return
+	}
+	countMap := make(map[string]int64, len(counts))
+	for _, c := range counts {
+		countMap[uuidToString(c.BaseID)] = c.AgentCount
+	}
+	resp := make([]CompanyBase, 0, len(bases))
+	for _, b := range bases {
+		resp = append(resp, CompanyBase{
+			ID: uuidToString(b.ID), Code: b.Code, Name: b.Name,
+			Device: b.Device, MachineTitle: b.MachineTitle,
+			Agents: int(countMap[uuidToString(b.ID)]),
+		})
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
