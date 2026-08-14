@@ -58,6 +58,11 @@ DELETE FROM project WHERE id = $1 AND workspace_id = $2;
 SELECT count(*) FROM issue
 WHERE project_id = $1;
 
+-- name: CountIssuesByProjectAndStatus :one
+SELECT count(*) FROM issue
+WHERE project_id = $1
+  AND status = $2;
+
 -- name: GetProjectIssueStats :many
 SELECT project_id,
        count(*)::bigint AS total_count,

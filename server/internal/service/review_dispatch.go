@@ -27,8 +27,12 @@ type ReviewDispatchPreviewItem struct {
 type ReviewDispatchPreview struct {
 	SchemaVersion string                      `json:"schema_version"`
 	Items         []ReviewDispatchPreviewItem `json:"items"`
-	Eligible      int                         `json:"eligible"`
-	Skipped       int                         `json:"skipped"`
+	// Total is the number of review issues in the project, independent of the
+	// requested page. It prevents a mixed-status project page from looking
+	// empty when review work exists beyond the first general issue page.
+	Total    int `json:"total"`
+	Eligible int `json:"eligible"`
+	Skipped  int `json:"skipped"`
 }
 
 type ReviewDispatchBatchResult struct {
@@ -37,6 +41,12 @@ type ReviewDispatchBatchResult struct {
 }
 
 const reviewDispatchPreviewSchema = "hivecrew.review-dispatch-preview/v1"
+
+const reviewDispatchScanPageSize = 200
+
+type reviewDispatchFilteredInspector interface {
+	InspectReviewProject(context.Context, pgtype.UUID, pgtype.UUID, int, int) (*ContinuousDispatchShadowResult, error)
+}
 
 // ReviewDispatchBatchService drains only the existing review frontier. It
 // delegates each write to ContinuousDispatchTriggerService, which recomputes
@@ -63,7 +73,7 @@ func (s *ReviewDispatchBatchService) PreviewProject(
 	if limit <= 0 || limit > 25 || offset < 0 {
 		return ReviewDispatchPreview{}, fmt.Errorf("review dispatch page must be 1..25 and offset non-negative")
 	}
-	page, err := s.inspector.InspectProject(ctx, workspaceID, projectID, limit, offset)
+	page, err := s.inspectReviewPage(ctx, workspaceID, projectID, limit, offset)
 	if err != nil {
 		return ReviewDispatchPreview{}, err
 	}
@@ -71,11 +81,8 @@ func (s *ReviewDispatchBatchService) PreviewProject(
 		page.WorkspaceID != shadowUUIDString(workspaceID) || page.ProjectID != shadowUUIDString(projectID) {
 		return ReviewDispatchPreview{}, ErrContinuousDispatchSourceGap
 	}
-	preview := ReviewDispatchPreview{SchemaVersion: reviewDispatchPreviewSchema, Items: make([]ReviewDispatchPreviewItem, 0, len(page.Items))}
+	preview := ReviewDispatchPreview{SchemaVersion: reviewDispatchPreviewSchema, Items: make([]ReviewDispatchPreviewItem, 0, len(page.Items)), Total: page.Total}
 	for _, item := range page.Items {
-		if item.Status != "in_review" {
-			continue
-		}
 		proposal := ReviewDispatchPreviewItem{
 			IssueID: item.IssueID, IssueTitle: item.IssueTitle, SourceRef: item.SourceRef, SourceTaskID: item.SourceTaskID,
 			State: item.NextAction.State, Reasons: append([]continuousdispatch.Reason(nil), item.NextAction.Reasons...),
@@ -94,6 +101,58 @@ func (s *ReviewDispatchBatchService) PreviewProject(
 		preview.Items = append(preview.Items, proposal)
 	}
 	return preview, nil
+}
+
+// inspectReviewPage prefers the SQL status-filtered shadow query. The
+// complete-scan fallback keeps older read-only adapters correct: it walks all
+// general pages, filters every item, and then applies the requested review
+// offset/limit. It intentionally never treats one general page as a review
+// page.
+func (s *ReviewDispatchBatchService) inspectReviewPage(
+	ctx context.Context, workspaceID, projectID pgtype.UUID, limit, offset int,
+) (*ContinuousDispatchShadowResult, error) {
+	if filtered, ok := s.inspector.(reviewDispatchFilteredInspector); ok {
+		return filtered.InspectReviewProject(ctx, workspaceID, projectID, limit, offset)
+	}
+
+	var first *ContinuousDispatchShadowResult
+	reviewItems := make([]ContinuousDispatchShadowItem, 0, limit)
+	reviewTotal := 0
+	for scanOffset := 0; ; scanOffset += reviewDispatchScanPageSize {
+		page, err := s.inspector.InspectProject(ctx, workspaceID, projectID, reviewDispatchScanPageSize, scanOffset)
+		if err != nil {
+			return nil, err
+		}
+		if page == nil || page.SchemaVersion != ContinuousDispatchShadowSchemaV1 ||
+			page.WorkspaceID != shadowUUIDString(workspaceID) || page.ProjectID != shadowUUIDString(projectID) {
+			return nil, ErrContinuousDispatchSourceGap
+		}
+		if first == nil {
+			first = page
+		}
+		for _, item := range page.Items {
+			if item.Status != "in_review" {
+				continue
+			}
+			reviewTotal++
+			if reviewTotal <= offset || len(reviewItems) >= limit {
+				continue
+			}
+			reviewItems = append(reviewItems, item)
+		}
+		if len(page.Items) == 0 || (page.Total > 0 && scanOffset+len(page.Items) >= page.Total) {
+			break
+		}
+	}
+	if first == nil {
+		return nil, ErrContinuousDispatchSourceGap
+	}
+	result := *first
+	result.Items = reviewItems
+	result.Total = reviewTotal
+	result.Limit = limit
+	result.Offset = offset
+	return &result, nil
 }
 
 // DispatchProject performs at most one bounded page of review dispatches.

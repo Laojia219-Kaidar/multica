@@ -36,8 +36,25 @@ func (f *shadowStoreFixture) CountIssuesByProject(context.Context, pgtype.UUID) 
 	return int64(len(f.issues)), nil
 }
 
-func (f *shadowStoreFixture) ListIssues(context.Context, db.ListIssuesParams) ([]db.ListIssuesRow, error) {
-	return append([]db.ListIssuesRow(nil), f.issues...), nil
+func (f *shadowStoreFixture) CountIssuesByProjectAndStatus(_ context.Context, _ pgtype.UUID, status string) (int64, error) {
+	var count int64
+	for _, issue := range f.issues {
+		if issue.Status == status {
+			count++
+		}
+	}
+	return count, nil
+}
+
+func (f *shadowStoreFixture) ListIssues(_ context.Context, params db.ListIssuesParams) ([]db.ListIssuesRow, error) {
+	items := make([]db.ListIssuesRow, 0, len(f.issues))
+	for _, issue := range f.issues {
+		if params.Status.Valid && issue.Status != params.Status.String {
+			continue
+		}
+		items = append(items, issue)
+	}
+	return items, nil
 }
 
 func (f *shadowStoreFixture) ListAllAgents(context.Context, pgtype.UUID) ([]db.Agent, error) {
@@ -142,6 +159,32 @@ func TestContinuousDispatchShadowReturnsFallbackFromRealSourceRows(t *testing.T)
 	}
 	if !got.Sources.Project || !got.Sources.Organization || !got.Sources.Tasks || !got.Sources.Runtime {
 		t.Fatalf("source health = %+v", got.Sources)
+	}
+}
+
+func TestContinuousDispatchShadowReviewQueryFiltersBeforePagination(t *testing.T) {
+	fixture, workspaceID, projectID, issueID, primaryID, fallbackID := validShadowFixture(t)
+	fixture.issues = append(fixture.issues, db.ListIssuesRow{
+		ID: shadowUUID(t, "00000000-0000-0000-0000-000000000302"), WorkspaceID: workspaceID,
+		Title: "Review this candidate", Status: "in_review", ProjectID: projectID,
+		Metadata: []byte(`{"stage":"review","generation":"g-1","candidate_revision":"abc123","write_mutex_key":"repo:main"}`),
+	})
+	service := NewContinuousDispatchShadowService(
+		fixture,
+		shadowDirectoryFixture{result: employeeDirectory(primaryID, fallbackID)},
+		shadowQuotaFixture{
+			uuidString(primaryID):  {State: routescore.QuotaFresh, CheckedAt: shadowNow.Add(-time.Minute)},
+			uuidString(fallbackID): {State: routescore.QuotaFresh, CheckedAt: shadowNow.Add(-time.Minute)},
+		},
+		shadowLeaseFixture{leases: map[string]*WriteLease{}},
+	).WithClock(fixedShadowClock{now: shadowNow})
+
+	got, err := service.InspectReviewProject(context.Background(), workspaceID, projectID, 1, 0)
+	if err != nil {
+		t.Fatalf("InspectReviewProject: %v", err)
+	}
+	if got.Total != 1 || len(got.Items) != 1 || got.Items[0].Status != "in_review" || got.Items[0].IssueID == uuidString(issueID) {
+		t.Fatalf("review page = %+v, want only the in_review issue with filtered total", got)
 	}
 }
 

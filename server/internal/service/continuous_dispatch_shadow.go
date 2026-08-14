@@ -38,6 +38,14 @@ type ContinuousDispatchShadowStore interface {
 	ListCommentsForIssue(context.Context, db.ListCommentsForIssueParams) ([]db.Comment, error)
 }
 
+// ContinuousDispatchReviewCountStore is implemented by the generated query
+// store. It is kept optional so read-only fixtures and older adapters can
+// still use the general shadow inspector; review dispatch uses the filtered
+// path only when the adapter can provide a status-scoped count.
+type ContinuousDispatchReviewCountStore interface {
+	CountIssuesByProjectAndStatus(context.Context, pgtype.UUID, string) (int64, error)
+}
+
 type ContinuousDispatchEmployeeDirectory interface {
 	GetEmployees(context.Context, pgtype.UUID, string, string, int, int) (*EmployeesResult, error)
 }
@@ -137,6 +145,39 @@ func (s *ContinuousDispatchShadowService) InspectProject(
 	limit int,
 	offset int,
 ) (*ContinuousDispatchShadowResult, error) {
+	return s.inspectProject(ctx, workspaceID, projectID, limit, offset, pgtype.Text{})
+}
+
+// InspectReviewProject returns a page from the same shadow read model, but
+// applies the in_review predicate in the SQL query before pagination. This is
+// essential for review draining: a project page can contain implementation,
+// blocked, and review issues in arbitrary order, so filtering a limited
+// general page would silently skip review work.
+func (s *ContinuousDispatchShadowService) InspectReviewProject(
+	ctx context.Context,
+	workspaceID pgtype.UUID,
+	projectID pgtype.UUID,
+	limit int,
+	offset int,
+) (*ContinuousDispatchShadowResult, error) {
+	status := pgtype.Text{String: "in_review", Valid: true}
+	if s == nil || s.store == nil {
+		return nil, fmt.Errorf("%w: required adapter unavailable", ErrContinuousDispatchSourceGap)
+	}
+	if _, ok := s.store.(ContinuousDispatchReviewCountStore); !ok {
+		return nil, fmt.Errorf("%w: review status count adapter unavailable", ErrContinuousDispatchSourceGap)
+	}
+	return s.inspectProject(ctx, workspaceID, projectID, limit, offset, status)
+}
+
+func (s *ContinuousDispatchShadowService) inspectProject(
+	ctx context.Context,
+	workspaceID pgtype.UUID,
+	projectID pgtype.UUID,
+	limit int,
+	offset int,
+	status pgtype.Text,
+) (*ContinuousDispatchShadowResult, error) {
 	if s == nil || s.store == nil || s.directory == nil {
 		return nil, fmt.Errorf("%w: required adapter unavailable", ErrContinuousDispatchSourceGap)
 	}
@@ -156,11 +197,17 @@ func (s *ContinuousDispatchShadowService) InspectProject(
 		ProjectID:   projectID,
 		Limit:       int32(limit),
 		Offset:      int32(offset),
+		Status:      status,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("read project issues: %w", err)
 	}
-	total, err := s.store.CountIssuesByProject(ctx, projectID)
+	var total int64
+	if status.Valid {
+		total, err = s.store.(ContinuousDispatchReviewCountStore).CountIssuesByProjectAndStatus(ctx, projectID, status.String)
+	} else {
+		total, err = s.store.CountIssuesByProject(ctx, projectID)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("count project issues: %w", err)
 	}

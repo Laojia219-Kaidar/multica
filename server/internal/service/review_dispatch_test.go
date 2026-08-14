@@ -93,3 +93,80 @@ func TestReviewDispatchPreviewBoundsBatch(t *testing.T) {
 		t.Fatal("limit 26 accepted; want bounded batch rejection")
 	}
 }
+
+func TestReviewDispatchPreviewScansMixedGeneralPages(t *testing.T) {
+	workspaceID, projectID := reviewDispatchUUID(30), reviewDispatchUUID(31)
+	firstReview := triggerShadowItem(workspaceID, reviewDispatchUUID(32), reviewDispatchUUID(33), reviewDispatchUUID(34))
+	firstReview.Status = "in_review"
+	firstReview.SourceRef = continuousDispatchReviewCommentRef(reviewDispatchUUID(51))
+	firstReview.SourceTaskID = shadowUUIDString(reviewDispatchUUID(52))
+	firstReview.NextAction.State = continuousdispatch.StateReady
+	secondReview := triggerShadowItem(workspaceID, reviewDispatchUUID(35), reviewDispatchUUID(36), reviewDispatchUUID(37))
+	secondReview.Status = "in_review"
+	secondReview.SourceRef = continuousDispatchReviewCommentRef(reviewDispatchUUID(53))
+	secondReview.SourceTaskID = shadowUUIDString(reviewDispatchUUID(54))
+	secondReview.NextAction.State = continuousdispatch.StateFallback
+	nonReview := triggerShadowItem(workspaceID, reviewDispatchUUID(38), reviewDispatchUUID(39), reviewDispatchUUID(40))
+	nonReview.Status = "in_progress"
+	inspector := &triggerInspectorFixture{pages: map[int]*ContinuousDispatchShadowResult{
+		0: {
+			SchemaVersion: ContinuousDispatchShadowSchemaV1, WorkspaceID: shadowUUIDString(workspaceID),
+			ProjectID: shadowUUIDString(projectID), Total: 3,
+			Items: []ContinuousDispatchShadowItem{nonReview, firstReview},
+		},
+		200: {
+			SchemaVersion: ContinuousDispatchShadowSchemaV1, WorkspaceID: shadowUUIDString(workspaceID),
+			ProjectID: shadowUUIDString(projectID), Total: 3,
+			Items: []ContinuousDispatchShadowItem{secondReview},
+		},
+	}}
+	preview, err := NewReviewDispatchBatchService(inspector, nil).PreviewProject(context.Background(), workspaceID, projectID, 1, 0)
+	if err != nil {
+		t.Fatalf("PreviewProject: %v", err)
+	}
+	if preview.Total != 2 || preview.Eligible != 1 || len(preview.Items) != 1 {
+		t.Fatalf("preview = %+v, want total=2 and first review page", preview)
+	}
+	if preview.Items[0].IssueID != firstReview.IssueID {
+		t.Fatalf("preview item = %+v, want first review issue", preview.Items[0])
+	}
+	if len(inspector.offsets) != 2 || inspector.offsets[0] != 0 || inspector.offsets[1] != 200 {
+		t.Fatalf("scan offsets = %v, want complete scan across general pages", inspector.offsets)
+	}
+}
+
+func TestReviewDispatchPreviewDispatchesOnlyReviewItemsAcrossPages(t *testing.T) {
+	workspaceID, projectID, actorID := reviewDispatchUUID(41), reviewDispatchUUID(42), reviewDispatchUUID(43)
+	review := triggerShadowItem(workspaceID, reviewDispatchUUID(44), reviewDispatchUUID(45), reviewDispatchUUID(46))
+	review.Status = "in_review"
+	review.SourceRef = continuousDispatchReviewCommentRef(reviewDispatchUUID(55))
+	review.SourceTaskID = shadowUUIDString(reviewDispatchUUID(56))
+	review.NextAction.State = continuousdispatch.StateReady
+	nonReview := triggerShadowItem(workspaceID, reviewDispatchUUID(47), reviewDispatchUUID(48), reviewDispatchUUID(49))
+	nonReview.Status = "in_progress"
+	inspector := &triggerInspectorFixture{pages: map[int]*ContinuousDispatchShadowResult{
+		0: {
+			SchemaVersion: ContinuousDispatchShadowSchemaV1, WorkspaceID: shadowUUIDString(workspaceID),
+			ProjectID: shadowUUIDString(projectID), Total: 2,
+			Items: []ContinuousDispatchShadowItem{nonReview},
+		},
+		200: {
+			SchemaVersion: ContinuousDispatchShadowSchemaV1, WorkspaceID: shadowUUIDString(workspaceID),
+			ProjectID: shadowUUIDString(projectID), Total: 2,
+			Items: []ContinuousDispatchShadowItem{review},
+		},
+	}}
+	dispatcher := &triggerDispatcherFixture{receipt: dispatchReceiptFixture(50)}
+	result, err := NewReviewDispatchBatchService(inspector, NewContinuousDispatchTriggerService(inspector, dispatcher)).DispatchProject(
+		context.Background(), workspaceID, projectID, actorID, 1, 0,
+	)
+	if err != nil {
+		t.Fatalf("DispatchProject: %v", err)
+	}
+	if len(result.Receipts) != 1 || len(dispatcher.requests) != 1 {
+		t.Fatalf("result = %+v requests=%d, want one review dispatch", result, len(dispatcher.requests))
+	}
+	if dispatcher.requests[0].Identity.IssueID != review.IssueID {
+		t.Fatalf("dispatched issue = %s, want review issue %s", dispatcher.requests[0].Identity.IssueID, review.IssueID)
+	}
+}
