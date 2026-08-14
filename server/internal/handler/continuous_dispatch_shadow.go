@@ -13,16 +13,25 @@ var allowedContinuousDispatchShadowQueryParams = map[string]bool{
 	"workspace_id": true,
 	"limit":        true,
 	"offset":       true,
+	"projection":   true,
 }
 
 func (h *Handler) GetProjectNextActions(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	values := r.URL.Query()
+	projectionRequested := false
 	for key, items := range values {
 		if !allowedContinuousDispatchShadowQueryParams[key] || len(items) != 1 {
 			writeContinuousDispatchShadowError(w, http.StatusBadRequest, "invalid_request", "query parameters must be known and singular")
 			return
+		}
+		if key == "projection" {
+			if items[0] != "work_conserving" {
+				writeContinuousDispatchShadowError(w, http.StatusBadRequest, "invalid_request", "projection must be work_conserving")
+				return
+			}
+			projectionRequested = true
 		}
 	}
 	limit := 50
@@ -67,6 +76,30 @@ func (h *Handler) GetProjectNextActions(w http.ResponseWriter, r *http.Request) 
 			writeContinuousDispatchShadowError(w, http.StatusServiceUnavailable, "source_gap", "continuous dispatch source is temporarily unavailable")
 		}
 		return
+	}
+	if projectionRequested {
+		projection := service.NewWorkConservingSourceGapProjection(limit, offset)
+		if h.WorkConservingProjection != nil {
+			candidate, providerErr := h.WorkConservingProjection.ProjectWorkConserving(r.Context(), service.WorkConservingProjectionRequest{
+				WorkspaceID: workspaceUUID,
+				ProjectID:   projectUUID,
+				Limit:       limit,
+				Offset:      offset,
+			})
+			if providerErr == nil && service.ValidateWorkConservingProjection(candidate, service.WorkConservingProjectionRequest{
+				WorkspaceID: workspaceUUID,
+				ProjectID:   projectUUID,
+				Limit:       limit,
+				Offset:      offset,
+			}) == nil {
+				// Read-only is enforced by the service boundary, not delegated to a
+				// provider or a browser-controlled response field.
+				candidate.NoWrite = true
+				candidate.Blocked = candidate.State == service.WorkConservingProjectionBlocked
+				projection = candidate
+			}
+		}
+		result.WorkConserving = &projection
 	}
 	writeJSON(w, http.StatusOK, result)
 }

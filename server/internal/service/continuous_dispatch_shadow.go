@@ -106,6 +106,10 @@ type ContinuousDispatchShadowResult struct {
 	Total         int                             `json:"total"`
 	Limit         int                             `json:"limit"`
 	Offset        int                             `json:"offset"`
+	// WorkConserving is optional and is only populated by the explicit
+	// projection=work_conserving request. Keeping it nil by default preserves
+	// the original shadow response contract byte-for-byte at the field level.
+	WorkConserving *WorkConservingProjection `json:"work_conserving,omitempty"`
 }
 
 type continuousDispatchClock interface{ Now() time.Time }

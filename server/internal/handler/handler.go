@@ -193,6 +193,10 @@ type Handler struct {
 	ContinuousDispatchShadow interface {
 		InspectProject(context.Context, pgtype.UUID, pgtype.UUID, int, int) (*service.ContinuousDispatchShadowResult, error)
 	}
+	// WorkConservingProjection is an optional, Goal-scoped read provider. It
+	// must return a complete Authority-backed plan; nil or incomplete evidence
+	// is rendered as an embedded source_gap projection and never writes state.
+	WorkConservingProjection service.WorkConservingProjectionProvider
 	// ContinuousDispatchTrigger is the Owner/Admin write command. The handler
 	// passes only workspace/project/issue/actor and handoff text; the service
 	// recomputes employee, Agent, Runtime, model, account and generation truth.

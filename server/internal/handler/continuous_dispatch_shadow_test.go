@@ -22,6 +22,17 @@ type shadowInspectorFixture struct {
 	offset int
 }
 
+type workConservingProjectionFixture struct {
+	result service.WorkConservingProjection
+	err    error
+	req    service.WorkConservingProjectionRequest
+}
+
+func (f *workConservingProjectionFixture) ProjectWorkConserving(_ context.Context, req service.WorkConservingProjectionRequest) (service.WorkConservingProjection, error) {
+	f.req = req
+	return f.result, f.err
+}
+
 func (f *shadowInspectorFixture) InspectProject(_ context.Context, _, _ pgtype.UUID, limit, offset int) (*service.ContinuousDispatchShadowResult, error) {
 	f.limit, f.offset = limit, offset
 	return f.result, f.err
@@ -58,6 +69,147 @@ func TestGetProjectNextActionsReturnsStrictReadOnlyEnvelope(t *testing.T) {
 	}
 	if body["schema_version"] != service.ContinuousDispatchShadowSchemaV1 {
 		t.Fatalf("body = %v", body)
+	}
+	if _, present := body["work_conserving"]; present {
+		t.Fatal("projection field must be absent when projection query is omitted")
+	}
+}
+
+func TestGetProjectNextActionsWorkConservingRejectsNonCanonicalProjectionAndRouteSelectors(t *testing.T) {
+	for _, rawQuery := range []string{
+		"projection=other",
+		"projection=work_conserving&projection=work_conserving",
+		"projection=work_conserving&goal_id=goal-1",
+		"projection=work_conserving&employee=DE-1",
+		"projection=work_conserving&agent=agent-1",
+		"projection=work_conserving&runtime=runtime-1",
+		"projection=work_conserving&model=model-1",
+		"projection=work_conserving&account=account-1",
+		"projection=work_conserving&stage=review",
+		"projection=work_conserving&revision=rev-1",
+		"projection=work_conserving&generation=gen-1",
+	} {
+		t.Run(rawQuery, func(t *testing.T) {
+			h := &Handler{ContinuousDispatchShadow: &shadowInspectorFixture{}}
+			req := newRequest(http.MethodGet, "/api/projects/00000000-0000-0000-0000-000000000201/next-actions?workspace_id="+testWorkspaceID+"&"+rawQuery, nil)
+			req = withURLParam(req, "id", "00000000-0000-0000-0000-000000000201")
+			w := httptest.NewRecorder()
+			h.GetProjectNextActions(w, req)
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d body=%s", w.Code, w.Body.String())
+			}
+		})
+	}
+}
+
+func TestGetProjectNextActionsWorkConservingMissingProviderIsSourceGapAndNoWrite(t *testing.T) {
+	inspector := &shadowInspectorFixture{result: &service.ContinuousDispatchShadowResult{
+		SchemaVersion: service.ContinuousDispatchShadowSchemaV1,
+		WorkspaceID:   testWorkspaceID,
+		ProjectID:     "00000000-0000-0000-0000-000000000201",
+		Items:         []service.ContinuousDispatchShadowItem{{IssueID: "issue-page-only"}},
+		Total:         1,
+		Limit:         1,
+		Offset:        0,
+	}}
+	h := &Handler{ContinuousDispatchShadow: inspector}
+	req := newRequest(http.MethodGet, "/api/projects/00000000-0000-0000-0000-000000000201/next-actions?workspace_id="+testWorkspaceID+"&limit=1&projection=work_conserving", nil)
+	req = withURLParam(req, "id", "00000000-0000-0000-0000-000000000201")
+	w := httptest.NewRecorder()
+	h.GetProjectNextActions(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", w.Code, w.Body.String())
+	}
+	var body service.ContinuousDispatchShadowResult
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.WorkConserving == nil {
+		t.Fatal("missing work_conserving projection")
+	}
+	p := body.WorkConserving
+	if p.State != service.WorkConservingProjectionSourceGap || !p.NoWrite || len(p.Suggestions) != 0 || len(p.BlockedBacklog) != 0 {
+		t.Fatalf("projection = %+v, want source_gap blocked no-write empty plan", *p)
+	}
+	if p.Total != 0 || p.Limit != 1 || p.Offset != 0 {
+		t.Fatalf("projection pagination = %+v, want empty source-gap metadata", *p)
+	}
+}
+
+func TestGetProjectNextActionsWorkConservingProviderRoundTripsGlobalTotal(t *testing.T) {
+	provider := &workConservingProjectionFixture{result: service.WorkConservingProjection{
+		SchemaVersion: service.WorkConservingProjectionSchemaV1,
+		State:         service.WorkConservingProjectionReady,
+		GoalID:        "goal-global-1",
+		Suggestions: []continuousdispatch.WorkConservingSuggestion{{
+			IssueID: "issue-global-1", GoalID: "goal-global-1", EmployeeID: "DE-1", AgentID: "agent-1", RuntimeID: "runtime-1",
+			Score: 42, Receiver: "dispatch-coordinator", WakeCondition: "fresh evidence",
+		}},
+		BlockedBacklog: []continuousdispatch.WorkConservingBlockedIssue{{
+			IssueID: "issue-blocked-1", GoalID: "goal-global-1", Receiver: "authority-operator", WakeCondition: "authority available",
+			Reasons: []continuousdispatch.Reason{continuousdispatch.ReasonIssueAuthorityMissing},
+		}},
+		Mismatch: continuousdispatch.WorkConservingMismatch{OpenIssues: 99, PlannedIssues: 1, BlockedBacklog: 98},
+		Total:    99, Limit: 1, Offset: 0,
+	}}
+	inspector := &shadowInspectorFixture{result: &service.ContinuousDispatchShadowResult{
+		SchemaVersion: service.ContinuousDispatchShadowSchemaV1,
+		WorkspaceID:   testWorkspaceID,
+		ProjectID:     "00000000-0000-0000-0000-000000000201",
+		Items:         []service.ContinuousDispatchShadowItem{{IssueID: "issue-page-only"}},
+		Total:         1,
+		Limit:         1,
+		Offset:        0,
+	}}
+	h := &Handler{ContinuousDispatchShadow: inspector, WorkConservingProjection: provider}
+	req := newRequest(http.MethodGet, "/api/projects/00000000-0000-0000-0000-000000000201/next-actions?workspace_id="+testWorkspaceID+"&limit=1&projection=work_conserving", nil)
+	req = withURLParam(req, "id", "00000000-0000-0000-0000-000000000201")
+	w := httptest.NewRecorder()
+	h.GetProjectNextActions(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", w.Code, w.Body.String())
+	}
+	var body service.ContinuousDispatchShadowResult
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.WorkConserving == nil {
+		t.Fatal("missing work_conserving projection")
+	}
+	p := body.WorkConserving
+	if p.State != service.WorkConservingProjectionReady || p.GoalID != "goal-global-1" || p.Total != 99 || len(p.Suggestions) != 1 || len(p.BlockedBacklog) != 1 || !p.NoWrite {
+		t.Fatalf("projection = %+v, want provider plan with enforced no-write", *p)
+	}
+	if provider.req.Limit != 1 || provider.req.Offset != 0 || !provider.req.WorkspaceID.Valid || !provider.req.ProjectID.Valid {
+		t.Fatalf("provider request = %+v", provider.req)
+	}
+}
+
+func TestGetProjectNextActionsWorkConservingInvalidProviderFailsClosed(t *testing.T) {
+	provider := &workConservingProjectionFixture{result: service.WorkConservingProjection{
+		State:  service.WorkConservingProjectionReady,
+		GoalID: "goal-without-schema",
+		Total:  4, Limit: 50, Offset: 0,
+	}}
+	h := &Handler{ContinuousDispatchShadow: &shadowInspectorFixture{result: &service.ContinuousDispatchShadowResult{
+		SchemaVersion: service.ContinuousDispatchShadowSchemaV1,
+		WorkspaceID:   testWorkspaceID,
+		ProjectID:     "00000000-0000-0000-0000-000000000201",
+		Items:         []service.ContinuousDispatchShadowItem{}, Total: 4, Limit: 50, Offset: 0,
+	}}, WorkConservingProjection: provider}
+	req := newRequest(http.MethodGet, "/api/projects/00000000-0000-0000-0000-000000000201/next-actions?workspace_id="+testWorkspaceID+"&projection=work_conserving", nil)
+	req = withURLParam(req, "id", "00000000-0000-0000-0000-000000000201")
+	w := httptest.NewRecorder()
+	h.GetProjectNextActions(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", w.Code, w.Body.String())
+	}
+	var body service.ContinuousDispatchShadowResult
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.WorkConserving == nil || body.WorkConserving.State != service.WorkConservingProjectionSourceGap || !body.WorkConserving.NoWrite || len(body.WorkConserving.Suggestions) != 0 {
+		t.Fatalf("projection = %+v, want fail-closed source gap", body.WorkConserving)
 	}
 }
 
