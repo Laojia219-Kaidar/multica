@@ -1,0 +1,34 @@
+flowchart LR
+    OUT(["Candidate Ready\nnot merged, deployed, or published"])
+
+    subgraph CONTROL["WO-00 · Control and isolated candidate environment"]
+      C0["Goal, CHECKLIST, worktree\nand isolated ports"]
+    end
+
+    subgraph PARALLEL["Three non-overlapping Luna implementation lanes"]
+      K["WO-10 · Workflow kernel\npersisted instances, versioned graph, restart hydration"]
+      U["WO-20 · Operations workbench\ncontext tree, graph designer, runtime projection"]
+      S["WO-30 · Outcome storage\nartifact durability and capacity fixtures"]
+    end
+
+    subgraph JOIN["Integrator-only shared-boundary join"]
+      I["WO-40 · Integrate\nroutes, API, navigation, typed contracts"]
+      V["WO-50 · Canary and review\ncontent.wechat-production-package.v1\nsimulated publish only"]
+    end
+
+    C0 --> K
+    C0 --> U
+    C0 --> S
+    K --> I
+    U --> I
+    S --> I
+    I --> V --> OUT
+
+    classDef control fill:#EFF6FF,stroke:#2563EB,color:#172554
+    classDef lane fill:#F0FDF4,stroke:#16A34A,color:#14532D
+    classDef join fill:#FFF7ED,stroke:#EA580C,color:#7C2D12
+    classDef outcome fill:#FDF2F8,stroke:#DB2777,color:#831843
+    class C0 control
+    class K,U,S lane
+    class I,V join
+    class OUT outcome
