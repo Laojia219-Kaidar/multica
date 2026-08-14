@@ -134,6 +134,14 @@ func (s *ContinuousDispatchTriggerService) DispatchIssue(
 			if item.IssueID != wantedIssueID {
 				continue
 			}
+			// The generic entry has no immutable review source provenance and no
+			// Authority identity provider input. It must never turn an in-review
+			// item into a bare dispatch: callers must use DispatchReviewIssue,
+			// which re-reads source lineage and, when composed, crosses the
+			// Authority gate before any Task/receipt write.
+			if item.Status == "in_review" || item.DispatchIdentity.Stage == "review" {
+				return ContinuousDispatchTriggerResult{}, ErrContinuousDispatchSourceGap
+			}
 			return s.dispatchShadowItem(ctx, workspaceID, projectID, item, actorUserID, handoffNote)
 		}
 		if len(page.Items) == 0 || offset+len(page.Items) >= page.Total {

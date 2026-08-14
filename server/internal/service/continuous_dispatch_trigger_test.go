@@ -177,6 +177,31 @@ func TestContinuousDispatchReviewTriggerMarksAtomicReviewPrecondition(t *testing
 	}
 }
 
+func TestContinuousDispatchGenericTriggerFailsClosedForReviewItemEvenWhenAuthorityModeIsComposed(t *testing.T) {
+	workspaceID, projectID, issueID := dispatchReceiptUUID(64), dispatchReceiptUUID(65), dispatchReceiptUUID(66)
+	item := triggerShadowItem(workspaceID, issueID, dispatchReceiptUUID(67), dispatchReceiptUUID(68))
+	item.Status = "in_review"
+	item.DispatchIdentity.Stage = "review"
+	inspector := &triggerInspectorFixture{pages: map[int]*ContinuousDispatchShadowResult{0: {
+		SchemaVersion: ContinuousDispatchShadowSchemaV1, WorkspaceID: shadowUUIDString(workspaceID),
+		ProjectID: shadowUUIDString(projectID), Items: []ContinuousDispatchShadowItem{item}, Total: 1,
+	}}}
+	dispatcher := &triggerDispatcherFixture{}
+	authorizer := &authorityReviewDispatchAuthorizerFake{}
+	provider := &triggerAuthorityIdentityProviderFixture{}
+	trigger := NewContinuousDispatchTriggerService(inspector, dispatcher).WithAuthorityReviewDispatchGate(
+		NewAuthorityReviewDispatchGate(authorizer, dispatcher), provider,
+	)
+
+	_, err := trigger.DispatchIssue(context.Background(), workspaceID, projectID, issueID, dispatchReceiptUUID(69), "generic handoff")
+	if !errors.Is(err, ErrContinuousDispatchSourceGap) {
+		t.Fatalf("DispatchIssue error = %v, want source gap", err)
+	}
+	if provider.calls != 0 || authorizer.calls != 0 || len(dispatcher.requests) != 0 {
+		t.Fatalf("resolver/authority/dispatcher calls = %d/%d/%d, want 0/0/0", provider.calls, authorizer.calls, len(dispatcher.requests))
+	}
+}
+
 func TestContinuousDispatchReviewTriggerAuthorityModeRunsResolverGateBeforeDispatcher(t *testing.T) {
 	workspaceID, projectID, issueID := dispatchReceiptUUID(68), dispatchReceiptUUID(69), dispatchReceiptUUID(70)
 	sourceTaskID, sourceCommentID := dispatchReceiptUUID(71), dispatchReceiptUUID(72)
