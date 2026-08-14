@@ -33,9 +33,17 @@ database_url="postgres://hivecrew_test:hivecrew_test_only@127.0.0.1:${test_port}
 container_id=""
 
 cleanup() {
-  docker rm -f "$container_name" >/dev/null 2>&1 || true
+  if [[ -z "$container_id" ]]; then
+    return 0
+  fi
+  if ! docker rm -f "$container_id" >/dev/null 2>&1; then
+    if docker container inspect "$container_id" >/dev/null 2>&1; then
+      echo "failed to remove isolated test container $container_id" >&2
+      return 1
+    fi
+  fi
   if [[ -n "$container_id" ]] && docker container inspect "$container_id" >/dev/null 2>&1; then
-    echo "isolated test container $container_name remained after cleanup" >&2
+    echo "isolated test container $container_id remained after cleanup" >&2
     return 1
   fi
 }

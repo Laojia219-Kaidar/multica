@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/multica-ai/multica/server/internal/continuousdispatch"
 	"github.com/multica-ai/multica/server/internal/events"
@@ -18,16 +20,23 @@ import (
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
+func cleanupProductionContinuousDispatchReceipt(t *testing.T, pool *pgxpool.Pool, workspaceID pgtype.UUID) {
+	t.Helper()
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cleanupCancel()
+		if _, err := pool.Exec(cleanupCtx, `DELETE FROM continuous_dispatch_receipt WHERE workspace_id = $1`, workspaceID); err != nil {
+			t.Errorf("cleanup production continuous dispatch receipt: %v", err)
+		}
+	})
+}
+
 func TestProductionContinuousDispatchConcurrentGenerationCreatesOneTaskAndReceipt(t *testing.T) {
 	pool := newProductionCompanyOpsPool(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	fixture := seedProductionCompanyOpsFixture(t, ctx, pool)
-	t.Cleanup(func() {
-		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cleanupCancel()
-		_, _ = pool.Exec(cleanupCtx, `DELETE FROM continuous_dispatch_receipt WHERE workspace_id = $1`, fixture.workspaceID)
-	})
+	cleanupProductionContinuousDispatchReceipt(t, pool, fixture.workspaceID)
 
 	identity := continuousdispatch.DispatchIdentity{
 		WorkspaceID: util.UUIDToString(fixture.workspaceID), IssueID: util.UUIDToString(fixture.issueID),
@@ -158,9 +167,7 @@ func TestProductionContinuousDispatchRejectsRouteDriftWithoutWrites(t *testing.T
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	fixture := seedProductionCompanyOpsFixture(t, ctx, pool)
-	t.Cleanup(func() {
-		_, _ = pool.Exec(context.Background(), `DELETE FROM continuous_dispatch_receipt WHERE workspace_id = $1`, fixture.workspaceID)
-	})
+	cleanupProductionContinuousDispatchReceipt(t, pool, fixture.workspaceID)
 	if _, err := pool.Exec(ctx, `UPDATE agent SET model = 'glm-5.2' WHERE id = $1`, fixture.agentID); err != nil {
 		t.Fatalf("seed selected model: %v", err)
 	}
@@ -190,8 +197,12 @@ func TestProductionContinuousDispatchRejectsRouteDriftWithoutWrites(t *testing.T
 		t.Fatalf("route drift error = %v, want ErrContinuousDispatchRouteDrift", err)
 	}
 	var taskCount, receiptCount int
-	_ = pool.QueryRow(ctx, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1`, fixture.issueID).Scan(&taskCount)
-	_ = pool.QueryRow(ctx, `SELECT count(*) FROM continuous_dispatch_receipt WHERE issue_id = $1`, fixture.issueID).Scan(&receiptCount)
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1`, fixture.issueID).Scan(&taskCount); err != nil {
+		t.Fatalf("count route-drift tasks: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM continuous_dispatch_receipt WHERE issue_id = $1`, fixture.issueID).Scan(&receiptCount); err != nil {
+		t.Fatalf("count route-drift receipts: %v", err)
+	}
 	if taskCount != 0 || receiptCount != 0 {
 		t.Fatalf("route drift wrote task/receipt = %d/%d, want 0/0", taskCount, receiptCount)
 	}
