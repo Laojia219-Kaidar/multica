@@ -115,8 +115,9 @@ func (s *ReviewDispatchBatchService) DispatchProject(
 		if item.State != continuousdispatch.StateReady && item.State != continuousdispatch.StateFallback {
 			continue
 		}
-		note := fmt.Sprintf("review_dispatch source_issue_id=%s source_task_id=%s", item.IssueID, item.SourceTaskID)
-		dispatch, dispatchErr := s.trigger.DispatchIssue(ctx, workspaceID, projectID, parseDispatchUUID(item.IssueID), actorUserID, note)
+		dispatch, dispatchErr := s.trigger.DispatchReviewIssue(
+			ctx, workspaceID, projectID, parseDispatchUUID(item.IssueID), actorUserID, parseDispatchUUID(item.SourceTaskID),
+		)
 		if dispatchErr != nil {
 			return result, dispatchErr
 		}

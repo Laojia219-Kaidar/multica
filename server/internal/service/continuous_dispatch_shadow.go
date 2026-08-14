@@ -35,6 +35,7 @@ type ContinuousDispatchShadowStore interface {
 	ListAgentRuntimes(context.Context, pgtype.UUID) ([]db.AgentRuntime, error)
 	ListWorkspaceAgentTaskSnapshot(context.Context, pgtype.UUID) ([]db.AgentTaskQueue, error)
 	ListTasksByIssue(context.Context, pgtype.UUID) ([]db.AgentTaskQueue, error)
+	ListCommentsForIssue(context.Context, db.ListCommentsForIssueParams) ([]db.Comment, error)
 }
 
 type ContinuousDispatchEmployeeDirectory interface {
@@ -210,11 +211,21 @@ func (s *ContinuousDispatchShadowService) InspectProject(
 		lease, leaseKnown := s.composeLease(ctx, metadata.WriteMutexKey, now)
 		leaseComplete = leaseComplete && leaseKnown
 		frontier := composeFrontier(issue, tasks, agentsByID, runtimesByID, activeWIP, now)
-		requirement, authorKnown, authorIDs := composeRequirement(issue, tasks)
+		requirement := composeRequirement(issue)
+		lineage := reviewSourceLineage{}
+		if requirement.NeedsReview {
+			comments, commentErr := s.store.ListCommentsForIssue(ctx, db.ListCommentsForIssueParams{
+				IssueID: issue.ID, WorkspaceID: issue.WorkspaceID, Limit: 2000,
+			})
+			if commentErr != nil {
+				return nil, fmt.Errorf("read review source comments: %w", commentErr)
+			}
+			lineage = resolveReviewSourceLineage(issue, tasks, comments, identity)
+		}
 		issueCandidates := append([]continuousdispatch.Candidate(nil), candidates...)
 		if requirement.NeedsReview {
 			for i := range issueCandidates {
-				_, issueCandidates[i].Route.IsAuthor = authorIDs[issueCandidates[i].Route.AgentID.String()]
+				issueCandidates[i].Route.IsAuthor = lineage.AuthorID != "" && issueCandidates[i].Route.AgentID.String() == lineage.AuthorID
 			}
 		}
 		preferredEmployeeID := metadata.PreferredEmployeeID
@@ -230,11 +241,11 @@ func (s *ContinuousDispatchShadowService) InspectProject(
 			Generation:          generation,
 			WIP:                 wip,
 			Lease:               lease,
-			ReviewAuthorKnown:   authorKnown,
+			ReviewAuthorKnown:   !requirement.NeedsReview || lineage.Proven,
 		})
 		items = append(items, ContinuousDispatchShadowItem{
 			IssueID: shadowUUIDString(issue.ID), IssueTitle: issue.Title, Status: issue.Status,
-			SourceTaskID:     sourceTaskID(tasks),
+			SourceTaskID:     lineage.TaskID,
 			DispatchIdentity: identity, Generation: generation, NextAction: next,
 		})
 	}
@@ -251,16 +262,58 @@ func (s *ContinuousDispatchShadowService) InspectProject(
 	}, nil
 }
 
-// sourceTaskID returns the canonical completed implementation Task used as
-// review provenance. It deliberately does not infer provenance from an open
-// reviewer Task or from an Issue's assignee.
-func sourceTaskID(tasks []db.AgentTaskQueue) string {
+type reviewSourceLineage struct {
+	TaskID   string
+	AuthorID string
+	Proven   bool
+}
+
+// resolveReviewSourceLineage accepts only a current agent Comment that points
+// through source_task_id to the completed implementation Task for this exact
+// Issue/candidate generation. A completed Task by itself is never sufficient:
+// that could be an old attempt or a previous review. The current Issue must
+// be in the distinct review stage, while the source Task must be stamped as
+// implementation with the same workspace/Issue/revision/generation. This
+// gives implementation and review independent receipt identities.
+func resolveReviewSourceLineage(
+	issue db.ListIssuesRow,
+	tasks []db.AgentTaskQueue,
+	comments []db.Comment,
+	identity continuousdispatch.DispatchIdentity,
+) reviewSourceLineage {
+	if identity.Stage != "review" {
+		return reviewSourceLineage{}
+	}
+	tasksByID := make(map[string]db.AgentTaskQueue, len(tasks))
 	for _, task := range tasks {
-		if task.Status == "completed" && task.ID.Valid {
-			return shadowUUIDString(task.ID)
+		if task.ID.Valid {
+			tasksByID[shadowUUIDString(task.ID)] = task
 		}
 	}
-	return ""
+	for i := len(comments) - 1; i >= 0; i-- {
+		comment := comments[i]
+		if comment.AuthorType != "agent" || !comment.SourceTaskID.Valid || !comment.AuthorID.Valid ||
+			comment.IssueID != issue.ID || comment.WorkspaceID != issue.WorkspaceID {
+			continue
+		}
+		task, ok := tasksByID[shadowUUIDString(comment.SourceTaskID)]
+		if !ok || task.Status != "completed" || !task.IssueID.Valid || task.IssueID != issue.ID ||
+			!task.AgentID.Valid || task.AgentID != comment.AuthorID ||
+			(task.HandoffNote.Valid && strings.HasPrefix(task.HandoffNote.String, "review_dispatch ")) {
+			continue
+		}
+		var contextValue shadowTaskContext
+		if len(task.Context) == 0 || json.Unmarshal(task.Context, &contextValue) != nil ||
+			!contextValue.ContinuousDispatch.Complete() || contextValue.ContinuousDispatch.Stage != "implementation" ||
+			contextValue.ContinuousDispatch.WorkspaceID != identity.WorkspaceID ||
+			contextValue.ContinuousDispatch.IssueID != identity.IssueID ||
+			contextValue.ContinuousDispatch.CandidateRevision != identity.CandidateRevision ||
+			contextValue.ContinuousDispatch.Generation != identity.Generation {
+			continue
+		}
+		return reviewSourceLineage{TaskID: shadowUUIDString(task.ID), AuthorID: shadowUUIDString(task.AgentID), Proven: true}
+	}
+	return reviewSourceLineage{}
 }
 
 func (s *ContinuousDispatchShadowService) buildCandidates(
@@ -448,23 +501,14 @@ func composeFrontier(issue db.ListIssuesRow, tasks []db.AgentTaskQueue, agents m
 	return in
 }
 
-func composeRequirement(issue db.ListIssuesRow, tasks []db.AgentTaskQueue) (routescore.TaskRequirement, bool, map[string]struct{}) {
+func composeRequirement(issue db.ListIssuesRow) routescore.TaskRequirement {
 	review := issue.Status == "in_review"
 	requirement := routescore.TaskRequirement{RequiredRoles: []string{"implementation"}, MaxLatencyMs: 10 * 60 * 1000, MaxCostUSD: 1}
 	if review {
 		requirement.RequiredRoles = []string{"code_review", "independent_test_review"}
 		requirement.NeedsReview = true
 	}
-	authors := map[string]struct{}{}
-	if review {
-		for _, task := range tasks {
-			if task.Status == "completed" && task.AgentID.Valid {
-				authors[shadowUUIDString(task.AgentID)] = struct{}{}
-				break
-			}
-		}
-	}
-	return requirement, !review || len(authors) > 0, authors
+	return requirement
 }
 
 func (s *ContinuousDispatchShadowService) composeLease(ctx context.Context, mutexKey string, now time.Time) (continuousdispatch.LeaseEvidence, bool) {

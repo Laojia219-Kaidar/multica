@@ -191,6 +191,13 @@ type Handler struct {
 	ContinuousDispatchTrigger interface {
 		DispatchIssue(context.Context, pgtype.UUID, pgtype.UUID, pgtype.UUID, pgtype.UUID, string) (service.ContinuousDispatchTriggerResult, error)
 	}
+	// ReviewDispatch is the bounded Owner/Admin review-drain coordinator. It
+	// uses the existing Shadow and exact Task+receipt dispatcher; it does not
+	// create a second scheduler or review queue.
+	ReviewDispatch interface {
+		PreviewProject(context.Context, pgtype.UUID, pgtype.UUID, int, int) (service.ReviewDispatchPreview, error)
+		DispatchProject(context.Context, pgtype.UUID, pgtype.UUID, pgtype.UUID, int, int) (service.ReviewDispatchBatchResult, error)
+	}
 	// CompanyOpsEnsureWorkOrderIssue projects an authoritative WorkOrder into
 	// one local Issue and provenance link. The concrete implementation lives in
 	// the service layer so HTTP handlers cannot bypass IssueService.

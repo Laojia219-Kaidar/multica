@@ -86,11 +86,78 @@ func (s *ContinuousDispatchTriggerService) DispatchIssue(
 	}
 }
 
+// DispatchReviewIssue is the review-only variant used by the bounded drain
+// command. It re-reads the Shadow immediately before write and requires the
+// exact, previously-previewed source implementation Task to remain proven.
+// It never accepts a reviewer, runtime, model, account, or generation from a
+// caller.
+func (s *ContinuousDispatchTriggerService) DispatchReviewIssue(
+	ctx context.Context,
+	workspaceID, projectID, issueID, actorUserID, sourceTaskID pgtype.UUID,
+) (ContinuousDispatchTriggerResult, error) {
+	if s == nil || s.inspector == nil || s.dispatcher == nil {
+		return ContinuousDispatchTriggerResult{}, fmt.Errorf("continuous dispatch trigger dependencies are required")
+	}
+	for name, value := range map[string]pgtype.UUID{
+		"workspace_id": workspaceID, "project_id": projectID, "issue_id": issueID, "actor_user_id": actorUserID,
+	} {
+		if !value.Valid || value.Bytes == ([16]byte{}) {
+			return ContinuousDispatchTriggerResult{}, fmt.Errorf("%s is required", name)
+		}
+	}
+	if !sourceTaskID.Valid || sourceTaskID.Bytes == ([16]byte{}) {
+		return ContinuousDispatchTriggerResult{}, ErrContinuousDispatchNotReady
+	}
+	wantedIssueID := shadowUUIDString(issueID)
+	for offset := 0; ; offset += continuousDispatchTriggerPageSize {
+		page, err := s.inspector.InspectProject(ctx, workspaceID, projectID, continuousDispatchTriggerPageSize, offset)
+		if err != nil {
+			return ContinuousDispatchTriggerResult{}, err
+		}
+		if page == nil || page.SchemaVersion != ContinuousDispatchShadowSchemaV1 ||
+			page.WorkspaceID != shadowUUIDString(workspaceID) || page.ProjectID != shadowUUIDString(projectID) {
+			return ContinuousDispatchTriggerResult{}, ErrContinuousDispatchSourceGap
+		}
+		for _, item := range page.Items {
+			if item.IssueID != wantedIssueID {
+				continue
+			}
+			if item.Status != "in_review" || item.SourceTaskID != shadowUUIDString(sourceTaskID) {
+				return ContinuousDispatchTriggerResult{}, ErrContinuousDispatchIssueDrift
+			}
+			note := fmt.Sprintf("review_dispatch source_issue_id=%s source_task_id=%s", item.IssueID, item.SourceTaskID)
+			return s.dispatchReviewShadowItem(ctx, item, actorUserID, note)
+		}
+		if len(page.Items) == 0 || offset+len(page.Items) >= page.Total {
+			return ContinuousDispatchTriggerResult{}, ErrContinuousDispatchIssueAbsent
+		}
+	}
+}
+
 func (s *ContinuousDispatchTriggerService) dispatchShadowItem(
 	ctx context.Context,
 	item ContinuousDispatchShadowItem,
 	actorUserID pgtype.UUID,
 	handoffNote string,
+) (ContinuousDispatchTriggerResult, error) {
+	return s.dispatchShadowItemWithPrecondition(ctx, item, actorUserID, handoffNote, false)
+}
+
+func (s *ContinuousDispatchTriggerService) dispatchReviewShadowItem(
+	ctx context.Context,
+	item ContinuousDispatchShadowItem,
+	actorUserID pgtype.UUID,
+	handoffNote string,
+) (ContinuousDispatchTriggerResult, error) {
+	return s.dispatchShadowItemWithPrecondition(ctx, item, actorUserID, handoffNote, true)
+}
+
+func (s *ContinuousDispatchTriggerService) dispatchShadowItemWithPrecondition(
+	ctx context.Context,
+	item ContinuousDispatchShadowItem,
+	actorUserID pgtype.UUID,
+	handoffNote string,
+	requireInReview bool,
 ) (ContinuousDispatchTriggerResult, error) {
 	action := item.NextAction
 	if (action.State != continuousdispatch.StateReady && action.State != continuousdispatch.StateFallback) || action.Selected == nil {
@@ -117,8 +184,9 @@ func (s *ContinuousDispatchTriggerService) dispatchShadowItem(
 			Model:        selected.Model,
 			AccountRef:   selected.AccountRef,
 		},
-		ActorUserID: actorUserID,
-		HandoffNote: handoffNote,
+		ActorUserID:     actorUserID,
+		HandoffNote:     handoffNote,
+		RequireInReview: requireInReview,
 	})
 	if err != nil {
 		return ContinuousDispatchTriggerResult{}, err

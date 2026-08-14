@@ -197,5 +197,18 @@ func TestContinuousDispatchRejectsIssueDriftAndTerminalState(t *testing.T) {
 	}
 }
 
+func TestContinuousDispatchReviewPreconditionRejectsStatusChangedAfterPreview(t *testing.T) {
+	req, issue := continuousDispatchRequestFixture(150)
+	req.RequireInReview = true
+	issue.Status = "in_progress"
+	backend := &fakeContinuousDispatchBackend{issue: issue, nextTaskID: dispatchReceiptUUID(151)}
+	if _, err := NewContinuousDispatchService(backend).Dispatch(context.Background(), req); !errors.Is(err, ErrContinuousDispatchIssueDrift) {
+		t.Fatalf("review status drift error = %v, want ErrContinuousDispatchIssueDrift", err)
+	}
+	if backend.prepareN != 0 || backend.appendN != 0 || backend.notifyN != 0 {
+		t.Fatalf("review status drift mutated counts: %d/%d/%d", backend.prepareN, backend.appendN, backend.notifyN)
+	}
+}
+
 var _ ContinuousDispatchBackend = (*fakeContinuousDispatchBackend)(nil)
 var _ ContinuousDispatchTx = (*fakeContinuousDispatchTx)(nil)

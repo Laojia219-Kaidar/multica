@@ -334,9 +334,14 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	if continuousDispatchErr != nil {
 		slog.Warn("continuous dispatch writer disabled", "error", continuousDispatchErr)
 	} else {
-		h.ContinuousDispatchTrigger = service.NewContinuousDispatchTriggerService(
+		continuousDispatchTrigger := service.NewContinuousDispatchTriggerService(
 			continuousDispatchShadow,
 			service.NewContinuousDispatchService(continuousDispatchBackend),
+		)
+		h.ContinuousDispatchTrigger = continuousDispatchTrigger
+		h.ReviewDispatch = service.NewReviewDispatchBatchService(
+			continuousDispatchShadow,
+			continuousDispatchTrigger,
 		)
 	}
 	h.CompanyOpsOutcomeCenter = service.NewCompanyOpsOutcomeCenterService(queries)
@@ -1327,6 +1332,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Get("/", h.GetProject)
 					r.Get("/next-actions", h.GetProjectNextActions)
 					r.Post("/next-actions/{issueId}/dispatch", h.DispatchProjectNextAction)
+					r.Get("/review-dispatch/preview", h.GetProjectReviewDispatchPreview)
+					r.Post("/review-dispatch/dispatch", h.DispatchProjectReviewBatch)
 					r.Put("/", h.UpdateProject)
 					r.Delete("/", h.DeleteProject)
 					r.Get("/resources", h.ListProjectResources)

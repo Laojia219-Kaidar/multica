@@ -44,6 +44,10 @@ type ContinuousDispatchRequest struct {
 	Route       ContinuousDispatchRoute
 	ActorUserID pgtype.UUID
 	HandoffNote string
+	// RequireInReview is an internal review-drain precondition. It is built by
+	// the server-only review trigger, never decoded from HTTP, and is checked
+	// again inside the same transaction that creates the Task+receipt.
+	RequireInReview bool
 }
 
 // ContinuousDispatchTx is the transaction-local seam. Implementations must
@@ -119,7 +123,7 @@ func (s *ContinuousDispatchService) Dispatch(
 		if err != nil {
 			return fmt.Errorf("load continuous dispatch issue: %w", err)
 		}
-		if err := validateContinuousDispatchIssue(issue, req.Identity); err != nil {
+		if err := validateContinuousDispatchIssue(issue, req.Identity, req.RequireInReview); err != nil {
 			return err
 		}
 
@@ -191,7 +195,7 @@ func validateContinuousDispatchRequest(req ContinuousDispatchRequest) error {
 	return nil
 }
 
-func validateContinuousDispatchIssue(issue db.Issue, identity continuousdispatch.DispatchIdentity) error {
+func validateContinuousDispatchIssue(issue db.Issue, identity continuousdispatch.DispatchIdentity, requireInReview bool) error {
 	if !issue.ID.Valid || !issue.WorkspaceID.Valid ||
 		shadowUUIDString(issue.ID) != identity.IssueID || shadowUUIDString(issue.WorkspaceID) != identity.WorkspaceID {
 		return ErrContinuousDispatchIssueDrift
@@ -199,6 +203,9 @@ func validateContinuousDispatchIssue(issue db.Issue, identity continuousdispatch
 	switch issue.Status {
 	case "done", "cancelled", "backlog":
 		return ErrContinuousDispatchIssueNotReady
+	}
+	if requireInReview && issue.Status != "in_review" {
+		return ErrContinuousDispatchIssueDrift
 	}
 	metadata := parseShadowMetadata(issue.Metadata)
 	if metadata.Stage != identity.Stage || metadata.CandidateRevision != identity.CandidateRevision ||
@@ -232,12 +239,13 @@ func continuousDispatchRequestDigest(req ContinuousDispatchRequest) (string, err
 		Model             string `json:"model"`
 		AccountRef        string `json:"account_ref"`
 		HandoffNote       string `json:"handoff_note"`
+		RequireInReview   bool   `json:"require_in_review"`
 	}{
 		WorkspaceID: req.Identity.WorkspaceID, IssueID: req.Identity.IssueID, Stage: req.Identity.Stage,
 		CandidateRevision: req.Identity.CandidateRevision, Generation: req.Identity.Generation,
 		EmployeeRef: req.Route.EmployeeRef, LocalAgentID: shadowUUIDString(req.Route.LocalAgentID),
 		RuntimeID: shadowUUIDString(req.Route.RuntimeID), Model: req.Route.Model,
-		AccountRef: req.Route.AccountRef, HandoffNote: req.HandoffNote,
+		AccountRef: req.Route.AccountRef, HandoffNote: req.HandoffNote, RequireInReview: req.RequireInReview,
 	}
 	payload, err := json.Marshal(canonical)
 	if err != nil {

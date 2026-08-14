@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -24,6 +25,7 @@ type shadowStoreFixture struct {
 	runtimes []db.AgentRuntime
 	snapshot []db.AgentTaskQueue
 	tasks    map[string][]db.AgentTaskQueue
+	comments map[string][]db.Comment
 }
 
 func (f *shadowStoreFixture) GetProjectInWorkspace(context.Context, db.GetProjectInWorkspaceParams) (db.Project, error) {
@@ -52,6 +54,10 @@ func (f *shadowStoreFixture) ListWorkspaceAgentTaskSnapshot(context.Context, pgt
 
 func (f *shadowStoreFixture) ListTasksByIssue(_ context.Context, issueID pgtype.UUID) ([]db.AgentTaskQueue, error) {
 	return append([]db.AgentTaskQueue(nil), f.tasks[uuidString(issueID)]...), nil
+}
+
+func (f *shadowStoreFixture) ListCommentsForIssue(_ context.Context, params db.ListCommentsForIssueParams) ([]db.Comment, error) {
+	return append([]db.Comment(nil), f.comments[uuidString(params.IssueID)]...), nil
 }
 
 type shadowDirectoryFixture struct {
@@ -239,6 +245,72 @@ func TestContinuousDispatchShadowRejectsDuplicateOpenGeneration(t *testing.T) {
 	}
 }
 
+func TestContinuousDispatchShadowReviewRequiresStrictCommentTaskLineage(t *testing.T) {
+	fixture, workspaceID, projectID, issueID, authorID, reviewerID := validShadowFixture(t)
+	fixture.issues[0].Status = "in_review"
+	fixture.issues[0].Metadata = []byte(`{"stage":"review","generation":"g-1","candidate_revision":"abc123","preferred_employee_id":"DE-PRIMARY","required_base_id":"base-a","write_mutex_key":"repo:main"}`)
+	identity := continuousdispatch.DispatchIdentity{
+		WorkspaceID: uuidString(workspaceID), IssueID: uuidString(issueID),
+		Stage: "implementation", CandidateRevision: "abc123", Generation: "g-1",
+	}
+	source := shadowTask(t, issueID, authorID, "completed", "00000000-0000-0000-0000-000000000905")
+	sourceContext, err := json.Marshal(shadowTaskContext{ContinuousDispatch: identity})
+	if err != nil {
+		t.Fatal(err)
+	}
+	source.Context = sourceContext
+	fixture.tasks[uuidString(issueID)] = []db.AgentTaskQueue{source}
+	directory := employeeDirectory(authorID, reviewerID)
+	directory.Items[1].PositionTitle = "质量审核工程师"
+	directory.Items[1].PositionID = "code_review"
+	service := NewContinuousDispatchShadowService(
+		fixture,
+		shadowDirectoryFixture{result: directory},
+		shadowQuotaFixture{
+			uuidString(authorID):   {State: routescore.QuotaFresh, CheckedAt: shadowNow.Add(-time.Minute), AccountRef: "author"},
+			uuidString(reviewerID): {State: routescore.QuotaFresh, CheckedAt: shadowNow.Add(-time.Minute), AccountRef: "reviewer"},
+		},
+		shadowLeaseFixture{leases: map[string]*WriteLease{}},
+	).WithClock(fixedShadowClock{now: shadowNow})
+
+	withoutComment, err := service.InspectProject(context.Background(), workspaceID, projectID, 50, 0)
+	if err != nil {
+		t.Fatalf("InspectProject without source comment: %v", err)
+	}
+	if withoutComment.Items[0].NextAction.State != continuousdispatch.StateBlocked ||
+		withoutComment.Items[0].NextAction.Reasons[0] != continuousdispatch.ReasonReviewAuthorEvidenceMissing {
+		t.Fatalf("without source comment = %+v, want strict lineage block", withoutComment.Items[0])
+	}
+
+	fixture.comments[uuidString(issueID)] = []db.Comment{{
+		ID: shadowUUID(t, "00000000-0000-0000-0000-000000000906"), IssueID: issueID, WorkspaceID: workspaceID,
+		AuthorType: "agent", AuthorID: authorID, SourceTaskID: source.ID,
+	}}
+	withLineage, err := service.InspectProject(context.Background(), workspaceID, projectID, 50, 0)
+	if err != nil {
+		t.Fatalf("InspectProject with source comment: %v", err)
+	}
+	item := withLineage.Items[0]
+	if item.SourceTaskID != uuidString(source.ID) || item.NextAction.Selected == nil || item.NextAction.Selected.AgentID != uuidString(reviewerID) {
+		t.Fatalf("strict lineage item = %+v, want source task and independent reviewer", item)
+	}
+	for _, candidate := range item.NextAction.Candidates {
+		if candidate.AgentID == uuidString(authorID) && candidate.Eligible {
+			t.Fatalf("source author was eligible as reviewer: %+v", candidate)
+		}
+	}
+
+	fixture.tasks[uuidString(issueID)][0].Context = []byte(`{"continuous_dispatch":{"workspace_id":"00000000-0000-0000-0000-000000000101","issue_id":"00000000-0000-0000-0000-000000000301","stage":"old","candidate_revision":"abc123","generation":"g-1"}}`)
+	drifted, err := service.InspectProject(context.Background(), workspaceID, projectID, 50, 0)
+	if err != nil {
+		t.Fatalf("InspectProject with drifted lineage: %v", err)
+	}
+	if drifted.Items[0].NextAction.State != continuousdispatch.StateBlocked ||
+		drifted.Items[0].NextAction.Reasons[0] != continuousdispatch.ReasonReviewAuthorEvidenceMissing {
+		t.Fatalf("drifted lineage = %+v, want source block", drifted.Items[0])
+	}
+}
+
 func TestContinuousDispatchShadowReturnsOnlyExactGenerationTaskReceipt(t *testing.T) {
 	fixture, workspaceID, projectID, issueID, primaryID, fallbackID := validShadowFixture(t)
 	task := shadowTask(t, issueID, primaryID, "running", "00000000-0000-0000-0000-000000000905")
@@ -349,7 +421,8 @@ func validShadowFixture(t *testing.T) (*shadowStoreFixture, pgtype.UUID, pgtype.
 			{ID: primaryRuntimeID, WorkspaceID: workspaceID, Status: "online", DaemonID: pgtype.Text{String: "base-a", Valid: true}, LastSeenAt: pgtype.Timestamptz{Time: shadowNow.Add(-time.Minute), Valid: true}},
 			{ID: fallbackRuntimeID, WorkspaceID: workspaceID, Status: "online", DaemonID: pgtype.Text{String: "base-a", Valid: true}, LastSeenAt: pgtype.Timestamptz{Time: shadowNow.Add(-time.Minute), Valid: true}},
 		},
-		tasks: map[string][]db.AgentTaskQueue{uuidString(issueID): {}},
+		tasks:    map[string][]db.AgentTaskQueue{uuidString(issueID): {}},
+		comments: map[string][]db.Comment{uuidString(issueID): {}},
 	}
 	return fixture, workspaceID, projectID, issueID, primaryID, fallbackID
 }
