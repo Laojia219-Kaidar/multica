@@ -723,3 +723,14 @@ direct_deploy_status:
     single_owner: W3 确认；W4 明确「只读不碰生产」「从未跑 compose up，之后不跑」，将做只读验收
     container_recreation_warning: 生产容器曾被以旧镜像重建（丢失 docker cp 部署并重灌 400-403）；已重新直部署收敛 HEAD
     commits: e378f8ceb(348/349) e389c8bb9(343-347) d1ec7f8dd(P3) 6241aa8ee(P4)
+
+w4_readonly_acceptance:
+  schema: ReadonlyAcceptanceV1
+  at: '2026-08-14T01:39:25.039949+00:00'
+  reviewer: W4 (sibling 019ffb54)
+  verdict: PASS（无路由回退）
+  frontend: work-wall/memory/workflow/employees/datasets 全部 200
+  backend: work-wall/snapshot 401 · memory/candidates 401 · workflow/instances 405 · employees 401 · datasets 401
+  migrations: schema_migrations 唯一编号 341-349 无 400-405
+  containers: 稳定 3 分钟无重建
+  conclusion: 收敛 + 部署确认闭环
