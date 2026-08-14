@@ -203,9 +203,12 @@ func TestContinuousDispatchGenericTriggerFailsClosedForReviewItemEvenWhenAuthori
 }
 
 func TestContinuousDispatchReviewTriggerAuthorityModeRunsResolverGateBeforeDispatcher(t *testing.T) {
-	workspaceID, projectID, issueID := dispatchReceiptUUID(68), dispatchReceiptUUID(69), dispatchReceiptUUID(70)
+	workspaceID := parseDispatchUUID("01972f7e-7e8d-77ef-a13d-1b0ce3e9c010")
+	projectID := dispatchReceiptUUID(69)
+	issueID := parseDispatchUUID("01972f7e-7e8d-77ef-a13d-1b0ce3e9c011")
 	sourceTaskID, sourceCommentID := dispatchReceiptUUID(71), dispatchReceiptUUID(72)
-	agentID, runtimeID := dispatchReceiptUUID(73), dispatchReceiptUUID(74)
+	agentID := parseDispatchUUID("01972f7e-7e8d-77ef-a13d-1b0ce3e9c001")
+	runtimeID := dispatchReceiptUUID(74)
 	item := triggerShadowItem(workspaceID, issueID, agentID, runtimeID)
 	item.DispatchIdentity.Stage = "review"
 	item.Status = "in_review"
@@ -228,7 +231,7 @@ func TestContinuousDispatchReviewTriggerAuthorityModeRunsResolverGateBeforeDispa
 	if err != nil {
 		t.Fatal(err)
 	}
-	authorizer := &authorityReviewDispatchAuthorizerFake{response: authorityReviewDispatchResponse(lookup)}
+	authorizer := &authorityReviewDispatchAuthorizerFake{response: authorityReviewDispatchGateResponse(lookup, ContinuousDispatchRequest{Identity: item.DispatchIdentity})}
 	provider := &triggerAuthorityIdentityProviderFixture{identity: identity}
 	gate := NewAuthorityReviewDispatchGate(authorizer, dispatcher)
 	trigger := NewContinuousDispatchTriggerService(inspector, dispatcher).WithAuthorityReviewDispatchGate(gate, provider)

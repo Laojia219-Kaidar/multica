@@ -68,7 +68,7 @@ func authorityReviewDispatchFixture(seed byte) (AuthorityReviewDispatchIdentity,
 
 func authorityReviewDispatchStringPtr(value string) *string { return &value }
 
-func authorityReviewDispatchResponse(lookup companyopsapi.DispatchAuthorizationLookup, request ContinuousDispatchRequest) companyopsapi.DispatchAuthorizationResponse {
+func authorityReviewDispatchGateResponse(lookup companyopsapi.DispatchAuthorizationLookup, request ContinuousDispatchRequest) companyopsapi.DispatchAuthorizationResponse {
 	now := time.Now().UTC()
 	observed := now.Add(-time.Minute).Format(time.RFC3339Nano)
 	generated := now.Add(-2 * time.Minute).Format(time.RFC3339Nano)
@@ -132,7 +132,7 @@ func TestAuthorityReviewDispatchGateForwardsOnlyExactAuthorizedCandidate(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	authorizer := &authorityReviewDispatchAuthorizerFake{response: authorityReviewDispatchResponse(lookup, candidate.request)}
+	authorizer := &authorityReviewDispatchAuthorizerFake{response: authorityReviewDispatchGateResponse(lookup, candidate.request)}
 	wantReceipt := dispatchReceiptFixture(217)
 	dispatcher := &authorityReviewDispatchDispatcherFake{receipt: wantReceipt}
 
@@ -172,7 +172,7 @@ func TestAuthorityReviewDispatchGateFailsClosedBeforeDispatcher(t *testing.T) {
 		{
 			name: "nil dispatcher", gate: func(a *authorityReviewDispatchAuthorizerFake, _ *authorityReviewDispatchDispatcherFake) *AuthorityReviewDispatchGate {
 				return NewAuthorityReviewDispatchGate(a, nil)
-			}, identity: identity, candidate: candidate, response: authorityReviewDispatchResponse(lookup, candidate.request), want: ErrAuthorityReviewDispatchSourceGap,
+			}, identity: identity, candidate: candidate, response: authorityReviewDispatchGateResponse(lookup, candidate.request), want: ErrAuthorityReviewDispatchSourceGap,
 		},
 		{
 			name: "incomplete five selector identity", gate: func(a *authorityReviewDispatchAuthorizerFake, d *authorityReviewDispatchDispatcherFake) *AuthorityReviewDispatchGate {
@@ -193,7 +193,7 @@ func TestAuthorityReviewDispatchGateFailsClosedBeforeDispatcher(t *testing.T) {
 			name: "explicit deny", gate: func(a *authorityReviewDispatchAuthorizerFake, d *authorityReviewDispatchDispatcherFake) *AuthorityReviewDispatchGate {
 				return NewAuthorityReviewDispatchGate(a, d)
 			}, identity: identity, candidate: candidate, response: func() companyopsapi.DispatchAuthorizationResponse {
-				r := authorityReviewDispatchResponse(lookup, candidate.request)
+				r := authorityReviewDispatchGateResponse(lookup, candidate.request)
 				r.Authorization.EventReconcile.Eligible = false
 				r.Authorization.EventReconcile.Reason = "blocked:authorization_scope_mismatch"
 				r.Authorization.RecoveryOnly.Eligible = true
@@ -206,7 +206,7 @@ func TestAuthorityReviewDispatchGateFailsClosedBeforeDispatcher(t *testing.T) {
 			name: "authorizer response selector drift", gate: func(a *authorityReviewDispatchAuthorizerFake, d *authorityReviewDispatchDispatcherFake) *AuthorityReviewDispatchGate {
 				return NewAuthorityReviewDispatchGate(a, d)
 			}, identity: identity, candidate: candidate, response: func() companyopsapi.DispatchAuthorizationResponse {
-				r := authorityReviewDispatchResponse(lookup, candidate.request)
+				r := authorityReviewDispatchGateResponse(lookup, candidate.request)
 				r.ExecutionIdentity.AgentID = shadowUUIDString(dispatchReceiptUUID(249))
 				return r
 			}(), want: ErrAuthorityReviewDispatchSourceGap, wantAuthCalls: 1,
@@ -286,7 +286,7 @@ func TestAuthorityReviewDispatchGateRejectsAuthorityEvidenceGapsBeforeDispatcher
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			response := authorityReviewDispatchResponse(lookup, candidate.request)
+			response := authorityReviewDispatchGateResponse(lookup, candidate.request)
 			test.mutate(&response)
 			authorizer := &authorityReviewDispatchAuthorizerFake{response: response}
 			dispatcher := &authorityReviewDispatchDispatcherFake{}
@@ -324,7 +324,7 @@ func TestAuthorityReviewDispatchGateBindsCandidateToAuthorityIssueAndWorkspace(t
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			request := candidate.request
-			response := authorityReviewDispatchResponse(lookup, request)
+			response := authorityReviewDispatchGateResponse(lookup, request)
 			test.mutate(&request, &response)
 			candidate := authorityReviewDispatchCandidateFromServer(request)
 			authorizer := &authorityReviewDispatchAuthorizerFake{response: response}
