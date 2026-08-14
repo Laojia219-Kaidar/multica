@@ -179,6 +179,14 @@ type Handler struct {
 	// employee read model, then resolves executable HiveCrew-local Agents
 	// without becoming a second employee or organization authority.
 	CompanyOpsDirectory *service.CompanyOpsDirectoryService
+	// CompanyOpsDispatchAuthorization is the read-only HiveCosm execution
+	// authorization client. It is nil until the complete origin, tenant, and
+	// injected bearer configuration is available; nil is source_gap, never a
+	// local authorization fallback.
+	CompanyOpsDispatchAuthorization *companyops.HiveCosmDispatchAuthorizationClient
+	// CompanyOpsQuotaObservation is the read-only HiveCosm provider quota
+	// observation client. It is nil when Authority configuration is incomplete.
+	CompanyOpsQuotaObservation *companyops.HiveCosmQuotaObservationClient
 	// ContinuousDispatchShadow is a read-only projection over the existing
 	// Project/Issue/Task/Agent/Runtime and HiveCosm employee truths. It never
 	// dispatches work or acquires a writer lease.
