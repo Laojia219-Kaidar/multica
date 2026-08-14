@@ -458,6 +458,11 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			continuousDispatchShadow,
 			service.NewContinuousDispatchService(continuousDispatchBackend),
 		)
+		// Review dispatches are a formal Authority boundary. Keep the gate enabled
+		// even before the canonical Authority identity provider is installed: an
+		// incomplete runtime configuration must yield source_gap before any review
+		// Task or receipt write, never fall back to local inference.
+		continuousDispatchTrigger = continuousDispatchTrigger.WithAuthorityReviewDispatchGate(nil, nil)
 		h.ContinuousDispatchTrigger = continuousDispatchTrigger
 		h.ReviewDispatch = service.NewReviewDispatchBatchService(
 			continuousDispatchShadow,
