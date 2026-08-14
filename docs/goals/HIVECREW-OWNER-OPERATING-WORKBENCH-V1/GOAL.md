@@ -1,4 +1,47 @@
-/goal HIVECREW-OWNER-OPERATING-WORKBENCH-V1 v1 — 从 HiveCrew 真实底座到可运营公司工作台
+/goal HIVECREW-OWNER-OPERATING-WORKBENCH-V1 v2 — Prime 0813 主力驱动的四车道正式融合
+
+## v2 当前执行指令（2026-08-14）
+
+继续同一个 Goal，不创建第二套项目或状态真源。以正式 HiveCrew Project `3b0330e7-a2da-4f41-94ab-61c911af2820`、本目录 `CHECKLIST.yaml` 和干净融合工作树 `/Users/jiawei/hivecosm-worktrees/hivecrew-four-lane-formal-convergence-codex` 为唯一当前执行面，把已经形成候选的四条 Prime 车道正式消费为一套可构建、可验收、可回滚的 HiveCrew 产品候选：
+
+- W1：公司 OS 信息架构、组织/基地、数字员工工厂、数据知识工厂、QM Workroom 候选。
+- W2：项目持续经营、停止/继续、生命周期闭环、成果归属与回执候选。
+- W3：遗留项目收敛、组合集成、运行时与浏览器验收证据。
+- W4：工作流、员工记忆、绿色终端实时工作墙候选。
+
+主力数字员工为 `Shard｜后端与数据库工程师`（Agent `86b86d76-09f4-42e3-bb7a-8113c81775e0`），主 Runtime 为 `Prime Agent · DeepSeek V4 Pro 0813`，模型路由必须为 `deepseek/deepseek-v4-pro`。优先基地为工程基地 MBP M5X；远端 Prime 适配失败时自动降级到中枢基地 Mac mini 的同一 Runtime Profile，不让整条车道等待。Shard 是唯一正式融合写入者，不垄断调研、合同、fixtures、测试、视觉校验和独立审查。
+
+### 当前阶段
+
+执行 `P2F — 四车道正式融合`：
+
+1. `F0 运行时 canary`：真实 HiveCrew Issue→Task→Prime Run→Task-linked Comment 全链路通过。
+2. `F1 四车道 intake`：冻结每条车道的 revision、dirty boundary、候选文件、测试与 receiver，不重新实现已完成工作。
+3. `F2 并行消费`：组织/基地、项目生命周期、工作流/记忆/工作墙、视觉合同和测试矩阵并行；只冻结真实冲突文件。
+4. `F3 单一 Join`：Shard 在本工作树消费候选，禁止其他 Writer 覆盖共享文件、migration 号段和发布配置。
+5. `F4 独立验收`：Gauss 做合同/回归，Atelier 做返修/集成，Keep 做构建与运行时回读；reviewer 不得等于实现者。
+6. `F5 当前系统应用`：精确 revision 构建后，以可回滚事务更新 HiveCrew `:3000/:8080`，浏览器验证议题、项目、数字员工、组织部门、工作墙、成果中心与运行回执；1421 仍留给原 `P7` 正式发布事务。
+
+### 速度优先的冲突规则
+
+- W1–W4 原工作树视为只读候选源；不得要求它们为 W3 或本 Join 停产。
+- 冲突只锁精确文件、migration 号段、端口或部署 critical section；无冲突的合同、UI、测试、fixtures、审查继续并行。
+- 任一任务 held 超过 10 分钟，必须写明 blocker、receiver、wake condition，并转入同一 Goal 的非冲突 fallback；禁止无声等待。
+- Task 数、token 消耗、Issue 状态和“审核中”不等于有效产出；评价指标是 accepted candidate、Task-linked receipt 和运行时应用延迟。
+- 审核只阻断与 required VictoryCondition 直接相关的错误；可逆改进进入 Repair backlog，不让全部员工停工。
+
+### 视觉标准
+
+- 不另造第二套设计系统；复用当前 HiveCrew tokens、布局、导航、表格/卡片密度、暗色/亮色和中英文 i18n。
+- 新栏目必须与现有侧边栏、页面标题、空态、加载态、错误态、按钮层级和响应式行为一致。
+- 工作墙保持绿色终端卡片语义，但字体、边框、间距、悬停、抽屉和详情交互必须来自当前组件体系。
+- 验收必须同时包含真实数据、空态、失败态、窄屏/宽屏和浏览器截图；禁止只用 mock 或静态截图宣称完成。
+
+### v2 新增胜利条件
+
+`VC-07`：W1–W4 的 required 候选被一个干净、可重建的精确 revision 消费，真实 HiveCrew UI 可见相关功能，Shard 的 Prime 0813 Run 及各员工 Task/Run/Comment lineage 可回读，独立审查和浏览器旅程通过，当前 HiveCrew 运行时与该 revision 一致且存在回滚点。
+
+以下 v1 使命、永久边界、P0–P7 与 VC-01–VC-06 继续有效；v2 是当前执行 frontier，不删除历史目标。
 
 ## 使命与人类结果
 

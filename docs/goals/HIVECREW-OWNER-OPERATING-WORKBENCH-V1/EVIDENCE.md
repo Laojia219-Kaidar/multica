@@ -15,5 +15,11 @@ This file is a human-readable projection. `CHECKLIST.yaml` is the sole progress-
 | EV-P5-CANARY | pending | Multi-instance execution isolation and capacity recovery |
 | EV-P6-JOURNEY | pending | Human/digital QM Workroom journey |
 | EV-P7-FORMAL | pending | Formal 1421 UI/service/revision/rollback readback |
+| EV-P2F-CANARY | REVISE | HiveCrew `HIV-640`; Task `776aafa4-2293-42a2-ab57-8798446c8aef` completed on Mac mini but output was corrupted and output `source_task_id=null`; `delivered_comment_ids=[]` is normal for this direct assignment and not an output failure; receiver `HIV-644` |
+| EV-P2F-INTAKE | started | `FOUR-LANE-CONVERGENCE-CONTRACT-V2.md`; exact W1-W4 revisions and boundaries frozen, per-lane manifests pending |
+| EV-P2F-SOURCE-SNAPSHOT | verified read-only | `SOURCE-INTAKE-SNAPSHOT-V2.md`; W4 is an ancestor of W3, W3 clean HEAD selected as first cut, W1/W2 remain fidelity sources |
+| EV-P2F-VISUAL | frozen | `VISUAL-ACCEPTANCE-V2.md`; current HiveCrew components and browser state matrix are authoritative |
+| EV-P2F-JOIN | pending | Clean integration revision, source lineage, focused/mainline tests, typecheck and build |
+| EV-P2F-BROWSER | pending | Current `:3000/:8080` revision, browser journeys, Task-linked receipts and rollback rehearsal |
 
 P2 evidence above is candidate/isolated evidence. It is not browser acceptance, a real Run, a formal authority readback, or a production release.
