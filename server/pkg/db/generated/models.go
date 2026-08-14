@@ -1483,6 +1483,23 @@ type WorkflowInstance struct {
 	WorkspaceID       pgtype.UUID        `json:"workspace_id"`
 }
 
+type WorkflowOperatingProgram struct {
+	ID             pgtype.UUID        `json:"id"`
+	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
+	Name           string             `json:"name"`
+	Description    string             `json:"description"`
+	IdempotencyKey string             `json:"idempotency_key"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
+}
+
+type WorkflowOperatingProgramProject struct {
+	ProgramID   pgtype.UUID        `json:"program_id"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	ProjectID   pgtype.UUID        `json:"project_id"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+}
+
 type Workroom struct {
 	ID          pgtype.UUID        `json:"id"`
 	WorkspaceID pgtype.UUID        `json:"workspace_id"`
