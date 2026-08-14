@@ -36,7 +36,7 @@ import (
 // is still "valid" from its perspective, a newer generation proves a
 // different writer now holds the lease.
 //
-// Schema authority belongs exclusively to migration 260. This service never
+// Schema authority belongs exclusively to migration 262. This service never
 // creates or alters its own table; an unapplied migration fails loudly.
 
 // DefaultLeaseDuration is the standard lease TTL when none is specified.
@@ -84,7 +84,7 @@ var ErrLeaseNotFound = errors.New("write lease: no lease row for mutex key")
 
 // ---------------------------------------------------------------------------
 // SQL constants are kept local until the service is wired into a shared DB
-// query surface. Schema ownership remains exclusively in migration 260.
+// query surface. Schema ownership remains exclusively in migration 262.
 // ---------------------------------------------------------------------------
 
 const acquireWriteLeaseSQL = `

@@ -60,11 +60,11 @@ func newWriteLeaseTestPool(t *testing.T) *pgxpool.Pool {
 	var tableName *string
 	if err := pool.QueryRow(ctx, `SELECT to_regclass('public.write_lease')::text`).Scan(&tableName); err != nil {
 		pool.Close()
-		t.Fatalf("verify migration 260: %v", err)
+		t.Fatalf("verify migration 262: %v", err)
 	}
 	if tableName == nil {
 		pool.Close()
-		t.Fatal("write_lease table missing: apply migration 260 to the dedicated test database")
+		t.Fatal("write_lease table missing: apply migration 262 to the dedicated test database")
 	}
 	t.Cleanup(pool.Close)
 	return pool

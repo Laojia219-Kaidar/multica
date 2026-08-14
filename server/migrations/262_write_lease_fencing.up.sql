@@ -1,6 +1,6 @@
 -- Single Writer Lease with fencing generation (HIV-410).
 --
--- Migration 260 is the canonical schema owner. Application code must never
+-- Migration 262 is the canonical schema owner. Application code must never
 -- create this table lazily. The fence_generation counter assumes exactly one
 -- row per mutex_key, enforced by the UNIQUE constraint below.
 --
