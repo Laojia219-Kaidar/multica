@@ -28,7 +28,13 @@ func readyInput(candidates ...Candidate) Input {
 		Requirement: routescore.TaskRequirement{RequiredRoles: []string{"implementation"}},
 		Candidates:  candidates,
 		Generation:  GenerationEvidence{Known: true},
-		Lease:       LeaseEvidence{Required: true, Known: true, Available: true, LeaseID: "lease-1"},
+		WIP: WIPTruthEvidence{
+			Required:            true,
+			Known:               true,
+			Reconciled:          true,
+			ProjectionAvailable: true,
+		},
+		Lease: LeaseEvidence{Required: true, Known: true, Available: true, LeaseID: "lease-1"},
 	}
 }
 
@@ -144,6 +150,33 @@ func TestPlanMissingEvidenceAndLeaseFailClosed(t *testing.T) {
 	in.Lease.Available = false
 	if got := planner().Plan(in); got.State != StateWaiting || got.Reasons[0] != ReasonLeaseUnavailable {
 		t.Fatalf("lease availability plan = %+v", got)
+	}
+}
+
+func TestPlanWIPTruthFailsClosed(t *testing.T) {
+	in := readyInput(candidate("emp", "00000000-0000-0000-0000-000000000001", "base-a", routescore.QuotaFresh))
+
+	in.WIP.Known = false
+	if got := planner().Plan(in); got.State != StateBlocked || got.Reasons[0] != ReasonWIPTruthMissing {
+		t.Fatalf("missing WIP plan = %+v", got)
+	}
+
+	in.WIP.Known = true
+	in.WIP.Reconciled = false
+	if got := planner().Plan(in); got.State != StateBlocked || got.Reasons[0] != ReasonWIPReconciliationFailed {
+		t.Fatalf("unreconciled WIP plan = %+v", got)
+	}
+
+	in.WIP.Reconciled = true
+	in.WIP.ProjectionAvailable = false
+	if got := planner().Plan(in); got.State != StateBlocked || got.Reasons[0] != ReasonWorkerProjectionUnavailable {
+		t.Fatalf("missing projection plan = %+v", got)
+	}
+
+	in.WIP.ProjectionAvailable = true
+	in.WIP.UnknownRows = 1
+	if got := planner().Plan(in); got.State != StateBlocked || got.Reasons[0] != ReasonWIPUnknownEvidence {
+		t.Fatalf("unknown WIP plan = %+v", got)
 	}
 }
 

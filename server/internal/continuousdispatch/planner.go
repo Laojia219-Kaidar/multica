@@ -28,16 +28,20 @@ const (
 type Reason string
 
 const (
-	ReasonGenerationEvidenceMissing  Reason = "generation_evidence_missing"
-	ReasonDuplicateUnattributed      Reason = "duplicate_generation_unattributed"
-	ReasonExistingOpenTask           Reason = "existing_open_task"
-	ReasonBaseEvidenceMissing        Reason = "base_visibility_unknown"
-	ReasonRuntimeBaseMismatch        Reason = "runtime_base_mismatch"
-	ReasonCandidateIdentityDuplicate Reason = "candidate_identity_duplicate"
-	ReasonNoEligibleCandidate        Reason = "no_eligible_candidate"
-	ReasonPreferredUnavailable       Reason = "preferred_candidate_unavailable"
-	ReasonLeaseEvidenceMissing       Reason = "write_lease_evidence_missing"
-	ReasonLeaseUnavailable           Reason = "write_lease_unavailable"
+	ReasonGenerationEvidenceMissing   Reason = "generation_evidence_missing"
+	ReasonDuplicateUnattributed       Reason = "duplicate_generation_unattributed"
+	ReasonExistingOpenTask            Reason = "existing_open_task"
+	ReasonBaseEvidenceMissing         Reason = "base_visibility_unknown"
+	ReasonRuntimeBaseMismatch         Reason = "runtime_base_mismatch"
+	ReasonCandidateIdentityDuplicate  Reason = "candidate_identity_duplicate"
+	ReasonNoEligibleCandidate         Reason = "no_eligible_candidate"
+	ReasonPreferredUnavailable        Reason = "preferred_candidate_unavailable"
+	ReasonWIPTruthMissing             Reason = "wip_truth_missing"
+	ReasonWIPReconciliationFailed     Reason = "wip_reconciliation_failed"
+	ReasonWorkerProjectionUnavailable Reason = "worker_projection_unavailable"
+	ReasonWIPUnknownEvidence          Reason = "wip_unknown_evidence"
+	ReasonLeaseEvidenceMissing        Reason = "write_lease_evidence_missing"
+	ReasonLeaseUnavailable            Reason = "write_lease_unavailable"
 )
 
 // GenerationEvidence proves whether this Issue/stage/revision/generation
@@ -56,6 +60,18 @@ type LeaseEvidence struct {
 	Known     bool   `json:"known"`
 	Available bool   `json:"available"`
 	LeaseID   string `json:"lease_id,omitempty"`
+}
+
+// WIPTruthEvidence is the minimal fail-closed summary produced by the pure
+// WIP truth engine. Unknown rows or workers can hide active work and therefore
+// cannot be treated as spare capacity.
+type WIPTruthEvidence struct {
+	Required            bool `json:"required"`
+	Known               bool `json:"known"`
+	Reconciled          bool `json:"reconciled"`
+	ProjectionAvailable bool `json:"projection_available"`
+	UnknownRows         int  `json:"unknown_rows"`
+	UnknownWorkers      int  `json:"unknown_workers"`
 }
 
 // Candidate joins a stable employee identity to its route and base evidence.
@@ -92,6 +108,7 @@ type Input struct {
 	PreferredEmployeeID string                     `json:"preferred_employee_id,omitempty"`
 	RequiredBaseID      string                     `json:"required_base_id,omitempty"`
 	Generation          GenerationEvidence         `json:"generation"`
+	WIP                 WIPTruthEvidence           `json:"wip"`
 	Lease               LeaseEvidence              `json:"lease"`
 }
 
@@ -148,6 +165,21 @@ func (p *Planner) Plan(in Input) NextAction {
 			State:          StateAlreadyDispatched,
 			Reasons:        []Reason{ReasonExistingOpenTask},
 			ExistingTaskID: in.Generation.OpenTaskID,
+		}
+	}
+
+	if in.WIP.Required {
+		if !in.WIP.Known {
+			return NextAction{State: StateBlocked, Reasons: []Reason{ReasonWIPTruthMissing}}
+		}
+		if !in.WIP.Reconciled {
+			return NextAction{State: StateBlocked, Reasons: []Reason{ReasonWIPReconciliationFailed}}
+		}
+		if !in.WIP.ProjectionAvailable {
+			return NextAction{State: StateBlocked, Reasons: []Reason{ReasonWorkerProjectionUnavailable}}
+		}
+		if in.WIP.UnknownRows > 0 || in.WIP.UnknownWorkers > 0 {
+			return NextAction{State: StateBlocked, Reasons: []Reason{ReasonWIPUnknownEvidence}}
 		}
 	}
 
