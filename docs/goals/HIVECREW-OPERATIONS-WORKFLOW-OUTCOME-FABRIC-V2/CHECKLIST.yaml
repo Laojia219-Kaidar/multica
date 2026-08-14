@@ -72,4 +72,4 @@ nodes:
 resume_package:
   current_controller: codex
   current_frontier: [WO-40-INTEGRATION, WO-50-CANARY-AND-REVIEW]
-  next_action: Run clean candidate build and record its result; browser localhost navigation is an environment blocker, while API and component canaries are already source-backed.
+  next_action: Complete an authenticated, owner-authorized browser review of the candidate workflow page. Browser localhost connectivity, API canaries, migrations and component checks are already source-backed; this is not a production-acceptance step.

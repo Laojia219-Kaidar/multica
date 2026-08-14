@@ -40,10 +40,12 @@
 - Outcome Center failure in the `项目成果` tab is explicit and never displayed as
   zero results.
 - Publish failure preserves the local draft and shows no success receipt.
-- Browser localhost navigation was observed to remain pending in the Codex
-  In-app Browser on 2026-08-14. This is an environment limitation, not a
-  successful browser acceptance claim. Candidate API, migrations and component
-  tests remain independently recorded in the Goal CHECKLIST.
+- Codex In-app Browser independently reached the candidate login page on
+  2026-08-14 (`127.0.0.1:13512`, HiveCrew title and login form observed).
+  Authenticated workflow-page review remains pending: no verification code,
+  user account or user session was used merely to complete this candidate
+  check. Candidate API, migrations and component tests remain independently
+  recorded in the Goal CHECKLIST.
 
 ## Candidate-only receipt
 
