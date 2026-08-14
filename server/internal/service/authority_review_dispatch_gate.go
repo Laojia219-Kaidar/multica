@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	companyopsapi "github.com/multica-ai/multica/server/internal/companyops"
 )
@@ -118,10 +119,11 @@ func (g *AuthorityReviewDispatchGate) DispatchReview(
 	if err != nil {
 		return ContinuousDispatchReceipt{}, fmt.Errorf("%w: authority read failed", ErrAuthorityReviewDispatchSourceGap)
 	}
-	if response.SchemaVersion != companyopsapi.HiveCosmDispatchAuthorizationSchema ||
-		!response.OK || !response.ReadOnly || response.TenantID != lookup.TenantID ||
-		response.Request != lookup || response.ExecutionIdentity != lookup.ExecutionIdentity {
-		return ContinuousDispatchReceipt{}, ErrAuthorityReviewDispatchSourceGap
+	if err := companyopsapi.ValidateDispatchAuthorizationResponseAt(response, lookup, time.Now().UTC()); err != nil {
+		return ContinuousDispatchReceipt{}, fmt.Errorf("%w: authority response invalid: %v", ErrAuthorityReviewDispatchSourceGap, err)
+	}
+	if err := bindAuthorityReviewDispatchCandidate(identity, response, candidate.request); err != nil {
+		return ContinuousDispatchReceipt{}, err
 	}
 	if !response.Authorization.EventReconcile.Eligible {
 		return ContinuousDispatchReceipt{}, ErrAuthorityReviewDispatchDenied
@@ -146,6 +148,26 @@ func validateAuthorityReviewDispatchCandidate(
 	if shadowUUIDString(request.Route.LocalAgentID) != identity.AgentID {
 		return ErrAuthorityReviewDispatchSourceGap
 	}
+	return nil
+}
+
+func bindAuthorityReviewDispatchCandidate(
+	identity AuthorityReviewDispatchIdentity,
+	response companyopsapi.DispatchAuthorizationResponse,
+	request ContinuousDispatchRequest,
+) error {
+	if response.Scope.WorkspaceID == nil || *response.Scope.WorkspaceID != request.Identity.WorkspaceID ||
+		response.IssueLinkage.IssueID == nil || *response.IssueLinkage.IssueID != request.Identity.IssueID ||
+		response.Evidence == nil || response.Evidence.WorkOrder.SourceRef == nil || *response.Evidence.WorkOrder.SourceRef != identity.WorkOrderSourceRef {
+		return ErrAuthorityReviewDispatchSourceGap
+	}
+	if request.reviewProvenance == nil || request.reviewProvenance.SourceIssueID != *response.IssueLinkage.IssueID {
+		return ErrAuthorityReviewDispatchSourceGap
+	}
+	// Authority's current read contract has no candidate_revision or generation
+	// fields. Those values remain protected by validateContinuousDispatchRequest
+	// and the existing transactional lineage check; the upstream contract must
+	// expose them before this gate can bind them to Authority evidence.
 	return nil
 }
 

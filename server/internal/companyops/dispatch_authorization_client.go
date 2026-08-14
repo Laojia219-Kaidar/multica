@@ -239,20 +239,34 @@ func (c *HiveCosmDispatchAuthorizationClient) Resolve(ctx context.Context, looku
 	if err := decoder.Decode(&envelope); err != nil || ensureJSONEOF(decoder) != nil {
 		return DispatchAuthorizationResponse{}, dispatchAuthorizationFailure(HiveCosmAuthoritySourceGap, resp.StatusCode, errors.New("dispatch authorization response shape is invalid"))
 	}
-	if err := c.validate(envelope, lookup); err != nil {
+	if err := ValidateDispatchAuthorizationResponseAt(envelope, lookup, c.now().UTC()); err != nil {
 		return DispatchAuthorizationResponse{}, dispatchAuthorizationFailure(HiveCosmAuthoritySourceGap, resp.StatusCode, err)
 	}
 	return envelope, nil
 }
 func (c *HiveCosmDispatchAuthorizationClient) validate(r DispatchAuthorizationResponse, lookup DispatchAuthorizationLookup) error {
-	if r.SchemaVersion != HiveCosmDispatchAuthorizationSchema || !r.OK || !r.ReadOnly || r.TenantID != c.tenantID || r.Request != lookup || r.ExecutionIdentity != lookup.ExecutionIdentity {
+	if r.TenantID != c.tenantID {
+		return errors.New("dispatch authorization tenant does not match configured authority boundary")
+	}
+	return ValidateDispatchAuthorizationResponseAt(r, lookup, c.now().UTC())
+}
+
+// ValidateDispatchAuthorizationResponseAt applies the same complete,
+// fail-closed Authority contract used by the HTTP client to an already
+// received response. Dispatch gates use this entry point so an injected
+// authorizer cannot weaken evidence, freshness, expiry, or provenance checks.
+func ValidateDispatchAuthorizationResponseAt(r DispatchAuthorizationResponse, lookup DispatchAuthorizationLookup, now time.Time) error {
+	if r.SchemaVersion != HiveCosmDispatchAuthorizationSchema || !r.OK || !r.ReadOnly || r.TenantID != lookup.TenantID || r.Request != lookup || r.ExecutionIdentity != lookup.ExecutionIdentity {
 		return errors.New("dispatch authorization identity is not exact")
 	}
 	if err := validateSafeID(r.TenantID, "tenant_id"); err != nil {
 		return err
 	}
-	now := c.now().UTC()
-	if err := validateScope(r.Scope, c.tenantID, now); err != nil {
+	if err := validateDispatchAuthorizationLookup(lookup); err != nil {
+		return err
+	}
+	now = now.UTC()
+	if err := validateScope(r.Scope, lookup.TenantID, now); err != nil {
 		return err
 	}
 	if err := validateIssueLinkage(r.IssueLinkage, now); err != nil {
@@ -264,7 +278,7 @@ func (c *HiveCosmDispatchAuthorizationClient) validate(r DispatchAuthorizationRe
 	if !reflect.DeepEqual(r.Scope, r.Evidence.Scope) || !reflect.DeepEqual(r.IssueLinkage, r.Evidence.IssueLinkage) {
 		return errors.New("dispatch authorization top-level and evidence identity drift")
 	}
-	if err := validateEvidence(*r.Evidence, c.tenantID, lookup, now); err != nil {
+	if err := validateEvidence(*r.Evidence, lookup.TenantID, lookup, now); err != nil {
 		return err
 	}
 	if err := validateAuthorizationDecision(r.Authorization.EventReconcile, "event_reconcile", *r.Evidence, now); err != nil {
@@ -497,11 +511,12 @@ func validateFreshTimes(observed string, generated, expires *string, now time.Ti
 			return errors.New("dispatch authorization source_generated_at is invalid")
 		}
 	}
-	if expires != nil {
-		x, e := parseDispatchAuthorizationTime(*expires, now, false)
-		if e != nil || !x.After(now) || !x.After(o) {
-			return errors.New("dispatch authorization expires_at is invalid")
-		}
+	if expires == nil {
+		return errors.New("dispatch authorization expires_at is missing")
+	}
+	x, e := parseDispatchAuthorizationTime(*expires, now, false)
+	if e != nil || !x.After(now) || !x.After(o) {
+		return errors.New("dispatch authorization expires_at is invalid")
 	}
 	return nil
 }
