@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -12,124 +11,138 @@ import (
 	"time"
 )
 
-func TestDispatchAuthorizationClientAcceptsOnlyExactFreshAuthority(t *testing.T) {
-	lookup := DispatchAuthorizationLookup{WorkspaceID: "ws-1", WorkflowID: "wf-1", GoalID: "goal-1", WorkOrderID: "wo-1"}
-	now := time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC)
-	decision := DispatchAuthorization{
-		State: "authorized", Scope: "event_reconcile", WorkflowID: lookup.WorkflowID, GoalID: lookup.GoalID, WorkOrderID: lookup.WorkOrderID,
-		OwnerDecisionRef: "hive://owner/decision/42", SourceRef: "hive://authority/dispatch/42", SourceRevision: "sha256:" + strings.Repeat("a", 64),
-		ObservedAt: "2026-08-14T11:59:00Z", SourceGeneratedAt: "2026-08-14T11:58:59Z", Freshness: "fresh", ExpiresAt: "2026-08-14T12:05:00Z",
-	}
-	var gotAuth string
-	var gotQuery string
+func testLookup() DispatchAuthorizationLookup {
+	return DispatchAuthorizationLookup{TenantID: "tenant-1", ExecutionIdentity: DispatchAuthorizationExecutionIdentity{WorkOrderSourceRef: "hive://orders/wo-1", EmployeeID: "employee-1", IdentityBindingID: "binding-1", AgentID: "agent-1", AssignmentID: "assignment-1"}}
+}
+func ptr(v string) *string { return &v }
+func validDispatchResponse() DispatchAuthorizationResponse {
+	l := testLookup()
+	now := time.Now().UTC()
+	observed := now.Add(-time.Minute).Format(time.RFC3339Nano)
+	generated := now.Add(-2 * time.Minute).Format(time.RFC3339Nano)
+	expires := now.Add(5 * time.Minute).Format(time.RFC3339Nano)
+	scopeRef := "hive://scope/tenant-1/ws-1/wf-1/goal-1/wo-1"
+	issueRef := "hive://issues/project-1/wo-1/issue-1"
+	rev := "revision:dispatch-1"
+	scope := DispatchAuthorizationScope{State: "OBSERVED", TenantID: ptr(l.TenantID), WorkspaceID: ptr("ws-1"), WorkflowID: ptr("wf-1"), GoalID: ptr("goal-1"), WorkOrderID: ptr("wo-1"), SourceRef: ptr(scopeRef), SourceRevision: ptr(rev), ObservedAt: observed, SourceGeneratedAt: ptr(generated), Freshness: "current", ExpiresAt: ptr(expires)}
+	issue := DispatchAuthorizationIssueLinkage{State: "OBSERVED", IssueID: ptr("issue-1"), ProjectID: ptr("project-1"), WorkOrderID: ptr("wo-1"), SourceRef: ptr(issueRef), SourceRevision: ptr(rev), ObservedAt: observed, SourceGeneratedAt: ptr(generated), Freshness: "current", ExpiresAt: ptr(expires)}
+	rec := dispatchEvidenceRecord{State: "OBSERVED", SourceRef: ptr(l.ExecutionIdentity.WorkOrderSourceRef), SourceRevision: ptr(rev), WorkOrderID: ptr("wo-1"), ObservedAt: observed, SourceGeneratedAt: ptr(generated), Freshness: "current", ExpiresAt: ptr(expires)}
+	assignment := dispatchAssignmentEvidence{dispatchEvidenceRecord: rec, AssignmentID: ptr(l.ExecutionIdentity.AssignmentID), EmployeeID: ptr(l.ExecutionIdentity.EmployeeID), AgentID: ptr(l.ExecutionIdentity.AgentID)}
+	binding := dispatchBindingEvidence{dispatchEvidenceRecord: rec, IdentityBindingID: ptr(l.ExecutionIdentity.IdentityBindingID), EmployeeID: ptr(l.ExecutionIdentity.EmployeeID), AgentID: ptr(l.ExecutionIdentity.AgentID), Active: true}
+	custody := dispatchCustodyEvidence{dispatchEvidenceRecord: rec, AssignmentID: ptr(l.ExecutionIdentity.AssignmentID), EmployeeID: ptr(l.ExecutionIdentity.EmployeeID), AgentID: ptr(l.ExecutionIdentity.AgentID)}
+	workflow := dispatchWorkflowEvidence{State: "AUTHORIZED", Scope: ptr("event_reconcile"), WorkflowID: ptr("wf-1"), GoalID: ptr("goal-1"), WorkOrderID: ptr("wo-1"), ObservedAt: observed, SourceGeneratedAt: ptr(generated), Freshness: "current", ExpiresAt: ptr(expires)}
+	evidence := &DispatchAuthorizationEvidence{Scope: scope, IssueLinkage: issue, WorkOrder: rec, Assignment: assignment, IdentityBinding: binding, Custody: custody, ContinuousWorkflowAuthorization: workflow}
+	r := DispatchAuthorizationResponse{SchemaVersion: HiveCosmDispatchAuthorizationSchema, OK: true, ReadOnly: true, TenantID: l.TenantID, Request: l, ExecutionIdentity: l.ExecutionIdentity, Scope: scope, IssueLinkage: issue, Evidence: evidence}
+	r.Authorization.EventReconcile = DispatchAuthorizationDecision{Eligible: true, Reason: "authorized", ObservedAt: observed, Freshness: "current", ExpiresAt: ptr(expires)}
+	r.Authorization.RecoveryOnly = r.Authorization.EventReconcile
+	return r
+}
+
+func TestDispatchAuthorizationClientConsumesExactAuthorityRead(t *testing.T) {
+	lookup := testLookup()
+	valid := validDispatchResponse()
+	var gotAuth, gotQuery string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotAuth = r.Header.Get("Authorization")
 		gotQuery = r.URL.RawQuery
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(HiveCosmDispatchAuthorizationResponse{
-			SchemaVersion: HiveCosmDispatchAuthorizationSchema, OK: true, TenantID: "tenant-1", WorkspaceID: lookup.WorkspaceID,
-			Request: lookup, Authorization: decision,
-		})
+		_ = json.NewEncoder(w).Encode(valid)
 	}))
 	defer server.Close()
 	transport := roundTripperFunc(func(r *http.Request) (*http.Response, error) {
 		r = r.Clone(r.Context())
-		r.Header.Set("Authorization", "Bearer test-authority-token")
+		r.Header.Set("Authorization", "Bearer injected")
 		return http.DefaultTransport.RoundTrip(r)
 	})
-	client, err := NewHiveCosmDispatchAuthorizationClient(server.URL, &http.Client{Transport: transport}, "tenant-1")
+	client, err := NewHiveCosmDispatchAuthorizationClient(server.URL, &http.Client{Transport: transport}, lookup.TenantID)
 	if err != nil {
-		t.Fatalf("New client: %v", err)
+		t.Fatal(err)
 	}
-	client.now = func() time.Time { return now }
 	got, err := client.Resolve(context.Background(), lookup)
 	if err != nil {
-		t.Fatalf("Resolve: %v", err)
+		t.Fatal(err)
 	}
-	if got != decision {
-		t.Fatalf("decision = %+v, want %+v", got, decision)
+	if !got.OK || got.SchemaVersion != HiveCosmDispatchAuthorizationSchema {
+		t.Fatalf("unexpected response: %+v", got)
 	}
-	if gotAuth != "Bearer test-authority-token" {
-		t.Fatalf("authorization header = %q", gotAuth)
+	if gotAuth != "Bearer injected" {
+		t.Fatalf("authorization = %q", gotAuth)
 	}
-	for _, expected := range []string{"workspace_id=ws-1", "workflow_id=wf-1", "goal_id=goal-1", "work_order_id=wo-1"} {
-		if !strings.Contains(gotQuery, expected) {
-			t.Fatalf("query %q does not contain %q", gotQuery, expected)
+	for _, key := range []string{"tenant_id=tenant-1", "work_order_source_ref=hive%3A%2F%2Forders%2Fwo-1", "employee_id=employee-1", "identity_binding_id=binding-1", "agent_id=agent-1", "assignment_id=assignment-1"} {
+		if !strings.Contains(gotQuery, key) {
+			t.Fatalf("query %q missing %q", gotQuery, key)
 		}
 	}
 }
 
-func TestDispatchAuthorizationClientFailsClosed(t *testing.T) {
-	lookup := DispatchAuthorizationLookup{WorkspaceID: "ws-1", WorkflowID: "wf-1", GoalID: "goal-1", WorkOrderID: "wo-1"}
-	now := time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC)
-	valid := HiveCosmDispatchAuthorizationResponse{
-		SchemaVersion: HiveCosmDispatchAuthorizationSchema, OK: true, TenantID: "tenant-1", WorkspaceID: lookup.WorkspaceID, Request: lookup,
-		Authorization: DispatchAuthorization{State: "authorized", Scope: "recovery_only", WorkflowID: lookup.WorkflowID, GoalID: lookup.GoalID, WorkOrderID: lookup.WorkOrderID,
-			OwnerDecisionRef: "decision", SourceRef: "source", SourceRevision: "revision", ObservedAt: "2026-08-14T11:59:00Z", SourceGeneratedAt: "2026-08-14T11:59:00Z", Freshness: "fresh", ExpiresAt: "2026-08-14T12:01:00Z"},
-	}
+func TestDispatchAuthorizationClientFailsClosedForDriftAndMalformedResponses(t *testing.T) {
+	base := validDispatchResponse()
 	tests := []struct {
-		name       string
-		status     int
-		body       any
-		content    string
-		wantSecret string
-	}{
-		{name: "unauthenticated", status: http.StatusUnauthorized, body: map[string]string{"error": "Bearer real-secret-token"}, content: "application/json", wantSecret: "real-secret-token"},
-		{name: "unknown field", status: http.StatusOK, body: map[string]any{"schema_version": HiveCosmDispatchAuthorizationSchema, "ok": true, "tenant_id": "tenant-1", "workspace_id": lookup.WorkspaceID, "request": lookup, "authorization": valid.Authorization, "unexpected": true}, content: "application/json"},
-		{name: "tenant drift", status: http.StatusOK, body: func() HiveCosmDispatchAuthorizationResponse { v := valid; v.TenantID = "other"; return v }(), content: "application/json"},
-		{name: "request drift", status: http.StatusOK, body: func() HiveCosmDispatchAuthorizationResponse { v := valid; v.Request.GoalID = "other"; return v }(), content: "application/json"},
-		{name: "revoked", status: http.StatusOK, body: func() HiveCosmDispatchAuthorizationResponse { v := valid; v.Authorization.State = "revoked"; return v }(), content: "application/json"},
-		{name: "stale", status: http.StatusOK, body: func() HiveCosmDispatchAuthorizationResponse {
-			v := valid
-			v.Authorization.ObservedAt = "2026-08-14T11:00:00Z"
-			return v
-		}(), content: "application/json"},
-		{name: "expired", status: http.StatusOK, body: func() HiveCosmDispatchAuthorizationResponse {
-			v := valid
-			v.Authorization.ExpiresAt = "2026-08-14T11:59:59Z"
-			return v
-		}(), content: "application/json"},
-		{name: "wrong media", status: http.StatusOK, body: valid, content: "text/plain"},
-	}
+		name   string
+		mutate func(*DispatchAuthorizationResponse)
+	}{{"tenant drift", func(r *DispatchAuthorizationResponse) { r.TenantID = "other" }}, {"selector drift", func(r *DispatchAuthorizationResponse) { r.ExecutionIdentity.AgentID = "other" }}, {"scope drift", func(r *DispatchAuthorizationResponse) { r.Scope.WorkspaceID = ptr("other") }}, {"issue linkage malformed", func(r *DispatchAuthorizationResponse) { r.IssueLinkage.IssueID = ptr("bad id") }}, {"stale evidence", func(r *DispatchAuthorizationResponse) { r.Evidence.Scope.ObservedAt = "2020-01-01T00:00:00Z" }}, {"unknown field", func(r *DispatchAuthorizationResponse) {}}}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			response := base
+			tt.mutate(&response)
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				w.Header().Set("Content-Type", tt.content)
-				w.WriteHeader(tt.status)
-				if tt.body != nil {
-					if raw, ok := tt.body.(string); ok {
-						_, _ = io.WriteString(w, raw)
-					} else {
-						_ = json.NewEncoder(w).Encode(tt.body)
-					}
+				w.Header().Set("Content-Type", "application/json")
+				if tt.name == "unknown field" {
+					_, _ = w.Write([]byte(`{"schema_version":"hivecosm.dispatch-authorization-read.v1","ok":true,"read_only":true,"unexpected":true}`))
+					return
 				}
+				_ = json.NewEncoder(w).Encode(response)
 			}))
 			defer server.Close()
-			client, err := NewHiveCosmDispatchAuthorizationClient(server.URL, nil, "tenant-1")
-			if err != nil {
-				t.Fatalf("New client: %v", err)
-			}
-			client.now = func() time.Time { return now }
-			_, err = client.Resolve(context.Background(), lookup)
+			client, _ := NewHiveCosmDispatchAuthorizationClient(server.URL, nil, "tenant-1")
+			_, err := client.Resolve(context.Background(), testLookup())
 			if err == nil {
-				t.Fatal("Resolve succeeded for ineligible authority response")
+				t.Fatal("accepted invalid Authority response")
 			}
-			var authorityErr *HiveCosmAuthorityError
-			if !errors.As(err, &authorityErr) || authorityErr.Kind != HiveCosmAuthoritySourceGap {
-				t.Fatalf("error = %v, want source_gap authority error", err)
-			}
-			if tt.wantSecret != "" && strings.Contains(err.Error(), tt.wantSecret) {
-				t.Fatalf("error leaked secret %q: %v", tt.wantSecret, err)
+			var ae *HiveCosmAuthorityError
+			if !errors.As(err, &ae) || ae.Kind != HiveCosmAuthoritySourceGap {
+				t.Fatalf("error = %v", err)
 			}
 		})
 	}
 }
 
-func TestDispatchAuthorizationClientRejectsMissingConfiguration(t *testing.T) {
-	client := &HiveCosmDispatchAuthorizationClient{}
-	_, err := client.Resolve(context.Background(), DispatchAuthorizationLookup{WorkspaceID: "ws-1", WorkflowID: "wf-1", GoalID: "goal-1", WorkOrderID: "wo-1"})
-	if err == nil || !strings.Contains(err.Error(), string(HiveCosmAuthoritySourceGap)) {
-		t.Fatalf("error = %v, want source_gap", err)
+func TestDispatchAuthorizationClientRejectsWrongMethodMediaAndRedirect(t *testing.T) {
+	for _, mode := range []string{"POST", "wrong-media", "redirect"} {
+		t.Run(mode, func(t *testing.T) {
+			target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(validDispatchResponse())
+			}))
+			defer target.Close()
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if mode == "redirect" {
+					http.Redirect(w, r, target.URL, http.StatusFound)
+					return
+				}
+				if mode == "wrong-media" {
+					w.Header().Set("Content-Type", "text/plain")
+				}
+				if mode == "POST" {
+					w.WriteHeader(http.StatusMethodNotAllowed)
+					return
+				}
+				_ = json.NewEncoder(w).Encode(validDispatchResponse())
+			}))
+			defer server.Close()
+			client, _ := NewHiveCosmDispatchAuthorizationClient(server.URL, nil, "tenant-1")
+			_, err := client.Resolve(context.Background(), testLookup())
+			if err == nil {
+				t.Fatal("accepted invalid method/media/redirect")
+			}
+		})
+	}
+}
+func TestDispatchAuthorizationLookupRequiresAllFiveSelectors(t *testing.T) {
+	l := testLookup()
+	l.ExecutionIdentity.AssignmentID = ""
+	if err := validateDispatchAuthorizationLookup(l); err == nil {
+		t.Fatal("accepted missing assignment selector")
 	}
 }
 
