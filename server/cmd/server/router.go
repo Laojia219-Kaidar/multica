@@ -3,7 +3,10 @@ package main
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/netip"
@@ -39,6 +42,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/storage"
 	"github.com/multica-ai/multica/server/internal/util"
 	"github.com/multica-ai/multica/server/internal/util/secretbox"
+	"github.com/multica-ai/multica/server/internal/workflow"
 	composiosdk "github.com/multica-ai/multica/server/pkg/composio"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/featureflag"
@@ -187,6 +191,398 @@ func configureCompanyOps(h *handler.Handler, queries *db.Queries, pool *pgxpool.
 		return
 	}
 	h.CompanyOpsArtifacts = artifactService
+}
+
+// ---------------------------------------------------------------------------
+// WeChat content production slice (HIVECREW-WECHAT-REAL-OPERATIONS-V1, WO-50
+// integrator wiring). The executor below is the narrow seam between the WO-30
+// orchestrator and the existing CompanyOps authorities: Issue projection,
+// assignment Dispatch, execution receipts, artifact materialization, and Owner
+// review. It creates no new queue, table, or registry.
+// ---------------------------------------------------------------------------
+
+// wechatProductionExecutor implements workflow.WechatNodeExecutor over the
+// handler's already-configured CompanyOps services. It is built per request so
+// the acting Owner and the request's authority context stay exact.
+type wechatProductionExecutor struct {
+	authority   *service.CompanyOpsAuthorityResolver
+	ensureIssue func(ctx context.Context, workspaceID pgtype.UUID, actorUserID pgtype.UUID, workOrder companyopsapi.AuthoritySnapshot) (db.Issue, error)
+	assignment  *service.CompanyOpsAssignmentService
+	artifacts   *service.CompanyOpsArtifactService
+	queries     *db.Queries
+	actor       pgtype.UUID
+	authContext workflow.WechatContentAuthorityContext
+}
+
+// resolve re-observes the external authority chain for one node WorkOrder.
+// Permanent authority failures (not_found/unsupported/invalid/conflict) wrap
+// workflow.ErrWechatNodeAuthorityRejected so the orchestrator fails the node
+// closed instead of retrying; source_gap stays transient.
+func (e *wechatProductionExecutor) resolve(ctx context.Context, workspaceID pgtype.UUID, workOrderSourceRef string) (service.ResolvedCompanyOpsAuthority, error) {
+	resolved, err := e.authority.Resolve(ctx, workspaceID, companyopsapi.HiveCosmAuthorityLookup{
+		WorkOrderSourceRef: workOrderSourceRef,
+		EmployeeID:         e.authContext.EmployeeID,
+		IdentityBindingID:  e.authContext.IdentityBindingID,
+		AgentID:            e.authContext.AgentID,
+	})
+	if err != nil {
+		var authErr *companyopsapi.HiveCosmAuthorityError
+		if errors.As(err, &authErr) && authErr.Kind != companyopsapi.HiveCosmAuthoritySourceGap {
+			return service.ResolvedCompanyOpsAuthority{}, fmt.Errorf("%w: %v", workflow.ErrWechatNodeAuthorityRejected, err)
+		}
+		return service.ResolvedCompanyOpsAuthority{}, err
+	}
+	return resolved, nil
+}
+
+func (e *wechatProductionExecutor) EnsureNodeIssue(ctx context.Context, workspaceID string, plan workflow.WechatNodeExecutionPlan) (string, error) {
+	ws, err := util.ParseUUID(workspaceID)
+	if err != nil {
+		return "", err
+	}
+	resolved, err := e.resolve(ctx, ws, plan.WorkOrderSourceRef)
+	if err != nil {
+		return "", err
+	}
+	issue, err := e.ensureIssue(ctx, ws, e.actor, resolved.WorkOrder)
+	if err != nil {
+		return "", err
+	}
+	return util.UUIDToString(issue.ID), nil
+}
+
+func (e *wechatProductionExecutor) DispatchNode(ctx context.Context, workspaceID string, plan workflow.WechatNodeExecutionPlan, issueID string) (workflow.WechatNodeDispatch, error) {
+	ws, err := util.ParseUUID(workspaceID)
+	if err != nil {
+		return workflow.WechatNodeDispatch{}, err
+	}
+	issueUUID, err := util.ParseUUID(issueID)
+	if err != nil {
+		return workflow.WechatNodeDispatch{}, err
+	}
+	commandUUID, err := util.ParseUUID(plan.CommandID)
+	if err != nil {
+		return workflow.WechatNodeDispatch{}, err
+	}
+	resolved, err := e.resolve(ctx, ws, plan.WorkOrderSourceRef)
+	if err != nil {
+		return workflow.WechatNodeDispatch{}, err
+	}
+	receipt, err := e.assignment.Dispatch(ctx, resolved.AssignmentRequest(commandUUID, ws, issueUUID, e.actor, plan.HandoffNote))
+	if err != nil {
+		var authErr *companyopsapi.HiveCosmAuthorityError
+		if errors.As(err, &authErr) && authErr.Kind != companyopsapi.HiveCosmAuthoritySourceGap {
+			return workflow.WechatNodeDispatch{}, fmt.Errorf("%w: %v", workflow.ErrWechatNodeAuthorityRejected, err)
+		}
+		return workflow.WechatNodeDispatch{}, err
+	}
+	return workflow.WechatNodeDispatch{
+		CommandID: plan.CommandID,
+		IssueID:   issueID,
+		TaskID:    util.UUIDToString(receipt.InitialTaskID),
+	}, nil
+}
+
+func (e *wechatProductionExecutor) ReadNodeExecution(ctx context.Context, workspaceID string, issueID string, taskID string) (workflow.WechatNodeExecutionObservation, error) {
+	ws, err := util.ParseUUID(workspaceID)
+	if err != nil {
+		return workflow.WechatNodeExecutionObservation{}, err
+	}
+	issueUUID, err := util.ParseUUID(issueID)
+	if err != nil {
+		return workflow.WechatNodeExecutionObservation{}, err
+	}
+	taskUUID, err := util.ParseUUID(taskID)
+	if err != nil {
+		return workflow.WechatNodeExecutionObservation{}, err
+	}
+	task, err := e.queries.GetAgentTask(ctx, taskUUID)
+	if err != nil {
+		return workflow.WechatNodeExecutionObservation{}, err
+	}
+	state := task.Status
+	switch task.Status {
+	case "queued":
+		state = "awaiting_claim"
+	case "claimed", "in_progress", "preparing":
+		state = "running"
+	}
+	receiptCompleted := false
+	if receipt, receiptErr := service.NewCompanyOpsPersistenceRepositoryWithQueries(e.queries).GetExecutionReceipt(ctx, taskUUID); receiptErr == nil &&
+		receipt.Terminal != nil && receipt.Terminal.Status == "completed" {
+		receiptCompleted = true
+	}
+	candidateID := ""
+	if outcome, outcomeErr := e.artifacts.GetIssueOutcome(ctx, ws, issueUUID); outcomeErr == nil &&
+		outcome != nil && outcome.Candidate != nil {
+		candidateID = outcome.Candidate.ID
+	}
+	return workflow.WechatNodeExecutionObservation{
+		State:            state,
+		ReceiptCompleted: receiptCompleted,
+		CandidateID:      candidateID,
+	}, nil
+}
+
+func (e *wechatProductionExecutor) MaterializeNodeCandidate(ctx context.Context, workspaceID string, taskID string) (string, error) {
+	taskUUID, err := util.ParseUUID(taskID)
+	if err != nil {
+		return "", err
+	}
+	task, err := e.queries.GetAgentTask(ctx, taskUUID)
+	if err != nil {
+		return "", err
+	}
+	outcome, err := e.artifacts.MaterializeCompletedTask(ctx, workspaceID, task, wechatTaskOutputText(task.Result), "")
+	if err != nil {
+		return "", err
+	}
+	if outcome == nil || outcome.Candidate == nil {
+		return "", fmt.Errorf("materialize Run %s produced no candidate", taskID)
+	}
+	return outcome.Candidate.ID, nil
+}
+
+func (e *wechatProductionExecutor) ReviewNodeCandidate(ctx context.Context, workspaceID string, issueID string, candidateID string, decision workflow.WechatProductionReviewDecision, reviewID string) error {
+	ws, err := util.ParseUUID(workspaceID)
+	if err != nil {
+		return err
+	}
+	issueUUID, err := util.ParseUUID(issueID)
+	if err != nil {
+		return err
+	}
+	feedback := ""
+	if decision == workflow.WechatReviewChangesRequested {
+		// The existing ReviewArtifact path requires non-empty rework feedback;
+		// the exact Owner rationale lives in the workflow event ledger under
+		// this review id, so the feedback pins that receipt.
+		feedback = fmt.Sprintf("Owner requested changes on the WeChat production surface (review %s); rework is tracked on the same issue.", reviewID)
+	}
+	_, err = e.artifacts.ReviewArtifact(ctx, ws, issueUUID, service.CompanyOpsArtifactReview{
+		CandidateID:   candidateID,
+		Decision:      companyopsapi.ArtifactEventType(decision),
+		IdempotencyID: reviewID,
+		Feedback:      feedback,
+		ActorUserID:   e.actor,
+	})
+	return err
+}
+
+// wechatTaskOutputText extracts the operator-visible output a completing Run
+// reported. An empty result stays empty so materialization fails closed
+// instead of synthesizing content.
+func wechatTaskOutputText(result []byte) string {
+	trimmed := strings.TrimSpace(string(result))
+	if trimmed == "" {
+		return ""
+	}
+	var payload struct {
+		Output string `json:"output"`
+	}
+	if err := json.Unmarshal(result, &payload); err == nil {
+		return payload.Output
+	}
+	return trimmed
+}
+
+// wechatProductionAPI is the per-request assembly the HTTP handlers use.
+type wechatProductionAPI struct {
+	orchestrator *workflow.WechatProductionOrchestrator
+	workspaceID  string
+	actor        string
+}
+
+// wechatProductionAPIForRequest fail-closed builds the orchestrator over the
+// configured CompanyOps services. Any missing writer keeps the endpoints
+// registered but unavailable (503), matching the existing CompanyOps posture.
+func wechatProductionAPIForRequest(h *handler.Handler, w http.ResponseWriter, r *http.Request, authContext workflow.WechatContentAuthorityContext) *wechatProductionAPI {
+	userID := strings.TrimSpace(r.Header.Get("X-User-ID"))
+	if userID == "" {
+		writeWechatProductionError(w, http.StatusUnauthorized, "unauthorized", "user not authenticated")
+		return nil
+	}
+	workspaceIDString := middleware.ResolveWorkspaceIDFromRequest(r, h.Queries)
+	workspaceID, err := util.ParseUUID(workspaceIDString)
+	if err != nil || !workspaceID.Valid {
+		writeWechatProductionError(w, http.StatusBadRequest, "invalid_request", "workspace_id is required")
+		return nil
+	}
+	actorUserID, err := util.ParseUUID(userID)
+	if err != nil || !actorUserID.Valid {
+		writeWechatProductionError(w, http.StatusUnauthorized, "unauthorized", "user is not a canonical member")
+		return nil
+	}
+	if h.CompanyOpsAuthority == nil || h.CompanyOpsEnsureWorkOrderIssue == nil || h.CompanyOpsAssignment == nil || h.CompanyOpsArtifacts == nil {
+		writeWechatProductionError(w, http.StatusServiceUnavailable, "writer_unavailable", "CompanyOps writers are not configured")
+		return nil
+	}
+	executor := &wechatProductionExecutor{
+		authority:   h.CompanyOpsAuthority,
+		ensureIssue: h.CompanyOpsEnsureWorkOrderIssue,
+		assignment:  h.CompanyOpsAssignment,
+		artifacts:   h.CompanyOpsArtifacts,
+		queries:     h.Queries,
+		actor:       actorUserID,
+		authContext: authContext,
+	}
+	orchestrator, err := workflow.NewWechatProductionOrchestrator(workflow.NewRepository(h.Queries), executor)
+	if err != nil {
+		writeWechatProductionError(w, http.StatusServiceUnavailable, "writer_unavailable", err.Error())
+		return nil
+	}
+	return &wechatProductionAPI{
+		orchestrator: orchestrator,
+		workspaceID:  util.UUIDToString(workspaceID),
+		actor:        userID,
+	}
+}
+
+// decodeWechatProductionRequest strictly decodes one production request: no
+// unknown fields, no trailing JSON values, canonical wire shape only.
+func decodeWechatProductionRequest(w http.ResponseWriter, r *http.Request) (workflow.WechatContentProductionRequest, bool) {
+	var req workflow.WechatContentProductionRequest
+	decoder := json.NewDecoder(io.LimitReader(r.Body, 1<<20))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
+		writeWechatProductionError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return workflow.WechatContentProductionRequest{}, false
+	}
+	var extra any
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		writeWechatProductionError(w, http.StatusBadRequest, "invalid_request", "request contains multiple JSON values")
+		return workflow.WechatContentProductionRequest{}, false
+	}
+	if err := workflow.ValidateWechatContentProductionRequest(req); err != nil {
+		writeWechatProductionError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return workflow.WechatContentProductionRequest{}, false
+	}
+	return req, true
+}
+
+func writeWechatProductionJSON(w http.ResponseWriter, status int, payload any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(payload)
+}
+
+func writeWechatProductionError(w http.ResponseWriter, status int, code string, message string) {
+	writeWechatProductionJSON(w, status, map[string]string{"error": code, "message": message})
+}
+
+// writeWechatProductionServiceError maps orchestrator failures onto stable
+// HTTP statuses without leaking internals.
+func writeWechatProductionServiceError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, workflow.ErrWechatProductionNotFound):
+		writeWechatProductionError(w, http.StatusNotFound, "not_found", err.Error())
+	case errors.Is(err, workflow.ErrWechatDefinitionPin):
+		writeWechatProductionError(w, http.StatusConflict, "definition_pin_conflict", err.Error())
+	case errors.Is(err, workflow.ErrWechatReviewUnavailable):
+		writeWechatProductionError(w, http.StatusConflict, "review_unavailable", err.Error())
+	default:
+		writeWechatProductionError(w, http.StatusInternalServerError, "internal", err.Error())
+	}
+}
+
+// wechatProductionStartHandler starts (or idempotently replays) one frozen
+// WeChat content production. Node 1 dispatches inside the same call.
+func wechatProductionStartHandler(h *handler.Handler) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		req, ok := decodeWechatProductionRequest(w, r)
+		if !ok {
+			return
+		}
+		api := wechatProductionAPIForRequest(h, w, r, req.Authority)
+		if api == nil {
+			return
+		}
+		view, err := api.orchestrator.StartProduction(r.Context(), api.workspaceID, req, api.actor)
+		if err != nil {
+			writeWechatProductionServiceError(w, err)
+			return
+		}
+		writeWechatProductionJSON(w, http.StatusOK, map[string]any{
+			"schema_version":  "hivecrew.wechat-content-production.v1",
+			"instance_id":     view.InstanceID,
+			"idempotency_key": req.IdempotencyKey,
+			"production":      view,
+		})
+	}
+}
+
+// wechatProductionReconcileHandler poll-drives one production forward. The
+// brief is not ledger-persisted, so the caller resends the exact same request;
+// any drift fails closed inside the orchestrator.
+func wechatProductionReconcileHandler(h *handler.Handler) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		req, ok := decodeWechatProductionRequest(w, r)
+		if !ok {
+			return
+		}
+		api := wechatProductionAPIForRequest(h, w, r, req.Authority)
+		if api == nil {
+			return
+		}
+		view, err := api.orchestrator.ReconcileProduction(r.Context(), api.workspaceID, r.PathValue("instanceId"), req, api.actor)
+		if err != nil {
+			writeWechatProductionServiceError(w, err)
+			return
+		}
+		writeWechatProductionJSON(w, http.StatusOK, map[string]any{
+			"schema_version": "hivecrew.wechat-content-production.v1",
+			"production":     view,
+		})
+	}
+}
+
+func wechatProductionGetHandler(h *handler.Handler) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		api := wechatProductionAPIForRequest(h, w, r, workflow.WechatContentAuthorityContext{})
+		if api == nil {
+			return
+		}
+		view, err := api.orchestrator.GetProduction(r.Context(), api.workspaceID, r.PathValue("instanceId"))
+		if err != nil {
+			writeWechatProductionServiceError(w, err)
+			return
+		}
+		writeWechatProductionJSON(w, http.StatusOK, map[string]any{
+			"schema_version": "hivecrew.wechat-content-production.v1",
+			"production":     view,
+		})
+	}
+}
+
+// wechatProductionReviewHandler records the Owner decision at the approval
+// gate (node 3) or on the terminal publication package (node 4).
+func wechatProductionReviewHandler(h *handler.Handler) http.HandlerFunc {
+	type reviewRequest struct {
+		Decision string `json:"decision"`
+		ReviewID string `json:"review_id"`
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		var body reviewRequest
+		decoder := json.NewDecoder(io.LimitReader(r.Body, 1<<16))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&body); err != nil {
+			writeWechatProductionError(w, http.StatusBadRequest, "invalid_request", err.Error())
+			return
+		}
+		api := wechatProductionAPIForRequest(h, w, r, workflow.WechatContentAuthorityContext{})
+		if api == nil {
+			return
+		}
+		view, err := api.orchestrator.ReviewProduction(r.Context(), api.workspaceID, r.PathValue("instanceId"), workflow.WechatProductionReviewDecision(body.Decision), body.ReviewID, api.actor)
+		if err != nil {
+			writeWechatProductionServiceError(w, err)
+			return
+		}
+		writeWechatProductionJSON(w, http.StatusOK, map[string]any{
+			"schema_version": "hivecrew.wechat-content-production.v1",
+			"production":     view,
+		})
+	}
 }
 
 // parseTrustedProxies parses a comma-separated list of CIDR prefixes from the
@@ -1545,6 +1941,12 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			r.Get("/api/workflow/instances/{id}", h.GetWorkflowInstance)
 			r.Post("/api/workflow/instances/{id}/advance", h.AdvanceWorkflowInstance)
 			r.Get("/api/workflow/instances/{id}/events", h.WorkflowInstanceEvents)
+			r.Route("/api/workflow/wechat-productions", func(r chi.Router) {
+				r.Post("/", wechatProductionStartHandler(h))
+				r.Get("/{instanceId}", wechatProductionGetHandler(h))
+				r.Post("/{instanceId}/reconcile", wechatProductionReconcileHandler(h))
+				r.Post("/{instanceId}/review", wechatProductionReviewHandler(h))
+			})
 			r.Get("/api/workrooms", h.ListWorkrooms)
 			r.Post("/api/workrooms", h.CreateWorkroom)
 			r.Get("/api/workrooms/{id}", h.GetWorkroom)
