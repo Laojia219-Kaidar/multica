@@ -195,8 +195,8 @@ work_orders:
     evidence_refs: [EV-ISOLATION]
   - id: WO-20
     phase_ref: PHASE-2
-    status: ready
-    stage: ready
+    status: completed
+    stage: candidate_verified
     required: true
     worker_role: luna_frontend
     read_scope: [packages/views/workflow, "apps/web/app/[workspaceSlug]/(dashboard)/workflow"]
@@ -206,6 +206,12 @@ work_orders:
     deliverables: [production_request_and_runtime_control_surface]
     acceptance: [design_operations_split, accessible_preview_and_approval_controls]
     verification: [views_tests_browser_journey]
+    evidence_refs: [EV-UI-COMPONENT]
+    wo20_result:
+      revision: c386c016a
+      verdict: candidate_verified_component_level
+      verified_at: "2026-08-15T13:27:34Z"
+      note: pure-view WechatProductionPanel on the L4 plan section; fail-closed start form with the same frozen contract validator, stable idempotency key, four-node reconciled status with read-only lineage, gate-only approve/reject controls, terminal awaiting-publication honesty, no phantom pause/resume/retry/publish controls, VC-01 design/ops separation. 43/43 workflow view tests pass; tsc clean in WO-20 files (6 pre-existing errors confined to the protected dirty designer files; 2 unrelated failing baseline test files recorded). Integrator API/page wiring and the live browser journey are WO-50 (EV-UI stays pending until then).
   - id: WO-30
     phase_ref: PHASE-2
     status: completed
@@ -274,7 +280,7 @@ work_orders:
 artifacts:
   - {id: ART-GOAL, type: goal, path: docs/goals/HIVECREW-WECHAT-REAL-OPERATIONS-V1/GOAL.md, producer_ref: WO-00, verifier_ref: EV-GOAL, owner: integrator, status: produced}
   - {id: ART-CONTRACT, type: contract, path: packages/core/workflow, producer_ref: WO-10, verifier_ref: EV-CONTRACT, owner: backend_architect, status: planned}
-  - {id: ART-UI, type: code, path: packages/views/workflow, producer_ref: WO-20, verifier_ref: EV-UI, owner: luna_frontend, status: planned}
+  - {id: ART-UI, type: code, path: packages/views/workflow, producer_ref: WO-20, verifier_ref: EV-UI-COMPONENT, owner: luna_frontend, status: produced}
   - {id: ART-EXECUTION, type: code, path: server/internal/workflow/wechat_execution.go, producer_ref: WO-30, verifier_ref: EV-EXECUTION, owner: luna_backend, status: produced}
   - {id: ART-OUTCOME, type: code, path: server/internal/companyops, producer_ref: WO-40, verifier_ref: EV-OUTCOME, owner: luna_outcome, status: planned}
 evidence:
@@ -285,6 +291,7 @@ evidence:
   - {id: EV-CONTRACT, kind: test, source: core_and_go_tests, method: strict_contract_and_failure_tests_plus_independent_readonly_review, observed_at: "2026-08-15T09:30:00Z", revision: 62e6cf517f9c45123d0c792e20710184da994dcb, result: passed, path: docs/goals/HIVECREW-WECHAT-REAL-OPERATIONS-V1/evidence/WO-10R-CONTRACT-EVIDENCE.md, note: vitest 44/44, tsc clean, gofmt clean, go vet clean, go test ok; independent review round 1 NEEDS_REPAIR (Go offset range), repaired, round 2 PASS}
   - {id: EV-ISOLATION, kind: readback, source: wo15_candidate_isolation_proof, method: readonly_code_path_research_plus_executable_assertions, observed_at: "2026-08-15T10:05:00Z", revision: 62e6cf517f9c45123d0c792e20710184da994dcb, result: passed, path: docs/goals/HIVECREW-WECHAT-REAL-OPERATIONS-V1/evidence/WO-15-CANDIDATE-ISOLATION-PROOF.md, note: "verdict PROVEN_ISOLATED; assertions 1/5/7 executed and passed (single DSN entry, authority client tests, nil-authority fail-closed); assertions 2/3/4/6/8 deferred to WO-50 canary; open risks recorded (default-DSN fallback, authority URL config discipline, shared-instance isolation, engine-3104 inference, CWD-sensitive object store)"}
   - {id: EV-UI, kind: browser, source: candidate_browser, method: owner_operating_journey, observed_at: null, revision: null, result: pending, path: null}
+  - {id: EV-UI-COMPONENT, kind: test, source: views_vitest, method: component_tests_and_typecheck, observed_at: "2026-08-15T13:27:34Z", revision: c386c016a, result: passed, path: docs/goals/HIVECREW-WECHAT-REAL-OPERATIONS-V1/evidence/WO-20-OPERATIONS-SURFACE-EVIDENCE.md, note: "43/43 workflow view tests pass (11 new panel tests + 2 new page tests); tsc clean in WO-20 files; 6 pre-existing tsc errors confined to the protected dirty designer files; 2 unrelated baseline test failures (layout/tab-presentation, agents/agent-activity-hover-content) recorded for JOIN-1 attribution"}
   - {id: EV-EXECUTION, kind: test, source: go_workflow_package_tests, method: orchestrator_state_machine_tests_over_in_memory_seams, observed_at: "2026-08-15T13:07:28Z", revision: bacdc389b05b9e0a50d6a1c1640dafc4bc6812d0, result: passed, path: docs/goals/HIVECREW-WECHAT-REAL-OPERATIONS-V1/evidence/WO-30-EXECUTION-BRIDGE-EVIDENCE.md, note: "go test ./internal/workflow ok (28 WO-30 tests), go vet/gofmt clean; unit/state-machine level only — live Task/Run readback against the candidate runtime is deferred to WO-50 canary"}
   - {id: EV-OUTCOME, kind: readback, source: existing_outcome_center, method: artifact_lineage_and_formal_outcome_cross_readback, observed_at: null, revision: null, result: pending, path: null}
 reviews:
@@ -317,20 +324,20 @@ edges:
 runtime:
   current_phase_ref: PHASE-2
   current_wave_id: WO-15-20-30-40A_PARALLEL
-  frontier: {ready: [WO-20, WO-40], running: [], waiting: [], blocked: [], join_ref: null}
+  frontier: {ready: [WO-40], running: [], waiting: [], blocked: [], join_ref: null}
   critical_path: [WO-00, WO-10, WO-30, WO-40, WO-50, WO-60]
-  refreshed_at: "2026-08-15T13:07:28Z"
-  graph_hash: wo30_verified_gate04_proven
+  refreshed_at: "2026-08-15T13:27:34Z"
+  graph_hash: wo20_wo30_verified_gate04_proven
 resume_package:
   goal_version: 1
   current_controller: executor
   current_phase: PHASE-2
-  ready_nodes: [WO-20, WO-40]
+  ready_nodes: [WO-40]
   running_nodes: []
   blocked_nodes: []
   waiting_nodes: []
-  evidence_index: [EV-WO00-AUDIT, EV-WO00-CORRECTION, EV-WO00-ACCEPTANCE, EV-CONTRACT, EV-ISOLATION, EV-EXECUTION]
+  evidence_index: [EV-WO00-AUDIT, EV-WO00-CORRECTION, EV-WO00-ACCEPTANCE, EV-CONTRACT, EV-ISOLATION, EV-EXECUTION, EV-UI-COMPONENT]
   latest_review_ref: REVIEW-WO10R
   latest_journal_ref: JOURNAL-P1
   dirty_boundaries: [apps/web/next-env.d.ts, packages/views/workflow/workflow-designer.tsx, packages/views/workflow/workflow-designer.test.tsx, docs/goals/HIVECREW-WECHAT-REAL-OPERATIONS-V1]
-  next_action: Run WO-20 (operations UI) and WO-40A (artifact/outcome candidate code, promotion held until JOIN-1) in parallel. WO-30 execution bridge is candidate_verified at the state-machine level (EV-EXECUTION, bacdc389b); the concrete CompanyOps executor wiring, live server-side Task/Run receipt proof, and the deferred isolation assertions 2/3/4/6/8 are WO-50 canary scope after JOIN-1.
+  next_action: Run WO-40A (artifact/outcome candidate code in the four exact write-scope files, promotion held until JOIN-1). WO-20 and WO-30 are candidate_verified (EV-UI-COMPONENT c386c016a, EV-EXECUTION bacdc389b); then JOIN-1 unified verification, then WO-40B/WO-50 canary with the deferred isolation assertions 2/3/4/6/8.
