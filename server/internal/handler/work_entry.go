@@ -345,6 +345,39 @@ func (h *Handler) WorkEntryReview(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, res)
 }
 
+// WorkEntryMCPTools handles GET /api/work/mcp/tools — exposes the work.* MCP
+// tool manifest so HTTP/Generic carriers can discover the entry surface.
+func (h *Handler) WorkEntryMCPTools(w http.ResponseWriter, r *http.Request) {
+	if !h.requireWorkEntry(w) {
+		return
+	}
+	writeJSON(w, http.StatusOK, workentry.WorkMCPTools())
+}
+
+// workMCPCallRequest is the tools/call envelope.
+type workMCPCallRequest struct {
+	Name      string         `json:"name"`
+	Arguments map[string]any `json:"arguments"`
+}
+
+// WorkEntryMCPCall handles POST /api/work/mcp/call — invokes one work.* tool.
+// Every write traces to the authenticated workspace member tenant.
+func (h *Handler) WorkEntryMCPCall(w http.ResponseWriter, r *http.Request) {
+	if !h.requireWorkEntry(w) {
+		return
+	}
+	var req workMCPCallRequest
+	if !decodeWorkRequest(w, r, &req) {
+		return
+	}
+	res, err := h.WorkEntry.CallMCPTool(r.Context(), req.Name, req.Arguments)
+	if err != nil {
+		writeWorkEntryError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
 // WorkEntryReconcile handles GET /api/work/reconcile (read-only diagnostic).
 func (h *Handler) WorkEntryReconcile(w http.ResponseWriter, r *http.Request) {
 	if !h.requireWorkEntry(w) {

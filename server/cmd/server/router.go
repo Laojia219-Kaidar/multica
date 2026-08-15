@@ -1262,6 +1262,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			r.Post("/attach", h.WorkEntryAttach)
 			r.Post("/ignore", h.WorkEntryIgnore)
 			r.Get("/replay", h.WorkEntryReplay)
+			r.Get("/mcp/tools", h.WorkEntryMCPTools)
+			r.Post("/mcp/call", h.WorkEntryMCPCall)
 		})
 
 		// --- Workspace-scoped routes (all require workspace membership) ---
