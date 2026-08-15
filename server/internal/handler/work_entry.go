@@ -97,6 +97,131 @@ func (h *Handler) scopeWorkspace(w http.ResponseWriter, r *http.Request, bodyWor
 	return true
 }
 
+// decodeMCPArgsLocal round-trips a JSON-decoded argument/payload map through
+// JSON into a typed destination, mirroring the service-side MCP boundary
+// decode so handler-level tenant checks read exactly what the service writes.
+func decodeMCPArgsLocal(m map[string]any, dst any) error {
+	b, err := json.Marshal(m)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(b, dst)
+}
+
+// workMCPStringArg reads a trimmed string argument.
+func workMCPStringArg(args map[string]any, key string) string {
+	v, _ := args[key].(string)
+	return strings.TrimSpace(v)
+}
+
+// scopeSyncEntries fails closed (403) before any offline spool entry reaches
+// the kernel when its tenant does not match the authenticated workspace member
+// tenant. register entries carry the tenant in actor_identity.workspace_id;
+// event entries carry it inside the work_ref. Offline spool payload is never
+// authority for tenant isolation.
+func (h *Handler) scopeSyncEntries(w http.ResponseWriter, r *http.Request, entries []workentry.SyncEntry) bool {
+	for i := range entries {
+		if !h.scopeSyncEntry(w, r, &entries[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+// scopeSyncEntry validates one spool entry and pins the resolved tenant back
+// into register payloads so the service can never persist a caller-supplied
+// workspace. Undecodable payloads are left for the service's per-entry
+// conflict reporting; they can never write cross-tenant.
+func (h *Handler) scopeSyncEntry(w http.ResponseWriter, r *http.Request, entry *workentry.SyncEntry) bool {
+	switch entry.Verb {
+	case "register":
+		var p struct {
+			ActorIdentity workentry.WorkActorIdentityV1 `json:"actor_identity"`
+		}
+		if err := decodeMCPArgsLocal(entry.CanonicalPayload, &p); err != nil {
+			return true
+		}
+		if !h.scopeWorkspace(w, r, &p.ActorIdentity.WorkspaceID) {
+			return false
+		}
+		actor, _ := entry.CanonicalPayload["actor_identity"].(map[string]any)
+		if actor == nil {
+			actor = map[string]any{}
+			entry.CanonicalPayload["actor_identity"] = actor
+		}
+		actor["workspace_id"] = p.ActorIdentity.WorkspaceID
+		return true
+	case "event":
+		var p struct {
+			Event workentry.WorkEventV1 `json:"event"`
+		}
+		if err := decodeMCPArgsLocal(entry.CanonicalPayload, &p); err != nil {
+			return true
+		}
+		return h.requireWorkRefTenant(w, r, p.Event.WorkRef)
+	default:
+		// Unknown verbs never write; the service reports them per-entry.
+		return true
+	}
+}
+
+// requireMCPCallTenant fails closed (403) before a work.* write tool reaches
+// the kernel when its tenant does not match the authenticated workspace member
+// tenant. register/heartbeat carry the tenant in workspace_id; start/event/
+// handoff/finish carry it inside the work_ref; sync entries are checked one by
+// one. The resolved tenant is pinned back into workspace_id-carrying args.
+func (h *Handler) requireMCPCallTenant(w http.ResponseWriter, r *http.Request, name string, args map[string]any) bool {
+	switch name {
+	case string(workentry.MCPWorkRegister):
+		var p struct {
+			ActorIdentity workentry.WorkActorIdentityV1 `json:"actor_identity"`
+		}
+		if err := decodeMCPArgsLocal(args, &p); err != nil {
+			return true
+		}
+		if !h.scopeWorkspace(w, r, &p.ActorIdentity.WorkspaceID) {
+			return false
+		}
+		actor, _ := args["actor_identity"].(map[string]any)
+		if actor == nil {
+			actor = map[string]any{}
+			args["actor_identity"] = actor
+		}
+		actor["workspace_id"] = p.ActorIdentity.WorkspaceID
+		return true
+	case string(workentry.MCPWorkHeartbeat):
+		ws := workMCPStringArg(args, "workspace_id")
+		if !h.scopeWorkspace(w, r, &ws) {
+			return false
+		}
+		args["workspace_id"] = ws
+		return true
+	case string(workentry.MCPWorkStart), string(workentry.MCPWorkEvent), string(workentry.MCPWorkHandoff), string(workentry.MCPWorkFinish):
+		return h.requireWorkRefTenant(w, r, workMCPStringArg(args, "work_ref"))
+	case string(workentry.MCPWorkSync):
+		raw, ok := args["entries"]
+		if !ok {
+			return true
+		}
+		b, err := json.Marshal(raw)
+		if err != nil {
+			return true
+		}
+		var entries []workentry.SyncEntry
+		if err := json.Unmarshal(b, &entries); err != nil {
+			return true
+		}
+		if !h.scopeSyncEntries(w, r, entries) {
+			return false
+		}
+		args["entries"] = entries
+		return true
+	default:
+		// Read-only tools (resolve/status/doctor) do not write.
+		return true
+	}
+}
+
 // ---------------------------------------------------------------------------
 // resolve / register
 // ---------------------------------------------------------------------------
@@ -313,6 +438,9 @@ func (h *Handler) WorkEntrySync(w http.ResponseWriter, r *http.Request) {
 	if !decodeWorkRequest(w, r, &req) {
 		return
 	}
+	if !h.scopeSyncEntries(w, r, req.Entries) {
+		return
+	}
 	res, err := h.WorkEntry.Sync(r.Context(), req.Entries)
 	if err != nil {
 		writeWorkEntryError(w, err)
@@ -368,6 +496,9 @@ func (h *Handler) WorkEntryMCPCall(w http.ResponseWriter, r *http.Request) {
 	}
 	var req workMCPCallRequest
 	if !decodeWorkRequest(w, r, &req) {
+		return
+	}
+	if !h.requireMCPCallTenant(w, r, req.Name, req.Arguments) {
 		return
 	}
 	res, err := h.WorkEntry.CallMCPTool(r.Context(), req.Name, req.Arguments)
