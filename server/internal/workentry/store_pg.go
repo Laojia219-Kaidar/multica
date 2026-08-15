@@ -454,6 +454,8 @@ func (p *PGStore) GetEvent(ctx context.Context, workspaceID, workRef, idempotenc
 		rec           EventRecord
 		eventType     string
 		payloadJSON   []byte
+		sessionID     *string
+		runID         *string
 		blockerReason *string
 		receiver      *string
 		occurredAt    pgtype.Timestamptz
@@ -461,7 +463,7 @@ func (p *PGStore) GetEvent(ctx context.Context, workspaceID, workRef, idempotenc
 	)
 	err = p.exec.QueryRow(ctx,
 		"SELECT work_ref, session_id, run_id, event_type, event_payload, blocker_reason, receiver, idempotency_key, occurred_at, observed_at FROM work_event WHERE workspace_id = $1 AND work_ref = $2 AND idempotency_key = $3",
-		ws, workRef, idempotencyKey).Scan(&rec.WorkRef, &rec.SessionID, &rec.RunID, &eventType,
+		ws, workRef, idempotencyKey).Scan(&rec.WorkRef, &sessionID, &runID, &eventType,
 		&payloadJSON, &blockerReason, &receiver, &rec.IdempotencyKey, &occurredAt, &observedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
@@ -472,6 +474,12 @@ func (p *PGStore) GetEvent(ctx context.Context, workspaceID, workRef, idempotenc
 	rec.WorkspaceID = workspaceID
 	rec.EventType = WorkEventType(eventType)
 	_ = json.Unmarshal(payloadJSON, &rec.EventPayload)
+	if sessionID != nil {
+		rec.SessionID = *sessionID
+	}
+	if runID != nil {
+		rec.RunID = *runID
+	}
 	if blockerReason != nil {
 		rec.BlockerReason = *blockerReason
 	}
