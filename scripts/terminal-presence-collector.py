@@ -17,6 +17,7 @@
 import json
 import os
 import re
+import shutil
 import signal
 import socket
 import subprocess
@@ -43,6 +44,17 @@ SECRET_PATTERNS = [
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]")
 
+def _find_tmux() -> str:
+    """launchd 环境的 PATH 只有系统目录，homebrew 的 tmux 需要显式解析。"""
+    candidates = [shutil.which("tmux"),
+                  "/opt/homebrew/bin/tmux", "/usr/local/bin/tmux", "/usr/bin/tmux"]
+    for c in candidates:
+        if c and os.access(c, os.X_OK):
+            return c
+    return "tmux"
+
+TMUX_BIN = _find_tmux()
+
 def sanitize(text: str) -> str:
     text = ANSI_RE.sub("", text)
     for pat in SECRET_PATTERNS:
@@ -64,7 +76,7 @@ def agent_hint(session: str, cmd: str, tail: str) -> str:
 def collect():
     try:
         fmt = subprocess.run(
-            ["tmux", "list-panes", "-a", "-F",
+            [TMUX_BIN, "list-panes", "-a", "-F",
              "#{session_name}\t#{window_index}\t#{pane_index}\t#{pane_pid}\t#{pane_current_command}"],
             capture_output=True, text=True, timeout=5,
         )
@@ -78,7 +90,7 @@ def collect():
         session, win, pane, pid, cmd = parts
         try:
             cap = subprocess.run(
-                ["tmux", "capture-pane", "-p", "-t", f"{session}:{win}.{pane}", "-S", f"-{TAIL_LINES}"],
+                [TMUX_BIN, "capture-pane", "-p", "-t", f"{session}:{win}.{pane}", "-S", f"-{TAIL_LINES}"],
                 capture_output=True, text=True, timeout=5,
             )
             tail = cap.stdout
