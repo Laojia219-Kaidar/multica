@@ -210,12 +210,14 @@ import type {
   PublishedWorkflowDefinitionVersion,
   PublishedWorkflowGraph,
   PublishWorkflowDefinitionVersionResponse,
+  WechatContentProductionRequest,
   WorkflowOperatingProgram,
   WorkflowOperatingProgramCommandResponse,
   WorkflowOperatingProgramProjectCommandResponse,
   WorkflowEvent,
   WorkflowInstance,
 } from "./workflow";
+import { WECHAT_CONTENT_NODE_KEYS } from "../workflow/content-node-contract";
 
 const CompanyOpsAuthoritySnapshotSchema = z.object({
   kind: z.string().min(1),
@@ -557,6 +559,61 @@ const CompanyOpsBindingStateSchema = z.enum([
   "local_agent_missing_or_invalid",
   "source_gap",
 ]);
+
+// WeChat content production read model (HIVECREW-WECHAT-REAL-OPERATIONS-V1 /
+// WO-50). Mirrors the server/internal/workflow WechatProductionView /
+// WechatNodeLineageRecord JSON exactly (snake_case). publication_state is
+// never "published" — the platform has no publication receipt.
+const WechatProductionNodeViewSchema = z
+  .object({
+    node: z.enum(WECHAT_CONTENT_NODE_KEYS),
+    order: z.number().int().positive(),
+    work_order_ref: z.string(),
+    command_id: z.string().optional(),
+    issue_id: z.string().optional(),
+    task_id: z.string().optional(),
+    candidate_id: z.string().optional(),
+    state: z.enum(["pending", "dispatched", "completed", "failed"]),
+    live_state: z.string().optional(),
+    review_decision: z.string().optional(),
+    failure: z.string().optional(),
+  })
+  .strict();
+
+const WechatProductionViewSchema = z
+  .object({
+    instance_id: z.string().min(1),
+    definition_id: z.string().min(1),
+    definition_version: z.number().int().positive(),
+    project_id: z.string().min(1),
+    status: z.enum(["running", "paused", "stopped", "completed", "failed"]),
+    current_node: z.enum(WECHAT_CONTENT_NODE_KEYS).optional(),
+    nodes: z.array(WechatProductionNodeViewSchema),
+    approval_state: z.enum(["none", "awaiting", "approved", "changes_requested"]),
+    publication_state: z.enum(["none", "awaiting_publication"]),
+  })
+  .strict();
+
+const WechatProductionStartResponseSchema = z
+  .object({
+    schema_version: z.literal("hivecrew.wechat-content-production.v1"),
+    instance_id: z.string().min(1),
+    idempotency_key: z.string().min(1),
+    production: WechatProductionViewSchema,
+  })
+  .strict();
+
+const WechatProductionViewResponseSchema = z
+  .object({
+    schema_version: z.literal("hivecrew.wechat-content-production.v1"),
+    production: WechatProductionViewSchema,
+  })
+  .strict();
+
+export type WechatProductionNodeView = z.infer<typeof WechatProductionNodeViewSchema>;
+export type WechatProductionView = z.infer<typeof WechatProductionViewSchema>;
+export type WechatProductionStartResponse = z.infer<typeof WechatProductionStartResponseSchema>;
+export type WechatProductionViewResponse = z.infer<typeof WechatProductionViewResponseSchema>;
 
 // The browser consumes the public Consumer wire, not the Adapter wire. Keep
 // this decoder exact, then project it into the stable view model used by the
@@ -3734,6 +3791,51 @@ export class ApiClient {
 
   async workflowInstanceEvents(id: string): Promise<WorkflowEvent[]> {
     return this.fetch(`/api/workflow/instances/${id}/events`);
+  }
+
+  // WeChat content production (HIVECREW-WECHAT-REAL-OPERATIONS-V1 / WO-50).
+  // Start is idempotent on the request's idempotency_key; reconcile
+  // poll-drives one instance and the caller MUST resend the exact same
+  // request DTO (the brief is not ledger-persisted, so drift fails closed
+  // server-side). The server never reports a publication receipt: a
+  // completed production is publication_state "awaiting_publication".
+  // Responses are strictly parsed — a drifting wire throws instead of
+  // falling back to a fabricated production view.
+  async startWechatProduction(
+    request: WechatContentProductionRequest,
+  ): Promise<WechatProductionStartResponse> {
+    const raw = await this.fetch<unknown>("/api/workflow/wechat-productions", {
+      method: "POST",
+      body: JSON.stringify(request),
+    });
+    return WechatProductionStartResponseSchema.parse(raw);
+  }
+
+  async reconcileWechatProduction(
+    instanceId: string,
+    request: WechatContentProductionRequest,
+  ): Promise<WechatProductionViewResponse> {
+    const raw = await this.fetch<unknown>(`/api/workflow/wechat-productions/${encodeURIComponent(instanceId)}/reconcile`, {
+      method: "POST",
+      body: JSON.stringify(request),
+    });
+    return WechatProductionViewResponseSchema.parse(raw);
+  }
+
+  async getWechatProduction(instanceId: string): Promise<WechatProductionViewResponse> {
+    const raw = await this.fetch<unknown>(`/api/workflow/wechat-productions/${encodeURIComponent(instanceId)}`);
+    return WechatProductionViewResponseSchema.parse(raw);
+  }
+
+  async reviewWechatProduction(
+    instanceId: string,
+    body: { decision: "approved" | "changes_requested"; review_id: string },
+  ): Promise<WechatProductionViewResponse> {
+    const raw = await this.fetch<unknown>(`/api/workflow/wechat-productions/${encodeURIComponent(instanceId)}/review`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+    return WechatProductionViewResponseSchema.parse(raw);
   }
 
   async getProject(id: string): Promise<Project> {
