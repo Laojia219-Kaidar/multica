@@ -16,6 +16,14 @@ import (
 
 // pgExecutor is the raw-SQL seam the PG store uses for tables that have no
 // generated query yet (project_lifecycle_receipt). *pgxpool.Pool satisfies it.
+// ExternalActorCreatorID is the deterministic sentinel issue creator UUID for
+// external_agent / automation_service / observed_unclaimed_actor actors that
+// have no agent row. issue.creator_id has no FK and creator_type CHECK only
+// allows member|agent, so this sentinel keeps the zero-migration path valid
+// without impersonating a registered employee. A real work_actor→creator
+// mapping is deferred to the ≥400 migration join.
+var ExternalActorCreatorID = pgtype.UUID{Bytes: [16]byte{0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}, Valid: true}
+
 type pgExecutor interface {
 	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
@@ -221,14 +229,20 @@ func (p *PGStore) GetReceipt(ctx context.Context, workspaceID, dedupeKey string)
 	default:
 		decision = DecisionContinued
 	}
+	projectStr, issueStr, taskStr := util.UUIDToString(projectID), util.UUIDToString(issueID), util.UUIDToString(taskID)
 	return &ReceiptRecord{
 		WorkspaceID: workspaceID,
 		DedupeKey:   idemKey,
 		Digest:      payloadDigest,
-		ProjectID:   util.UUIDToString(projectID),
-		IssueID:     util.UUIDToString(issueID),
-		TaskID:      util.UUIDToString(taskID),
-		Decision:    decision,
+		// WorkRef is derived, not stored; recompute it from the persisted lineage
+		// so replay returns the exact same work_ref (VC-03). The actor/intent
+		// snapshot is NOT recoverable from project_lifecycle_receipt — that is a
+		// known gap deferred to the ≥400 work_registration_receipt join.
+		WorkRef:   FormatWorkRef(workspaceID, projectStr, issueStr, taskStr),
+		ProjectID: projectStr,
+		IssueID:   issueStr,
+		TaskID:    taskStr,
+		Decision:  decision,
 	}, nil
 }
 
@@ -397,6 +411,11 @@ func (p *PGStore) CreateWork(ctx context.Context, req CreateWorkRequest) (*Creat
 		Status:      "todo",
 		Priority:    "none",
 		CreatorType: "agent",
+		// issue.creator_id is NOT NULL (no FK) and issue_creator_type_check only
+		// allows member|agent. External/unclaimed actors have no agent row, so we
+		// use the documented sentinel creator UUID for the first slice; a proper
+		// work_actor → creator mapping is deferred to the ≥400 join.
+		CreatorID:  ExternalActorCreatorID,
 		Number:      number,
 		ProjectID:   pid,
 	})
