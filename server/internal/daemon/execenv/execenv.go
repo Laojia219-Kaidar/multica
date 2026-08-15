@@ -21,6 +21,12 @@ type RepoContextForEnv struct {
 	Ref         string // optional default checkout ref for this task
 }
 
+// EmployeeMemoryForEnv is one promoted employee memory carried on a claim.
+type EmployeeMemoryForEnv struct {
+	Kind    string // episodic | experience
+	Content string
+}
+
 // ProjectResourceForEnv describes a single resource attached to the issue's
 // project. The resource_ref payload is type-specific JSON; the agent reads
 // resources.json on disk for the full structure. This struct only carries
@@ -147,6 +153,13 @@ type TaskContextForEnv struct {
 	// non-empty so every agent in the workspace sees the same shared context,
 	// regardless of issue / chat / autopilot / quick-create.
 	WorkspaceContext string
+	// EmployeeMemories are this agent's PROMOTED memories carried from the
+	// claim response. Rendered into the brief as `## Employee Memories` right
+	// after Agent Identity, so validated-and-promoted lessons directly shape
+	// future runs. Empty for agents with no promoted memories; promotion and
+	// revocation live server-side, so the brief only re-renders on the next
+	// claim (a revoked memory stops applying to new tasks).
+	EmployeeMemories []EmployeeMemoryForEnv
 	// ConnectedApps lists per-run external app capabilities mounted through
 	// MCP overlays. Rendered briefly so the agent can map app names such as
 	// Notion to the actual MCP server name (`composio`).

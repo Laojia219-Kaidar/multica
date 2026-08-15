@@ -127,6 +127,32 @@ func writeAgentIdentity(b *strings.Builder, ctx TaskContextForEnv) {
 	}
 }
 
+// writeEmployeeMemories emits the agent's promoted memories (记忆晋升闭环
+// 生效 side). These cleared 27B validation AND an independent-reviewer
+// promotion server-side; rendering them right after Agent Identity means the
+// lessons compete for attention with the persona, not the task body. Revoked
+// memories never reach here — Retrieve only returns promoted candidates and
+// the set is re-resolved on every claim.
+func writeEmployeeMemories(b *strings.Builder, ctx TaskContextForEnv) {
+	if len(ctx.EmployeeMemories) == 0 {
+		return
+	}
+	b.WriteString("## Employee Memories\n\n")
+	b.WriteString("These are your own promoted lessons from past work — validated and promoted through review. Apply them when relevant; they outrank generic habit but not the current task's explicit instructions.\n\n")
+	for _, m := range ctx.EmployeeMemories {
+		kind := m.Kind
+		if kind == "" {
+			kind = "memory"
+		}
+		content := strings.TrimSpace(m.Content)
+		if content == "" {
+			continue
+		}
+		fmt.Fprintf(b, "- (%s) %s\n", kind, strings.ReplaceAll(content, "\n", " "))
+	}
+	b.WriteString("\n")
+}
+
 // writeRequestingUser emits the Requesting User block when the runtime
 // owner's profile description is non-empty. Sanitisation rules match the
 // legacy implementation; see runtime_config.go for the rationale.
@@ -690,6 +716,7 @@ func buildMetaSkillContentSlim(provider string, ctx TaskContextForEnv) string {
 	writeHeader(&b)
 	writeBackgroundTaskSafetySlim(&b)
 	writeAgentIdentity(&b, ctx)
+	writeEmployeeMemories(&b, ctx)
 	writeRequestingUser(&b, ctx)
 	writeWorkspaceContext(&b, ctx)
 

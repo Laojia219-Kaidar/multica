@@ -2507,7 +2507,40 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		)
 	}
 
+	// Employee promoted memories (HIVECREW-WORKFLOW-MEMORY-OS-V1 生效 side):
+	// every task claimed for this agent carries the agent's PROMOTED memories
+	// so the daemon can render them into the runtime brief as `## Employee
+	// Memories`. The store is the hydrated read model; memory failures never
+	// block the claim — the agent simply runs without the memory section.
+	if mems := h.employeePromotedMemories(r.Context(), resp.AgentID); len(mems) > 0 {
+		resp.EmployeeMemories = mems
+	}
+
 	return resp, deliveredCommentIDs, agentSkillCount, builtinSkillCount, nil
+}
+
+// employeePromotedMemories resolves the promoted memory projections for one
+// employee (agent) through the memory store, hydrating from the durable
+// memory_candidate table on demand. Newest first; nil when none.
+func (h *Handler) employeePromotedMemories(ctx context.Context, employeeID string) []EmployeeMemoryData {
+	if employeeID == "" {
+		return nil
+	}
+	store := memoryStore()
+	if err := store.Hydrate(ctx, h.memoryRepo(), employeeID); err != nil {
+		slog.Warn("task claim: memory hydrate failed, skipping employee memories",
+			"employee_id", employeeID, "error", err)
+		return nil
+	}
+	promoted := store.Retrieve(employeeID, "")
+	if len(promoted) == 0 {
+		return nil
+	}
+	out := make([]EmployeeMemoryData, 0, len(promoted))
+	for _, c := range promoted {
+		out = append(out, EmployeeMemoryData{Kind: string(c.Kind), Content: c.Content})
+	}
+	return out
 }
 
 func buildCompanyOpsExecutionPayloadEvidence(

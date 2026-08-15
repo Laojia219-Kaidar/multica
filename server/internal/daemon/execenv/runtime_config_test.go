@@ -587,6 +587,79 @@ func TestWorkspaceContextRenderedAcrossTaskKinds(t *testing.T) {
 	}
 }
 
+// Employee Memories block (记忆晋升闭环 生效 side): promoted memories must
+// render as `## Employee Memories` right after Agent Identity, across every
+// task kind. Empty set must skip the heading entirely.
+func TestEmployeeMemoriesRenderedAfterAgentIdentity(t *testing.T) {
+	t.Parallel()
+	mem := EmployeeMemoryForEnv{Kind: "experience", Content: "macOS 终端自动化读写 ~/Library 需 TCC 授权；launchd PATH 无 homebrew，工具用绝对路径。"}
+	cases := []struct {
+		name string
+		ctx  TaskContextForEnv
+	}{
+		{
+			name: "assignment-triggered",
+			ctx: TaskContextForEnv{
+				IssueID:          "11111111-2222-3333-4444-555555555555",
+				AgentName:        "Coco",
+				EmployeeMemories: []EmployeeMemoryForEnv{mem},
+			},
+		},
+		{
+			name: "chat",
+			ctx: TaskContextForEnv{
+				ChatSessionID:    "chat-1",
+				AgentName:        "Coco",
+				EmployeeMemories: []EmployeeMemoryForEnv{mem},
+			},
+		},
+		{
+			name: "quick-create",
+			ctx: TaskContextForEnv{
+				QuickCreatePrompt: "create me an issue",
+				AgentName:         "Coco",
+				EmployeeMemories:  []EmployeeMemoryForEnv{mem},
+			},
+		},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			out := buildMetaSkillContent("claude", tc.ctx)
+
+			if !strings.Contains(out, "## Employee Memories") {
+				t.Fatalf("[%s] expected `## Employee Memories` heading", tc.name)
+			}
+			if !strings.Contains(out, mem.Content) {
+				t.Errorf("[%s] brief missing memory content", tc.name)
+			}
+			// The block sits between Agent Identity and Requesting User /
+			// Workspace Context so lessons attach to the persona, not the task.
+			idIdx := strings.Index(out, "## Agent Identity")
+			memIdx := strings.Index(out, "## Employee Memories")
+			cmdsIdx := strings.Index(out, "## Available Commands")
+			if idIdx == -1 || memIdx == -1 || idIdx > memIdx {
+				t.Errorf("[%s] `## Employee Memories` must appear after `## Agent Identity` (id=%d, mem=%d)", tc.name, idIdx, memIdx)
+			}
+			if cmdsIdx != -1 && memIdx > cmdsIdx {
+				t.Errorf("[%s] `## Employee Memories` must appear above `## Available Commands` (mem=%d, cmds=%d)", tc.name, memIdx, cmdsIdx)
+			}
+		})
+	}
+}
+
+func TestEmployeeMemoriesHeadingSkippedWhenEmpty(t *testing.T) {
+	t.Parallel()
+	out := buildMetaSkillContent("claude", TaskContextForEnv{
+		IssueID:   "11111111-2222-3333-4444-555555555555",
+		AgentName: "Coco",
+	})
+	if strings.Contains(out, "## Employee Memories") {
+		t.Fatalf("expected no `## Employee Memories` heading for agent without promoted memories, got:\n%s", out)
+	}
+}
+
 func TestWorkspaceContextHeadingSkippedWhenEmpty(t *testing.T) {
 	t.Parallel()
 	cases := []struct {

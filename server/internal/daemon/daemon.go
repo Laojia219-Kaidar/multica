@@ -4636,6 +4636,19 @@ func skillRefFromBundle(bundle SkillData) SkillRefData {
 	}
 }
 
+// employeeMemoriesForEnv converts the claim-response memory payload into the
+// execenv brief form.
+func employeeMemoriesForEnv(in []EmployeeMemoryData) []execenv.EmployeeMemoryForEnv {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]execenv.EmployeeMemoryForEnv, 0, len(in))
+	for _, m := range in {
+		out = append(out, execenv.EmployeeMemoryForEnv{Kind: m.Kind, Content: m.Content})
+	}
+	return out
+}
+
 func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot int, taskLog *slog.Logger) (taskResult TaskResult, returnErr error) {
 	// Refuse to spawn an agent without a workspace. An empty workspace_id
 	// here would make MULTICA_WORKSPACE_ID empty in the agent env, and the
@@ -4765,6 +4778,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		InitiatorName:                    task.InitiatorName,
 		InitiatorEmail:                   task.InitiatorEmail,
 		WorkspaceContext:                 task.WorkspaceContext,
+		EmployeeMemories:                 employeeMemoriesForEnv(task.EmployeeMemories),
 		ConnectedApps:                    task.ConnectedApps,
 	}
 
