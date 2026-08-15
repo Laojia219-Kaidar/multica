@@ -78,7 +78,32 @@
     "no_issues_yet": "イシューはまだありません",
     "toast_link_copied": "リンクをコピーしました",
     "toast_project_deleted": "プロジェクトを削除しました",
-    "toast_move_issue_failed": "イシューを移動できませんでした"
+    "toast_move_issue_failed": "イシューを移動できませんでした",
+    "work_conserving": {
+      "title": "継続作業プラン",
+      "status": {
+        "ready": "準備完了",
+        "blocked": "ブロック中",
+        "source_gap": "ソース不足"
+      },
+      "ready_description": "完全な Goal スナップショットに基づく読み取り専用の提案です。",
+      "blocked_description": "プランがブロックされています。各 Issue に担当者と再開条件があります。",
+      "source_gap_description": "権威スナップショットが利用できないか不完全です。ローカルデータで代替しません。",
+      "no_write": "読み取り専用 · task 作成、割り当て、データベース書き込みなし",
+      "metrics": {
+        "open": "未完了 Issue",
+        "planned": "計画済み",
+        "blocked": "ブロックされた backlog",
+        "idle": "健全なアイドル従業員"
+      },
+      "authority": {
+        "revision": "権威リビジョン",
+        "observed_at": "観測時刻"
+      },
+      "plan_title": "現在のプラン証拠",
+      "empty_plan": "プラン項目は返されませんでした。",
+      "wake_condition": "再開条件"
+    }
   },
   "resources": {
     "section_header": "リソース",

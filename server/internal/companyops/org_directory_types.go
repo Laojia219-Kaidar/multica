@@ -84,7 +84,7 @@ func (a AdapterAuthorityRef) Validate(now time.Time) error {
 	if err != nil {
 		return fmt.Errorf("authority observed_at: %w", err)
 	}
-	sourceGeneratedAt, err := parseCanonicalFreshTimestamp(a.SourceGeneratedAt, now)
+	sourceGeneratedAt, err := parseCanonicalProvenanceTimestamp(a.SourceGeneratedAt, now)
 	if err != nil {
 		return fmt.Errorf("authority source_generated_at: %w", err)
 	}
@@ -118,6 +118,24 @@ func parseCanonicalFreshTimestamp(value string, now time.Time) (time.Time, error
 	}
 	if now.Sub(parsed) > authorityMaxAge {
 		return time.Time{}, fmt.Errorf("timestamp is stale")
+	}
+	return parsed, nil
+}
+
+// parseCanonicalProvenanceTimestamp accepts registry data stamps: canonical
+// UTC milliseconds, not in the future, and no wall-clock age bound. The
+// observed_at field alone carries observation liveness; a workforce
+// registry regenerates on weekly timescales.
+func parseCanonicalProvenanceTimestamp(value string, now time.Time) (time.Time, error) {
+	if !canonicalTimestampPattern.MatchString(value) {
+		return time.Time{}, fmt.Errorf("timestamp is not canonical UTC milliseconds")
+	}
+	parsed, err := time.Parse(canonicalTimeForm, value)
+	if err != nil || parsed.UTC().Format(canonicalTimeForm) != value {
+		return time.Time{}, fmt.Errorf("timestamp is not a real canonical instant")
+	}
+	if parsed.After(now.UTC().Add(authorityFutureGap)) {
+		return time.Time{}, fmt.Errorf("timestamp is in the future")
 	}
 	return parsed, nil
 }

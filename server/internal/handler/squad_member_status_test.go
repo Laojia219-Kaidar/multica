@@ -1,11 +1,14 @@
 package handler
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
 )
+
+func squadStatusPtr(value string) *string { return &value }
 
 func TestDeriveSquadMemberStatus(t *testing.T) {
 	now := time.Date(2026, 5, 18, 12, 0, 0, 0, time.UTC)
@@ -48,5 +51,50 @@ func TestDeriveSquadMemberStatus(t *testing.T) {
 				t.Fatalf("deriveSquadMemberStatus = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestDeriveSquadExecutionStateUsesCurrentTaskStatuses(t *testing.T) {
+	now := time.Date(2026, 5, 18, 12, 0, 0, 0, time.UTC)
+	online := pgtype.Text{String: "online", Valid: true}
+	seen := pgtype.Timestamptz{Time: now, Valid: true}
+	cases := []struct {
+		name     string
+		statuses []string
+		want     string
+	}{
+		{"running wins", []string{"queued", "running"}, "working"},
+		{"directory wait is blocked", []string{"waiting_local_directory"}, "blocked"},
+		{"queued is not working", []string{"queued"}, "queued"},
+		{"dispatched is queued", []string{"dispatched"}, "queued"},
+		{"no active task uses runtime availability", nil, "idle"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := deriveSquadExecutionState(tc.statuses, false, online, seen, now); got != tc.want {
+				t.Fatalf("deriveSquadExecutionState = %q, want %q", got, tc.want)
+			}
+		})
+	}
+	if got := deriveSquadExecutionState(nil, true, online, seen, now); got != "archived" {
+		t.Fatalf("archived execution state = %q, want archived", got)
+	}
+}
+
+func TestSquadMemberStatusResponseExposesObservedStateAdditively(t *testing.T) {
+	state := "queued"
+	encoded, err := json.Marshal(SquadMemberStatusResponse{
+		MemberType: "agent", MemberID: "agent-1", Status: squadStatusPtr("working"),
+		ExecutionState: &state, ActiveTaskCount: 2, ActiveIssues: []SquadActiveIssueBrief{},
+	})
+	if err != nil {
+		t.Fatalf("marshal status response: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(encoded, &got); err != nil {
+		t.Fatalf("unmarshal status response: %v", err)
+	}
+	if got["status"] != "working" || got["execution_state"] != "queued" || got["active_task_count"] != float64(2) {
+		t.Fatalf("response lost legacy/observed fields: %#v", got)
 	}
 }

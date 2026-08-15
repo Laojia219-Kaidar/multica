@@ -194,30 +194,7 @@ func (h *Handler) ListProjects(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// parseLimitOffset parses the shared list pagination query parameters. Missing
-// params use defaults (limit=100, offset=0); invalid or out-of-range values are
-// rejected. This is the canonical contract for the owner list surfaces (VC-09).
-func parseLimitOffset(r *http.Request) (limit, offset int, err error) {
-	limit, offset = 100, 0
-	if raw := r.URL.Query().Get("limit"); raw != "" {
-		n, e := strconv.Atoi(raw)
-		if e != nil || n < 0 {
-			return 0, 0, errors.New("invalid limit")
-		}
-		if n > 200 {
-			n = 200
-		}
-		limit = n
-	}
-	if raw := r.URL.Query().Get("offset"); raw != "" {
-		n, e := strconv.Atoi(raw)
-		if e != nil || n < 0 {
-			return 0, 0, errors.New("invalid offset")
-		}
-		offset = n
-	}
-	return limit, offset, nil
-}
+// parseLimitOffset lives in pagination.go (canonical contract, VC-09).
 
 func (h *Handler) GetProject(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")

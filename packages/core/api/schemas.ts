@@ -46,9 +46,173 @@ import type {
   TimelineEntry,
   User,
   WebhookDelivery,
+  WorkConservingProjection,
 } from "../types";
 import type { CloudRuntimeNode } from "../runtimes/cloud-runtime";
 import type { CreateFeedbackResponse } from "../feedback/types";
+
+const WorkConservingAuthoritySnapshotSchema = z.object({
+  workspace_id: z.string().default(""),
+  project_id: z.string().default(""),
+  source_ref: z.string().default(""),
+  revision: z.string().default(""),
+  observed_at: z.string().default(""),
+  expires_at: z.string().default(""),
+}).strict();
+
+const WorkConservingSuggestionSchema = z.object({
+  issue_id: z.string(),
+  goal_id: z.string(),
+  employee_id: z.string(),
+  agent_id: z.string(),
+  runtime_id: z.string(),
+  base_id: z.string().optional(),
+  score: z.number().finite(),
+  fallback_reason: z.string().optional(),
+  receiver: z.string(),
+  wake_condition: z.string(),
+}).strict();
+
+const WorkConservingBlockedIssueSchema = z.object({
+  issue_id: z.string(),
+  goal_id: z.string(),
+  reasons: z.array(z.string()),
+  receiver: z.string(),
+  wake_condition: z.string(),
+  eligible_employee_count: z.number().int().nonnegative(),
+}).strict();
+
+const WorkConservingMismatchSchema = z.object({
+  open_issues: z.number().int().nonnegative(),
+  planned_issues: z.number().int().nonnegative(),
+  blocked_backlog: z.number().int().nonnegative(),
+  healthy_idle_employees: z.number().int().nonnegative(),
+  unmatched_healthy_idle_employees: z.number().int().nonnegative(),
+  executable_backlog: z.number().int().nonnegative(),
+  idle_backlog_mismatch: z.number().int().nonnegative(),
+}).strict();
+
+const WorkConservingProjectionWireSchema = z.object({
+  schema_version: z.literal("hivecrew.work-conserving-projection/v1"),
+  state: z.enum(["ready", "blocked", "source_gap"]),
+  reason_code: z.string().optional(),
+  blocked: z.boolean(),
+  goal_id: z.string().optional(),
+  authority: WorkConservingAuthoritySnapshotSchema,
+  suggestions: z.array(WorkConservingSuggestionSchema),
+  blocked_backlog: z.array(WorkConservingBlockedIssueSchema),
+  mismatch: WorkConservingMismatchSchema,
+  total: z.number().int().nonnegative(),
+  limit: z.number().int().nonnegative(),
+  offset: z.number().int().nonnegative(),
+  no_write: z.literal(true),
+}).strict().superRefine((projection, ctx) => {
+  if (projection.state === "source_gap") {
+    const authorityPresent = Object.values(projection.authority).some(Boolean);
+    const mismatchIsZero = Object.values(projection.mismatch).every((value) => value === 0);
+    if (
+      projection.blocked !== true ||
+      authorityPresent ||
+      projection.suggestions.length !== 0 ||
+      projection.blocked_backlog.length !== 0 ||
+      projection.total !== 0 ||
+      !mismatchIsZero ||
+      projection.reason_code !== "source_gap"
+    ) {
+      ctx.addIssue({ code: "custom", message: "source_gap projection must be empty and blocked" });
+    }
+    return;
+  }
+  if (
+    !projection.authority.workspace_id ||
+    !projection.authority.project_id ||
+    !projection.authority.source_ref ||
+    !projection.authority.revision ||
+    !projection.authority.observed_at ||
+    !projection.authority.expires_at
+  ) {
+    ctx.addIssue({ code: "custom", message: "work-conserving authority snapshot is incomplete" });
+  }
+});
+
+export const WorkConservingProjectionResponseSchema = z.object({
+  work_conserving: WorkConservingProjectionWireSchema,
+}).loose().transform(({ work_conserving: projection }) => ({
+  workConserving: {
+    schemaVersion: projection.schema_version,
+    state: projection.state,
+    reasonCode: projection.reason_code,
+    blocked: projection.blocked,
+    goalId: projection.goal_id ?? null,
+    authority: projection.authority.workspace_id && projection.authority.project_id
+      ? {
+          workspaceId: projection.authority.workspace_id,
+          projectId: projection.authority.project_id,
+          sourceRef: projection.authority.source_ref,
+          revision: projection.authority.revision,
+          observedAt: projection.authority.observed_at,
+          expiresAt: projection.authority.expires_at,
+        }
+      : null,
+    suggestions: projection.suggestions.map((suggestion) => ({
+      issueId: suggestion.issue_id,
+      goalId: suggestion.goal_id,
+      employeeId: suggestion.employee_id,
+      agentId: suggestion.agent_id,
+      runtimeId: suggestion.runtime_id,
+      baseId: suggestion.base_id,
+      score: suggestion.score,
+      fallbackReason: suggestion.fallback_reason,
+      receiver: suggestion.receiver,
+      wakeCondition: suggestion.wake_condition,
+    })),
+    blockedBacklog: projection.blocked_backlog.map((issue) => ({
+      issueId: issue.issue_id,
+      goalId: issue.goal_id,
+      reasons: issue.reasons,
+      receiver: issue.receiver,
+      wakeCondition: issue.wake_condition,
+      eligibleEmployeeCount: issue.eligible_employee_count,
+    })),
+    mismatch: {
+      openIssues: projection.mismatch.open_issues,
+      plannedIssues: projection.mismatch.planned_issues,
+      blockedBacklog: projection.mismatch.blocked_backlog,
+      healthyIdleEmployees: projection.mismatch.healthy_idle_employees,
+      unmatchedHealthyIdleEmployees: projection.mismatch.unmatched_healthy_idle_employees,
+      executableBacklog: projection.mismatch.executable_backlog,
+      idleBacklogMismatch: projection.mismatch.idle_backlog_mismatch,
+    },
+    total: projection.total,
+    limit: projection.limit,
+    offset: projection.offset,
+    noWrite: true as const,
+  } satisfies WorkConservingProjection,
+}));
+
+export const EMPTY_WORK_CONSERVING_PROJECTION: WorkConservingProjection = {
+  schemaVersion: "hivecrew.work-conserving-projection/v1",
+  state: "source_gap",
+  reasonCode: "source_gap",
+  blocked: true,
+  goalId: null,
+  authority: null,
+  suggestions: [],
+  blockedBacklog: [],
+  mismatch: {
+    openIssues: 0,
+    plannedIssues: 0,
+    blockedBacklog: 0,
+    healthyIdleEmployees: 0,
+    unmatchedHealthyIdleEmployees: 0,
+    executableBacklog: 0,
+    idleBacklogMismatch: 0,
+  },
+  total: 0,
+  limit: 0,
+  offset: 0,
+  noWrite: true,
+};
 
 export const GitHubInstallationSchema = z.object({
   id: z.string(),
@@ -1341,6 +1505,8 @@ const SquadMemberStatusSchema = z.object({
   member_type: z.string(),
   member_id: z.string(),
   status: z.string().nullable().optional().transform((v) => v ?? null),
+  execution_state: z.string().nullable().optional().transform((v) => v ?? null),
+  active_task_count: z.number().int().nonnegative().optional(),
   active_issues: z.array(SquadActiveIssueBriefSchema).default([]),
   last_active_at: z.string().nullable().optional().transform((v) => v ?? null),
 }).loose();

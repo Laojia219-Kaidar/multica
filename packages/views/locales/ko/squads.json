@@ -73,6 +73,8 @@
     "make_leader_tooltip": "스쿼드 리더로 지정",
     "remove_member_tooltip": "스쿼드에서 제거",
     "status_working": "작업 중",
+    "status_queued": "대기 중",
+    "status_blocked": "차단됨",
     "status_idle": "유휴",
     "status_offline": "오프라인",
     "status_unstable": "불안정",

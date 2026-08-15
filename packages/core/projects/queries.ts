@@ -14,6 +14,8 @@ export const projectKeys = {
   lifecycle: (wsId: string) => [...projectKeys.all(wsId), "lifecycle"] as const,
   lifecycleDetail: (wsId: string, id: string) =>
     [...projectKeys.all(wsId), "lifecycle", "detail", id] as const,
+  workConserving: (wsId: string, id: string) =>
+    [...projectKeys.detail(wsId, id), "work-conserving"] as const,
 };
 
 export function projectListOptions(wsId: string) {
@@ -57,5 +59,12 @@ export function projectLifecycleDetailOptions(wsId: string, id: string) {
   return queryOptions({
     queryKey: projectKeys.lifecycleDetail(wsId, id),
     queryFn: () => api.getProjectLifecycle(id),
+  });
+}
+
+export function projectWorkConservingOptions(wsId: string, id: string) {
+  return queryOptions({
+    queryKey: projectKeys.workConserving(wsId, id),
+    queryFn: () => api.getProjectWorkConservingProjection(id),
   });
 }

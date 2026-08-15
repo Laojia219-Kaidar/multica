@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import type { Agent, AgentRuntime } from "@multica/core/types";
+import type {
+  Agent,
+  AgentRuntime,
+  DashboardUsageByAgent,
+} from "@multica/core/types";
 import { buildModelQuotaUsageInventory } from "./model-quota-inventory";
 
 function agent(
@@ -11,8 +15,31 @@ function agent(
   return { id, name, model, runtime_id: runtimeId } as Agent;
 }
 
-function runtime(id: string, name: string, provider = "qwen"): AgentRuntime {
-  return { id, name, provider } as AgentRuntime;
+function runtime(
+  id: string,
+  name: string,
+  provider = "qwen",
+  profileId?: string,
+): AgentRuntime {
+  return { id, name, provider, profile_id: profileId } as AgentRuntime;
+}
+
+function usage(
+  agentId: string,
+  model: string,
+  tokens: number,
+  provider = "qwen",
+): DashboardUsageByAgent {
+  return {
+    agent_id: agentId,
+    provider,
+    model,
+    input_tokens: tokens,
+    output_tokens: 0,
+    cache_read_tokens: 0,
+    cache_write_tokens: 0,
+    task_count: 1,
+  };
 }
 
 describe("buildModelQuotaUsageInventory", () => {
@@ -31,11 +58,11 @@ describe("buildModelQuotaUsageInventory", () => {
         runtime("glm-2", "HiveCosm Secure zhipu-2"),
       ],
       [
-        { agentId: "raven", tokens: 100, cost: 0, taskCount: 1 },
-        { agentId: "pixel", tokens: 250, cost: 0, taskCount: 1 },
-        { agentId: "atlas", tokens: 200, cost: 0, taskCount: 1 },
-        { agentId: "kai", tokens: 300, cost: 0, taskCount: 1 },
-        { agentId: "aria", tokens: 150, cost: 0, taskCount: 1 },
+        usage("raven", "qwen3.7-plus", 100),
+        usage("pixel", "qwen3.7-plus", 250),
+        usage("atlas", "qwen3.6-27b-nvfp4", 200),
+        usage("kai", "glm-5.2", 300),
+        usage("aria", "glm-5.2", 150),
       ],
     );
 
@@ -97,5 +124,53 @@ describe("buildModelQuotaUsageInventory", () => {
       "GLM API 账户 #1",
       "GLM API 账户 #2",
     ]);
+  });
+
+  it("groups Bailian runtimes by billing profile and keeps receipt models honest", () => {
+    const model = "bailian-token-plan-personal/deepseek-v4-flash-0731";
+    const inventory = buildModelQuotaUsageInventory(
+      [
+        agent("atelier", "Atelier", model, "runtime-a"),
+        agent("finn", "Finn", model, "runtime-b"),
+      ],
+      [
+        runtime("runtime-a", "HiveCosm Secure qwen-token A", "qwen", "profile-1"),
+        runtime("runtime-b", "HiveCosm Secure qwen-token B", "qwen", "profile-1"),
+      ],
+      [
+        usage("atelier", model, 100, "opencode"),
+        usage("finn", model, 200, "opencode"),
+        usage("finn", "qwen3.8-max", 50, "qwen"),
+      ],
+    );
+
+    const bailian = inventory.providers.find(
+      (provider) => provider.provider === "阿里云百炼",
+    );
+    expect(bailian).toMatchObject({ employeeCount: 2, observedTokens: 300 });
+    expect(bailian?.plans).toHaveLength(1);
+    expect(bailian?.plans[0]).toMatchObject({
+      account: "bailian-token-plan-personal",
+      observedTokens: 300,
+      quota: {
+        windowDays: 7,
+        totalTokens: 415_592_437,
+        usedTokens: 415_592_437,
+        remainingTokens: 0,
+        usedRatio: 1,
+        resetAt: null,
+        evidence: "owner_confirmed_zero_based_full_window_total",
+      },
+    });
+    expect(bailian?.plans[0]?.employees.map((employee) => employee.id).toSorted()).toEqual([
+      "atelier",
+      "finn",
+    ]);
+
+    const qwen = inventory.providers.find(
+      (provider) => provider.provider === "阿里云 · Qwen",
+    );
+    expect(qwen?.observedTokens).toBe(50);
+    expect(inventory.totalObservedTokens).toBe(350);
   });
 });

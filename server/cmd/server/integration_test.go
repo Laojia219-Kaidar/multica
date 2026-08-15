@@ -785,11 +785,23 @@ func TestInboxThroughRouter(t *testing.T) {
 	if resp.StatusCode != 200 {
 		t.Fatalf("ListInbox: expected 200, got %d", resp.StatusCode)
 	}
-	var items []map[string]any
-	readJSON(t, resp, &items)
-	// Inbox may be empty, just verify it returns valid JSON array
-	if items == nil {
+	var page struct {
+		Items   []map[string]any `json:"items"`
+		Total   int64            `json:"total"`
+		Limit   int              `json:"limit"`
+		Offset  int              `json:"offset"`
+		HasMore bool             `json:"has_more"`
+	}
+	readJSON(t, resp, &page)
+	// Inbox may be empty; verify the stable paginated response contract.
+	if page.Items == nil {
 		t.Fatal("expected non-nil inbox items array")
+	}
+	if page.Limit != 100 || page.Offset != 0 {
+		t.Fatalf("expected default pagination limit=100 offset=0, got limit=%d offset=%d", page.Limit, page.Offset)
+	}
+	if page.Total < int64(len(page.Items)) {
+		t.Fatalf("expected total >= returned items, got total=%d items=%d", page.Total, len(page.Items))
 	}
 }
 

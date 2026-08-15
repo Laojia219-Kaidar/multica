@@ -68,10 +68,15 @@ function seed(qc: QueryClient) {
     { id: "s1", title: "Deploy plan", status: "active" },
     { id: "s2", title: "  ", status: "active" },
   ] as never);
-  qc.setQueryData(inboxListOptions("ws1").queryKey, [
-    { id: "n1", issue_id: "i9", title: "Assigned to you", type: "issue_assigned" },
-    { id: "n2", issue_id: null, title: "Quick create failed", type: "quick_create_failed" },
-  ] as never);
+  qc.setQueryData(inboxListOptions("ws1").queryKey, {
+    // `inboxListOptions` selects the `items` array from the wire response.
+    // Seed the cache in that wire shape so a cache-only observer receives the
+    // same value as the real Inbox page.
+    items: [
+      { id: "n1", issue_id: "i9", title: "Assigned to you", type: "issue_assigned" },
+      { id: "n2", issue_id: null, title: "Quick create failed", type: "quick_create_failed" },
+    ],
+  } as never);
   // Archived list is a distinct cache; these items are NOT in the main list.
   qc.setQueryData(archivedInboxListOptions("ws1").queryKey, [
     { id: "a1", issue_id: "i1", title: "Old assignment", type: "issue_assigned" },

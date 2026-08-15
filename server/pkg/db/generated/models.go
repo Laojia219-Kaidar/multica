@@ -615,6 +615,23 @@ type ContactSalesInquiry struct {
 	CreatedAt       pgtype.Timestamptz `json:"created_at"`
 }
 
+type ContinuousDispatchReceipt struct {
+	ID                pgtype.UUID        `json:"id"`
+	WorkspaceID       pgtype.UUID        `json:"workspace_id"`
+	IssueID           pgtype.UUID        `json:"issue_id"`
+	Stage             string             `json:"stage"`
+	CandidateRevision string             `json:"candidate_revision"`
+	Generation        string             `json:"generation"`
+	TaskID            pgtype.UUID        `json:"task_id"`
+	EmployeeRef       string             `json:"employee_ref"`
+	LocalAgentID      pgtype.UUID        `json:"local_agent_id"`
+	RuntimeID         pgtype.UUID        `json:"runtime_id"`
+	Model             string             `json:"model"`
+	AccountRef        string             `json:"account_ref"`
+	RequestDigest     string             `json:"request_digest"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+}
+
 type DaemonConnection struct {
 	ID              pgtype.UUID        `json:"id"`
 	AgentID         pgtype.UUID        `json:"agent_id"`
@@ -1555,4 +1572,21 @@ type WorkspaceInvitation struct {
 	CreatedAt     pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
 	ExpiresAt     pgtype.Timestamptz `json:"expires_at"`
+}
+
+type WriteLease struct {
+	ID               pgtype.UUID        `json:"id"`
+	MutexKey         string             `json:"mutex_key"`
+	HolderID         pgtype.Text        `json:"holder_id"`
+	LeaseToken       pgtype.UUID        `json:"lease_token"`
+	FenceGeneration  int64              `json:"fence_generation"`
+	Status           string             `json:"status"`
+	AcquiredAt       pgtype.Timestamptz `json:"acquired_at"`
+	ExpiresAt        pgtype.Timestamptz `json:"expires_at"`
+	RenewedCount     int32              `json:"renewed_count"`
+	ReleasedAt       pgtype.Timestamptz `json:"released_at"`
+	LastCancelReason pgtype.Text        `json:"last_cancel_reason"`
+	LastCancelledAt  pgtype.Timestamptz `json:"last_cancelled_at"`
+	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
 }

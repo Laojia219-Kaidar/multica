@@ -467,8 +467,8 @@ export function DashboardPage() {
     [byAgentUsage],
   );
   const modelQuotaUsageInventory = useMemo(
-    () => buildModelQuotaUsageInventory(agents, runtimes, agentTokenRows),
-    [agents, runtimes, agentTokenRows],
+    () => buildModelQuotaUsageInventory(agents, runtimes, byAgentUsage),
+    [agents, runtimes, byAgentUsage],
   );
 
   // Run-time totals — taskCount + failedCount summed for the KPI row.
@@ -868,7 +868,9 @@ function ProviderQuotaPanel({
                         {plan.account}
                     </div>
                     <span className="mt-1 inline-flex rounded-full border px-1.5 py-0.5 text-[10px] text-muted-foreground">
-                      {t(($) => $.quota.plan_confirmation)}
+                      {plan.quota
+                        ? t(($) => $.quota.plan_confirmed)
+                        : t(($) => $.quota.plan_confirmation)}
                     </span>
                   </td>
                     <td className="space-y-1 px-3 py-3">
@@ -916,24 +918,64 @@ function ProviderQuotaPanel({
                         locale,
                       )}
                     </td>
-                  <PendingQuotaCell label={t(($) => $.quota.pending_input)} />
-                  <PendingQuotaCell
-                    label={t(($) => $.quota.pending_input)}
-                    align="right"
-                  />
-                  <PendingQuotaCell
-                    label={t(($) => $.quota.pending_metric)}
-                    align="right"
-                  />
-                  <PendingQuotaCell
-                    label={t(($) => $.quota.pending_metric)}
-                    align="right"
-                  />
-                  <PendingQuotaCell
-                    label={t(($) => $.quota.pending_metric)}
-                    align="right"
-                  />
-                  <PendingQuotaCell label={t(($) => $.quota.pending_input)} />
+                  {plan.quota ? (
+                    <>
+                      <td className="px-3 py-3">
+                        {t(($) => $.quota.window_days, {
+                          count: plan.quota.windowDays,
+                        })}
+                      </td>
+                      <td className="px-3 py-3 text-right">
+                        <div className="font-medium">
+                          {formatTokens(plan.quota.totalTokens)}
+                        </div>
+                        <div className="text-[10px] text-muted-foreground">
+                          {t(($) => $.quota.measured_cycle_total)}
+                        </div>
+                      </td>
+                      <td className="px-3 py-3 text-right font-medium">
+                        {formatTokens(plan.quota.usedTokens)}
+                      </td>
+                      <td className="px-3 py-3 text-right font-medium">
+                        {formatTokens(plan.quota.remainingTokens)}
+                      </td>
+                      <td className="px-3 py-3 text-right font-medium">
+                        {new Intl.NumberFormat(locale, {
+                          style: "percent",
+                          maximumFractionDigits: 0,
+                        }).format(plan.quota.usedRatio)}
+                      </td>
+                      <td className="px-3 py-3 text-muted-foreground">
+                        {plan.quota.resetAt
+                          ? new Intl.DateTimeFormat(locale, {
+                              dateStyle: "medium",
+                              timeStyle: "short",
+                            }).format(new Date(plan.quota.resetAt))
+                          : t(($) => $.quota.reset_unknown)}
+                      </td>
+                    </>
+                  ) : (
+                    <>
+                      <PendingQuotaCell label={t(($) => $.quota.pending_input)} />
+                      <PendingQuotaCell
+                        label={t(($) => $.quota.pending_input)}
+                        align="right"
+                      />
+                      <PendingQuotaCell
+                        label={t(($) => $.quota.pending_metric)}
+                        align="right"
+                      />
+                      <PendingQuotaCell
+                        label={t(($) => $.quota.pending_metric)}
+                        align="right"
+                      />
+                      <PendingQuotaCell
+                        label={t(($) => $.quota.pending_metric)}
+                        align="right"
+                      />
+                      <PendingQuotaCell label={t(($) => $.quota.pending_input)} />
+                    </>
+                  )}
                 </tr>
                 ))}
               </tbody>

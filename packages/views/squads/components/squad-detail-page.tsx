@@ -1136,6 +1136,8 @@ function SquadOverviewPane({
 // CLAUDE.md > API Response Compatibility.
 const SQUAD_STATUS_DOT_CLASS: Record<SquadMemberStatusValue, string> = {
   working: "bg-success",
+  queued: "bg-warning",
+  blocked: "bg-warning",
   idle: "bg-muted-foreground/40",
   offline: "bg-muted-foreground/40",
   unstable: "bg-warning",
@@ -1210,13 +1212,15 @@ function SquadMembersTab({
       <div className="space-y-2">
         {members.map((m) => {
           const status = memberStatusById.get(m.member_id);
-          const statusValue = status?.status ?? null;
+          const statusValue = status?.execution_state ?? status?.status ?? null;
           const dotClass =
             statusValue && statusValue in SQUAD_STATUS_DOT_CLASS
               ? SQUAD_STATUS_DOT_CLASS[statusValue as keyof typeof SQUAD_STATUS_DOT_CLASS]
               : null;
           const statusLabel =
             statusValue === "working" ? t(($) => $.members_tab.status_working)
+              : statusValue === "queued" ? t(($) => $.members_tab.status_queued)
+              : statusValue === "blocked" ? t(($) => $.members_tab.status_blocked)
               : statusValue === "idle" ? t(($) => $.members_tab.status_idle)
               : statusValue === "offline" ? t(($) => $.members_tab.status_offline)
               : statusValue === "unstable" ? t(($) => $.members_tab.status_unstable)
@@ -1516,9 +1520,11 @@ export function SquadBaseDistributionTab({
             </div>
             <div className="divide-y">
               {group.agents.map((entry) => {
-                const statusValue = entry.status?.status ?? null;
+                const statusValue = entry.status?.execution_state ?? entry.status?.status ?? null;
                 const statusLabel =
                   statusValue === "working" ? t(($) => $.members_tab.status_working)
+                    : statusValue === "queued" ? t(($) => $.members_tab.status_queued)
+                    : statusValue === "blocked" ? t(($) => $.members_tab.status_blocked)
                     : statusValue === "idle" ? t(($) => $.members_tab.status_idle)
                     : statusValue === "offline" ? t(($) => $.members_tab.status_offline)
                     : statusValue === "unstable" ? t(($) => $.members_tab.status_unstable)

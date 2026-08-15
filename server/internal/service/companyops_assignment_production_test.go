@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/url"
 	"os"
 	"testing"
 	"time"
@@ -24,19 +23,7 @@ func newProductionCompanyOpsPool(t *testing.T) *pgxpool.Pool {
 	if databaseURL == "" {
 		t.Skip("DATABASE_URL not set; skipping production CompanyOps assignment integration test")
 	}
-	parsed, err := url.Parse(databaseURL)
-	if err != nil {
-		t.Fatalf("parse DATABASE_URL: %v", err)
-	}
-	if parsed.Port() == "5432" {
-		t.Skip("refusing to connect production CompanyOps assignment test to port 5432")
-	}
-	if parsed.Port() != "55432" {
-		t.Skipf("production CompanyOps assignment test requires isolated port 55432, got %q", parsed.Port())
-	}
-	if host := parsed.Hostname(); host != "127.0.0.1" && host != "localhost" && host != "::1" {
-		t.Skipf("production CompanyOps assignment test requires loopback database host, got %q", host)
-	}
+	requireIsolatedLoopbackDatabaseURL(t, databaseURL, "production CompanyOps assignment test")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -60,6 +47,13 @@ type productionCompanyOpsFixture struct {
 	issueID     pgtype.UUID
 }
 
+func cleanupProductionCompanyOps(t *testing.T, ctx context.Context, pool *pgxpool.Pool, statement string, args ...any) {
+	t.Helper()
+	if _, err := pool.Exec(ctx, statement, args...); err != nil {
+		t.Errorf("cleanup CompanyOps fixture: %v", err)
+	}
+}
+
 func seedProductionCompanyOpsFixture(
 	t *testing.T,
 	ctx context.Context,
@@ -72,17 +66,17 @@ func seedProductionCompanyOpsFixture(
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if fixture.workspaceID.Valid {
-			_, _ = pool.Exec(cleanupCtx, `DELETE FROM assignment_dispatch_receipt WHERE workspace_id = $1`, fixture.workspaceID)
-			_, _ = pool.Exec(cleanupCtx, `DELETE FROM execution_receipt WHERE workspace_id = $1`, fixture.workspaceID)
-			_, _ = pool.Exec(cleanupCtx, `DELETE FROM agent_task_queue WHERE issue_id IN (SELECT id FROM issue WHERE workspace_id = $1)`, fixture.workspaceID)
-			_, _ = pool.Exec(cleanupCtx, `DELETE FROM issue WHERE workspace_id = $1`, fixture.workspaceID)
-			_, _ = pool.Exec(cleanupCtx, `DELETE FROM agent WHERE workspace_id = $1`, fixture.workspaceID)
-			_, _ = pool.Exec(cleanupCtx, `DELETE FROM agent_runtime WHERE workspace_id = $1`, fixture.workspaceID)
-			_, _ = pool.Exec(cleanupCtx, `DELETE FROM member WHERE workspace_id = $1`, fixture.workspaceID)
-			_, _ = pool.Exec(cleanupCtx, `DELETE FROM workspace WHERE id = $1`, fixture.workspaceID)
+			cleanupProductionCompanyOps(t, cleanupCtx, pool, `DELETE FROM assignment_dispatch_receipt WHERE workspace_id = $1`, fixture.workspaceID)
+			cleanupProductionCompanyOps(t, cleanupCtx, pool, `DELETE FROM execution_receipt WHERE workspace_id = $1`, fixture.workspaceID)
+			cleanupProductionCompanyOps(t, cleanupCtx, pool, `DELETE FROM agent_task_queue WHERE issue_id IN (SELECT id FROM issue WHERE workspace_id = $1)`, fixture.workspaceID)
+			cleanupProductionCompanyOps(t, cleanupCtx, pool, `DELETE FROM issue WHERE workspace_id = $1`, fixture.workspaceID)
+			cleanupProductionCompanyOps(t, cleanupCtx, pool, `DELETE FROM agent WHERE workspace_id = $1`, fixture.workspaceID)
+			cleanupProductionCompanyOps(t, cleanupCtx, pool, `DELETE FROM agent_runtime WHERE workspace_id = $1`, fixture.workspaceID)
+			cleanupProductionCompanyOps(t, cleanupCtx, pool, `DELETE FROM member WHERE workspace_id = $1`, fixture.workspaceID)
+			cleanupProductionCompanyOps(t, cleanupCtx, pool, `DELETE FROM workspace WHERE id = $1`, fixture.workspaceID)
 		}
 		if fixture.userID.Valid {
-			_, _ = pool.Exec(cleanupCtx, `DELETE FROM "user" WHERE id = $1`, fixture.userID)
+			cleanupProductionCompanyOps(t, cleanupCtx, pool, `DELETE FROM "user" WHERE id = $1`, fixture.userID)
 		}
 	})
 

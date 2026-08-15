@@ -48,6 +48,7 @@ describe("pageForSegment", () => {
     expect(pageForSegment("my-issues")).toBe("myIssues");
     expect(pageForSegment("outcomes")).toBe("outcomes");
     expect(pageForSegment("organization")).toBe("organization");
+    expect(pageForSegment("bases")).toBe("bases");
     expect(pageForSegment("settings")).toBe("settings");
   });
 
@@ -66,6 +67,7 @@ describe("resolveRouteIconName", () => {
     expect(resolveRouteIconName("/acme/autopilots")).toBe("Zap");
     expect(resolveRouteIconName("/acme/chat")).toBe("MessageSquare");
     expect(resolveRouteIconName("/acme/squads")).toBe("Users");
+    expect(resolveRouteIconName("/acme/bases")).toBe("Server");
     expect(resolveRouteIconName("/acme/usage")).toBe("BarChart3");
     expect(resolveRouteIconName("/acme/my-issues")).toBe("CircleUser");
   });

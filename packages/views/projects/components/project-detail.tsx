@@ -74,6 +74,7 @@ import {
 import { useT } from "../../i18n";
 import { useProjectStatusLabels, useProjectPriorityLabels } from "./labels";
 import { matchesPinyin } from "../../editor/extensions/pinyin-match";
+import { WorkConservingPanel } from "./work-conserving-panel";
 
 // ---------------------------------------------------------------------------
 // Property row — sidebar property display
@@ -557,6 +558,7 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
             }
           />
 
+          {!isMobile && <WorkConservingPanel projectId={projectId} />}
           <IssueSurface
             scope={issueScope}
             modes={["board", "list", "table", "swimlane", "gantt"]}

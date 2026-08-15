@@ -12,6 +12,7 @@ import (
 	"net/netip"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -42,8 +43,8 @@ import (
 	"github.com/multica-ai/multica/server/internal/storage"
 	"github.com/multica-ai/multica/server/internal/util"
 	"github.com/multica-ai/multica/server/internal/util/secretbox"
-	"github.com/multica-ai/multica/server/internal/workflow"
 	"github.com/multica-ai/multica/server/internal/workentry"
+	"github.com/multica-ai/multica/server/internal/workflow"
 	composiosdk "github.com/multica-ai/multica/server/pkg/composio"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/featureflag"
@@ -111,24 +112,41 @@ func appURLFromEnv() string {
 	return strings.TrimRight(strings.TrimSpace(os.Getenv("FRONTEND_ORIGIN")), "/")
 }
 
+type companyOpsRuntimeSources struct {
+	quota service.ContinuousDispatchQuotaSource
+}
+
+type companyOpsRuntimeClients struct {
+	dispatch *companyopsapi.HiveCosmDispatchAuthorizationClient
+	quota    *companyopsapi.HiveCosmQuotaObservationClient
+	source   service.ContinuousDispatchQuotaSource
+}
+
 // configureCompanyOps wires the optional HiveCosm read authority and the
 // HiveCrew-owned assignment writer. Missing or invalid authority configuration
 // leaves the public endpoints registered but fail-closed with source_gap.
-func configureCompanyOps(h *handler.Handler, queries *db.Queries, pool *pgxpool.Pool) {
-	baseURL := strings.TrimSpace(os.Getenv("HIVECOSM_AUTHORITY_BASE_URL"))
+// Runtime-only clients are installed atomically: an incomplete or unsafe
+// origin/tenant/token configuration never leaves a partially enabled source.
+func configureCompanyOps(h *handler.Handler, queries *db.Queries, pool *pgxpool.Pool) companyOpsRuntimeSources {
+	var runtimeSources companyOpsRuntimeSources
+	baseURL := os.Getenv("HIVECOSM_AUTHORITY_BASE_URL")
 	if baseURL == "" {
-		return
+		return runtimeSources
 	}
-	token := strings.TrimSpace(os.Getenv("HIVECOSM_AUTHORITY_BEARER_TOKEN"))
-	if token == "" {
-		slog.Warn("companyops authority adapter disabled", "error", "HIVECOSM_AUTHORITY_BEARER_TOKEN is unavailable")
-		return
+	if !strictCompanyOpsConfigText(baseURL) {
+		slog.Warn("companyops authority adapter disabled", "error", "HIVECOSM_AUTHORITY_BASE_URL is invalid")
+		return runtimeSources
+	}
+	token, tokenErr := companyOpsAuthorityBearerTokenFromEnv(context.Background(), nil)
+	if tokenErr != nil {
+		slog.Warn("companyops authority adapter disabled", "error", companyOpsAuthorityTokenSourceError(tokenErr))
+		return runtimeSources
 	}
 
 	authorityURL, err := url.Parse(baseURL)
-	if err != nil || authorityURL.Scheme == "" || authorityURL.Host == "" || authorityURL.User != nil {
+	if err != nil || !isSafeCompanyOpsAuthorityURL(authorityURL) {
 		slog.Warn("companyops authority adapter disabled", "error", "HIVECOSM_AUTHORITY_BASE_URL is invalid")
-		return
+		return runtimeSources
 	}
 	transport := companyOpsBearerTransport{
 		base:            http.DefaultTransport,
@@ -142,9 +160,19 @@ func configureCompanyOps(h *handler.Handler, queries *db.Queries, pool *pgxpool.
 	})
 	if err != nil {
 		slog.Warn("companyops authority adapter disabled", "error", err)
-		return
+		return runtimeSources
 	}
-	tenantID := strings.TrimSpace(os.Getenv("HIVECOSM_TENANT_ID"))
+	tenantID := os.Getenv("HIVECOSM_TENANT_ID")
+	// Dispatch authorization and quota observation are one runtime source
+	// boundary. Neither client is created without the tenant selector.
+	runtimeClients, runtimeErr := newCompanyOpsRuntimeClients(baseURL, token, tenantID, transport)
+	if runtimeErr == nil {
+		h.CompanyOpsDispatchAuthorization = runtimeClients.dispatch
+		h.CompanyOpsQuotaObservation = runtimeClients.quota
+		runtimeSources.quota = runtimeClients.source
+	} else {
+		slog.Warn("companyops runtime sources disabled", "error", runtimeErr)
+	}
 	directoryClient, directoryErr := companyopsapi.NewHiveCrewDirectoryClient(
 		baseURL,
 		&http.Client{Transport: transport, Timeout: 10 * time.Second},
@@ -160,7 +188,7 @@ func configureCompanyOps(h *handler.Handler, queries *db.Queries, pool *pgxpool.
 	projectionService, err := service.NewCompanyOpsWorkOrderProjectionService(h.IssueService)
 	if err != nil {
 		slog.Warn("companyops WorkOrder projection disabled", "error", err)
-		return
+		return runtimeSources
 	}
 	h.CompanyOpsEnsureWorkOrderIssue = func(
 		ctx context.Context,
@@ -183,15 +211,107 @@ func configureCompanyOps(h *handler.Handler, queries *db.Queries, pool *pgxpool.
 	assignmentBackend, err := service.NewProductionCompanyOpsAssignmentBackend(queries, pool, h.TaskService)
 	if err != nil {
 		slog.Warn("companyops assignment writer disabled", "error", err)
-		return
+		return runtimeSources
 	}
 	h.CompanyOpsAssignment = service.NewCompanyOpsAssignmentService(assignmentBackend)
 	artifactService, err := service.NewCompanyOpsArtifactService(queries, pool, h.Storage, h.TaskService, authorityClient)
 	if err != nil {
 		slog.Warn("companyops artifact writer disabled", "error", err)
-		return
+		return runtimeSources
 	}
 	h.CompanyOpsArtifacts = artifactService
+	return runtimeSources
+}
+
+func isSafeCompanyOpsAuthorityURL(u *url.URL) bool {
+	if u == nil || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		return false
+	}
+	hostname := u.Hostname()
+	if hostname == "" || strings.TrimSpace(hostname) != hostname || strings.ContainsAny(hostname, "\r\n") {
+		return false
+	}
+	port := u.Port()
+	if port != "" {
+		value, err := strconv.ParseUint(port, 10, 16)
+		if err != nil || value == 0 {
+			return false
+		}
+	}
+	canonicalHost := hostname
+	if strings.Contains(hostname, ":") {
+		canonicalHost = "[" + hostname + "]"
+	}
+	if port != "" {
+		canonicalHost += ":" + port
+	}
+	// net/url accepts some malformed Host spellings. Reconstructing the exact
+	// authority component closes those forms (for example https://:443,
+	// a trailing colon, or a non-numeric port) before a bearer transport exists.
+	if u.Host != canonicalHost {
+		return false
+	}
+	if u.Scheme == "https" {
+		return true
+	}
+	// Plain HTTP is permitted only for loopback development Authority, never
+	// for a network origin. The bearer value is still supplied only by the
+	// injected transport and is never included in logs or URLs.
+	if u.Scheme != "http" {
+		return false
+	}
+	host := strings.Trim(u.Hostname(), "[]")
+	return host == "localhost" || host == "127.0.0.1" || host == "::1"
+}
+
+func newCompanyOpsRuntimeClients(baseURL, token, tenantID string, base http.RoundTripper) (companyOpsRuntimeClients, error) {
+	if !strictCompanyOpsBearerToken(token) {
+		return companyOpsRuntimeClients{}, fmt.Errorf("authority bearer configuration is unavailable")
+	}
+	if !strictCompanyOpsConfigText(tenantID) {
+		return companyOpsRuntimeClients{}, fmt.Errorf("authority tenant configuration is unavailable")
+	}
+	if !strictCompanyOpsConfigText(baseURL) {
+		return companyOpsRuntimeClients{}, fmt.Errorf("authority base URL is invalid")
+	}
+	u, err := url.Parse(baseURL)
+	if err != nil || !isSafeCompanyOpsAuthorityURL(u) {
+		return companyOpsRuntimeClients{}, fmt.Errorf("authority base URL is invalid")
+	}
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	transport := companyOpsBearerTransport{
+		base:            base,
+		token:           token,
+		authorityScheme: u.Scheme,
+		authorityHost:   u.Host,
+	}
+	client := &http.Client{Transport: transport, Timeout: 10 * time.Second}
+	dispatch, err := companyopsapi.NewHiveCosmDispatchAuthorizationClient(baseURL, client, tenantID)
+	if err != nil {
+		return companyOpsRuntimeClients{}, fmt.Errorf("dispatch authorization client unavailable")
+	}
+	quota, err := companyopsapi.NewHiveCosmQuotaObservationClient(baseURL, client, tenantID)
+	if err != nil {
+		return companyOpsRuntimeClients{}, fmt.Errorf("quota observation client unavailable")
+	}
+	return companyOpsRuntimeClients{
+		dispatch: dispatch,
+		quota:    quota,
+		source:   service.NewCompanyOpsQuotaObservationSource(quota),
+	}, nil
+}
+
+func strictCompanyOpsConfigText(value string) bool {
+	return value != "" && strings.TrimSpace(value) == value && !strings.ContainsAny(value, "\r\n")
+}
+
+func strictCompanyOpsBearerToken(value string) bool {
+	// Bearer values are opaque. Interior bytes remain untouched, but accepting
+	// leading/trailing Unicode whitespace or line breaks would silently change
+	// the configured secret when HTTP normalizes a header. Reject it instead.
+	return strictCompanyOpsConfigText(value)
 }
 
 // ---------------------------------------------------------------------------
@@ -722,11 +842,71 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		ServerVersion:               normalizeServerVersion(version),
 	}
 	h := handler.New(queries, pool, hub, bus, emailSvc, store, cfSigner, analyticsClient, signupConfig, daemonHub)
-	configureCompanyOps(h, queries, pool)
+	runtimeSources := configureCompanyOps(h, queries, pool)
 	// Universal Work Registration Kernel (Phase-1). Reuses the existing
 	// project/issue/external_work_order_link/project_lifecycle_receipt/
 	// terminal_presence tables; no new task/run table set.
 	h.WorkEntry = workentry.NewService(workentry.NewPGStore(queries, pool))
+	continuousDispatchShadow := service.NewContinuousDispatchShadowService(
+		queries,
+		h.CompanyOpsDirectory,
+		runtimeSources.quota,
+		service.NewWriteLeaseService(pool),
+	)
+	h.ContinuousDispatchShadow = continuousDispatchShadow
+	continuousDispatchBackend, continuousDispatchErr := service.NewProductionContinuousDispatchBackend(queries, pool, h.TaskService)
+	if continuousDispatchErr != nil {
+		slog.Warn("continuous dispatch writer disabled", "error", continuousDispatchErr)
+	} else {
+		continuousDispatchDispatcher := service.NewContinuousDispatchService(continuousDispatchBackend)
+		continuousDispatchTrigger := service.NewContinuousDispatchTriggerService(
+			continuousDispatchShadow,
+			continuousDispatchDispatcher,
+		)
+		// Review dispatches are a formal Authority boundary. Keep the gate enabled
+		// even before the canonical Authority identity provider is installed: an
+		// incomplete runtime configuration must yield source_gap before any review
+		// Task or receipt write, never fall back to local inference. The only
+		// interim exception is William's Option C decision (2026-08-15): a fully
+		// env-configured, TTL-bounded, single-issue server-only canary provider
+		// may satisfy the identity seam until the Authority by-issue reverse
+		// lookup (Option A) replaces it.
+		var reviewIdentityProvider service.AuthorityReviewDispatchIdentityProvider
+		if byIssue := newByIssueIdentityProvider(os.Getenv("HIVECOSM_AUTHORITY_BASE_URL"), os.Getenv("HIVECOSM_TENANT_ID"), companyOpsTransportForBaseURL(os.Getenv("HIVECOSM_AUTHORITY_BASE_URL"))); byIssue != nil {
+			reviewIdentityProvider = byIssue
+			slog.Warn("companyops by-issue authority identity provider enabled (Option A)")
+		} else {
+			reviewIdentityProvider = reviewCanaryIdentityProviderFromEnv(time.Now)
+		}
+		if reviewIdentityProvider != nil && h.CompanyOpsDispatchAuthorization != nil {
+			continuousDispatchTrigger = continuousDispatchTrigger.WithAuthorityReviewDispatchGate(
+				service.NewAuthorityReviewDispatchGate(h.CompanyOpsDispatchAuthorization, continuousDispatchDispatcher),
+				reviewIdentityProvider,
+			)
+			if canary, ok := reviewIdentityProvider.(*reviewCanaryIdentityProvider); ok {
+				slog.Warn("companyops review canary identity provider enabled", "expires_at", canary.expiresAt.Format(time.RFC3339))
+			}
+		} else {
+			continuousDispatchTrigger = continuousDispatchTrigger.WithAuthorityReviewDispatchGate(nil, nil)
+		}
+		h.ContinuousDispatchTrigger = continuousDispatchTrigger
+		h.ReviewDispatch = service.NewReviewDispatchBatchService(
+			continuousDispatchShadow,
+			continuousDispatchTrigger,
+		)
+		if reviewIdentityProvider != nil && h.CompanyOpsDispatchAuthorization != nil {
+			if evidence := reviewCanaryAuthorityEvidenceProviderFromEnv(
+				reviewIdentityProvider,
+				canaryReviewAuthorize(h.CompanyOpsDispatchAuthorization, os.Getenv("HIVECOSM_TENANT_ID")),
+			); evidence != nil {
+				h.ReviewDispatch = service.NewReviewDispatchBatchService(
+					continuousDispatchShadow,
+					continuousDispatchTrigger,
+				).WithAuthorityEvidenceProvider(evidence)
+				slog.Warn("companyops review canary authority evidence provider enabled")
+			}
+		}
+	}
 	h.CompanyOpsOutcomeCenter = service.NewCompanyOpsOutcomeCenterService(queries)
 	h.Metrics = opts.BusinessMetrics
 	h.FeatureFlags = opts.FeatureFlags
@@ -1775,6 +1955,10 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Post("/", h.CreateProject)
 				r.Route("/{id}", func(r chi.Router) {
 					r.Get("/", h.GetProject)
+					r.Get("/next-actions", h.GetProjectNextActions)
+					r.Post("/next-actions/{issueId}/dispatch", h.DispatchProjectNextAction)
+					r.Get("/review-dispatch/preview", h.GetProjectReviewDispatchPreview)
+					r.Post("/review-dispatch/dispatch", h.DispatchProjectReviewBatch)
 					r.Put("/", h.UpdateProject)
 					r.Delete("/", h.DeleteProject)
 					// HIV-367 (P0-E): read-only pipeline projection. Composes

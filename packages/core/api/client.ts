@@ -191,6 +191,7 @@ import type {
   CompanyOpsRosterParams,
   CompanyOpsRosterResponse,
   CompanyOpsEmployeeDossier,
+  WorkConservingProjection,
 } from "../types";
 import type {
   WorkInboxItem,
@@ -1164,6 +1165,8 @@ import {
   EMPTY_LIST_GITHUB_REPOSITORIES_RESPONSE,
   RuntimeModelListRequestSchema,
   MALFORMED_RUNTIME_MODEL_LIST_REQUEST,
+  WorkConservingProjectionResponseSchema,
+  EMPTY_WORK_CONSERVING_PROJECTION,
 } from "./schemas";
 
 /** Identifies the calling client to the server.
@@ -3981,6 +3984,25 @@ export class ApiClient {
       method: "POST",
       body: JSON.stringify(data),
     });
+  }
+
+  /**
+   * Reads the complete, Goal-scoped work-conserving plan. The endpoint is
+   * intentionally fixed: workspace identity comes from authHeaders and the
+   * only path identity is the project id. This method never dispatches or
+   * creates a Task, lease, receipt, or database row.
+   */
+  async getProjectWorkConservingProjection(id: string): Promise<WorkConservingProjection> {
+    const raw = await this.fetch<unknown>(
+      `/api/projects/${id}/next-actions?projection=work_conserving`,
+    );
+    const parsed = parseWithFallback(
+      raw,
+      WorkConservingProjectionResponseSchema,
+      { workConserving: EMPTY_WORK_CONSERVING_PROJECTION },
+      { endpoint: "GET /api/projects/:id/next-actions?projection=work_conserving" },
+    );
+    return parsed.workConserving;
   }
 
   async createProject(data: CreateProjectRequest): Promise<Project> {

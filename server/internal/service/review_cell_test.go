@@ -14,7 +14,6 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/multica-ai/multica/server/internal/events"
-	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -448,7 +447,7 @@ func mustGetIssue(t *testing.T, ctx context.Context, f reviewCellFixture) db.Iss
 	return issue
 }
 
-func uuidString(id pgtype.UUID) string { return util.UUIDToString(id) }
+// uuidString is defined in continuous_dispatch_shadow_test.go.
 
 func containsString(s, substr string) bool {
 	return strings.Contains(s, substr)

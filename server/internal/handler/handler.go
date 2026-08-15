@@ -194,6 +194,37 @@ type Handler struct {
 	// employee read model, then resolves executable HiveCrew-local Agents
 	// without becoming a second employee or organization authority.
 	CompanyOpsDirectory *service.CompanyOpsDirectoryService
+	// CompanyOpsDispatchAuthorization is the read-only HiveCosm execution
+	// authorization client. It is nil until the complete origin, tenant, and
+	// injected bearer configuration is available; nil is source_gap, never a
+	// local authorization fallback.
+	CompanyOpsDispatchAuthorization *companyops.HiveCosmDispatchAuthorizationClient
+	// CompanyOpsQuotaObservation is the read-only HiveCosm provider quota
+	// observation client. It is nil when Authority configuration is incomplete.
+	CompanyOpsQuotaObservation *companyops.HiveCosmQuotaObservationClient
+	// ContinuousDispatchShadow is a read-only projection over the existing
+	// Project/Issue/Task/Agent/Runtime and HiveCosm employee truths. It never
+	// dispatches work or acquires a writer lease.
+	ContinuousDispatchShadow interface {
+		InspectProject(context.Context, pgtype.UUID, pgtype.UUID, int, int) (*service.ContinuousDispatchShadowResult, error)
+	}
+	// WorkConservingProjection is an optional, Goal-scoped read provider. It
+	// must return a complete Authority-backed plan; nil or incomplete evidence
+	// is rendered as an embedded source_gap projection and never writes state.
+	WorkConservingProjection service.WorkConservingProjectionProvider
+	// ContinuousDispatchTrigger is the Owner/Admin write command. The handler
+	// passes only workspace/project/issue/actor and handoff text; the service
+	// recomputes employee, Agent, Runtime, model, account and generation truth.
+	ContinuousDispatchTrigger interface {
+		DispatchIssue(context.Context, pgtype.UUID, pgtype.UUID, pgtype.UUID, pgtype.UUID, string) (service.ContinuousDispatchTriggerResult, error)
+	}
+	// ReviewDispatch is the bounded Owner/Admin review-drain coordinator. It
+	// uses the existing Shadow and exact Task+receipt dispatcher; it does not
+	// create a second scheduler or review queue.
+	ReviewDispatch interface {
+		PreviewProject(context.Context, pgtype.UUID, pgtype.UUID, int, int) (service.ReviewDispatchPreview, error)
+		DispatchProject(context.Context, pgtype.UUID, pgtype.UUID, pgtype.UUID, int, int) (service.ReviewDispatchBatchResult, error)
+	}
 	// CompanyOpsEnsureWorkOrderIssue projects an authoritative WorkOrder into
 	// one local Issue and provenance link. The concrete implementation lives in
 	// the service layer so HTTP handlers cannot bypass IssueService.

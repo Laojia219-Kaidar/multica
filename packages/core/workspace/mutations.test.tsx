@@ -1,7 +1,7 @@
 /**
  * @vitest-environment jsdom
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, renderHook } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
@@ -34,6 +34,25 @@ const makeWorkspace = (id: string, slug: string): Workspace => ({
   avatar_url: null,
   created_at: "2026-01-01T00:00:00Z",
   updated_at: "2026-01-01T00:00:00Z",
+});
+
+// Node 25 ships a partial `localStorage` shim under jsdom that's missing
+// `clear`/`removeItem`; replace it with a real in-memory Storage so persist
+// can round-trip values.
+beforeAll(() => {
+  if (typeof globalThis.localStorage?.clear !== "function") {
+    const values = new Map<string, string>();
+    const storage: Storage = {
+      get length() { return values.size; },
+      clear: () => values.clear(),
+      getItem: (k) => values.get(k) ?? null,
+      key: (i) => Array.from(values.keys())[i] ?? null,
+      removeItem: (k) => { values.delete(k); },
+      setItem: (k, v) => { values.set(k, v); },
+    };
+    Object.defineProperty(globalThis, "localStorage", { configurable: true, value: storage });
+    Object.defineProperty(window, "localStorage", { configurable: true, value: storage });
+  }
 });
 
 describe("useCreateWorkspace", () => {
@@ -126,7 +145,7 @@ describe("useDeleteWorkspace", () => {
     // after a successful delete (it suppresses the WS echo); reset it so
     // tests stay independent.
     unmarkWorkspaceDeletePending("ws-2");
-    localStorage.clear();
+    window.localStorage.clear();
     vi.restoreAllMocks();
   });
 
