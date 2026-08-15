@@ -435,8 +435,12 @@ func eventEqual(a, b *EventRecord) bool {
 		a.EventType == b.EventType &&
 		a.BlockerReason == b.BlockerReason &&
 		a.Receiver == b.Receiver &&
-		a.OccurredAt == b.OccurredAt &&
 		string(pa) == string(pb)
+	// OccurredAt / ObservedAt are observation timestamps, not idempotency
+	// identity: a replayed event with the same semantic payload must return the
+	// original event even when re-observed at a different wall-clock time
+	// (fixes work.start replay returning ErrConflict on the stable
+	// "start:<work_ref>:<session_id>:<run_id>" key).
 }
 
 // similarityScore is a tiny token-overlap similarity for fixtures (0..1).
