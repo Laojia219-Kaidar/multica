@@ -126,6 +126,11 @@ services:
       MULTICA_VCS_INTEGRATION_ENABLED: ${MULTICA_VCS_INTEGRATION_ENABLED:-true}
       # VCS integration at-rest encryption key for token-based providers
       MULTICA_VCS_SECRET_KEY: ${MULTICA_VCS_SECRET_KEY:-}
+      # HiveCosm authority adapter (owner work-context + formal-artifact
+      # authority). Unset = company-ops endpoints fail closed with source_gap.
+      HIVECOSM_AUTHORITY_BASE_URL: ${HIVECOSM_AUTHORITY_BASE_URL:-}
+      HIVECOSM_AUTHORITY_BEARER_TOKEN: ${HIVECOSM_AUTHORITY_BEARER_TOKEN:-}
+      HIVECOSM_TENANT_ID: ${HIVECOSM_TENANT_ID:-}
     restart: unless-stopped
 
   frontend:

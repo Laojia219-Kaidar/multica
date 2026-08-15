@@ -221,3 +221,196 @@ func TestResumeDoesNotDuplicateRunningTask(t *testing.T) {
 		t.Fatalf("task count after resume = %d, want 1 (no duplicate)", countTasks(t, pool, issueID))
 	}
 }
+
+// Slice 4 contract: close fails closed (OUTCOME_COVERAGE_INCOMPLETE) when the
+// project has all-terminal issues but no confirmed outcomes; status unchanged.
+func TestCloseFailsClosedWithoutOutcomes(t *testing.T) {
+	pool, workspaceID, projectID, issueID := seedPausedProjectFixture(t, "in_progress")
+	q := db.New(pool)
+	svc := &TaskService{Queries: q, TxStarter: pool, Bus: events.New()}
+	ctrl := NewProjectLifecycleControlService(q, svc)
+	ctx := context.Background()
+	// make the only issue terminal (done) so "all terminal" holds but outcome=0.
+	if _, err := pool.Exec(ctx, `UPDATE issue SET status='done' WHERE id=$1`, issueID); err != nil {
+		t.Fatalf("mark issue done: %v", err)
+	}
+
+	pkg, err := ctrl.GenerateClosurePackage(ctx, util.MustParseUUID(workspaceID), util.MustParseUUID(projectID), "pkg-k1")
+	if err != nil {
+		t.Fatalf("generate package: %v", err)
+	}
+	if !pkg.ReviewRequired {
+		t.Fatalf("package review_required = false, want true")
+	}
+	if pkg.Digest == "" {
+		t.Fatalf("package digest empty")
+	}
+
+	r, err := ctrl.Close(ctx, util.MustParseUUID(workspaceID), util.MustParseUUID(projectID), "close-k1")
+	if err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	if !containsStr(r.Blockers, "OUTCOME_COVERAGE_INCOMPLETE") || !containsStr(r.Blockers, "CLOSURE_PACKAGE_MISSING") {
+		t.Fatalf("close blockers = %v, want OUTCOME_COVERAGE_INCOMPLETE + CLOSURE_PACKAGE_MISSING", r.Blockers)
+	}
+	if r.Applied {
+		t.Fatalf("close applied a terminal write despite unmet gates: %+v", r)
+	}
+	// status must be unchanged.
+	var status string
+	if err := pool.QueryRow(ctx, `SELECT status FROM project WHERE id=$1`, projectID).Scan(&status); err != nil {
+		t.Fatalf("read status: %v", err)
+	}
+	if status != "in_progress" {
+		t.Fatalf("close mutated status to %q, want in_progress", status)
+	}
+}
+
+// digest determinism: same package state yields the same sha256 fingerprint.
+func TestClosurePackageDigestDeterministic(t *testing.T) {
+	p1 := &ClosurePackage{ProjectID: "p1", Status: "in_progress", TerminalIssueCount: 4, ReviewRequired: true}
+	p2 := &ClosurePackage{ProjectID: "p1", Status: "in_progress", TerminalIssueCount: 4, ReviewRequired: true}
+	if closurePackageDigest(p1) != closurePackageDigest(p2) {
+		t.Fatalf("digest not deterministic: %s vs %s", closurePackageDigest(p1), closurePackageDigest(p2))
+	}
+	p2.TerminalIssueCount = 5
+	if closurePackageDigest(p1) == closurePackageDigest(p2) {
+		t.Fatalf("digest did not change on different terminal count")
+	}
+}
+
+// Durable idempotency: same key + same action replays from the stored receipt;
+// same key + DIFFERENT action conflicts (409 sentinel).
+func TestProjectLifecycleReceiptConflict(t *testing.T) {
+	pool, workspaceID, projectID, _ := seedPausedProjectFixture(t, "in_progress")
+	q := db.New(pool)
+	svc := &TaskService{Queries: q, TxStarter: pool, Bus: events.New()}
+	ctrl := NewProjectLifecycleControlService(q, svc)
+	ctx := context.Background()
+	wsUUID, pidUUID := util.MustParseUUID(workspaceID), util.MustParseUUID(projectID)
+
+	if _, err := ctrl.PauseDispatch(ctx, wsUUID, pidUUID, "shared-key"); err != nil {
+		t.Fatalf("pause: %v", err)
+	}
+	// Same key reused for a different action -> conflict.
+	if _, err := ctrl.Continue(ctx, wsUUID, pidUUID, "shared-key"); !errors.Is(err, ErrProjectLifecycleConflict) {
+		t.Fatalf("continue with reused key err = %v, want ErrProjectLifecycleConflict", err)
+	}
+	// Same key + same action -> durable replay from the stored receipt.
+	r, err := ctrl.PauseDispatch(ctx, wsUUID, pidUUID, "shared-key")
+	if err != nil {
+		t.Fatalf("replay pause: %v", err)
+	}
+	if !r.Replayed || r.Applied {
+		t.Fatalf("replay receipt = %+v, want Replayed=true Applied=false (from stored receipt)", r)
+	}
+}
+
+// stop-current terminates live tasks (the explicit separate action; pause only
+// stops new dispatch).
+func TestStopCurrentCancelsLiveTasks(t *testing.T) {
+	pool, workspaceID, projectID, issueID := seedPausedProjectFixture(t, "in_progress")
+	q := db.New(pool)
+	svc := &TaskService{Queries: q, TxStarter: pool, Bus: events.New()}
+	ctrl := NewProjectLifecycleControlService(q, svc)
+	ctx := context.Background()
+	wsUUID, pidUUID := util.MustParseUUID(workspaceID), util.MustParseUUID(projectID)
+
+	if _, err := ctrl.Continue(ctx, wsUUID, pidUUID, "c-stop"); err != nil {
+		t.Fatalf("continue: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE agent_task_queue SET status='running' WHERE issue_id=$1`, issueID); err != nil {
+		t.Fatalf("mark running: %v", err)
+	}
+	r, err := ctrl.StopCurrent(ctx, wsUUID, pidUUID, "stop-k1")
+	if err != nil {
+		t.Fatalf("stop-current: %v", err)
+	}
+	if !r.Applied {
+		t.Fatalf("stop-current receipt = %+v, want Applied=true", r)
+	}
+	var active int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM agent_task_queue WHERE issue_id=$1 AND status IN ('queued','dispatched','running','waiting_local_directory','deferred')`, issueID).Scan(&active); err != nil {
+		t.Fatalf("count active: %v", err)
+	}
+	if active != 0 {
+		t.Fatalf("active tasks after stop-current = %d, want 0", active)
+	}
+}
+
+// Review mechanism (VC-07 gate 5): an independent approve makes review_required
+// false; the outcome gate remains the only remaining blocker.
+func TestReviewClosurePackageSatisfiesReviewGate(t *testing.T) {
+	pool, workspaceID, projectID, issueID := seedPausedProjectFixture(t, "in_progress")
+	q := db.New(pool)
+	svc := &TaskService{Queries: q, TxStarter: pool, Bus: events.New()}
+	ctrl := NewProjectLifecycleControlService(q, svc)
+	ctx := context.Background()
+	if _, err := pool.Exec(ctx, `UPDATE issue SET status='done' WHERE id=$1`, issueID); err != nil {
+		t.Fatalf("mark done: %v", err)
+	}
+	wsUUID, pidUUID := util.MustParseUUID(workspaceID), util.MustParseUUID(projectID)
+
+	pkg, err := ctrl.GenerateClosurePackage(ctx, wsUUID, pidUUID, "pkg-r1")
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	if !pkg.ReviewRequired {
+		t.Fatalf("review_required before review = false, want true")
+	}
+	// Reviewer = the fixture owner user (a member, different from the agent lead).
+	var reviewerID string
+	if err := pool.QueryRow(ctx, `SELECT user_id::text FROM member WHERE workspace_id=$1 AND role='owner' LIMIT 1`, workspaceID).Scan(&reviewerID); err != nil {
+		t.Fatalf("load reviewer: %v", err)
+	}
+	if _, err := ctrl.ReviewClosurePackage(ctx, wsUUID, pidUUID, util.MustParseUUID(reviewerID), true); err != nil {
+		t.Fatalf("review: %v", err)
+	}
+	pkg2, err := ctrl.GenerateClosurePackage(ctx, wsUUID, pidUUID, "pkg-r2")
+	if err != nil {
+		t.Fatalf("generate after review: %v", err)
+	}
+	if pkg2.ReviewRequired {
+		t.Fatalf("review_required after approve = true, want false")
+	}
+	// Outcome gate still blocks close (ledger empty), so close remains fail-closed.
+	r, err := ctrl.Close(ctx, wsUUID, pidUUID, "close-r1")
+	if err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	if !containsStr(r.Blockers, "OUTCOME_COVERAGE_INCOMPLETE") {
+		t.Fatalf("close blockers = %v, want OUTCOME_COVERAGE_INCOMPLETE (ledger empty)", r.Blockers)
+	}
+}
+
+// VC-12: ReconcileWorkspace creates a dedup'd traceable action per finding, and
+// a second run is idempotent (no duplicate issues).
+func TestReconcileWorkspaceDedup(t *testing.T) {
+	pool, workspaceID, _, _ := seedPausedProjectFixture(t, "in_progress")
+	q := db.New(pool)
+	svc := &TaskService{Queries: q, TxStarter: pool, Bus: events.New()}
+	issueSvc := NewIssueService(q, pool, events.New(), nil, svc)
+	reconciler := NewProjectLifecycleReconciler(q)
+	ctx := context.Background()
+	wsUUID := util.MustParseUUID(workspaceID)
+
+	var ownerID string
+	if err := pool.QueryRow(ctx, `SELECT user_id::text FROM member WHERE workspace_id=$1 AND role='owner' LIMIT 1`, workspaceID).Scan(&ownerID); err != nil {
+		t.Fatalf("load owner: %v", err)
+	}
+
+	n1, err := reconciler.ReconcileWorkspace(ctx, wsUUID, issueSvc, "member", util.MustParseUUID(ownerID))
+	if err != nil {
+		t.Fatalf("first reconcile: %v", err)
+	}
+	if n1 == 0 {
+		t.Fatalf("first reconcile created 0 actions, want >= 1")
+	}
+	n2, err := reconciler.ReconcileWorkspace(ctx, wsUUID, issueSvc, "member", util.MustParseUUID(ownerID))
+	if err != nil {
+		t.Fatalf("second reconcile: %v", err)
+	}
+	if n2 != 0 {
+		t.Fatalf("second reconcile created %d duplicate actions, want 0", n2)
+	}
+}

@@ -73,6 +73,18 @@ truth_anchors:
     HIV-549 [P0-F1] Inbox cursor pagination: in_progress, task FAILED (needs repair)
     HIV-550 [P0-F2] 议题活动工作流与历史视图: in_progress, task RUNNING (only live task)
     HIV-553 [P0-F4] 项目持续经营合同: in_review (this goal contract, task completed)
+  live_deployed:
+    deployed_at: '2026-08-13T23:38:27.148613+00:00'
+    candidate_branch: work/hivecrew-project-lifecycle-closure
+    backend: multica-backend:dev (rebuilt from candidate)
+    frontend: multica-web:dev (rebuilt from candidate)
+    migrations_applied:
+    - 342_project_lifecycle_receipt
+    - 343_closure_package_review
+    rollback_images:
+    - multica-backend:dev-pre-lifecycle
+    - multica-web:dev-pre-lifecycle
+    db_snapshot: /tmp/hivecrew-live-backup-20260814072111.sql
 write_boundaries:
   rule: one file = one writer; backend/frontend/migration/test areas must not overlap
     across concurrently-running sub-agents
@@ -104,84 +116,128 @@ phases:
   WAVE-3 independent rolling acceptance:
     status: ready
   WAVE-4 integration + candidate deploy:
-    status: not_started
+    status: api_candidate_verified
   WAVE-5 portfolio disposition + self-operation:
-    status: not_started
+    status: reconciler_diagnostic_done
 slices:
   slice_1_project_health_visibility:
-    status: implemented_and_verified_candidate
+    status: accepted
     scope: Project health/portfolio read API + Projects page classification + project
       cards (lead/frontier/worker/last receipt/next action/outcome coverage)
     commits:
     - 0eeb7a05b
     - 74bb1fe31
+    final_revision: 726bcca4a
+    reviews:
+      Gauss: PASS
+      Quinn: PASS
+      Pixel: PASS
   slice_2_continue_resume_pause:
-    status: not_started
+    status: accepted
+    contract: contracts/SLICE-2-CONTROL-CONTRACT.md
+    red_tests: contracts/SLICE-2-RED-TEST-MATRIX.md
+    source_impl: BLOCKED_ON_W3_LANE
+    commit: 977e3e8b5
+    final_revision: b852af8a5
+    reviews:
+      Gauss: PASS
+      Quinn: PASS
+      Pixel: PASS
   slice_3_review_repair_routing:
-    status: not_started
+    status: w3_provided_verified
+    w3_ref: review_cell/review_drain/review.go + migrations 280-285
   slice_4_outcome_center_closure_package:
-    status: not_started
+    status: accepted
+    gap: Closure Package generation + close gate NOT implemented by W3 (remaining
+      Slice 4 work)
+    commit: 528020fde
+    reviews:
+      Gauss: PASS
+      Quinn: PASS
+      Pixel: PASS
   slice_5_history_pagination_backfill:
-    status: not_started
+    status: w3_provided_verified
+    w3_ref: JOIN-8 projects / JOIN-10 inbox / JOIN-2 outcomes cursor
 victory_conditions:
   VC-01:
     title: Current truth honest classification
-    status: candidate_evidence
+    status: runtime_accepted
     evidence:
     - EV-S1-03
     - EV-S1-05
     - EV-S1-09
+    - EV-S1-GAUSS-PASS
+    - EV-S1-QUINN-PASS
+    - EV-S1-PIXEL-PASS
+    - EV-LIVE-01 (live :8080 portfolio honest classification)
   VC-02:
     title: Accountability per project
     status: not_started
     evidence: []
   VC-03:
     title: Owner controls
-    status: not_started
-    evidence: []
+    status: partial_accepted
+    evidence:
+    - Slice 2 continue/pause/resume accepted (3x PASS); close-preview/closure-package
+      are Slice 4
   VC-04:
     title: Continuous dispatch
-    status: not_started
-    evidence: []
+    status: partial_accepted
+    evidence:
+    - Slice 2 pause dispatch gate + idempotent replay accepted (3x PASS)
   VC-05:
     title: Review/repair
-    status: not_started
+    status: w3_provided
     evidence: []
   VC-06:
     title: Outcome lineage
-    status: not_started
-    evidence: []
+    status: code_proven_blocked_external_authority
+    evidence:
+    - TestOwnerToOutcomeMinimalSlice (5 ledger tables, stub authority)
+    - AUTHORITY-HANDOFF.md
   VC-07:
     title: Project closure
-    status: not_started
-    evidence: []
+    status: partial_accepted
+    evidence:
+    - Slice 4 closure package + close gate accepted (3x PASS); review record = Slice
+      3 review-cell (deferred)
   VC-08:
     title: Existing portfolio disposition
-    status: partial_candidate_evidence
+    status: owner_decisions_recorded_partial_applied
     evidence:
-    - EV-S1-05 (2 owner_decision, 2 source_gap, 1 duplicate surfaced)
+    - OWNER-DECISIONS.md (supersede + 补跑2名)
+    - W2-portfolio-disposition-preprocessing.md
   VC-09:
     title: Active/history UX
-    status: not_started
+    status: w3_provided
     evidence: []
   VC-10:
     title: Runtime acceptance
-    status: not_started
-    evidence: []
+    status: runtime_accepted_api_build_test_evidence
+    evidence:
+    - EV-W4-01 (candidate :18090 full-stack API, 401/200, honest portfolio + reconciler
+      + closure + control)
+    - 'Owner option (b): API live + prod build + unit tests = sufficient; real-browser
+      optional'
   VC-11:
     title: Provenance
     status: not_started
     evidence: []
   VC-12:
     title: Self-operation
-    status: not_started
-    evidence: []
+    status: diagnostic_dispatch_scheduler_implemented
+    evidence:
+    - WAVE-5 reconciler diagnostic (4 detectors, 15 live findings)
 frontier:
   controller: Prime Agent
-  phase: WAVE-2 Slice 1 -> WAVE-3 independent acceptance
+  phase: GOAL-STATE-SNAPSHOT frozen; waiting on HiveCosm Authority lane (receiver)
+    + Mac Canary 4/4 completion
   ready:
-  - HiveCrew independent acceptance (Gauss/Quinn/Pixel) for Slice 1
-  running: []
+  - Closure Package generation + close gate (Slice 4 gap)
+  - WAVE-4 candidate deploy + runtime acceptance
+  - WAVE-5 reconciler + portfolio disposition
+  running:
+  - Slice 2 acceptance (Gauss/Quinn/Pixel) HIV-557/558/559
   blocked: []
 evidence_index: []
 subagent_roster:
@@ -216,19 +272,87 @@ subagent_roster:
       assignee: Gauss
       issue: 6c263eac-7e34-48d4-97be-c6e2d119627e
       scope: backend/API/concurrency
-      status: repair3_applied
+      status: PASS
       repair_commits:
       - b954e7e5c
       - 90d7b50af
-      - (pending commit 3)
+      - 726bcca4a
     HIV-555:
       assignee: Quinn
       issue: e3741103-9e97-442c-88fa-b6e33d727858
       scope: quality/state-machine
-      status: revise_repair_applied
+      status: PASS
       repair_commit: b954e7e5c
     HIV-556:
       assignee: Pixel
       issue: 770a9e87-bad1-4837-a6a0-2aee00c00ec5
       scope: frontend/browser
-      status: running
+      status: PASS
+  slice2_acceptance:
+    HIV-557:
+      assignee: Gauss
+      issue: 31102a00-a5e4-4483-b234-f45cbdf14a95
+      scope: backend/API/control
+      status: PASS
+      repair_commit: df0fdf7ab
+      final_tip: b852af8a5
+    HIV-558:
+      assignee: Quinn
+      issue: f1dd0041-f819-4d63-986a-ad91c60a9981
+      scope: quality/invariants
+      status: PASS
+      repair_commit: df0fdf7ab
+      final_tip: b852af8a5
+    HIV-559:
+      assignee: Pixel
+      issue: 6771d512-1456-424b-acc5-b7dab146959e
+      scope: frontend
+      status: PASS
+  slice4_acceptance:
+    HIV-560:
+      assignee: Gauss
+      issue: f80f4df5-5d17-4a34-9ca8-322895afab8b
+      scope: closure/close backend
+      status: PASS
+    HIV-561:
+      assignee: Quinn
+      issue: 2a93f39a-ae0a-4012-9344-9f53b9d56be6
+      scope: closure quality
+      status: PASS
+    HIV-562:
+      assignee: Pixel
+      issue: 6490a022-3114-401e-accf-8190c69c4d8b
+      scope: closure frontend
+      status: PASS
+contracts_accepted:
+- B-C-OPERATIONALIZATION.md (in_review->C accepted; BASES/ORCHESTRATION deviate C
+  vs frozen B, visible via review_issue_count)
+authority_integration:
+  status: BLOCKED_EXTERNAL_AUTHORITY_NOT_DEPLOYED
+  decision: HiveCosm Authority 服务尚未正式部署；不提供/不臆造 URL/Token
+  candidate_complete:
+  - HiveCrew 消费端代码
+  - compose 接线
+  - 回滚点
+  - 本地/隔离测试
+  not_complete:
+  - 真实 Authority 联调
+  - Formal Artifact Promotion
+  - 生产验收
+  handoff: AUTHORITY-HANDOFF.md
+  receiver: HiveCosm Authority 建设/集成车道
+  resume_trigger: Authority 候选独立验收 + 合入 + 部署后，由集成负责人回传 base URL / secret 引用 / tenant
+    ID / 健康检查窗口
+owner_decisions:
+  PRJ-HCW-V2:
+    decision: supersede
+    target: HIVECREW-OWNER-OPERATING-WORKBENCH-V1 (3b0330e7)
+    receipt: OWNER-DECISIONS.md
+    issue_migration: deferred to Slice 4/5 disposition mechanism (schema lacks disposition
+      column)
+  Mac-Native-Canary:
+    decision: 补跑 2 名员工凑满 4/4 再关闭
+    created_issues:
+    - eb9eae40-1a44-4189-9643-4e90725cb7a2 (GLM)
+    - 32779f59-d6e2-49cb-bc60-5f75fbf1ba3d (Qwen)
+    closure_lead: Coco (agent 67903491) — set on project

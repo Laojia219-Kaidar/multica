@@ -48,3 +48,10 @@ Append-only. Each entry: id, what, how verified, revision/source, timestamp, sta
 
 - EV-S1-17 : Gauss re-review of 90d7b50af : F1/F3/F6 PASS, F2 residual (outcome_confirmed still hardcoded 0 in wire struct) : HIV-554
 - EV-S1-18 : Repair #3 : OutcomeConfirmed <- confirmedByProject[pid]; stale comment fixed; EVIDENCE/CHECKLIST repaired : git log (this commit)
+
+
+## WAVE-4 candidate API acceptance + WAVE-5 reconciler
+
+- EV-W4-01 : candidate server (:18090, isolated DB 55433) full-stack API verified: portfolio 11 projects honest (8 C/1 E/2 G), reconciler 15 findings (8 review_no_reviewer/5 repair_no_repair/2 terminal_no_package), closure package review_required+digest+blockers, pause preview read-only, auth 401 : curl evidence
+- EV-W5-01 : reconciler diagnostic commit 23615f2e4 (4 detectors, read-only) + live 15 findings
+- EV-S4-* : Slice 4 3x PASS (Gauss/Quinn/Pixel) — closure package + close gate accepted

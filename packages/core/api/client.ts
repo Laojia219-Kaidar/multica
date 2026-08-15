@@ -107,6 +107,7 @@ import type {
   ProjectControlAction,
   ProjectControlReceipt,
   ContinuePreview,
+  ProjectClosurePackage,
   ProjectResource,
   CreateProjectResourceRequest,
   UpdateProjectResourceRequest,
@@ -3978,7 +3979,7 @@ export class ApiClient {
   async projectLifecycleAction(
     id: string,
     action: ProjectControlAction,
-    data: { preview?: boolean; idempotency_key?: string },
+    data: { preview?: boolean; idempotency_key?: string; target_project_id?: string },
   ): Promise<ProjectControlReceipt | { preview: ContinuePreview }> {
     return this.fetch(`/api/projects/${id}/lifecycle/actions/${action}`, {
       method: "POST",
@@ -4003,6 +4004,13 @@ export class ApiClient {
       { endpoint: "GET /api/projects/:id/next-actions?projection=work_conserving" },
     );
     return parsed.workConserving;
+  }
+
+  async generateClosurePackage(id: string): Promise<ProjectClosurePackage> {
+    return this.fetch(`/api/projects/${id}/closure-package`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
   }
 
   async createProject(data: CreateProjectRequest): Promise<Project> {

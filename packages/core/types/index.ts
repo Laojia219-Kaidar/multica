@@ -137,6 +137,7 @@ export type {
   ProjectControlAction,
   ProjectControlReceipt,
   ContinuePreview,
+  ProjectClosurePackage,
 } from "./project";
 export type {
   WorkConservingAuthoritySnapshot,

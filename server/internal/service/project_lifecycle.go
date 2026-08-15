@@ -123,6 +123,8 @@ func ClassifyProject(in ProjectLifecycleInput) ProjectLifecycleClassification {
 		c.Health = HealthActiveWithFrontier
 		c.Flags = append(c.Flags, "active")
 		c.NextAction = fmt.Sprintf("active: %d nonterminal task(s); keep WIP and await receipts", in.ActiveTaskCount)
+		// Closure gate 3: nonterminal Task/Run must be empty before close.
+		c.ClosureBlockers = append(c.ClosureBlockers, "ACTIVE_TASKS_PRESENT")
 		return c
 	}
 

@@ -170,7 +170,7 @@ export interface ListProjectLifecycleResponse {
 
 // ---- Slice 2 owner control operations (continue / pause_dispatch / resume) ----
 
-export type ProjectControlAction = "continue" | "pause_dispatch" | "resume" | "close" | "supersede" | "generate_closure_package";
+export type ProjectControlAction = "continue" | "pause_dispatch" | "resume" | "stop_current" | "close" | "supersede" | "generate_closure_package";
 
 export interface ProjectControlReceipt {
   action: string;
@@ -195,4 +195,24 @@ export interface ContinuePreview {
   target_issue_number: number;
   target_agent_id: string | null;
   blockers: string[];
+}
+
+// ---- Slice 4 project closure package (candidate, derived read model) ----
+
+export interface ProjectClosurePackage {
+  package_id: string;
+  project_id: string;
+  status: string;
+  lead_type: "member" | "agent" | null;
+  lead_id: string | null;
+  terminal_issue_count: number;
+  nonterminal_issue_count: number;
+  active_task_count: number;
+  outcome_confirmed: number;
+  outcome_total: number;
+  duplicate_of_project_id: string | null;
+  review_required: boolean;
+  closure_ready: boolean;
+  blockers: string[];
+  digest: string;
 }

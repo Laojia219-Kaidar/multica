@@ -146,3 +146,29 @@ func TestProjectLifecycleAction_NonAdminForbidden(t *testing.T) {
 		t.Fatalf("expected 403, got %d: %s", w.Code, w.Body.String())
 	}
 }
+
+// Slice 4: closure-package endpoint returns a candidate package (200) and is
+// owner/admin gated; close preview is read-only.
+func TestProjectClosurePackageEndpoint(t *testing.T) {
+	p := seedControlProject(t, "in_progress", "agent", testUserID)
+	w := httptest.NewRecorder()
+	req := newRequest("POST", "/api/projects/"+p.ID+"/closure-package?workspace_id="+testWorkspaceID, map[string]any{})
+	req = withURLParam(req, "id", p.ID)
+	testHandler.ProjectClosurePackage(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var pkg struct {
+		ReviewRequired bool   `json:"review_required"`
+		Digest         string `json:"digest"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&pkg); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !pkg.ReviewRequired {
+		t.Fatalf("review_required = false, want true")
+	}
+	if pkg.Digest == "" {
+		t.Fatalf("digest empty")
+	}
+}

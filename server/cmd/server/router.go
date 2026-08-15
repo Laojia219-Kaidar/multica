@@ -1951,6 +1951,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				// Project lifecycle closure read model (derived health /
 				// frontier / outcome coverage projection, HIV-553 contract).
 				r.Get("/lifecycle", h.ListProjectLifecycle)
+				// Self-operation diagnosis (VC-12 four broken-chain detectors).
+				r.Get("/reconciler", h.ListProjectLifecycleReconciler)
+				r.Post("/reconciler/dispatch", h.DispatchProjectLifecycleReconcileAction)
 				r.Get("/", h.ListProjects)
 				r.Post("/", h.CreateProject)
 				r.Route("/{id}", func(r chi.Router) {
@@ -1968,6 +1971,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Get("/lifecycle", h.GetProjectLifecycle)
 					// Slice 2 owner control operations (preview-first).
 					r.Post("/lifecycle/actions/{action}", h.ProjectLifecycleAction)
+					// Slice 4 project closure package (candidate, read-only).
+					r.Post("/closure-package", h.ProjectClosurePackage)
+					r.Post("/closure-package/review", h.ReviewProjectClosurePackage)
 					r.Get("/resources", h.ListProjectResources)
 					r.Post("/resources", h.CreateProjectResource)
 					r.Put("/resources/{resourceId}", h.UpdateProjectResource)

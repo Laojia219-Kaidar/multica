@@ -2,6 +2,7 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 
@@ -12,11 +13,26 @@ import (
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
+// writeControlError maps a control-service error to the right HTTP status:
+// not-found -> 404, idempotency conflict -> 409, anything else -> 500 (no more
+// masking every internal fault as "project not found").
+func writeControlError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, service.ErrProjectLifecycleNotFound):
+		writeError(w, http.StatusNotFound, "project not found")
+	case errors.Is(err, service.ErrProjectLifecycleConflict):
+		writeError(w, http.StatusConflict, "idempotency key conflict")
+	default:
+		writeError(w, http.StatusInternalServerError, "project control operation failed")
+	}
+}
+
 // projectLifecycleActionRequest is the body for the Slice 2 control endpoints.
 // preview=true returns the planned effect with zero writes.
 type projectLifecycleActionRequest struct {
-	Preview         bool   `json:"preview"`
-	IdempotencyKey  string `json:"idempotency_key"`
+	Preview        bool   `json:"preview"`
+	IdempotencyKey string `json:"idempotency_key"`
+	// TargetProjectID is only read by supersede (source -> target lineage).
 	TargetProjectID string `json:"target_project_id"`
 }
 
@@ -69,7 +85,7 @@ func (h *Handler) ProjectLifecycleAction(w http.ResponseWriter, r *http.Request)
 		if req.Preview {
 			p, err := ctrl.PreviewContinue(r.Context(), wsUUID, idUUID)
 			if err != nil {
-				writeError(w, http.StatusNotFound, "project not found")
+				writeControlError(w, err)
 				return
 			}
 			writeJSON(w, http.StatusOK, map[string]any{"preview": p})
@@ -77,7 +93,7 @@ func (h *Handler) ProjectLifecycleAction(w http.ResponseWriter, r *http.Request)
 		}
 		receipt, err := ctrl.Continue(r.Context(), wsUUID, idUUID, req.IdempotencyKey)
 		if err != nil {
-			writeError(w, http.StatusNotFound, "project not found")
+			writeControlError(w, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, receipt)
@@ -86,7 +102,7 @@ func (h *Handler) ProjectLifecycleAction(w http.ResponseWriter, r *http.Request)
 		if req.Preview {
 			receipt, err := ctrl.PreviewPause(r.Context(), wsUUID, idUUID)
 			if err != nil {
-				writeError(w, http.StatusNotFound, "project not found")
+				writeControlError(w, err)
 				return
 			}
 			writeJSON(w, http.StatusOK, receipt)
@@ -94,7 +110,7 @@ func (h *Handler) ProjectLifecycleAction(w http.ResponseWriter, r *http.Request)
 		}
 		receipt, err := ctrl.PauseDispatch(r.Context(), wsUUID, idUUID, req.IdempotencyKey)
 		if err != nil {
-			writeError(w, http.StatusNotFound, "project not found")
+			writeControlError(w, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, receipt)
@@ -103,7 +119,7 @@ func (h *Handler) ProjectLifecycleAction(w http.ResponseWriter, r *http.Request)
 		if req.Preview {
 			receipt, err := ctrl.PreviewResume(r.Context(), wsUUID, idUUID)
 			if err != nil {
-				writeError(w, http.StatusNotFound, "project not found")
+				writeControlError(w, err)
 				return
 			}
 			writeJSON(w, http.StatusOK, receipt)
@@ -111,15 +127,41 @@ func (h *Handler) ProjectLifecycleAction(w http.ResponseWriter, r *http.Request)
 		}
 		receipt, err := ctrl.Resume(r.Context(), wsUUID, idUUID, req.IdempotencyKey)
 		if err != nil {
-			writeError(w, http.StatusNotFound, "project not found")
+			writeControlError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, receipt)
+
+	case service.ActionStopCurrent:
+		if req.Preview {
+			p, err := ctrl.PreviewStopCurrent(r.Context(), wsUUID, idUUID)
+			if err != nil {
+				writeControlError(w, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"preview": p})
+			return
+		}
+		receipt, err := ctrl.StopCurrent(r.Context(), wsUUID, idUUID, req.IdempotencyKey)
+		if err != nil {
+			writeControlError(w, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, receipt)
 
 	case service.ActionClose:
+		if req.Preview {
+			pkg, err := ctrl.PreviewClose(r.Context(), wsUUID, idUUID)
+			if err != nil {
+				writeControlError(w, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"preview": pkg})
+			return
+		}
 		receipt, err := ctrl.Close(r.Context(), wsUUID, idUUID, req.IdempotencyKey)
 		if err != nil {
-			writeError(w, http.StatusNotFound, "project not found")
+			writeControlError(w, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, receipt)
@@ -135,20 +177,111 @@ func (h *Handler) ProjectLifecycleAction(w http.ResponseWriter, r *http.Request)
 		}
 		receipt, err := ctrl.Supersede(r.Context(), wsUUID, idUUID, targetUUID, req.IdempotencyKey)
 		if err != nil {
-			writeError(w, http.StatusNotFound, "project not found")
+			writeControlError(w, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, receipt)
 
-	case service.ActionGenerateClosurePackage:
-		pkg, err := ctrl.GenerateClosurePackage(r.Context(), wsUUID, idUUID)
+	default:
+		writeError(w, http.StatusBadRequest, "unknown action; valid values: continue, pause_dispatch, resume, stop_current, close, supersede")
+	}
+}
+
+// ProjectClosurePackage generates a candidate project closure package (read-only,
+// never auto-closes).
+//
+//	POST /api/projects/{id}/closure-package
+func (h *Handler) ProjectClosurePackage(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	workspaceID := h.resolveWorkspaceID(r)
+	idUUID, ok := parseUUIDOrBadRequest(w, id, "project id")
+	if !ok {
+		return
+	}
+	wsUUID, ok := parseUUIDOrBadRequest(w, workspaceID, "workspace id")
+	if !ok {
+		return
+	}
+	project, err := h.Queries.GetProjectInWorkspace(r.Context(), db.GetProjectInWorkspaceParams{ID: idUUID, WorkspaceID: wsUUID})
+	if err != nil {
+		writeError(w, http.StatusNotFound, "project not found")
+		return
+	}
+	if _, ok := h.requireWorkspaceRole(w, r, util.UUIDToString(project.WorkspaceID), "project not found", "owner", "admin"); !ok {
+		return
+	}
+	var req projectLifecycleActionRequest
+	if r.Body != nil {
+		body, err := io.ReadAll(r.Body)
 		if err != nil {
-			writeError(w, http.StatusNotFound, "project not found")
+			writeError(w, http.StatusBadRequest, "failed to read request body")
 			return
 		}
-		writeJSON(w, http.StatusOK, pkg)
-
-	default:
-		writeError(w, http.StatusBadRequest, "unknown action; valid values: continue, pause_dispatch, resume, close, supersede, generate_closure_package")
+		if len(body) > 0 {
+			if err := json.Unmarshal(body, &req); err != nil {
+				writeError(w, http.StatusBadRequest, "invalid request body")
+				return
+			}
+		}
 	}
+	ctrl := service.NewProjectLifecycleControlService(h.Queries, h.TaskService)
+	pkg, err := ctrl.GenerateClosurePackage(r.Context(), wsUUID, idUUID, req.IdempotencyKey)
+	if err != nil {
+		writeControlError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, pkg)
+}
+
+// ReviewProjectClosurePackage records an independent approve/reject decision on
+// a candidate closure package (reviewer != lead).
+//
+//	POST /api/projects/{id}/closure-package/review
+func (h *Handler) ReviewProjectClosurePackage(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	workspaceID := h.resolveWorkspaceID(r)
+	idUUID, ok := parseUUIDOrBadRequest(w, id, "project id")
+	if !ok {
+		return
+	}
+	wsUUID, ok := parseUUIDOrBadRequest(w, workspaceID, "workspace id")
+	if !ok {
+		return
+	}
+	project, err := h.Queries.GetProjectInWorkspace(r.Context(), db.GetProjectInWorkspaceParams{ID: idUUID, WorkspaceID: wsUUID})
+	if err != nil {
+		writeControlError(w, err)
+		return
+	}
+	requester, ok := h.requireWorkspaceRole(w, r, util.UUIDToString(project.WorkspaceID), "project not found", "owner", "admin")
+	if !ok {
+		return
+	}
+	var req struct {
+		Approve bool `json:"approve"`
+	}
+	if r.Body != nil {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "failed to read request body")
+			return
+		}
+		if len(body) > 0 {
+			if err := json.Unmarshal(body, &req); err != nil {
+				writeError(w, http.StatusBadRequest, "invalid request body")
+				return
+			}
+		}
+	}
+	ctrl := service.NewProjectLifecycleControlService(h.Queries, h.TaskService)
+	decision, err := ctrl.ReviewClosurePackage(r.Context(), wsUUID, idUUID, requester.UserID, req.Approve)
+	if err != nil {
+		if errors.Is(err, service.ErrProjectLifecycleReviewerIsImplementer) {
+			writeError(w, http.StatusForbidden, "closure reviewer must differ from the project lead")
+			return
+		}
+		writeControlError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"decision": decision})
 }

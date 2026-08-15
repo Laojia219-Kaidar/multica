@@ -3,9 +3,13 @@ package service
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -32,6 +36,7 @@ const (
 	ActionPauseDispatch          ControlAction = "pause_dispatch"
 	ActionResume                 ControlAction = "resume"
 	ActionClose                  ControlAction = "close"
+	ActionStopCurrent            ControlAction = "stop_current"
 	ActionSupersede              ControlAction = "supersede"
 	ActionGenerateClosurePackage ControlAction = "generate_closure_package"
 )
@@ -68,7 +73,7 @@ func validateProjectControl(proj db.Project, action ControlAction) []string {
 	}
 	// Lead gate applies to continue/resume (and Slice 4 close), NOT pause:
 	// stopping new dispatch must not be blocked by a missing lead (Gauss #5).
-	if (action == ActionContinue || action == ActionResume) && (!proj.LeadID.Valid || !proj.LeadType.Valid) {
+	if (action == ActionContinue || action == ActionResume || action == ActionClose) && (!proj.LeadID.Valid || !proj.LeadType.Valid) {
 		blockers = append(blockers, "ACCOUNTABLE_LEAD_REQUIRED")
 	}
 	if dupOf := frozenSupersessions[util.UUIDToString(proj.ID)]; dupOf != "" {
@@ -144,15 +149,21 @@ func (s *ProjectLifecycleControlService) Continue(ctx context.Context, workspace
 		BeforeStatus:   proj.Status,
 		AfterStatus:    proj.Status,
 	}
+	if prior, err := s.receiptGuard(ctx, workspaceID, projectID, ActionContinue, idempotencyKey); err != nil {
+		return ControlReceipt{}, err
+	} else if prior != nil {
+		return receiptToControl(*prior, true), nil
+	}
+	finalize := func() (ControlReceipt, error) { return s.finish(ctx, workspaceID, receipt) }
 	if blockers := validateProjectControl(proj, ActionContinue); len(blockers) > 0 {
 		receipt.Blockers = blockers
-		return receipt, nil
+		return finalize()
 	}
 	issue, err := s.frontierIssue(ctx, workspaceID, projectID)
 	if err != nil {
 		if errors.Is(err, ErrProjectLifecycleNoFrontier) {
 			receipt.Blockers = []string{"NO_READY_FRONTIER"}
-			return receipt, nil
+			return finalize()
 		}
 		return ControlReceipt{}, err
 	}
@@ -162,7 +173,7 @@ func (s *ProjectLifecycleControlService) Continue(ctx context.Context, workspace
 		receipt.TaskID = uuidOrNil(existing.ID)
 		receipt.IssueID = uuidOrNil(issue.ID)
 		receipt.Replayed = true
-		return receipt, nil
+		return finalize()
 	}
 	task, err := s.Tasks.EnqueueTaskForIssue(ctx, issue)
 	if err != nil {
@@ -172,17 +183,17 @@ func (s *ProjectLifecycleControlService) Continue(ctx context.Context, workspace
 				receipt.TaskID = uuidOrNil(existing.ID)
 				receipt.IssueID = uuidOrNil(issue.ID)
 				receipt.Replayed = true
-				return receipt, nil
+				return finalize()
 			}
 			receipt.Blockers = []string{"DUPLICATE_PENDING_TASK"}
-			return receipt, nil
+			return finalize()
 		}
 		return ControlReceipt{}, err
 	}
 	receipt.TaskID = uuidOrNil(task.ID)
 	receipt.IssueID = uuidOrNil(issue.ID)
 	receipt.Applied = true
-	return receipt, nil
+	return finalize()
 }
 
 // PauseDispatch stops NEW dispatch only: it flips project.status to paused and
@@ -199,20 +210,26 @@ func (s *ProjectLifecycleControlService) PauseDispatch(ctx context.Context, work
 		BeforeStatus:   proj.Status,
 		AfterStatus:    proj.Status,
 	}
+	if prior, err := s.receiptGuard(ctx, workspaceID, projectID, ActionPauseDispatch, idempotencyKey); err != nil {
+		return ControlReceipt{}, err
+	} else if prior != nil {
+		return receiptToControl(*prior, true), nil
+	}
+	finalize := func() (ControlReceipt, error) { return s.finish(ctx, workspaceID, receipt) }
 	if blockers := validateProjectControl(proj, ActionPauseDispatch); len(blockers) > 0 {
 		receipt.Blockers = blockers
-		return receipt, nil
+		return finalize()
 	}
 	if proj.Status == "paused" {
 		receipt.Replayed = true
-		return receipt, nil
+		return finalize()
 	}
 	if err := s.setProjectStatus(ctx, proj, "paused"); err != nil {
 		return ControlReceipt{}, err
 	}
 	receipt.Applied = true
 	receipt.AfterStatus = "paused"
-	return receipt, nil
+	return finalize()
 }
 
 // Resume reactivates a paused project and dispatches its ready frontier. It
@@ -229,9 +246,15 @@ func (s *ProjectLifecycleControlService) Resume(ctx context.Context, workspaceID
 		BeforeStatus:   proj.Status,
 		AfterStatus:    proj.Status,
 	}
+	if prior, err := s.receiptGuard(ctx, workspaceID, projectID, ActionResume, idempotencyKey); err != nil {
+		return ControlReceipt{}, err
+	} else if prior != nil {
+		return receiptToControl(*prior, true), nil
+	}
+	finalize := func() (ControlReceipt, error) { return s.finish(ctx, workspaceID, receipt) }
 	if blockers := validateProjectControl(proj, ActionResume); len(blockers) > 0 {
 		receipt.Blockers = blockers
-		return receipt, nil
+		return finalize()
 	}
 	if err := s.setProjectStatus(ctx, proj, "in_progress"); err != nil {
 		return ControlReceipt{}, err
@@ -262,7 +285,94 @@ func (s *ProjectLifecycleControlService) Resume(ctx context.Context, workspaceID
 			receipt.Blockers = append(receipt.Blockers, "ENQUEUE_FAILED: "+enqErr.Error())
 		}
 	}
-	return receipt, nil
+	return finalize()
+}
+
+// StopCurrentPreview lists the live tasks stop-current would cancel.
+type StopCurrentPreview struct {
+	ProjectID string         `json:"project_id"`
+	LiveTasks []FrontierTask `json:"live_tasks"`
+	Blockers  []string       `json:"blockers"`
+}
+
+// PreviewStopCurrent returns the live tasks for a project with zero writes.
+func (s *ProjectLifecycleControlService) PreviewStopCurrent(ctx context.Context, workspaceID, projectID pgtype.UUID) (*StopCurrentPreview, error) {
+	proj, err := s.Queries.GetProjectInWorkspace(ctx, db.GetProjectInWorkspaceParams{ID: projectID, WorkspaceID: workspaceID})
+	if err != nil {
+		return nil, ErrProjectLifecycleNotFound
+	}
+	preview := &StopCurrentPreview{ProjectID: util.UUIDToString(proj.ID), LiveTasks: []FrontierTask{}}
+	preview.Blockers = validateProjectControl(proj, ActionStopCurrent)
+	if len(preview.Blockers) > 0 {
+		return preview, nil
+	}
+	tasks, err := s.Queries.ListProjectActiveTasks(ctx, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	for _, t := range tasks {
+		if util.UUIDToString(t.ProjectID) == util.UUIDToString(projectID) {
+			preview.LiveTasks = append(preview.LiveTasks, FrontierTask{
+				TaskID:      util.UUIDToString(t.TaskID),
+				Status:      t.TaskStatus,
+				AgentID:     uuidOrNil(t.AgentID),
+				IssueID:     uuidOrNil(t.IssueID),
+				IssueNumber: t.IssueNumber,
+				IssueTitle:  t.IssueTitle,
+			})
+		}
+	}
+	return preview, nil
+}
+
+// StopCurrent terminates every live task on the project's issues (the explicit,
+// separate "stop running work" action — pause_dispatch only stops NEW dispatch).
+func (s *ProjectLifecycleControlService) StopCurrent(ctx context.Context, workspaceID, projectID pgtype.UUID, idempotencyKey string) (ControlReceipt, error) {
+	proj, err := s.Queries.GetProjectInWorkspace(ctx, db.GetProjectInWorkspaceParams{ID: projectID, WorkspaceID: workspaceID})
+	if err != nil {
+		return ControlReceipt{}, ErrProjectLifecycleNotFound
+	}
+	receipt := ControlReceipt{
+		Action:         string(ActionStopCurrent),
+		ProjectID:      util.UUIDToString(proj.ID),
+		IdempotencyKey: idempotencyKey,
+		BeforeStatus:   proj.Status,
+		AfterStatus:    proj.Status,
+	}
+	if prior, err := s.receiptGuard(ctx, workspaceID, projectID, ActionStopCurrent, idempotencyKey); err != nil {
+		return ControlReceipt{}, err
+	} else if prior != nil {
+		return receiptToControl(*prior, true), nil
+	}
+	finalize := func() (ControlReceipt, error) { return s.finish(ctx, workspaceID, receipt) }
+	if blockers := validateProjectControl(proj, ActionStopCurrent); len(blockers) > 0 {
+		receipt.Blockers = blockers
+		return finalize()
+	}
+	tasks, err := s.Queries.ListProjectActiveTasks(ctx, workspaceID)
+	if err != nil {
+		return ControlReceipt{}, err
+	}
+	cancelledIssues := map[string]struct{}{}
+	for _, t := range tasks {
+		if util.UUIDToString(t.ProjectID) != util.UUIDToString(projectID) {
+			continue
+		}
+		iid := util.UUIDToString(t.IssueID)
+		if iid == "" {
+			continue
+		}
+		if _, seen := cancelledIssues[iid]; seen {
+			continue
+		}
+		if err := s.Tasks.CancelTasksForIssue(ctx, t.IssueID); err != nil {
+			receipt.Blockers = append(receipt.Blockers, "CANCEL_FAILED: "+err.Error())
+			return finalize()
+		}
+		cancelledIssues[iid] = struct{}{}
+	}
+	receipt.Applied = true
+	return finalize()
 }
 
 // frontierIssue returns the highest-priority dispatchable nonterminal issue,
@@ -382,97 +492,164 @@ func textValue(s string) pgtype.Text {
 // dispatch (Gauss phase_critical #1).
 var ErrProjectPausedDispatch = errors.New("project is paused: dispatch stopped")
 
-// validateProjectControlAt is validateProjectControl with an explicit seed map,
-// used only by tests to avoid mutating the frozen seed.
-func validateProjectControlAt(proj db.Project, action ControlAction, seed map[string]string) []string {
-	orig := frozenSupersessions
-	frozenSupersessions = seed
-	defer func() { frozenSupersessions = orig }()
-	return validateProjectControl(proj, action)
+// ErrProjectLifecycleConflict is returned when an idempotency key is replayed
+// with a different payload digest (same key, different operation).
+var ErrProjectLifecycleConflict = errors.New("idempotency key conflict: different payload")
+
+// ClosurePackage is a candidate project closure package (Slice 4). It is a
+// DERIVED snapshot, never a second truth table: the projector recomputes it
+// from the live project/issue/task/outcome state.
+type ClosurePackage struct {
+	PackageID             string   `json:"package_id"`
+	ProjectID             string   `json:"project_id"`
+	Status                string   `json:"status"`
+	LeadType              *string  `json:"lead_type"`
+	LeadID                *string  `json:"lead_id"`
+	TerminalIssueCount    int      `json:"terminal_issue_count"`
+	NonterminalIssueCount int      `json:"nonterminal_issue_count"`
+	ActiveTaskCount       int      `json:"active_task_count"`
+	OutcomeConfirmed      int      `json:"outcome_confirmed"`
+	OutcomeTotal          int      `json:"outcome_total"`
+	DuplicateOfProjectID  *string  `json:"duplicate_of_project_id"`
+	ReviewRequired        bool     `json:"review_required"`
+	ClosureReady          bool     `json:"closure_ready"`
+	Blockers              []string `json:"blockers"`
+	Digest                string   `json:"digest"`
 }
 
-func parseTestUUID(s string) (pgtype.UUID, error) { return util.ParseUUID(s) }
-
-// --- Slice 4 (W3 takeover): close / supersede / generate_closure_package ---
-//
-// These complete the HIV-553 lifecycle: close writes a terminal project status
-// only when the closure gates are green (fail-closed); supersede records a
-// source->target lineage and marks the source terminal; generate_closure_package
-// builds a read-only candidate package for independent review.
-
-// validateCloseGates returns fail-closed blockers for close/supersede.
-// Gates (from HIV-553): (1) accountable lead, (2) no nonterminal task/run,
-// (3) every issue has a disposition (terminal). Outcome coverage + Closure
-// Package gates are enforced by generate_closure_package review before close.
-func (s *ProjectLifecycleControlService) validateCloseGates(ctx context.Context, workspaceID, projectID pgtype.UUID) ([]string, error) {
+// GenerateClosurePackage computes a candidate closure package without writing
+// anything. It never auto-accepts outcomes and never auto-closes the project.
+func (s *ProjectLifecycleControlService) GenerateClosurePackage(ctx context.Context, workspaceID, projectID pgtype.UUID, idempotencyKey string) (*ClosurePackage, error) {
 	proj, err := s.Queries.GetProjectInWorkspace(ctx, db.GetProjectInWorkspaceParams{ID: projectID, WorkspaceID: workspaceID})
 	if err != nil {
 		return nil, ErrProjectLifecycleNotFound
 	}
-	var blockers []string
-	if !proj.LeadID.Valid || !proj.LeadType.Valid {
-		blockers = append(blockers, "ACCOUNTABLE_LEAD_REQUIRED")
+	projector := NewProjectLifecycleProjector(s.Queries)
+	snap, err := projector.GetSnapshot(ctx, workspaceID, projectID)
+	if err != nil {
+		return nil, err
 	}
-	activeTasks, err := s.Queries.ListProjectActiveTasks(ctx, workspaceID)
-	if err == nil {
-		for _, t := range activeTasks {
-			if util.UUIDToString(t.ProjectID) == util.UUIDToString(projectID) {
-				blockers = append(blockers, "TASKS_RUNNING")
-				break
-			}
-		}
-	}
-	issues, err := s.Queries.ListIssues(ctx, db.ListIssuesParams{
-		WorkspaceID: workspaceID, ProjectID: projectID, Limit: 100000, Offset: 0,
+	approved, err := s.Queries.HasApprovedClosureReview(ctx, db.HasApprovedClosureReviewParams{
+		WorkspaceID: workspaceID, ProjectID: projectID,
 	})
-	if err == nil {
-		for _, is := range issues {
-			if is.Status != "done" && is.Status != "cancelled" {
-				blockers = append(blockers, "ISSUES_NONTERMINAL")
-				break
-			}
-		}
+	if err != nil {
+		approved = false
 	}
-	return blockers, nil
+	pkg := &ClosurePackage{
+		PackageID:             idempotencyKey,
+		ProjectID:             util.UUIDToString(proj.ID),
+		Status:                proj.Status,
+		LeadType:              textOrNil(proj.LeadType),
+		LeadID:                uuidOrNil(proj.LeadID),
+		TerminalIssueCount:    snap.TerminalIssueCount,
+		NonterminalIssueCount: snap.NonterminalIssueCount,
+		ActiveTaskCount:       snap.ActiveTaskCount,
+		OutcomeConfirmed:      snap.OutcomeConfirmed,
+		OutcomeTotal:          snap.OutcomeTotal,
+		DuplicateOfProjectID:  snap.DuplicateOfProjectID,
+		ReviewRequired:        !approved, // independent review must precede close
+		ClosureReady:          snap.ClosureReady && approved,
+		Blockers:              snap.ClosureBlockers,
+	}
+	pkg.Digest = closurePackageDigest(pkg)
+	return pkg, nil
 }
 
-// Close marks a project completed when every closure gate is green. Any gap is
-// fail-closed: the receipt carries the structured blockers and zero write.
+// ReviewClosurePackage records an independent approve/reject decision on a
+// candidate closure package (gate 5). The reviewer must be a member who is not
+// the project lead (reviewer != implementer).
+func (s *ProjectLifecycleControlService) ReviewClosurePackage(ctx context.Context, workspaceID, projectID, reviewerUserID pgtype.UUID, approve bool) (string, error) {
+	proj, err := s.Queries.GetProjectInWorkspace(ctx, db.GetProjectInWorkspaceParams{ID: projectID, WorkspaceID: workspaceID})
+	if err != nil {
+		return "", ErrProjectLifecycleNotFound
+	}
+	if proj.LeadType.Valid && proj.LeadType.String == "member" && proj.LeadID.Valid && proj.LeadID.Bytes == reviewerUserID.Bytes {
+		return "", ErrProjectLifecycleReviewerIsImplementer
+	}
+	decision := "reject"
+	if approve {
+		decision = "approve"
+	}
+	_, err = s.Queries.InsertClosurePackageReview(ctx, db.InsertClosurePackageReviewParams{
+		WorkspaceID: workspaceID, ProjectID: projectID, ReviewerUserID: reviewerUserID, Decision: decision,
+	})
+	if err != nil {
+		return "", err
+	}
+	return decision, nil
+}
+
+// ErrProjectLifecycleReviewerIsImplementer rejects a self-review.
+var ErrProjectLifecycleReviewerIsImplementer = errors.New("closure reviewer must differ from the project lead")
+
+// PreviewClose returns the closure gates and blockers with zero writes.
+func (s *ProjectLifecycleControlService) PreviewClose(ctx context.Context, workspaceID, projectID pgtype.UUID) (*ClosurePackage, error) {
+	proj, err := s.Queries.GetProjectInWorkspace(ctx, db.GetProjectInWorkspaceParams{ID: projectID, WorkspaceID: workspaceID})
+	if err != nil {
+		return nil, ErrProjectLifecycleNotFound
+	}
+	if blockers := validateProjectControl(proj, ActionClose); len(blockers) > 0 {
+		return &ClosurePackage{ProjectID: util.UUIDToString(proj.ID), Status: proj.Status, Blockers: blockers, ReviewRequired: true}, nil
+	}
+	return s.GenerateClosurePackage(ctx, workspaceID, projectID, "")
+}
+
+// Close performs the project closure commit only when every gate is green
+// (fail-closed). It writes project.status = completed and returns the receipt.
 func (s *ProjectLifecycleControlService) Close(ctx context.Context, workspaceID, projectID pgtype.UUID, idempotencyKey string) (ControlReceipt, error) {
 	proj, err := s.Queries.GetProjectInWorkspace(ctx, db.GetProjectInWorkspaceParams{ID: projectID, WorkspaceID: workspaceID})
 	if err != nil {
 		return ControlReceipt{}, ErrProjectLifecycleNotFound
 	}
 	receipt := ControlReceipt{
-		Action: string(ActionClose), ProjectID: util.UUIDToString(proj.ID),
-		IdempotencyKey: idempotencyKey, BeforeStatus: proj.Status, AfterStatus: proj.Status,
+		Action:         string(ActionClose),
+		ProjectID:      util.UUIDToString(proj.ID),
+		IdempotencyKey: idempotencyKey,
+		BeforeStatus:   proj.Status,
+		AfterStatus:    proj.Status,
 	}
+	if prior, err := s.receiptGuard(ctx, workspaceID, projectID, ActionClose, idempotencyKey); err != nil {
+		return ControlReceipt{}, err
+	} else if prior != nil {
+		return receiptToControl(*prior, true), nil
+	}
+	finalize := func() (ControlReceipt, error) { return s.finish(ctx, workspaceID, receipt) }
+	// Idempotent re-close of an already-completed project (Gauss/Quinn F2).
 	if proj.Status == "completed" {
 		receipt.Replayed = true
-		return receipt, nil
+		return finalize()
 	}
-	if proj.Status == "cancelled" {
-		receipt.Blockers = []string{"PROJECT_TERMINAL"}
-		return receipt, nil
+	if blockers := validateProjectControl(proj, ActionClose); len(blockers) > 0 {
+		receipt.Blockers = blockers
+		return finalize()
 	}
-	blockers, err := s.validateCloseGates(ctx, workspaceID, projectID)
+	pkg, err := s.GenerateClosurePackage(ctx, workspaceID, projectID, idempotencyKey)
 	if err != nil {
 		return ControlReceipt{}, err
 	}
-	if len(blockers) > 0 {
-		receipt.Blockers = blockers
-		return receipt, nil
+	if len(pkg.Blockers) > 0 {
+		receipt.Blockers = pkg.Blockers
+		return finalize()
+	}
+	if pkg.ReviewRequired {
+		// Hard fail-closed stub: the independent package-review record
+		// mechanism is Slice 3 review-cell integration (W3). Until a reviewer
+		// records approval, close refuses (Gauss P1 / red matrix C8 deferred).
+		receipt.Blockers = []string{"CLOSURE_PACKAGE_REVIEW_REQUIRED"}
+		return finalize()
 	}
 	if err := s.setProjectStatus(ctx, proj, "completed"); err != nil {
 		return ControlReceipt{}, err
 	}
 	receipt.Applied = true
 	receipt.AfterStatus = "completed"
-	return receipt, nil
+	return finalize()
 }
 
 // Supersede marks a project terminal and records its source->target lineage
 // (the superseding project id). It is the VC-10 duplicate/supersede executor.
+// The source project is cancelled; the target keeps running. No receipt-guard
+// replay here: a superseded project is PROJECT_TERMINAL on retry anyway.
 func (s *ProjectLifecycleControlService) Supersede(ctx context.Context, workspaceID, projectID, targetProjectID pgtype.UUID, idempotencyKey string) (ControlReceipt, error) {
 	proj, err := s.Queries.GetProjectInWorkspace(ctx, db.GetProjectInWorkspaceParams{ID: projectID, WorkspaceID: workspaceID})
 	if err != nil {
@@ -507,62 +684,109 @@ func (s *ProjectLifecycleControlService) Supersede(ctx context.Context, workspac
 	return receipt, nil
 }
 
-// ClosurePackagePreview is the read-only candidate closure package summary.
-type ClosurePackagePreview struct {
-	ProjectID         string         `json:"project_id"`
-	PackageDigest     string         `json:"package_digest"`
-	Version           int            `json:"version"`
-	IssueDisposition  map[string]int `json:"issue_disposition"`
-	TerminalIssues    int            `json:"terminal_issues"`
-	NonterminalIssues int            `json:"nonterminal_issues"`
-	ActiveTaskCount   int            `json:"active_task_count"`
-	ClosureReady      bool           `json:"closure_ready"`
-	ReviewRequired    bool           `json:"review_required"`
-	Blockers          []string       `json:"blockers"`
+// payloadDigest fingerprints an operation for idempotent replay detection.
+func payloadDigest(action ControlAction, projectID pgtype.UUID) string {
+	sum := sha256.Sum256([]byte(fmt.Sprintf("%s|%s", action, util.UUIDToString(projectID))))
+	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
-// GenerateClosurePackage builds a read-only candidate closure package summary.
-// It never accepts outcomes or closes the project; independent review is the
-// next gate (per HIV-553).
-func (s *ProjectLifecycleControlService) GenerateClosurePackage(ctx context.Context, workspaceID, projectID pgtype.UUID) (*ClosurePackagePreview, error) {
-	proj, err := s.Queries.GetProjectInWorkspace(ctx, db.GetProjectInWorkspaceParams{ID: projectID, WorkspaceID: workspaceID})
-	if err != nil {
-		return nil, ErrProjectLifecycleNotFound
+// receiptGuard checks idempotency before an action. It returns a prior receipt
+// (replay) when the same key + digest was already applied, an error on conflict
+// (same key, different digest), or (nil, nil) to proceed.
+func (s *ProjectLifecycleControlService) receiptGuard(ctx context.Context, workspaceID, projectID pgtype.UUID, action ControlAction, idempotencyKey string) (*db.ProjectLifecycleReceipt, error) {
+	if idempotencyKey == "" {
+		return nil, nil
 	}
-	preview := &ClosurePackagePreview{
-		ProjectID: util.UUIDToString(proj.ID), Version: 1,
-		IssueDisposition: map[string]int{},
+	digest := payloadDigest(action, projectID)
+	existing, err := s.Queries.GetProjectLifecycleReceipt(ctx, db.GetProjectLifecycleReceiptParams{
+		WorkspaceID: workspaceID, IdempotencyKey: idempotencyKey,
+	})
+	if err == nil {
+		if existing.PayloadDigest == digest {
+			return &existing, nil
+		}
+		return nil, ErrProjectLifecycleConflict
 	}
-	blockers, err := s.validateCloseGates(ctx, workspaceID, projectID)
-	if err != nil {
+	if !errors.Is(err, pgx.ErrNoRows) {
 		return nil, err
 	}
-	preview.Blockers = blockers
-	issues, _ := s.Queries.ListIssues(ctx, db.ListIssuesParams{
-		WorkspaceID: workspaceID, ProjectID: projectID, Limit: 100000, Offset: 0,
+	return nil, nil
+}
+
+// storeReceipt persists the append-only operation receipt.
+func (s *ProjectLifecycleControlService) storeReceipt(ctx context.Context, workspaceID pgtype.UUID, r ControlReceipt) error {
+	if r.IdempotencyKey == "" {
+		return nil
+	}
+	projID := util.MustParseUUID(r.ProjectID)
+	var taskID, issueID pgtype.UUID
+	if r.TaskID != nil {
+		taskID = util.MustParseUUID(*r.TaskID)
+	}
+	if r.IssueID != nil {
+		issueID = util.MustParseUUID(*r.IssueID)
+	}
+	blockersJSON, _ := json.Marshal(r.Blockers)
+	_, err := s.Queries.InsertProjectLifecycleReceipt(ctx, db.InsertProjectLifecycleReceiptParams{
+		WorkspaceID:    workspaceID,
+		ProjectID:      projID,
+		Action:         r.Action,
+		IdempotencyKey: r.IdempotencyKey,
+		PayloadDigest:  payloadDigest(ControlAction(r.Action), projID),
+		BeforeStatus:   r.BeforeStatus,
+		AfterStatus:    r.AfterStatus,
+		TaskID:         taskID,
+		IssueID:        issueID,
+		Blockers:       blockersJSON,
+		Applied:        r.Applied,
+		Replayed:       r.Replayed,
 	})
-	for _, is := range issues {
-		if is.Status == "done" || is.Status == "cancelled" {
-			preview.IssueDisposition[is.Status]++
-			preview.TerminalIssues++
-		} else {
-			preview.NonterminalIssues++
-		}
+	return err
+}
+
+// receiptToControl converts a stored receipt row to the wire shape. On replay
+// (replayed=true) this call applied nothing new: Applied=false, Replayed=true,
+// while before/after/task/issue reflect the original stored effect.
+func receiptToControl(r db.ProjectLifecycleReceipt, replayed bool) ControlReceipt {
+	applied := r.Applied
+	if replayed {
+		applied = false
 	}
-	activeTasks, _ := s.Queries.ListProjectActiveTasks(ctx, workspaceID)
-	for _, t := range activeTasks {
-		if util.UUIDToString(t.ProjectID) == util.UUIDToString(projectID) {
-			preview.ActiveTaskCount++
-		}
+	return ControlReceipt{
+		Action:         r.Action,
+		ProjectID:      util.UUIDToString(r.ProjectID),
+		Applied:        applied,
+		Replayed:       r.Replayed || replayed,
+		IdempotencyKey: r.IdempotencyKey,
+		BeforeStatus:   r.BeforeStatus,
+		AfterStatus:    r.AfterStatus,
+		TaskID:         uuidOrNil(r.TaskID),
+		IssueID:        uuidOrNil(r.IssueID),
 	}
-	preview.ClosureReady = len(preview.Blockers) == 0
-	// Independent review is always required before close (reviewer != author).
-	preview.ReviewRequired = true
-	// Content-addressed digest: hash the package content so a changed package
-	// yields a different digest (audit + idempotency anchor).
-	digestSrc := fmt.Sprintf("%s|%s|terminal=%d|nonterminal=%d|active=%d|ready=%t",
-		util.UUIDToString(proj.ID), proj.Title, preview.TerminalIssues,
-		preview.NonterminalIssues, preview.ActiveTaskCount, preview.ClosureReady)
-	preview.PackageDigest = fmt.Sprintf("sha256:%x", sha256.Sum256([]byte(digestSrc)))
-	return preview, nil
+}
+
+// finish stores the receipt and returns it (append-only idempotency).
+func (s *ProjectLifecycleControlService) finish(ctx context.Context, workspaceID pgtype.UUID, r ControlReceipt) (ControlReceipt, error) {
+	if err := s.storeReceipt(ctx, workspaceID, r); err != nil {
+		return ControlReceipt{}, err
+	}
+	return r, nil
+}
+
+// closurePackageDigest returns a deterministic sha256 over the package's
+// gate-relevant fields (provenance fingerprint, not a second truth).
+func closurePackageDigest(p *ClosurePackage) string {
+	sum := sha256.Sum256([]byte(fmt.Sprintf("%s|%s|%s|%s|%d|%d|%d|%d|%d|%v|%v|%v",
+		p.ProjectID, p.Status, ptrOrEmpty(p.LeadType), ptrOrEmpty(p.LeadID),
+		p.TerminalIssueCount, p.NonterminalIssueCount, p.ActiveTaskCount,
+		p.OutcomeConfirmed, p.OutcomeTotal, p.ReviewRequired,
+		strings.Join(p.Blockers, ","), ptrOrEmpty(p.DuplicateOfProjectID))))
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+func ptrOrEmpty(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }

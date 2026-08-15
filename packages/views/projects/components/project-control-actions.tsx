@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Pause, Play, RotateCcw, Loader2 } from "lucide-react";
+import { Pause, Play, RotateCcw, Loader2, PackageCheck, Archive } from "lucide-react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { api } from "@multica/core/api";
@@ -10,6 +10,7 @@ import type {
   Project,
   ProjectControlAction,
   ProjectControlReceipt,
+  ProjectClosurePackage,
 } from "@multica/core/types";
 import { projectKeys } from "@multica/core/projects/queries";
 import { Button } from "@multica/ui/components/ui/button";
@@ -26,6 +27,8 @@ export function ProjectControlActions({
   const qc = useQueryClient();
   const [preview, setPreview] = useState<ContinuePreview | null>(null);
   const [confirming, setConfirming] = useState<ProjectControlAction | null>(null);
+  const [pkg, setPkg] = useState<ProjectClosurePackage | null>(null);
+  const [closing, setClosing] = useState(false);
 
   const invalidate = () => {
     qc.invalidateQueries({ queryKey: projectKeys.list(workspaceId) });
@@ -53,6 +56,19 @@ export function ProjectControlActions({
     },
     onError: () => toast.error("操作失败"),
   });
+
+  const generatePackage = useMutation({
+    mutationFn: () => api.generateClosurePackage(project.id),
+    onSuccess: (p) => { setPkg(p); toast.success("已生成候选成果包", { description: `digest=${p.digest.slice(0, 16)}…` }); },
+    onError: () => toast.error("生成成果包失败"),
+  });
+
+  const previewClose = async () => {
+    const res = (await api.projectLifecycleAction(project.id, "close", { preview: true })) as { preview: unknown };
+    const p = (res.preview as ProjectClosurePackage) ?? null;
+    setPkg(p);
+    setClosing(true);
+  };
 
   const previewContinue = async () => {
     const res = (await api.projectLifecycleAction(project.id, "continue", {
@@ -96,6 +112,50 @@ export function ProjectControlActions({
           恢复
         </Button>
       </div>
+
+      <div className="flex items-center gap-1.5">
+        <Button
+          size="sm"
+          variant="outline"
+          className="h-7 flex-1 gap-1 text-xs"
+          onClick={previewClose}
+          disabled={run.isPending || generatePackage.isPending}
+        >
+          <Archive className="h-3 w-3" />
+          关闭预览
+        </Button>
+        <Button
+          size="sm"
+          variant="outline"
+          className="h-7 flex-1 gap-1 text-xs"
+          onClick={() => generatePackage.mutate()}
+          disabled={generatePackage.isPending}
+        >
+          {generatePackage.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <PackageCheck className="h-3 w-3" />}
+          生成成果包
+        </Button>
+      </div>
+
+      {pkg && (
+        <div className="rounded-md border bg-accent/40 p-2 text-[11px]">
+          <div className="text-muted-foreground">成果包 digest: {pkg.digest.slice(0, 24)}…</div>
+          <div className="mt-0.5">
+            已终结议题 {pkg.terminal_issue_count} · 进行中 {pkg.nonterminal_issue_count} · 成果 {pkg.outcome_confirmed}/{pkg.outcome_total} · 待独立复核 {pkg.review_required ? "是" : "否"}
+          </div>
+          {pkg.blockers && pkg.blockers.length > 0 && (
+            <div className="mt-0.5 text-rose-700">关闭门未过: {pkg.blockers.join(", ")}</div>
+          )}
+          {closing && (
+            <div className="mt-1.5 flex gap-1.5">
+              <Button size="sm" className="h-6 flex-1 text-[11px]" disabled={run.isPending || pkg.blockers.length > 0 || pkg.review_required}
+                onClick={() => run.mutate("close" as ProjectControlAction)}>
+                确认关闭
+              </Button>
+              <Button size="sm" variant="ghost" className="h-6 text-[11px]" onClick={() => { setPkg(null); setClosing(false); }}>取消</Button>
+            </div>
+          )}
+        </div>
+      )}
 
       {preview && confirming === "continue" && (
         <div className="rounded-md border bg-accent/40 p-2 text-[11px]">

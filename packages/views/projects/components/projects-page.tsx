@@ -584,6 +584,7 @@ function ProjectCard({
   canDelete: boolean;
 }) {
   const { t } = useT("projects");
+  const { getActorName } = useActorName();
   const wsPaths = useWorkspacePaths();
   const formatRelativeDate = useFormatRelativeDate();
   const updateProject = useUpdateProject();
@@ -667,12 +668,26 @@ function ProjectCard({
       </div>
 
       {snapshot && (
-        <div className="border-t px-3 py-2">
+        <div className="space-y-1 border-t px-3 py-2">
+          {(() => {
+            const f = snapshot.frontier_tasks[0];
+            return f ? (
+              <p className="truncate text-[10px] text-muted-foreground" title={f.issue_title}>
+                前沿: #{f.issue_number} {f.issue_title}
+                {f.agent_id ? (
+                  <span className="text-muted-foreground/70"> · {getActorName("agent", f.agent_id)}</span>
+                ) : null}
+              </p>
+            ) : (
+              <p className="truncate text-[10px] text-muted-foreground">前沿: 无 live task</p>
+            );
+          })()}
+          <p className="text-[10px] tabular-nums text-muted-foreground">
+            {snapshot.last_progress_at ? `最近进展: ${formatRelativeDate(snapshot.last_progress_at)}` : "最近进展: 无"}
+            {" · "}{t(($) => $.health.terminal_issues)}: {snapshot.terminal_issue_count}
+          </p>
           <p className="truncate text-[10px] text-muted-foreground" title={snapshot.next_action}>
             {snapshot.next_action}
-          </p>
-          <p className="mt-0.5 text-[10px] tabular-nums text-muted-foreground">
-            {t(($) => $.health.terminal_issues)}: {snapshot.terminal_issue_count}
           </p>
         </div>
       )}

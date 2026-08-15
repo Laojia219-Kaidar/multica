@@ -2,14 +2,14 @@
 
 - Goal/version: HIVECREW-PROJECT-LIFECYCLE-CLOSURE-V1 / 1.0
 - Current controller: Prime Agent
-- Current Phase: WAVE-2 Slice 1 implemented -> WAVE-3 independent acceptance (HIV-554/555/556 dispatched to Gauss/Quinn/Pixel)
+- Current Phase: Slice 1 ACCEPTED (3x independent PASS) + INTEGRATION-HANDOFF-V1 frozen for W3
 - Ready: sub-agent archaeology (code/data contract, project page + owner journey, test matrix)
 - Running: (none yet)
 - Blocked: (none)
 - Evidence index: see EVIDENCE.md
 - Dirty boundaries: mainline clean at f7667c8d; integration worktree = /Users/jiawei/hivecosm-worktrees/hivecrew-project-lifecycle-closure
 - Latest review/journal: HIV-553 contract report recovered and frozen
-- Next action: wait for Gauss/Quinn/Pixel verdicts; REVISE -> minimal Repair; then Slice 2 (control operations)
+- Next action: handoff to W3 (integration/deploy lane); after dependency gate, continue WAVE-2 Slice 2 (control ops) per CHECKLIST
 
 ## Truth anchors (re-calibrated 2026-08-13T12:54:30.905411+00:00)
 

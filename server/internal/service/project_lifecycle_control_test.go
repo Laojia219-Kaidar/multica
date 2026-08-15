@@ -3,6 +3,8 @@ package service
 import (
 	"testing"
 
+	"github.com/multica-ai/multica/server/internal/util"
+
 	"github.com/jackc/pgx/v5/pgtype"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -59,11 +61,18 @@ func TestValidateProjectControl_ContinueOk(t *testing.T) {
 }
 
 func mustUUID(t *testing.T, s string) pgtype.UUID {
-	u, err := parseTestUUID(s)
+	u, err := util.ParseUUID(s)
 	if err != nil {
 		t.Fatalf("parse uuid: %v", err)
 	}
 	return u
+}
+
+func validateProjectControlAt(proj db.Project, action ControlAction, seed map[string]string) []string {
+	orig := frozenSupersessions
+	frozenSupersessions = seed
+	defer func() { frozenSupersessions = orig }()
+	return validateProjectControl(proj, action)
 }
 
 // Quinn invariant 3: terminal projects (completed/cancelled) reject every action.
