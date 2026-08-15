@@ -13,34 +13,34 @@ import (
 type MemoryStore struct {
 	mu sync.Mutex
 
-	links      map[string]*ExternalWorkOrderLink // workspaceID + "\x00" + workOrderRef
-	projects   map[string]*ProjectRef            // workspaceID + "\x00" + projectID
-	issues     map[string]*IssueRef              // workspaceID + "\x00" + issueID
-	receipts   map[string]*ReceiptRecord         // workspaceID + "\x00" + dedupeKey
-	events     map[string]*EventRecord           // workspaceID + "\x00" + workRef + "\x00" + idempotencyKey
-	handoffs   map[string]HandoffRecord          // workRef
-	completions map[string]CompletionRecord      // workRef
-	inbox      map[string]InboxItem              // inboxID
-	repoMatchesMap map[string]RepoMatch          // workspaceID + "\x00" + repo + "\x00" + revision + "\x00" + branch
-	campaigns      map[string]*CampaignMatch     // workspaceID + "\x00" + upper(campaignRef)
-	repoRefs       []RepoRef                     // repo ownership refs for inventory
-	projectLeads   []ProjectLead                 // project owner/lead projections for steward
-	heartbeats     []HeartbeatRef                // presence heartbeats for steward stale detection
-	candidates     []CandidateRef                // artifact candidates for steward review diagnostics
-	seq        int64
+	links          map[string]*ExternalWorkOrderLink // workspaceID + "\x00" + workOrderRef
+	projects       map[string]*ProjectRef            // workspaceID + "\x00" + projectID
+	issues         map[string]*IssueRef              // workspaceID + "\x00" + issueID
+	receipts       map[string]*ReceiptRecord         // workspaceID + "\x00" + dedupeKey
+	events         map[string]*EventRecord           // workspaceID + "\x00" + workRef + "\x00" + idempotencyKey
+	handoffs       map[string]HandoffRecord          // workRef
+	completions    map[string]CompletionRecord       // workRef
+	inbox          map[string]InboxItem              // inboxID
+	repoMatchesMap map[string]RepoMatch              // workspaceID + "\x00" + repo + "\x00" + revision + "\x00" + branch
+	campaigns      map[string]*CampaignMatch         // workspaceID + "\x00" + upper(campaignRef)
+	repoRefs       []RepoRef                         // repo ownership refs for inventory
+	projectLeads   []ProjectLead                     // project owner/lead projections for steward
+	heartbeats     []HeartbeatRef                    // presence heartbeats for steward stale detection
+	candidates     []CandidateRef                    // artifact candidates for steward review diagnostics
+	seq            int64
 }
 
 // NewMemoryStore returns an empty in-memory Store.
 func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{
-		links:       make(map[string]*ExternalWorkOrderLink),
-		projects:    make(map[string]*ProjectRef),
-		issues:      make(map[string]*IssueRef),
-		receipts:    make(map[string]*ReceiptRecord),
-		events:      make(map[string]*EventRecord),
-		handoffs:    make(map[string]HandoffRecord),
-		completions: make(map[string]CompletionRecord),
-		inbox:       make(map[string]InboxItem),
+		links:          make(map[string]*ExternalWorkOrderLink),
+		projects:       make(map[string]*ProjectRef),
+		issues:         make(map[string]*IssueRef),
+		receipts:       make(map[string]*ReceiptRecord),
+		events:         make(map[string]*EventRecord),
+		handoffs:       make(map[string]HandoffRecord),
+		completions:    make(map[string]CompletionRecord),
+		inbox:          make(map[string]InboxItem),
 		repoMatchesMap: make(map[string]RepoMatch),
 		campaigns:      make(map[string]*CampaignMatch),
 		repoRefs:       []RepoRef{},
@@ -295,6 +295,36 @@ func (m *MemoryStore) CreateWork(_ context.Context, req CreateWorkRequest) (*Cre
 		ID: issueID, WorkspaceID: req.WorkspaceID, Title: req.Title, Status: "todo", ProjectID: projectID,
 	}
 	return &CreateWorkResult{ProjectID: projectID, IssueID: issueID}, nil
+}
+
+// CommitWorkRegistration reproduces the created-path projection for the memory
+// store by delegating to CreateWork → PutWorkOrderLink → PutReceipt. It keeps
+// the exact in-memory semantics (a conflicting pre-existing link is ignored;
+// a conflicting receipt digest returns ErrConflict) without the PostgreSQL
+// transaction guarantee.
+func (m *MemoryStore) CommitWorkRegistration(ctx context.Context, req CommitWorkRegistrationRequest) (*CreateWorkResult, error) {
+	result, err := m.CreateWork(ctx, req.CreateWorkRequest)
+	if err != nil {
+		return nil, err
+	}
+	if req.WorkOrderLink != nil {
+		link := *req.WorkOrderLink
+		link.WorkspaceID = req.WorkspaceID
+		link.IssueID = result.IssueID
+		if err := m.PutWorkOrderLink(ctx, link); err != nil && err != ErrConflict {
+			return nil, err
+		}
+	}
+	rec := req.Receipt
+	rec.WorkspaceID = req.WorkspaceID
+	rec.ProjectID = result.ProjectID
+	rec.IssueID = result.IssueID
+	rec.TaskID = ""
+	rec.WorkRef = FormatWorkRef(req.WorkspaceID, result.ProjectID, result.IssueID, "")
+	if err := m.PutReceipt(ctx, rec); err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 // Seed helpers for fixtures/tests.

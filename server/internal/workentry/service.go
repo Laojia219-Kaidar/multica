@@ -130,16 +130,65 @@ func (s *Service) create(ctx context.Context, req RegisterRequest, key, digest s
 			return WorkRegistrationReceiptV1{}, ErrInvalidRequest
 		}
 		receipt.WorkRef = FormatWorkRef(ws, receipt.ProjectID, receipt.IssueID, receipt.TaskID)
-	case DecisionClassificationRequired:
-		// Only reachable when ConfirmCreate is true.
-		result, err := s.store.CreateWork(ctx, CreateWorkRequest{
+
+		// Continued path: no project/issue row is created, so the receipt anchor
+		// itself is a single atomic INSERT.
+		if err := s.store.PutReceipt(ctx, ReceiptRecord{
 			WorkspaceID: ws,
-			Title:       strings.TrimSpace(req.Intent.Objective),
-			Description: strings.TrimSpace(req.Intent.ExpectedHumanResult),
-			ProjectID:   req.ProjectID,
-			IssueID:     req.IssueID,
+			DedupeKey:   key,
+			Digest:      digest,
+			WorkRef:     receipt.WorkRef,
+			ProjectID:   receipt.ProjectID,
+			IssueID:     receipt.IssueID,
+			TaskID:      receipt.TaskID,
+			Decision:    receipt.ResolutionDecision,
+			Actor:       req.Actor,
+			Intent:      req.Intent,
+			CreatedAt:   s.nowString(),
+		}); err != nil {
+			if err == ErrConflict {
+				return WorkRegistrationReceiptV1{}, ErrConflict
+			}
+			return WorkRegistrationReceiptV1{}, fmt.Errorf("persist work registration receipt: %w", err)
+		}
+		return receipt, nil
+
+	case DecisionClassificationRequired:
+		// Only reachable when ConfirmCreate is true. The store commits project +
+		// issue (+ optional external_work_order_link) + receipt in one transaction
+		// so a failure at any step leaves no orphan rows (zero partial writes).
+		var link *ExternalWorkOrderLink
+		if strings.TrimSpace(req.Intent.GoalRef) != "" {
+			link = &ExternalWorkOrderLink{
+				WorkspaceID:    ws,
+				WorkOrderRef:   req.Intent.GoalRef,
+				LinkedRevision: req.Intent.BaselineRevision,
+				LinkedDigest:   digest,
+			}
+		}
+		result, err := s.store.CommitWorkRegistration(ctx, CommitWorkRegistrationRequest{
+			CreateWorkRequest: CreateWorkRequest{
+				WorkspaceID: ws,
+				Title:       strings.TrimSpace(req.Intent.Objective),
+				Description: strings.TrimSpace(req.Intent.ExpectedHumanResult),
+				ProjectID:   req.ProjectID,
+				IssueID:     req.IssueID,
+			},
+			Receipt: ReceiptRecord{
+				WorkspaceID: ws,
+				DedupeKey:   key,
+				Digest:      digest,
+				Decision:    DecisionCreated,
+				Actor:       req.Actor,
+				Intent:      req.Intent,
+				CreatedAt:   s.nowString(),
+			},
+			WorkOrderLink: link,
 		})
 		if err != nil {
+			if err == ErrConflict {
+				return WorkRegistrationReceiptV1{}, ErrConflict
+			}
 			return WorkRegistrationReceiptV1{}, fmt.Errorf("create work projection: %w", err)
 		}
 		receipt.ResolutionDecision = DecisionCreated
@@ -147,43 +196,11 @@ func (s *Service) create(ctx context.Context, req RegisterRequest, key, digest s
 		receipt.ProjectID = result.ProjectID
 		receipt.IssueID = result.IssueID
 		receipt.WorkRef = FormatWorkRef(ws, result.ProjectID, result.IssueID, "")
+		return receipt, nil
 
-		// Reuse external_work_order_link when the intent carries a Goal/WorkOrder
-		// selector, so a later exact replay continues into this Issue.
-		if strings.TrimSpace(req.Intent.GoalRef) != "" {
-			if err := s.store.PutWorkOrderLink(ctx, ExternalWorkOrderLink{
-				WorkspaceID:    ws,
-				WorkOrderRef:   req.Intent.GoalRef,
-				LinkedRevision: req.Intent.BaselineRevision,
-				LinkedDigest:   digest,
-				IssueID:        receipt.IssueID,
-			}); err != nil && err != ErrConflict {
-				return WorkRegistrationReceiptV1{}, fmt.Errorf("persist external work order link: %w", err)
-			}
-		}
 	default:
 		return WorkRegistrationReceiptV1{}, ErrInvalidRequest
 	}
-
-	if err := s.store.PutReceipt(ctx, ReceiptRecord{
-		WorkspaceID: ws,
-		DedupeKey:   key,
-		Digest:      digest,
-		WorkRef:     receipt.WorkRef,
-		ProjectID:   receipt.ProjectID,
-		IssueID:     receipt.IssueID,
-		TaskID:      receipt.TaskID,
-		Decision:    receipt.ResolutionDecision,
-		Actor:       req.Actor,
-		Intent:      req.Intent,
-		CreatedAt:   s.nowString(),
-	}); err != nil {
-		if err == ErrConflict {
-			return WorkRegistrationReceiptV1{}, ErrConflict
-		}
-		return WorkRegistrationReceiptV1{}, fmt.Errorf("persist work registration receipt: %w", err)
-	}
-	return receipt, nil
 }
 
 // lineageFromMatches extracts the richest lineage from resolve matches.

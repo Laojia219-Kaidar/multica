@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -42,11 +43,13 @@ type pgExecutor interface {
 type PGStore struct {
 	queries *db.Queries
 	exec    pgExecutor
+	pool    *pgxpool.Pool
 }
 
-// NewPGStore binds the generated queries and the raw executor.
-func NewPGStore(queries *db.Queries, exec pgExecutor) *PGStore {
-	return &PGStore{queries: queries, exec: exec}
+// NewPGStore binds the generated queries, the raw executor, and the pool used
+// to begin the register-path transaction. The pool also satisfies pgExecutor.
+func NewPGStore(queries *db.Queries, pool *pgxpool.Pool) *PGStore {
+	return &PGStore{queries: queries, exec: pool, pool: pool}
 }
 
 func (p *PGStore) uuid(s string) (pgtype.UUID, error) { return util.ParseUUID(s) }
@@ -74,7 +77,17 @@ func (p *PGStore) LookupWorkOrder(ctx context.Context, workspaceID, workOrderRef
 	}, nil
 }
 
+// PutWorkOrderLink reuses external_work_order_link through the store's default
+// (non-transactional) query handle.
 func (p *PGStore) PutWorkOrderLink(ctx context.Context, link ExternalWorkOrderLink) error {
+	return p.putWorkOrderLink(ctx, p.queries, link)
+}
+
+// putWorkOrderLink inserts the WorkOrder→Issue projection link through the
+// given query handle (pool or transaction). ON CONFLICT DO NOTHING makes it
+// idempotent; a pre-existing link with a different revision/digest returns
+// ErrConflict so the register path can treat it as a best-effort anchor.
+func (p *PGStore) putWorkOrderLink(ctx context.Context, q *db.Queries, link ExternalWorkOrderLink) error {
 	ws, err := p.uuid(link.WorkspaceID)
 	if err != nil {
 		return ErrInvalidRequest
@@ -83,7 +96,7 @@ func (p *PGStore) PutWorkOrderLink(ctx context.Context, link ExternalWorkOrderLi
 	if err != nil {
 		return ErrInvalidRequest
 	}
-	_, err = p.queries.InsertExternalWorkOrderLink(ctx, db.InsertExternalWorkOrderLinkParams{
+	_, err = q.InsertExternalWorkOrderLink(ctx, db.InsertExternalWorkOrderLinkParams{
 		WorkspaceID:      ws,
 		WorkOrderRef:     link.WorkOrderRef,
 		LinkedRevision:   link.LinkedRevision,
@@ -92,6 +105,19 @@ func (p *PGStore) PutWorkOrderLink(ctx context.Context, link ExternalWorkOrderLi
 		FreshnessAtLink:  "current",
 		IssueID:          issueID,
 	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		// ON CONFLICT DO NOTHING returned no row: the link already exists.
+		existing, err := q.GetExternalWorkOrderLink(ctx, db.GetExternalWorkOrderLinkParams{
+			WorkspaceID: ws, WorkOrderRef: link.WorkOrderRef,
+		})
+		if err != nil {
+			return fmt.Errorf("read existing external work order link: %w", err)
+		}
+		if existing.LinkedDigest != link.LinkedDigest || existing.LinkedRevision != link.LinkedRevision {
+			return ErrConflict
+		}
+		return nil
+	}
 	if err != nil {
 		return fmt.Errorf("insert external work order link: %w", err)
 	}
@@ -197,21 +223,29 @@ func (p *PGStore) SearchSimilar(ctx context.Context, workspaceID, query string, 
 // column.
 const workRegisterActionPrefix = "work_register:"
 
+// GetReceipt reads the registration receipt through the store's default
+// (non-transactional) handle.
 func (p *PGStore) GetReceipt(ctx context.Context, workspaceID, dedupeKey string) (*ReceiptRecord, error) {
+	return p.getReceipt(ctx, p.exec, workspaceID, dedupeKey)
+}
+
+// getReceipt is the executor-parameterized receipt reader used by both the
+// pool-backed GetReceipt and the transaction-backed register path.
+func (p *PGStore) getReceipt(ctx context.Context, exec pgExecutor, workspaceID, dedupeKey string) (*ReceiptRecord, error) {
 	ws, err := p.uuid(workspaceID)
 	if err != nil {
 		return nil, ErrInvalidRequest
 	}
 	var (
-		id             pgtype.UUID
-		projectID      pgtype.UUID
-		action         string
-		idemKey        string
-		payloadDigest  string
-		taskID         pgtype.UUID
-		issueID        pgtype.UUID
+		id            pgtype.UUID
+		projectID     pgtype.UUID
+		action        string
+		idemKey       string
+		payloadDigest string
+		taskID        pgtype.UUID
+		issueID       pgtype.UUID
 	)
-	err = p.exec.QueryRow(ctx,
+	err = exec.QueryRow(ctx,
 		"SELECT id, project_id, action, idempotency_key, payload_digest, task_id, issue_id FROM project_lifecycle_receipt WHERE workspace_id = $1 AND idempotency_key = $2 AND action LIKE $3 ORDER BY created_at DESC LIMIT 1",
 		ws, dedupeKey, workRegisterActionPrefix+"%").Scan(&id, &projectID, &action, &idemKey, &payloadDigest, &taskID, &issueID)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -246,7 +280,17 @@ func (p *PGStore) GetReceipt(ctx context.Context, workspaceID, dedupeKey string)
 	}, nil
 }
 
+// PutReceipt writes the receipt anchor through the store's default
+// (non-transactional) handle. Used by the continued path, where no project/
+// issue row is created so a single INSERT is already atomic.
 func (p *PGStore) PutReceipt(ctx context.Context, receipt ReceiptRecord) error {
+	return p.putReceipt(ctx, p.exec, receipt)
+}
+
+// putReceipt is the executor-parameterized receipt writer used by both the
+// pool-backed PutReceipt and the transaction-backed register path. It returns
+// ErrConflict when the same dedupe key already holds a different digest.
+func (p *PGStore) putReceipt(ctx context.Context, exec pgExecutor, receipt ReceiptRecord) error {
 	// project_lifecycle_receipt requires project_id NOT NULL. For a continued
 	// work with no project, the existing object (issue/link) is the anchor;
 	// no receipt row is written in that case.
@@ -273,20 +317,20 @@ func (p *PGStore) PutReceipt(ctx context.Context, receipt ReceiptRecord) error {
 			return ErrInvalidRequest
 		}
 	}
-	_, err = p.exec.Exec(ctx,
+	_, err = exec.Exec(ctx,
 		"INSERT INTO project_lifecycle_receipt (workspace_id, project_id, action, idempotency_key, payload_digest, before_status, after_status, task_id, issue_id, blockers, applied, replayed) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'[]'::jsonb,true,false) ON CONFLICT (workspace_id, idempotency_key) DO NOTHING",
 		ws, projectID, action, receipt.DedupeKey, receipt.Digest, "", "", taskID, issueID)
 	if err != nil {
 		return fmt.Errorf("insert work registration receipt: %w", err)
 	}
 	// Re-read to detect a same-key/different-digest conflict.
-	stored, err := p.GetReceipt(ctx, receipt.WorkspaceID, receipt.DedupeKey)
+	stored, err := p.getReceipt(ctx, exec, receipt.WorkspaceID, receipt.DedupeKey)
 	if err != nil {
 		return err
 	}
 	if stored == nil {
 		// A concurrent conflicting insert may have been skipped; re-read once.
-		stored, err = p.GetReceipt(ctx, receipt.WorkspaceID, receipt.DedupeKey)
+		stored, err = p.getReceipt(ctx, exec, receipt.WorkspaceID, receipt.DedupeKey)
 		if err != nil {
 			return err
 		}
@@ -415,12 +459,102 @@ func (p *PGStore) CreateWork(ctx context.Context, req CreateWorkRequest) (*Creat
 		// allows member|agent. External/unclaimed actors have no agent row, so we
 		// use the documented sentinel creator UUID for the first slice; a proper
 		// work_actor → creator mapping is deferred to the ≥400 join.
-		CreatorID:  ExternalActorCreatorID,
-		Number:      number,
-		ProjectID:   pid,
+		CreatorID: ExternalActorCreatorID,
+		Number:    number,
+		ProjectID: pid,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create issue: %w", err)
 	}
 	return &CreateWorkResult{ProjectID: projectID, IssueID: util.UUIDToString(issue.ID)}, nil
+}
+
+// CommitWorkRegistration persists the created-path projection in one PostgreSQL
+// transaction: create project → allocate issue number → create issue →
+// (optional external_work_order_link) → write receipt. Any failure rolls the
+// whole transaction back so no orphan project/issue/receipt survives (zero
+// partial writes). A same-key/different-digest receipt conflict surfaces as
+// ErrConflict and rolls back this attempt's project/issue.
+func (p *PGStore) CommitWorkRegistration(ctx context.Context, req CommitWorkRegistrationRequest) (*CreateWorkResult, error) {
+	ws, err := p.uuid(req.WorkspaceID)
+	if err != nil {
+		return nil, ErrInvalidRequest
+	}
+
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin work registration transaction: %w", err)
+	}
+	defer tx.Rollback(context.Background())
+
+	tq := p.queries.WithTx(tx)
+
+	projectID := req.ProjectID
+	if projectID == "" {
+		project, err := tq.CreateProject(ctx, db.CreateProjectParams{
+			WorkspaceID: ws,
+			Title:       req.Title,
+			Description: pgtype.Text{String: req.Description, Valid: req.Description != ""},
+			Status:      "planned",
+			Priority:    "none",
+		})
+		if err != nil {
+			return nil, fmt.Errorf("create project: %w", err)
+		}
+		projectID = util.UUIDToString(project.ID)
+	}
+	pid, err := p.uuid(projectID)
+	if err != nil {
+		return nil, ErrInvalidRequest
+	}
+	number, err := tq.IncrementIssueCounter(ctx, ws)
+	if err != nil {
+		return nil, fmt.Errorf("allocate issue number: %w", err)
+	}
+	issue, err := tq.CreateIssue(ctx, db.CreateIssueParams{
+		WorkspaceID: ws,
+		Title:       req.Title,
+		Description: pgtype.Text{String: req.Description, Valid: req.Description != ""},
+		Status:      "todo",
+		Priority:    "none",
+		CreatorType: "agent",
+		// issue.creator_id is NOT NULL (no FK) and issue_creator_type_check only
+		// allows member|agent. External/unclaimed actors have no agent row, so we
+		// use the documented sentinel creator UUID for the first slice; a proper
+		// work_actor → creator mapping is deferred to the ≥400 join.
+		CreatorID: ExternalActorCreatorID,
+		Number:    number,
+		ProjectID: pid,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create issue: %w", err)
+	}
+	issueID := util.UUIDToString(issue.ID)
+
+	receipt := req.Receipt
+	receipt.WorkspaceID = req.WorkspaceID
+	receipt.ProjectID = projectID
+	receipt.IssueID = issueID
+	receipt.TaskID = ""
+	receipt.WorkRef = FormatWorkRef(req.WorkspaceID, projectID, issueID, "")
+
+	if req.WorkOrderLink != nil {
+		link := *req.WorkOrderLink
+		link.WorkspaceID = req.WorkspaceID
+		link.IssueID = issueID
+		if err := p.putWorkOrderLink(ctx, tq, link); err != nil && !errors.Is(err, ErrConflict) {
+			return nil, err
+		}
+		// A conflicting pre-existing link is best-effort (never blocks the
+		// receipt), matching memory-store semantics.
+	}
+
+	if err := p.putReceipt(ctx, tx, receipt); err != nil {
+		return nil, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit work registration transaction: %w", err)
+	}
+	return &CreateWorkResult{ProjectID: projectID, IssueID: issueID}, nil
 }

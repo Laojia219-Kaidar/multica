@@ -3,6 +3,7 @@ package handler
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"strings"
 
@@ -28,9 +29,32 @@ func writeWorkEntryError(w http.ResponseWriter, err error) {
 		writeJSON(w, http.StatusNotFound, workEntryErrorResponse{Error: err.Error(), ReasonCode: "not_found"})
 	case errors.Is(err, workentry.ErrUnavailable):
 		writeJSON(w, http.StatusServiceUnavailable, workEntryErrorResponse{Error: err.Error(), ReasonCode: "writer_unavailable"})
+	case errors.Is(err, workentry.ErrForbiddenProofField):
+		writeJSON(w, http.StatusBadRequest, workEntryErrorResponse{Error: err.Error(), ReasonCode: "forbidden_proof_field"})
 	default:
-		writeJSON(w, http.StatusBadRequest, workEntryErrorResponse{Error: err.Error(), ReasonCode: "invalid_request"})
+		// Internal/DB errors must not be misreported as a client 400.
+		writeJSON(w, http.StatusInternalServerError, workEntryErrorResponse{Error: err.Error(), ReasonCode: "internal_error"})
 	}
+}
+
+// decodeWorkRequest reads the request body, rejects caller-supplied proof
+// fields (fail-closed, §8.1), then decodes into dst. Returns false when a
+// response has already been written.
+func decodeWorkRequest(w http.ResponseWriter, r *http.Request, dst any) bool {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, workEntryErrorResponse{Error: "read body", ReasonCode: "invalid_request"})
+		return false
+	}
+	if err := workentry.RejectForbiddenProofFields(body); err != nil {
+		writeWorkEntryError(w, err)
+		return false
+	}
+	if err := json.Unmarshal(body, dst); err != nil {
+		writeJSON(w, http.StatusBadRequest, workEntryErrorResponse{Error: "invalid JSON body", ReasonCode: "invalid_request"})
+		return false
+	}
+	return true
 }
 
 // requireWorkEntry fails closed with 503 when the kernel service is unwired.
@@ -78,8 +102,7 @@ func (h *Handler) WorkEntryResolve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req workEntryResolveRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, workEntryErrorResponse{Error: "invalid JSON body", ReasonCode: "invalid_request"})
+	if !decodeWorkRequest(w, r, &req) {
 		return
 	}
 	if !h.scopeWorkspace(w, r, &req.Actor.WorkspaceID) {
@@ -109,8 +132,7 @@ func (h *Handler) WorkEntryRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req workEntryRegisterRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, workEntryErrorResponse{Error: "invalid JSON body", ReasonCode: "invalid_request"})
+	if !decodeWorkRequest(w, r, &req) {
 		return
 	}
 	if !h.scopeWorkspace(w, r, &req.Actor.WorkspaceID) {
@@ -145,8 +167,7 @@ func (h *Handler) WorkEntryStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req workEntryStartRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, workEntryErrorResponse{Error: "invalid JSON body", ReasonCode: "invalid_request"})
+	if !decodeWorkRequest(w, r, &req) {
 		return
 	}
 	if !h.scopeWorkspace(w, r, &req.WorkspaceID) {
@@ -182,8 +203,7 @@ func (h *Handler) WorkEntryHeartbeat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req workentry.HeartbeatRecord
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, workEntryErrorResponse{Error: "invalid JSON body", ReasonCode: "invalid_request"})
+	if !decodeWorkRequest(w, r, &req) {
 		return
 	}
 	if !h.scopeWorkspace(w, r, &req.WorkspaceID) {
@@ -203,8 +223,7 @@ func (h *Handler) WorkEntryEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var event workentry.WorkEventV1
-	if err := json.NewDecoder(r.Body).Decode(&event); err != nil {
-		writeJSON(w, http.StatusBadRequest, workEntryErrorResponse{Error: "invalid JSON body", ReasonCode: "invalid_request"})
+	if !decodeWorkRequest(w, r, &event) {
 		return
 	}
 	res, err := h.WorkEntry.Event(r.Context(), event)
@@ -225,8 +244,7 @@ func (h *Handler) WorkEntryHandoff(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var pkg workentry.WorkHandoffV1
-	if err := json.NewDecoder(r.Body).Decode(&pkg); err != nil {
-		writeJSON(w, http.StatusBadRequest, workEntryErrorResponse{Error: "invalid JSON body", ReasonCode: "invalid_request"})
+	if !decodeWorkRequest(w, r, &pkg) {
 		return
 	}
 	res, err := h.WorkEntry.Handoff(r.Context(), pkg)
@@ -243,8 +261,7 @@ func (h *Handler) WorkEntryFinish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var c workentry.WorkCompletionV1
-	if err := json.NewDecoder(r.Body).Decode(&c); err != nil {
-		writeJSON(w, http.StatusBadRequest, workEntryErrorResponse{Error: "invalid JSON body", ReasonCode: "invalid_request"})
+	if !decodeWorkRequest(w, r, &c) {
 		return
 	}
 	res, err := h.WorkEntry.Finish(r.Context(), c)
@@ -269,8 +286,7 @@ func (h *Handler) WorkEntrySync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req workEntrySyncRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, workEntryErrorResponse{Error: "invalid JSON body", ReasonCode: "invalid_request"})
+	if !decodeWorkRequest(w, r, &req) {
 		return
 	}
 	res, err := h.WorkEntry.Sync(r.Context(), req.Entries)
@@ -303,8 +319,7 @@ func (h *Handler) WorkEntryAttach(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req workentry.AttachRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, workEntryErrorResponse{Error: "invalid JSON body", ReasonCode: "invalid_request"})
+	if !decodeWorkRequest(w, r, &req) {
 		return
 	}
 	if !h.scopeWorkspace(w, r, &req.WorkspaceID) {
@@ -324,8 +339,7 @@ func (h *Handler) WorkEntryIgnore(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req workentry.IgnoreRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, workEntryErrorResponse{Error: "invalid JSON body", ReasonCode: "invalid_request"})
+	if !decodeWorkRequest(w, r, &req) {
 		return
 	}
 	if !h.scopeWorkspace(w, r, &req.WorkspaceID) {

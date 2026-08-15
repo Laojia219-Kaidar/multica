@@ -36,7 +36,7 @@ var actorTypes = []ActorType{
 }
 
 // employeeIDPattern mirrors org_directory_types.go's DE-* pattern.
-var employeeIDPattern = regexp.MustCompile(`^DE-[A-Z0-9][A-Z0-9_-]{0,126}$`)
+var employeeIDPattern = regexp.MustCompile(`^DE-[A-Z0-9][A-Z0-9_-]{1,126}$`)
 
 // CandidateFormalBoundary marks whether work is a candidate (default) or formal
 // (requires additional authority).

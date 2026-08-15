@@ -51,6 +51,13 @@ type Store interface {
 	// CreateWork creates the minimal project + issue projection in one logical
 	// step, reusing the existing project/issue tables.
 	CreateWork(ctx context.Context, req CreateWorkRequest) (*CreateWorkResult, error)
+
+	// CommitWorkRegistration atomically projects an intent into project + issue
+	// (+ optional external_work_order_link) and records the receipt anchor in a
+	// single transaction (all-or-nothing; never leaves an orphan project/issue/
+	// receipt). The service still performs the idempotency pre-check first, so a
+	// same key+digest replay never enters this creation path.
+	CommitWorkRegistration(ctx context.Context, req CommitWorkRegistrationRequest) (*CreateWorkResult, error)
 }
 
 // ExternalWorkOrderLink is the reused provenance link identity
@@ -134,16 +141,16 @@ type EventRecord struct {
 
 // HeartbeatRecord is the presence heartbeat payload.
 type HeartbeatRecord struct {
-	WorkspaceID   string
-	ActorID       string
-	SessionID     string
-	Host          string
-	SessionName   string
-	WindowIndex   int
-	PaneIndex     int
+	WorkspaceID    string
+	ActorID        string
+	SessionID      string
+	Host           string
+	SessionName    string
+	WindowIndex    int
+	PaneIndex      int
 	CurrentCommand string
-	AgentHint     string
-	HeartbeatAt   string
+	AgentHint      string
+	HeartbeatAt    string
 }
 
 // HandoffRecord is the persisted handoff package.
@@ -155,9 +162,9 @@ type HandoffRecord struct {
 
 // CompletionRecord is the persisted completion candidate.
 type CompletionRecord struct {
-	WorkspaceID string
-	WorkRef     string
-	Package     WorkCompletionV1
+	WorkspaceID    string
+	WorkRef        string
+	Package        WorkCompletionV1
 	RoutedToReview bool
 }
 
@@ -185,4 +192,15 @@ type CreateWorkRequest struct {
 type CreateWorkResult struct {
 	ProjectID string
 	IssueID   string
+}
+
+// CommitWorkRegistrationRequest carries the created-path projection inputs and
+// the receipt anchor so a store can persist them all-or-nothing. The store
+// fills Receipt.ProjectID/IssueID/WorkRef from the concrete created lineage.
+// WorkOrderLink is optional (nil when the intent carries no Goal/WorkOrder
+// selector); a conflicting pre-existing link never blocks the receipt.
+type CommitWorkRegistrationRequest struct {
+	CreateWorkRequest
+	Receipt       ReceiptRecord
+	WorkOrderLink *ExternalWorkOrderLink
 }
