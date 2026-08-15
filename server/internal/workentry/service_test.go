@@ -353,3 +353,17 @@ func TestReplayReturnsOriginalReceipt(t *testing.T) {
 		t.Fatalf("replay receipt must be marked replayed")
 	}
 }
+
+func TestParseWorkRef(t *testing.T) {
+	ws, proj, issue, task := ParseWorkRef("hivecrew://ws-1/work/p1/i1")
+	if ws != "ws-1" || proj != "p1" || issue != "i1" || task != "" {
+		t.Fatalf("parse no-task: got %q %q %q %q", ws, proj, issue, task)
+	}
+	ws, proj, issue, task = ParseWorkRef("hivecrew://ws-1/work/p1/i1/t1")
+	if ws != "ws-1" || proj != "p1" || issue != "i1" || task != "t1" {
+		t.Fatalf("parse with-task: got %q %q %q %q", ws, proj, issue, task)
+	}
+	if a, b, c, d := ParseWorkRef("not-a-workref"); a != "" || b != "" || c != "" || d != "" {
+		t.Fatalf("foreign format should be empty, got %q %q %q %q", a, b, c, d)
+	}
+}

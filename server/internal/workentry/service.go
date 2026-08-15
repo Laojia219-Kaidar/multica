@@ -490,6 +490,27 @@ func (s *Service) Finish(ctx context.Context, c WorkCompletionV1) (CompletionRes
 	}); err != nil {
 		return CompletionResult{}, err
 	}
+	// Bridge the completion candidate into the existing artifact machinery
+	// (candidate → review → promotion → outcome center), reusing
+	// artifact_candidate (zero migration). Optional: memory store no-ops.
+	if creator, ok := s.store.(artifactCandidateCreator); ok {
+		ws, _, issueID, _ := ParseWorkRef(c.WorkRef)
+		if issueID != "" {
+			if err := creator.CreateArtifactCandidate(ctx, ArtifactCandidateInput{
+				WorkspaceID:    ws,
+				LineageID:      issueID,
+				Revision:       1,
+				StorageKey:     "work:" + c.WorkRef,
+				DurableRef:     c.CompletionCandidate.ArtifactRef,
+				Digest:         c.CompletionCandidate.Digest,
+				Filename:       c.CompletionCandidate.ArtifactRef,
+				ContentType:    "application/octet-stream",
+				IdempotencyKey: "finish:" + c.WorkRef + ":" + c.CompletionCandidate.Digest,
+			}); err != nil {
+				return CompletionResult{}, fmt.Errorf("create artifact candidate: %w", err)
+			}
+		}
+	}
 	return CompletionResult{WorkRef: c.WorkRef, EventID: ev.EventID, ReviewRouted: true, AutoPassed: false}, nil
 }
 

@@ -70,6 +70,27 @@ func FormatWorkRef(workspaceID, projectID, issueID, taskID string) string {
 // DedupeKey builds the frozen dedupe key. Priority follows API-AND-ADAPTER-
 // CONTRACT §3: a Goal/WorkOrder ref wins; otherwise repo+revision+branch/worktree
 // is the selector. workspace_id is always the tenant scope.
+// ParseWorkRef splits hivecrew://<ws>/work/<project>/<issue>[/<task>] into its
+// parts. Unknown/foreign formats yield empty fields.
+func ParseWorkRef(workRef string) (workspaceID, projectID, issueID, taskID string) {
+	rest := strings.TrimPrefix(workRef, "hivecrew://")
+	if rest == workRef {
+		return "", "", "", ""
+	}
+	parts := strings.Split(rest, "/")
+	// rest = "<ws>/work/<project>/<issue>[/<task>]"
+	if len(parts) < 4 || parts[1] != "work" {
+		return "", "", "", ""
+	}
+	workspaceID = parts[0]
+	projectID = parts[2]
+	issueID = parts[3]
+	if len(parts) >= 5 && parts[4] != "" {
+		taskID = parts[4]
+	}
+	return workspaceID, projectID, issueID, taskID
+}
+
 func DedupeKey(workspaceID, actorID, goalRef, repo, revision, branchOrWorktree string) string {
 	// The key is actor-scoped so two different actors working the same Goal can
 	// each register (and resolve/continue onto the same project) without

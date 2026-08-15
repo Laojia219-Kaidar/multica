@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+
+	"github.com/google/uuid"
 	"strings"
 	"time"
 
@@ -54,6 +56,57 @@ func NewPGStore(queries *db.Queries, pool *pgxpool.Pool) *PGStore {
 }
 
 func (p *PGStore) uuid(s string) (pgtype.UUID, error) { return util.ParseUUID(s) }
+
+// ArtifactCandidateInput connects the kernel's completion candidate to the
+// existing artifact_candidate machinery (which flows into review/promotion/
+// outcome center). LineageID is the issue the work was registered under.
+type ArtifactCandidateInput struct {
+	WorkspaceID string
+	LineageID   string
+	Revision    int32
+	StorageKey  string
+	DurableRef  string
+	Digest      string
+	Filename    string
+	ContentType string
+	IdempotencyKey string
+}
+
+// CreateArtifactCandidate inserts a candidate artifact row (reused existing
+// table; zero migration). Idempotent on (workspace_id, idempotency_key).
+func (p *PGStore) CreateArtifactCandidate(ctx context.Context, in ArtifactCandidateInput) error {
+	ws, err := p.uuid(in.WorkspaceID)
+	if err != nil {
+		return ErrInvalidRequest
+	}
+	lineage, err := p.uuid(in.LineageID)
+	if err != nil {
+		return ErrInvalidRequest
+	}
+	_, err = p.queries.InsertArtifactCandidate(ctx, db.InsertArtifactCandidateParams{
+		ID:               pgtype.UUID{Bytes: uuid.New(), Valid: true},
+		WorkspaceID:      ws,
+		LineageID:        lineage,
+		Revision:         in.Revision,
+		StorageKey:       in.StorageKey,
+		DurableObjectRef: in.DurableRef,
+		Digest:           in.Digest,
+		Filename:         in.Filename,
+		ContentType:      in.ContentType,
+		IdempotencyKey:   in.IdempotencyKey,
+	})
+	if err != nil {
+		return fmt.Errorf("insert artifact candidate: %w", err)
+	}
+	return nil
+}
+
+// artifactCandidateCreator is the optional capability the Finish path uses to
+// persist a candidate artifact into the existing machinery.
+type artifactCandidateCreator interface {
+	CreateArtifactCandidate(ctx context.Context, in ArtifactCandidateInput) error
+}
+
 
 // escapeLike escapes LIKE wildcards so a caller-supplied query is matched
 // literally (F10). PostgreSQL's default LIKE escape character is backslash.

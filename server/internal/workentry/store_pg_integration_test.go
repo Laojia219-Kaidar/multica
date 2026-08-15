@@ -270,3 +270,58 @@ func TestPGStoreEventHandoffInbox(t *testing.T) {
 
 	t.Logf("PG event/handoff/inbox PASS: event replay + conflict + docs + inbox attach")
 }
+
+// TestPGStoreFinishCreatesArtifactCandidate proves the kernel's finish bridges
+// the completion candidate into the existing artifact_candidate machinery.
+func TestPGStoreFinishCreatesArtifactCandidate(t *testing.T) {
+	url := os.Getenv("DATABASE_URL")
+	if url == "" {
+		t.Skip("DATABASE_URL not set")
+	}
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, url)
+	if err != nil {
+		t.Fatalf("pgxpool: %v", err)
+	}
+	defer pool.Close()
+
+	var wsID string
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO workspace (name, slug) VALUES ('workentry-artifact', $1) RETURNING id`,
+		fmt.Sprintf("workentry-artifact-%d", time.Now().UnixNano())).Scan(&wsID); err != nil {
+		t.Fatalf("create workspace: %v", err)
+	}
+	store := NewPGStore(db.New(pool), pool)
+	svc := NewService(store)
+
+	actor := WorkActorIdentityV1{ActorType: ActorExternalAgent, ActorID: "EXT-art-1", CarrierID: "prime",
+		SessionID: "art-s1", WorkspaceID: wsID, ObservedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	intent := WorkIntentV1{OwnerIntent: "artifact", GoalRef: "GOAL-ART", Objective: "artifact bridge",
+		ExpectedHumanResult: "candidate", Repo: "/tmp/art", BaselineRevision: "rev", BranchOrWorktree: "main",
+		ReadScope: []string{"/tmp"}, WriteScope: []string{"/tmp"}, ExpectedOutcomes: []string{"a"},
+		CandidateFormalBoundary: BoundaryCandidate}
+
+	r1, err := svc.Register(ctx, RegisterRequest{ResolveRequest: ResolveRequest{Actor: actor, Intent: intent}, ConfirmCreate: true})
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+
+	_, err = svc.Finish(ctx, WorkCompletionV1{
+		WorkRef: r1.WorkRef,
+		CompletionCandidate: CompletionCandidate{ArtifactRef: "artifact://c/1", Digest: "sha256:abcd", Revision: "rev"},
+		Review: CompletionReview{ReviewerActorID: "REV-1"},
+		ProjectLifecycleConsequence: LifecycleContinue,
+	})
+	if err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+
+	var n int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM artifact_candidate WHERE workspace_id=$1`, wsID).Scan(&n); err != nil {
+		t.Fatalf("count artifact candidates: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("finish should create 1 artifact_candidate, got %d", n)
+	}
+	t.Logf("finish -> artifact_candidate bridge PASS (1 candidate)")
+}
