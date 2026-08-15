@@ -223,6 +223,10 @@ func (h *Handler) PromoteMemoryCandidate(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusBadRequest, "invalid body")
 		return
 	}
+	// Always rehydrate before promoting: the in-memory store starts empty
+	// after restarts AND can hold stale copies if the durable row changed;
+	// promotion is a rare admin action so a fresh read is cheap.
+	h.hydrateMemoryCandidate(r.Context(), id)
 	p, err := memoryStore().Promote(id, memory.PromotionTarget(req.Target), requestUserID(r), req.Approved, req.Reason)
 	if err != nil {
 		if errors.Is(err, memory.ErrCandidateNotFound) {
@@ -265,6 +269,8 @@ func (h *Handler) RevokeMemoryCandidate(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, "invalid body")
 		return
 	}
+	// Same freshness rule as promotion.
+	h.hydrateMemoryCandidate(r.Context(), id)
 	c, err := memoryStore().Revoke(id, req.Reason, requestUserID(r))
 	if err != nil {
 		if errors.Is(err, memory.ErrCandidateNotFound) {
