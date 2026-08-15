@@ -100,8 +100,20 @@ func (s *Service) resolve(ctx context.Context, req ResolveRequest, key, digest s
 		}
 	}
 
-	// Step 2: external G / campaign exact — no reusable table exists without a
-	// migration; this slice leaves it unmatched (P4 lands it).
+	// Step 2: external G / campaign exact — project_resource
+	// (resource_type='external_campaign') or issue.metadata, zero migration
+	// (P0-02 §3). Empty external_campaign_ref behaves exactly as before.
+	if strings.TrimSpace(req.Intent.ExternalCampaignRef) != "" {
+		cm, err := s.lookupCampaign(ctx, ws, req.Intent.ExternalCampaignRef)
+		if err != nil {
+			return ResolveResult{}, err
+		}
+		if cm != nil {
+			result.ResolutionDecision = DecisionContinued
+			result.Matches = append(result.Matches, campaignMatchToMatch(cm))
+			return result, nil
+		}
+	}
 
 	// Step 3: repo+revision+branch/worktree exact.
 	if strings.TrimSpace(req.Intent.Repo) != "" && strings.TrimSpace(req.Intent.BaselineRevision) != "" {

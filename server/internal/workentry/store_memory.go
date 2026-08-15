@@ -22,6 +22,8 @@ type MemoryStore struct {
 	completions map[string]CompletionRecord      // workRef
 	inbox      map[string]InboxItem              // inboxID
 	repoMatchesMap map[string]RepoMatch          // workspaceID + "\x00" + repo + "\x00" + revision + "\x00" + branch
+	campaigns      map[string]*CampaignMatch     // workspaceID + "\x00" + upper(campaignRef)
+	repoRefs       []RepoRef                     // repo ownership refs for inventory
 	seq        int64
 }
 
@@ -37,6 +39,8 @@ func NewMemoryStore() *MemoryStore {
 		completions: make(map[string]CompletionRecord),
 		inbox:       make(map[string]InboxItem),
 		repoMatchesMap: make(map[string]RepoMatch),
+		campaigns:      make(map[string]*CampaignMatch),
+		repoRefs:       []RepoRef{},
 	}
 }
 
@@ -315,6 +319,66 @@ func (m *MemoryStore) SeedInbox(it InboxItem) {
 	defer m.mu.Unlock()
 	cp := it
 	m.inbox[it.ID] = cp
+}
+
+// LookupCampaign implements campaignResolver (read-only G-series campaign →
+// project resolution via project_resource / issue.metadata, zero migration).
+func (m *MemoryStore) LookupCampaign(_ context.Context, workspaceID, campaignRef string) (*CampaignMatch, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	ref := NormalizeCampaignRef(campaignRef)
+	if c, ok := m.campaigns[memKey(workspaceID, "campaign", ref)]; ok {
+		return c, nil
+	}
+	return nil, nil
+}
+
+// SeedCampaign seeds a campaign → project match for tests.
+func (m *MemoryStore) SeedCampaign(cm CampaignMatch) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	ref := NormalizeCampaignRef(cm.CampaignRef)
+	cm.CampaignRef = ref
+	m.campaigns[memKey(cm.WorkspaceID, "campaign", ref)] = &cm
+}
+
+// SeedRepo seeds a repo ownership ref for inventory duplicate detection.
+func (m *MemoryStore) SeedRepo(r RepoRef) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.repoRefs = append(m.repoRefs, r)
+}
+
+// InventorySnapshot implements inventorySource (read-only) for the duplicate/
+// orphan diagnostic.
+func (m *MemoryStore) InventorySnapshot(_ context.Context, workspaceID string) (*InventorySnapshot, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	snap := &InventorySnapshot{
+		Projects: []ProjectRef{}, Issues: []IssueRef{},
+		Links: []ExternalWorkOrderLink{}, Repos: []RepoRef{},
+	}
+	for _, p := range m.projects {
+		if p.WorkspaceID == workspaceID {
+			snap.Projects = append(snap.Projects, *p)
+		}
+	}
+	for _, i := range m.issues {
+		if i.WorkspaceID == workspaceID {
+			snap.Issues = append(snap.Issues, *i)
+		}
+	}
+	for _, l := range m.links {
+		if l.WorkspaceID == workspaceID {
+			snap.Links = append(snap.Links, *l)
+		}
+	}
+	for _, r := range m.repoRefs {
+		if r.WorkspaceID == workspaceID {
+			snap.Repos = append(snap.Repos, r)
+		}
+	}
+	return snap, nil
 }
 
 // SeedRepoMatch seeds a step-3 repo+revision+branch exact match for tests.
