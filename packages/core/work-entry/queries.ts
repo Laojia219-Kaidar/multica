@@ -31,21 +31,25 @@ export function workforceBaseRuntimeOptions(wsId: string) {
 /**
  * 项目参与者 / 执行者读模型（VC-04）。
  *
- * 数据源策略：优先复用现有 companyops workforce_base_runtime 读模型（已部署），
- * 映射为 registered_employee 参与者；项目级聚合端点（external_agent /
- * carrier / host / session / next_action）待后端部署后接通，届时切换到
- * api.listProjectParticipants(projectId)。
+ * 数据源策略：优先调用项目级聚合端点 GET /api/work/participants
+ * （从 registration receipt 账本聚合 external_agent / carrier / host /
+ * session / task 等维度）；后端未部署或调用失败时回退到 companyops
+ * workforce_base_runtime 员工读模型（registered_employee 子集，pending 标注）。
  */
 export function projectParticipantsOptions(wsId: string, projectId: string) {
   return queryOptions({
     queryKey: workKeys.participants(wsId, projectId),
     queryFn: async (): Promise<ProjectParticipantsData> => {
-      const workforce = await api.listWorkforceBaseRuntime();
-      return {
-        source: "workforce_base_runtime",
-        pending_project_scope: true,
-        participants: workforce.items.map(participantFromWorkforceRow),
-      };
+      try {
+        return await api.listProjectParticipants(projectId);
+      } catch {
+        const workforce = await api.listWorkforceBaseRuntime();
+        return {
+          source: "workforce_base_runtime",
+          pending_project_scope: true,
+          participants: workforce.items.map(participantFromWorkforceRow),
+        };
+      }
     },
   });
 }

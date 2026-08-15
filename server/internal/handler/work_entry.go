@@ -525,6 +525,27 @@ func (h *Handler) WorkEntryReconcile(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, res)
 }
 
+// WorkEntryParticipants handles GET /api/work/participants (VC-04 project-
+// scoped participant read model). project_id is a query parameter; tenant
+// isolation is enforced by the workspace-scoped receipt query plus the
+// RequireWorkspaceMember middleware.
+func (h *Handler) WorkEntryParticipants(w http.ResponseWriter, r *http.Request) {
+	if !h.requireWorkEntry(w) {
+		return
+	}
+	projectID := strings.TrimSpace(r.URL.Query().Get("project_id"))
+	if projectID == "" {
+		writeWorkEntryError(w, workentry.ErrInvalidRequest)
+		return
+	}
+	res, err := h.WorkEntry.ProjectParticipants(r.Context(), h.resolveWorkspaceID(r), projectID)
+	if err != nil {
+		writeWorkEntryError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
 // WorkEntryAttach handles POST /api/work/attach.
 func (h *Handler) WorkEntryAttach(w http.ResponseWriter, r *http.Request) {
 	if !h.requireWorkEntry(w) {

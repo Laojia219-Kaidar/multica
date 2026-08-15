@@ -200,6 +200,9 @@ import type {
   WorkIgnoreResult,
   WorkStatusResult,
   WorkforceBaseRuntimeResponse,
+  WorkParticipant,
+  ProjectParticipantsData,
+  ProjectParticipantsSource,
 } from "../types/work-entry";
 import { z } from "zod";
 import type { OnboardingCompletionPath } from "../onboarding/types";
@@ -3816,15 +3819,26 @@ export class ApiClient {
   }
 
   /**
-   * 待后端部署后接通 — GET /api/work/participants?project_id=... project-scoped
-   * participant/executor aggregation (actor_type × carrier/runtime/model/base/
-   * host/session × next_action). Not wired by the queries layer yet; the
-   * participant panel falls back to listWorkforceBaseRuntime().
+   * GET /api/work/participants?project_id=... — project-scoped participant/
+   * executor read model (VC-04), aggregated from the registration receipt
+   * ledger: actor_type × carrier/runtime/model/base/host/session/task.
    */
-  async listProjectParticipants(_projectId: string): Promise<never> {
-    throw new Error(
-      "Project participants aggregation endpoint not deployed yet (待后端部署后接通).",
+  async listProjectParticipants(
+    projectId: string,
+  ): Promise<ProjectParticipantsData> {
+    const raw = await this.fetch<{
+      source: ProjectParticipantsSource;
+      project_id: string;
+      participants: WorkParticipant[];
+    }>(
+      `/api/work/participants?project_id=${encodeURIComponent(projectId)}`,
     );
+    return {
+      source: raw.source,
+      project_id: raw.project_id,
+      pending_project_scope: false,
+      participants: raw.participants,
+    };
   }
 
   // Slice 2 owner control operations (preview-first).

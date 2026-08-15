@@ -24,6 +24,9 @@ type Store interface {
 	GetReceipt(ctx context.Context, workspaceID, dedupeKey string) (*ReceiptRecord, error)
 	PutReceipt(ctx context.Context, receipt ReceiptRecord) error
 	FindReceiptByWorkRef(ctx context.Context, workspaceID, workRef string) (*ReceiptRecord, error)
+	// ListProjectParticipants is the VC-04 read model: every actor in the
+	// receipt ledger for one project (workspace-scoped), ordered by created_at.
+	ListProjectParticipants(ctx context.Context, workspaceID, projectID string) ([]ProjectParticipant, error)
 
 	// PutWorkOrderLink reuses external_work_order_link for the WorkOrder→Issue
 	// projection identity (step-1 exact-match anchor).

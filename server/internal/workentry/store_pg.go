@@ -461,6 +461,51 @@ func (p *PGStore) FindReceiptByWorkRef(ctx context.Context, workspaceID, workRef
 	return nil, rows.Err()
 }
 
+// ListProjectParticipants reads the receipt ledger for one project (workspace-
+// scoped) and projects each actor identity into the VC-04 participant read
+// model. Read-only; the receipt table's reject-mutation trigger keeps this
+// append-only.
+func (p *PGStore) ListProjectParticipants(ctx context.Context, workspaceID, projectID string) ([]ProjectParticipant, error) {
+	ws, err := p.uuid(workspaceID)
+	if err != nil {
+		return nil, ErrInvalidRequest
+	}
+	prj, err := p.uuid(projectID)
+	if err != nil {
+		return nil, ErrInvalidRequest
+	}
+	rows, err := p.exec.Query(ctx,
+		"SELECT actor, task_id FROM work_registration_receipt WHERE workspace_id = $1 AND project_id = $2 ORDER BY created_at",
+		ws, prj)
+	if err != nil {
+		return nil, fmt.Errorf("list project participants: %w", err)
+	}
+	defer rows.Close()
+	var out []ProjectParticipant
+	for rows.Next() {
+		var actorJSON []byte
+		var taskID pgtype.UUID
+		if err := rows.Scan(&actorJSON, &taskID); err != nil {
+			return nil, err
+		}
+		var actor WorkActorIdentityV1
+		_ = json.Unmarshal(actorJSON, &actor)
+		out = append(out, ProjectParticipant{
+			ActorType:  actor.ActorType,
+			ActorID:    actor.ActorID,
+			EmployeeID: actor.EmployeeID,
+			CarrierID:  actor.CarrierID,
+			RuntimeID:  actor.RuntimeID,
+			ModelRef:   actor.ModelRef,
+			BaseID:     actor.BaseID,
+			HostID:     actor.HostID,
+			SessionID:  actor.SessionID,
+			TaskID:     util.UUIDToString(taskID),
+		})
+	}
+	return out, rows.Err()
+}
+
 func (p *PGStore) AppendEvent(ctx context.Context, event EventRecord) (*EventRecord, error) {
 	ws, err := p.uuid(event.WorkspaceID)
 	if err != nil {

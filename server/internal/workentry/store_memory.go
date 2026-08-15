@@ -158,6 +158,24 @@ func (m *MemoryStore) FindReceiptByWorkRef(_ context.Context, workspaceID, workR
 	return nil, nil
 }
 
+func (m *MemoryStore) ListProjectParticipants(_ context.Context, workspaceID, projectID string) ([]ProjectParticipant, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []ProjectParticipant
+	for _, r := range m.receipts {
+		if r.WorkspaceID == workspaceID && r.ProjectID == projectID {
+			out = append(out, participantFromReceipt(*r))
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].ActorType != out[j].ActorType {
+			return out[i].ActorType < out[j].ActorType
+		}
+		return out[i].ActorID < out[j].ActorID
+	})
+	return out, nil
+}
+
 func (m *MemoryStore) PutWorkOrderLink(_ context.Context, link ExternalWorkOrderLink) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

@@ -122,6 +122,8 @@ export type ProjectParticipantsSource =
 
 export interface ProjectParticipantsData {
   source: ProjectParticipantsSource;
+  /** Backend-resolved project id (present for the project-scoped read model). */
+  project_id?: string;
   /** True while only the employee-centric workforce read model is available. */
   pending_project_scope: boolean;
   participants: WorkParticipant[];
