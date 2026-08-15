@@ -107,9 +107,6 @@ var workReplayCmd = &cobra.Command{
 }
 
 func init() {
-	workCmd.GroupID = groupCore
-	rootCmd.AddCommand(workCmd)
-
 	workCmd.PersistentFlags().String("state", "", "Path to the offline candidate ledger snapshot (JSON); empty = ephemeral in-memory store")
 	workCmd.PersistentFlags().String("output", "json", "Output format: json (default) or table")
 
@@ -472,6 +469,9 @@ func runWorkDoctor(cmd *cobra.Command, _ []string) error {
 	items, err := svc.Reconcile(context.Background(), ws)
 	if err != nil {
 		return err
+	}
+	if items == nil {
+		items = []workentry.InboxItem{}
 	}
 	if workOutput(cmd) == "table" {
 		headers := []string{"INBOX_ID", "WORK_REF"}
