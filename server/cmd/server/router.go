@@ -470,13 +470,21 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		// env-configured, TTL-bounded, single-issue server-only canary provider
 		// may satisfy the identity seam until the Authority by-issue reverse
 		// lookup (Option A) replaces it.
-		reviewCanaryProvider := reviewCanaryIdentityProviderFromEnv(time.Now)
-		if reviewCanaryProvider != nil && h.CompanyOpsDispatchAuthorization != nil {
+		var reviewIdentityProvider service.AuthorityReviewDispatchIdentityProvider
+		if byIssue := newByIssueIdentityProvider(os.Getenv("HIVECOSM_AUTHORITY_BASE_URL"), os.Getenv("HIVECOSM_TENANT_ID"), companyOpsTransportForBaseURL(os.Getenv("HIVECOSM_AUTHORITY_BASE_URL"))); byIssue != nil {
+			reviewIdentityProvider = byIssue
+			slog.Warn("companyops by-issue authority identity provider enabled (Option A)")
+		} else {
+			reviewIdentityProvider = reviewCanaryIdentityProviderFromEnv(time.Now)
+		}
+		if reviewIdentityProvider != nil && h.CompanyOpsDispatchAuthorization != nil {
 			continuousDispatchTrigger = continuousDispatchTrigger.WithAuthorityReviewDispatchGate(
 				service.NewAuthorityReviewDispatchGate(h.CompanyOpsDispatchAuthorization, continuousDispatchDispatcher),
-				reviewCanaryProvider,
+				reviewIdentityProvider,
 			)
-			slog.Warn("companyops review canary identity provider enabled", "expires_at", reviewCanaryProvider.expiresAt.Format(time.RFC3339))
+			if canary, ok := reviewIdentityProvider.(*reviewCanaryIdentityProvider); ok {
+				slog.Warn("companyops review canary identity provider enabled", "expires_at", canary.expiresAt.Format(time.RFC3339))
+			}
 		} else {
 			continuousDispatchTrigger = continuousDispatchTrigger.WithAuthorityReviewDispatchGate(nil, nil)
 		}
@@ -485,6 +493,18 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			continuousDispatchShadow,
 			continuousDispatchTrigger,
 		)
+		if reviewIdentityProvider != nil && h.CompanyOpsDispatchAuthorization != nil {
+			if evidence := reviewCanaryAuthorityEvidenceProviderFromEnv(
+				reviewIdentityProvider,
+				canaryReviewAuthorize(h.CompanyOpsDispatchAuthorization, os.Getenv("HIVECOSM_TENANT_ID")),
+			); evidence != nil {
+				h.ReviewDispatch = service.NewReviewDispatchBatchService(
+					continuousDispatchShadow,
+					continuousDispatchTrigger,
+				).WithAuthorityEvidenceProvider(evidence)
+				slog.Warn("companyops review canary authority evidence provider enabled")
+			}
+		}
 	}
 	h.CompanyOpsOutcomeCenter = service.NewCompanyOpsOutcomeCenterService(queries)
 	h.Metrics = opts.BusinessMetrics

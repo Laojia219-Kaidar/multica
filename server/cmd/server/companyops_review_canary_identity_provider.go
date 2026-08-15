@@ -91,7 +91,8 @@ func (p *reviewCanaryIdentityProvider) ResolveReviewDispatchIdentity(
 		return service.AuthorityReviewDispatchIdentity{}, errReviewCanaryIdentity
 	}
 	if workspaceID.Bytes != p.workspaceID || projectID.Bytes != p.projectID || issueID.Bytes != p.issueID {
-		return service.AuthorityReviewDispatchIdentity{}, fmt.Errorf("%w: candidate is outside the canary scope", errReviewCanaryIdentity)
+		return service.AuthorityReviewDispatchIdentity{}, fmt.Errorf("%w: candidate is outside the canary scope (want ws=%s proj=%s issue=%s got ws=%s proj=%s issue=%s)",
+			errReviewCanaryIdentity, p.workspaceID, p.projectID, p.issueID, workspaceID, projectID, issueID)
 	}
 	if p.now().UTC().After(p.expiresAt) {
 		return service.AuthorityReviewDispatchIdentity{}, fmt.Errorf("%w: canary TTL expired", errReviewCanaryIdentity)
