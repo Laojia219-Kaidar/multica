@@ -144,17 +144,22 @@ func (h *Handler) ListMemoryCandidates(w http.ResponseWriter, r *http.Request) {
 	var out []memory.MemoryCandidate
 	if positionID != "" {
 		out = memoryStore().ListByPosition(positionID)
-	} else {
-		if employeeID == "" {
-			writeError(w, http.StatusBadRequest, "employee_id or position_id required")
-			return
-		}
+	} else if employeeID != "" {
 		// Resume-after-restart read-back: hydrate this employee's candidates.
 		if err := memoryStore().Hydrate(r.Context(), h.memoryRepo(), employeeID); err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to hydrate memory")
 			return
 		}
 		out = memoryStore().List(employeeID)
+	} else {
+		// Workspace-wide listing reads the durable table directly so
+		// candidates persisted before a restart remain visible.
+		recent, err := h.memoryRepo().ListRecent(r.Context())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to list memory candidates")
+			return
+		}
+		out = recent
 	}
 	dtos := make([]memoryCandidateDTO, 0, len(out))
 	for _, c := range out {

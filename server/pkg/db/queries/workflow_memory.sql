@@ -130,6 +130,9 @@ SELECT * FROM memory_candidate WHERE employee_id = $1 ORDER BY created_at DESC;
 -- name: ListMemoryCandidatesByPosition :many
 SELECT * FROM memory_candidate WHERE position_id = $1 ORDER BY created_at DESC;
 
+-- name: ListMemoryCandidatesRecent :many
+SELECT * FROM memory_candidate ORDER BY created_at DESC LIMIT 200;
+
 -- name: UpdateMemoryCandidateStatus :exec
 UPDATE memory_candidate SET status = $2, updated_at = now() WHERE id = $1;
 

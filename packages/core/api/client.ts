@@ -204,7 +204,7 @@ import { type Logger, noopLogger } from "../logger";
 import { createRequestId } from "../utils";
 import { getCurrentSlug } from "../platform/workspace-storage";
 import { parseWithFallback } from "./schema";
-import type { EmployeeLiveActivityV1 } from "./workwall";
+import type { EmployeeLiveActivityV1, TerminalPane } from "./workwall";
 import type { MemoryCandidate, MemoryPromotion } from "./memory";
 import type {
   PublishedWorkflowDefinitionVersion,
@@ -3539,6 +3539,11 @@ export class ApiClient {
   /** Workspace "工作现场" (work wall) snapshot: one row per accessible agent. */
   async workWallSnapshot(): Promise<EmployeeLiveActivityV1[]> {
     return this.fetch("/api/work-wall/snapshot");
+  }
+
+  /** Terminal 现场: fresh host terminal panes (read-only projection). */
+  async listTerminalPresence(): Promise<TerminalPane[]> {
+    return this.fetch("/api/work-wall/terminal-presence");
   }
 
   // Employee memory candidate layer (Slice-M1). Promotion is proposal-only.

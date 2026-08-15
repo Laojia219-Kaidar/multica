@@ -1316,6 +1316,21 @@ type TaskUsageHourlyRollupState struct {
 	LastError         pgtype.Text        `json:"last_error"`
 }
 
+type TerminalPresence struct {
+	ID             pgtype.UUID        `json:"id"`
+	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
+	Host           string             `json:"host"`
+	SessionName    string             `json:"session_name"`
+	WindowIndex    int32              `json:"window_index"`
+	PaneIndex      int32              `json:"pane_index"`
+	PanePid        int32              `json:"pane_pid"`
+	CurrentCommand string             `json:"current_command"`
+	AgentHint      string             `json:"agent_hint"`
+	TailText       string             `json:"tail_text"`
+	HeartbeatAt    pgtype.Timestamptz `json:"heartbeat_at"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+}
+
 type User struct {
 	ID                      pgtype.UUID        `json:"id"`
 	Name                    string             `json:"name"`

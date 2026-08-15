@@ -130,3 +130,20 @@ export type WorkStage = z.infer<typeof WorkStageSchema>;
 export function parseWorkWallSnapshot(input: unknown): EmployeeLiveActivityV1[] {
   return z.array(EmployeeLiveActivityV1Schema).parse(input);
 }
+
+// Terminal presence: read-only projection of live host terminal panes,
+// upserted by the host-side collector (10s heartbeat, 15min freshness).
+export const TerminalPaneSchema = z
+  .object({
+    host: z.string(),
+    session_name: z.string(),
+    window_index: z.number().int(),
+    pane_index: z.number().int(),
+    current_command: z.string(),
+    agent_hint: z.string(),
+    tail_text: z.string(),
+    heartbeat_at: z.string(),
+  })
+  .strict();
+
+export type TerminalPane = z.infer<typeof TerminalPaneSchema>;

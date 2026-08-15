@@ -4,6 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { api } from "@multica/core/api";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { WorkWall } from "./work-wall";
+import { TerminalLiveSection } from "./terminal-live";
 
 export function WorkWallPage() {
   const wsId = useWorkspaceId();
@@ -15,5 +16,15 @@ export function WorkWallPage() {
     // planned upgrade once the integrator wires the realtime hub.
     refetchInterval: 5000,
   });
-  return <WorkWall employees={data} />;
+  const { data: panes = [] } = useQuery({
+    queryKey: ["work-wall", wsId, "terminal-presence"],
+    queryFn: () => api.listTerminalPresence(),
+    refetchInterval: 10000,
+  });
+  return (
+    <>
+      <WorkWall employees={data} />
+      <TerminalLiveSection panes={panes} />
+    </>
+  );
 }

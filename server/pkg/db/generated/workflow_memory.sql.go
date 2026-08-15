@@ -611,6 +611,42 @@ func (q *Queries) ListMemoryCandidatesByPosition(ctx context.Context, positionID
 	return items, nil
 }
 
+const listMemoryCandidatesRecent = `-- name: ListMemoryCandidatesRecent :many
+SELECT id, employee_id, position_id, kind, content, evidence, source_refs, author_id, status, created_at, updated_at FROM memory_candidate ORDER BY created_at DESC LIMIT 200
+`
+
+func (q *Queries) ListMemoryCandidatesRecent(ctx context.Context) ([]MemoryCandidate, error) {
+	rows, err := q.db.Query(ctx, listMemoryCandidatesRecent)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []MemoryCandidate{}
+	for rows.Next() {
+		var i MemoryCandidate
+		if err := rows.Scan(
+			&i.ID,
+			&i.EmployeeID,
+			&i.PositionID,
+			&i.Kind,
+			&i.Content,
+			&i.Evidence,
+			&i.SourceRefs,
+			&i.AuthorID,
+			&i.Status,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listMemoryPromotions = `-- name: ListMemoryPromotions :many
 SELECT id, candidate_id, target, reviewer_id, approved, reason, promoted_at FROM memory_promotion WHERE candidate_id = $1 ORDER BY promoted_at DESC
 `

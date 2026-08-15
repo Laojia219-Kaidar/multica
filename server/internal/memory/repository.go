@@ -97,6 +97,24 @@ func (r *Repository) ListByEmployee(ctx context.Context, employeeID string) ([]M
 	return out, nil
 }
 
+// ListRecent returns the most recent candidates across the workspace,
+// reading the durable table so pre-restart candidates stay visible.
+func (r *Repository) ListRecent(ctx context.Context) ([]MemoryCandidate, error) {
+	rows, err := r.Q.ListMemoryCandidatesRecent(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]MemoryCandidate, 0, len(rows))
+	for _, row := range rows {
+		c, err := r.LoadCandidate(ctx, row.ID)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, nil
+}
+
 func (r *Repository) ListByPosition(ctx context.Context, positionID string) ([]MemoryCandidate, error) {
 	rows, err := r.Q.ListMemoryCandidatesByPosition(ctx, positionID)
 	if err != nil {
