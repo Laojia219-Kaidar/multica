@@ -243,6 +243,57 @@ func TestArtifactLifecycleRejectsOutOfOrderEvents(t *testing.T) {
 	}
 }
 
+// WO-40A (HIVECREW-WECHAT-REAL-OPERATIONS-V1): the WeChat production slice
+// rejects an Owner changes_requested decision by refusing every subsequent
+// same-revision progression. A rejected candidate must stay unpromotable until
+// a new revision is materialized; only the revision flow may continue.
+func TestArtifactLifecycleChangesRequestedBlocksSameRevisionProgression(t *testing.T) {
+	candidate := mustArtifactCandidate(t, ArtifactCandidateInput{
+		ID:               "candidate-v1",
+		LineageID:        "artifact-lineage-rejected",
+		Revision:         1,
+		DurableObjectRef: "object://hivecrew/artifacts/candidate-v1",
+		Digest:           "sha256:v1",
+	})
+	lifecycle, err := NewArtifactLifecycle(candidate)
+	if err != nil {
+		t.Fatalf("NewArtifactLifecycle() error = %v", err)
+	}
+	mustAppendArtifactEvent(t, lifecycle, candidate, ArtifactEventSubmitted, "submit", "")
+	mustAppendArtifactEvent(t, lifecycle, candidate, ArtifactEventChangesRequested, "changes", "")
+	before := len(lifecycle.Events())
+
+	blocked := []ArtifactEventType{
+		ArtifactEventApproved,
+		ArtifactEventPromotionRequested,
+		ArtifactEventPromotionSucceeded,
+		ArtifactEventSubmitted,
+	}
+	for _, eventType := range blocked {
+		if _, err := lifecycle.Append(artifactEventInput(candidate, eventType, "blocked-"+string(eventType), "")); !errors.Is(err, ErrInvalidArtifactTransition) {
+			t.Fatalf("Append(%s) after changes_requested error = %v, want %v", eventType, err, ErrInvalidArtifactTransition)
+		}
+	}
+	if got := len(lifecycle.Events()); got != before {
+		t.Fatalf("blocked events were appended: got %d events, want %d", got, before)
+	}
+	projection := lifecycle.Projection()
+	if projection.Status != ArtifactEventChangesRequested || projection.FormalVisible {
+		t.Fatalf("projection after blocked progression = %+v, want changes_requested and not formally visible", projection)
+	}
+
+	// A foreign candidate (another slice node's lineage) can never inject an
+	// event into this lifecycle, even with a well-formed transition.
+	foreign := artifactEventInput(candidate, ArtifactEventApproved, "foreign-approval", "")
+	foreign.CandidateID = "candidate-from-another-node"
+	if _, err := lifecycle.Append(foreign); !errors.Is(err, ErrArtifactCandidateNotFound) {
+		t.Fatalf("foreign candidate Append() error = %v, want %v", err, ErrArtifactCandidateNotFound)
+	}
+	if got := len(lifecycle.Events()); got != before {
+		t.Fatalf("foreign candidate event was appended: got %d events, want %d", got, before)
+	}
+}
+
 func mustArtifactCandidate(t *testing.T, input ArtifactCandidateInput) ArtifactCandidate {
 	t.Helper()
 	candidate, err := NewArtifactCandidate(input)

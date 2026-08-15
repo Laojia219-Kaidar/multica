@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/companyops"
 	"github.com/multica-ai/multica/server/internal/storage"
 	"github.com/multica-ai/multica/server/internal/util"
@@ -113,16 +114,19 @@ func materializeAndApproveCompanyOpsArtifact(
 }
 
 func companyOpsArtifactPromotionRequest(fixture companyOpsExecutionTestFixture, candidateID, promotionID string) CompanyOpsArtifactPromotion {
-	target := fixture.assignment.Target
+	return companyOpsArtifactPromotionRequestForTarget(fixture.assignment.Target, fixture.company.userID, fixture.company.agentID, candidateID, promotionID)
+}
+
+func companyOpsArtifactPromotionRequestForTarget(target companyops.ExecutionTargetSnapshot, actorUserID, agentID pgtype.UUID, candidateID, promotionID string) CompanyOpsArtifactPromotion {
 	return CompanyOpsArtifactPromotion{
 		CandidateID: candidateID,
 		PromotionID: promotionID,
-		ActorUserID: fixture.company.userID,
+		ActorUserID: actorUserID,
 		Lookup: companyops.HiveCosmAuthorityLookup{
 			WorkOrderSourceRef: target.WorkOrderRef,
 			EmployeeID:         "EMP-ASSIGNMENT-001",
 			IdentityBindingID:  "BIND-ASSIGNMENT-001",
-			AgentID:            util.UUIDToString(fixture.company.agentID),
+			AgentID:            util.UUIDToString(agentID),
 		},
 		WorkOrder: companyops.AuthoritySnapshot{
 			Kind:          "WorkOrder",
@@ -1480,5 +1484,235 @@ func TestCompanyOpsArtifactOutcome_LegacyTerminalWithoutClaimFailsClosed(t *test
 				t.Fatalf("legacy terminal replay appended events: before %d after %d", len(eventsBefore), len(eventsAfter))
 			}
 		})
+	}
+}
+
+// WO-40A (HIVECREW-WECHAT-REAL-OPERATIONS-V1): an Owner changes_requested
+// decision on the WeChat production slice must durably block promotion of the
+// rejected candidate, queue exactly one rework Run on the same issue, and
+// replay idempotently.
+func TestCompanyOpsArtifactOutcome_ChangesRequestedBlocksPromotionAndQueuesRework(t *testing.T) {
+	ctx, fixture := newCompanyOpsExecutionTestFixture(t)
+	fake := &fakeFormalArtifactAuthority{formalArtifactRef: promotionTestFormalArtifactRef}
+	artifactService := newCompanyOpsArtifactServiceWithFakeAuthority(t, fixture, fake)
+
+	task := claimAndFinalizeCompanyOpsExecutionTestTask(t, ctx, fixture)
+	if _, err := fixture.service.StartTask(ctx, task.ID); err != nil {
+		t.Fatalf("StartTask: %v", err)
+	}
+	completed, err := fixture.service.CompleteTask(ctx, task.ID, []byte(`{"output":"draft v1"}`), "", "", false, "")
+	if err != nil {
+		t.Fatalf("CompleteTask: %v", err)
+	}
+	outcome, err := artifactService.MaterializeCompletedTask(
+		ctx,
+		util.UUIDToString(fixture.company.workspaceID),
+		*completed,
+		"Draft v1 of the node artifact.",
+		"",
+	)
+	if err != nil {
+		t.Fatalf("MaterializeCompletedTask: %v", err)
+	}
+
+	// Feedback is mandatory for a rejection.
+	if _, err := artifactService.ReviewArtifact(ctx, fixture.company.workspaceID, fixture.company.issueID, CompanyOpsArtifactReview{
+		CandidateID:   outcome.Candidate.ID,
+		Decision:      companyops.ArtifactEventChangesRequested,
+		IdempotencyID: uuid.NewString(),
+		Feedback:      "   ",
+		ActorUserID:   fixture.company.userID,
+	}); !errors.Is(err, ErrCompanyOpsArtifactConflict) {
+		t.Fatalf("changes_requested without feedback error = %v, want ErrCompanyOpsArtifactConflict", err)
+	}
+
+	reviewID := uuid.NewString()
+	review := CompanyOpsArtifactReview{
+		CandidateID:   outcome.Candidate.ID,
+		Decision:      companyops.ArtifactEventChangesRequested,
+		IdempotencyID: reviewID,
+		Feedback:      "Rework: tighten the summary and cite the exact source rows.",
+		ActorUserID:   fixture.company.userID,
+	}
+	receipt, err := artifactService.ReviewArtifact(ctx, fixture.company.workspaceID, fixture.company.issueID, review)
+	if err != nil {
+		t.Fatalf("ReviewArtifact(changes_requested): %v", err)
+	}
+	if receipt.Event.Type != companyops.ArtifactEventChangesRequested || receipt.Event.CandidateID != outcome.Candidate.ID {
+		t.Fatalf("rejection event = %+v", receipt.Event)
+	}
+	if receipt.ReworkTask == nil {
+		t.Fatal("changes_requested must queue a rework Run on the same issue")
+	}
+	if receipt.ReworkTask.IssueID != fixture.company.issueID ||
+		receipt.ReworkTask.TriggerEvidenceKind != (pgtype.Text{String: artifactRevisionEvidenceKind, Valid: true}) ||
+		util.UUIDToString(receipt.ReworkTask.TriggerEvidenceRefID) != receipt.Event.ID {
+		t.Fatalf("rework Run is not pinned to the rejection event on the same issue: %+v", receipt.ReworkTask)
+	}
+
+	// Idempotent replay of the same review collapses to the same event and the
+	// same rework Run; no second Run is queued.
+	replay, err := artifactService.ReviewArtifact(ctx, fixture.company.workspaceID, fixture.company.issueID, review)
+	if err != nil {
+		t.Fatalf("replay ReviewArtifact(changes_requested): %v", err)
+	}
+	if replay.Event.ID != receipt.Event.ID {
+		t.Fatalf("replay returned a different event: first %q replay %q", receipt.Event.ID, replay.Event.ID)
+	}
+	if replay.ReworkTask == nil || replay.ReworkTask.ID != receipt.ReworkTask.ID {
+		t.Fatalf("replay queued a duplicate rework Run: first %+v replay %+v", receipt.ReworkTask, replay.ReworkTask)
+	}
+
+	// The rejected candidate is not promotable, and the blocked attempt must
+	// not touch the formal authority.
+	promotion := companyOpsArtifactPromotionRequest(fixture, outcome.Candidate.ID, uuid.NewString())
+	if _, err := artifactService.PromoteArtifact(ctx, fixture.company.workspaceID, fixture.company.issueID, promotion); !errors.Is(err, ErrCompanyOpsArtifactConflict) {
+		t.Fatalf("PromoteArtifact after changes_requested error = %v, want ErrCompanyOpsArtifactConflict", err)
+	}
+	if fake.promoteCount != 0 || fake.readCount != 0 {
+		t.Fatalf("blocked promotion touched authority: promote %d read %d", fake.promoteCount, fake.readCount)
+	}
+
+	// The same revision can never be approved after rejection; only a new
+	// materialized revision may continue.
+	if _, err := artifactService.ReviewArtifact(ctx, fixture.company.workspaceID, fixture.company.issueID, CompanyOpsArtifactReview{
+		CandidateID:   outcome.Candidate.ID,
+		Decision:      companyops.ArtifactEventApproved,
+		IdempotencyID: uuid.NewString(),
+		ActorUserID:   fixture.company.userID,
+	}); !errors.Is(err, companyops.ErrInvalidArtifactTransition) {
+		t.Fatalf("approve after changes_requested error = %v, want ErrInvalidArtifactTransition", err)
+	}
+
+	after, err := artifactService.GetIssueOutcome(ctx, fixture.company.workspaceID, fixture.company.issueID)
+	if err != nil {
+		t.Fatalf("GetIssueOutcome after rejection: %v", err)
+	}
+	if after == nil || after.Projection == nil ||
+		after.Projection.Status != companyops.ArtifactEventChangesRequested || after.Projection.FormalVisible {
+		t.Fatalf("projection after rejection = %+v, want changes_requested and not formally visible", after)
+	}
+}
+
+// WO-40A (HIVECREW-WECHAT-REAL-OPERATIONS-V1): each WeChat slice node owns an
+// independent issue → candidate → lifecycle lineage. A candidate materialized
+// on one node's issue can never be reviewed or promoted through another node's
+// issue, and a promotion carrying another lineage's authority snapshots fails
+// closed against the issue's latest dispatch receipt.
+func TestCompanyOpsArtifactOutcome_SliceNodeLineageIsolation(t *testing.T) {
+	ctx, fixture := newCompanyOpsExecutionTestFixture(t)
+	fake := &fakeFormalArtifactAuthority{formalArtifactRef: promotionTestFormalArtifactRef}
+	artifactService := newCompanyOpsArtifactServiceWithFakeAuthority(t, fixture, fake)
+
+	// Node A (the fixture issue): materialize and approve its candidate.
+	outcomeA := materializeAndApproveCompanyOpsArtifact(t, ctx, fixture, artifactService)
+
+	// Node B: a second issue in the same workspace with its own dispatch that
+	// carries a distinct WorkOrder authority revision/digest.
+	issueB := insertProductionCompanyOpsIssue(t, ctx, fixture.pool, fixture.company, "todo", "WeChat slice node B")
+	backend, err := NewProductionCompanyOpsAssignmentBackend(fixture.queries, fixture.pool, fixture.service)
+	if err != nil {
+		t.Fatalf("NewProductionCompanyOpsAssignmentBackend: %v", err)
+	}
+	requestB := productionCompanyOpsRequest(fixture.company, issueB, util.MustParseUUID(uuid.NewString()))
+	requestB.WorkOrder = assignmentAuthority("WorkOrder", assignmentWorkOrderRef, "wo-rev-8", "b")
+	receiptB, err := NewCompanyOpsAssignmentService(backend).Dispatch(ctx, requestB)
+	if err != nil {
+		t.Fatalf("Dispatch node B: %v", err)
+	}
+	taskB := claimAndFinalizeCompanyOpsExecutionTestTask(t, ctx, fixture)
+	if taskB.IssueID != issueB {
+		t.Fatalf("claimed Run issue = %v, want node B issue %v", taskB.IssueID, issueB)
+	}
+	if _, err := fixture.service.StartTask(ctx, taskB.ID); err != nil {
+		t.Fatalf("StartTask node B: %v", err)
+	}
+	completedB, err := fixture.service.CompleteTask(ctx, taskB.ID, []byte(`{"output":"node B draft"}`), "", "", false, "")
+	if err != nil {
+		t.Fatalf("CompleteTask node B: %v", err)
+	}
+	outcomeB, err := artifactService.MaterializeCompletedTask(
+		ctx,
+		util.UUIDToString(fixture.company.workspaceID),
+		*completedB,
+		"Node B draft artifact.",
+		"",
+	)
+	if err != nil {
+		t.Fatalf("MaterializeCompletedTask node B: %v", err)
+	}
+	if outcomeB.Candidate.ID == outcomeA.Candidate.ID {
+		t.Fatalf("node lineages share a candidate: %q", outcomeB.Candidate.ID)
+	}
+
+	// Cross-lineage review is fail-closed in both directions.
+	for _, cross := range []struct {
+		name        string
+		issueID     pgtype.UUID
+		candidateID string
+	}{
+		{"node A candidate reviewed through node B issue", issueB, outcomeA.Candidate.ID},
+		{"node B candidate reviewed through node A issue", fixture.company.issueID, outcomeB.Candidate.ID},
+	} {
+		t.Run(cross.name, func(t *testing.T) {
+			if _, err := artifactService.ReviewArtifact(ctx, fixture.company.workspaceID, cross.issueID, CompanyOpsArtifactReview{
+				CandidateID:   cross.candidateID,
+				Decision:      companyops.ArtifactEventApproved,
+				IdempotencyID: uuid.NewString(),
+				ActorUserID:   fixture.company.userID,
+			}); !errors.Is(err, companyops.ErrArtifactCandidateNotFound) {
+				t.Fatalf("cross-lineage review error = %v, want ErrArtifactCandidateNotFound", err)
+			}
+		})
+	}
+
+	// Cross-lineage promotion is fail-closed: node B's candidate cannot be
+	// promoted through node A's issue.
+	crossPromotion := companyOpsArtifactPromotionRequest(fixture, outcomeB.Candidate.ID, uuid.NewString())
+	if _, err := artifactService.PromoteArtifact(ctx, fixture.company.workspaceID, fixture.company.issueID, crossPromotion); !errors.Is(err, companyops.ErrArtifactCandidateNotFound) {
+		t.Fatalf("cross-lineage promotion error = %v, want ErrArtifactCandidateNotFound", err)
+	}
+	if fake.promoteCount != 0 || fake.readCount != 0 {
+		t.Fatalf("cross-lineage attempts touched authority: promote %d read %d", fake.promoteCount, fake.readCount)
+	}
+
+	// Node B approved on its own issue, but promoted with node A's authority
+	// snapshots: fails closed against node B's latest dispatch receipt.
+	if _, err := artifactService.ReviewArtifact(ctx, fixture.company.workspaceID, issueB, CompanyOpsArtifactReview{
+		CandidateID:   outcomeB.Candidate.ID,
+		Decision:      companyops.ArtifactEventApproved,
+		IdempotencyID: uuid.NewString(),
+		ActorUserID:   fixture.company.userID,
+	}); err != nil {
+		t.Fatalf("ReviewArtifact(approved) node B: %v", err)
+	}
+	foreignAuthority := companyOpsArtifactPromotionRequest(fixture, outcomeB.Candidate.ID, uuid.NewString())
+	if _, err := artifactService.PromoteArtifact(ctx, fixture.company.workspaceID, issueB, foreignAuthority); !errors.Is(err, ErrCompanyOpsArtifactConflict) {
+		t.Fatalf("promotion with foreign authority snapshots error = %v, want ErrCompanyOpsArtifactConflict", err)
+	}
+	if fake.promoteCount != 0 {
+		t.Fatalf("foreign-authority promotion POSTed to the authority: promote %d", fake.promoteCount)
+	}
+
+	// Control: both lineages remain independently operable through their own
+	// issue, candidate, and dispatch authority.
+	promoteB := companyOpsArtifactPromotionRequestForTarget(receiptB.Target, fixture.company.userID, fixture.company.agentID, outcomeB.Candidate.ID, uuid.NewString())
+	receiptPromoteB, err := artifactService.PromoteArtifact(ctx, fixture.company.workspaceID, issueB, promoteB)
+	if err != nil {
+		t.Fatalf("PromoteArtifact node B: %v", err)
+	}
+	if receiptPromoteB.LifecycleStatus != companyops.ArtifactEventAuthorityReadbackConfirmed || !receiptPromoteB.FormalVisible {
+		t.Fatalf("node B promotion receipt = %+v, want authority readback confirmed", receiptPromoteB)
+	}
+	promoteA := companyOpsArtifactPromotionRequest(fixture, outcomeA.Candidate.ID, uuid.NewString())
+	receiptPromoteA, err := artifactService.PromoteArtifact(ctx, fixture.company.workspaceID, fixture.company.issueID, promoteA)
+	if err != nil {
+		t.Fatalf("PromoteArtifact node A: %v", err)
+	}
+	if receiptPromoteA.LifecycleStatus != companyops.ArtifactEventAuthorityReadbackConfirmed || !receiptPromoteA.FormalVisible {
+		t.Fatalf("node A promotion receipt = %+v, want authority readback confirmed", receiptPromoteA)
+	}
+	if fake.promoteCount != 2 {
+		t.Fatalf("authority POST count = %d, want exactly 2 (one per lineage)", fake.promoteCount)
 	}
 }
