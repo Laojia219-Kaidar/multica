@@ -192,6 +192,15 @@ import type {
   CompanyOpsRosterResponse,
   CompanyOpsEmployeeDossier,
 } from "../types";
+import type {
+  WorkInboxItem,
+  WorkAttachRequest,
+  WorkAttachResult,
+  WorkIgnoreRequest,
+  WorkIgnoreResult,
+  WorkStatusResult,
+  WorkforceBaseRuntimeResponse,
+} from "../types/work-entry";
 import { z } from "zod";
 import type { OnboardingCompletionPath } from "../onboarding/types";
 import type { CreateFeedbackResponse, FeedbackKind } from "../feedback/types";
@@ -3763,6 +3772,59 @@ export class ApiClient {
 
   async getProjectLifecycle(id: string): Promise<ProjectLifecycleSnapshot> {
     return this.fetch(`/api/projects/${id}/lifecycle`);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Universal Work Registration Kernel (Phase-1). The inbox surface is
+  // read-only + triage (attach/ignore); it never writes project progress.
+  // ---------------------------------------------------------------------------
+
+  /** GET /api/work/reconcile — unclaimed work inbox (read-only diagnostic). */
+  async reconcileWorkInbox(): Promise<WorkInboxItem[]> {
+    return this.fetch("/api/work/reconcile");
+  }
+
+  /** POST /api/work/attach — link an unclaimed entry to an existing project/issue. */
+  async attachWorkInbox(data: WorkAttachRequest): Promise<WorkAttachResult> {
+    return this.fetch("/api/work/attach", {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+  }
+
+  /** POST /api/work/ignore — mark an unclaimed entry as ignored. */
+  async ignoreWorkInbox(data: WorkIgnoreRequest): Promise<WorkIgnoreResult> {
+    return this.fetch("/api/work/ignore", {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+  }
+
+  /** GET /api/work/status — read-only projection for one work_ref. */
+  async getWorkStatus(workRef: string): Promise<WorkStatusResult> {
+    return this.fetch(`/api/work/status?work_ref=${encodeURIComponent(workRef)}`);
+  }
+
+  /**
+   * GET /api/company-ops/workforce-base-runtime — currently-deployed employee →
+   * agent → runtime → base read model. Reused by the project participant panel
+   * as the available subset while the project-scoped aggregation endpoint is
+   * pending backend deployment.
+   */
+  async listWorkforceBaseRuntime(): Promise<WorkforceBaseRuntimeResponse> {
+    return this.fetch("/api/company-ops/workforce-base-runtime");
+  }
+
+  /**
+   * 待后端部署后接通 — GET /api/work/participants?project_id=... project-scoped
+   * participant/executor aggregation (actor_type × carrier/runtime/model/base/
+   * host/session × next_action). Not wired by the queries layer yet; the
+   * participant panel falls back to listWorkforceBaseRuntime().
+   */
+  async listProjectParticipants(_projectId: string): Promise<never> {
+    throw new Error(
+      "Project participants aggregation endpoint not deployed yet (待后端部署后接通).",
+    );
   }
 
   // Slice 2 owner control operations (preview-first).
