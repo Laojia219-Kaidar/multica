@@ -247,7 +247,10 @@ func validateQuotaObservationEnvelope(response HiveCosmQuotaObservationResponse,
 	if err := validateQuotaReference("key_ref", o.KeyRef, "keychain:", "env:", "vault:"); err != nil {
 		return err
 	}
-	if o.Unit != "tokens" || o.Limit <= 0 || o.Used < 0 || o.Remaining < 0 || o.Used > o.Limit || o.Remaining != o.Limit-o.Used || math.IsNaN(o.Ratio) || math.IsInf(o.Ratio, 0) || o.Ratio < 0 || o.Ratio > 1 {
+	// The governed quota dimensions are request-count caps from the agent
+	// model assignment registry; token-denominated provider quotas may join
+	// later as an additional unit, not a replacement.
+	if (o.Unit != "tokens" && o.Unit != "requests") || o.Limit <= 0 || o.Used < 0 || o.Remaining < 0 || o.Used > o.Limit || o.Remaining != o.Limit-o.Used || math.IsNaN(o.Ratio) || math.IsInf(o.Ratio, 0) || o.Ratio < 0 || o.Ratio > 1 {
 		return errors.New("quota observation amounts are invalid")
 	}
 	expectedRatio := float64(o.Used) / float64(o.Limit)

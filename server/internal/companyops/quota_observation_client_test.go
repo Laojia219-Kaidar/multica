@@ -301,3 +301,23 @@ func quotaObservationJSON(response HiveCosmQuotaObservationResponse, addUnknown 
 	}
 	return data
 }
+
+func TestQuotaObservationAcceptsGovernedRequestUnit(t *testing.T) {
+	response := quotaTestResponse()
+	response.Observation.Unit = "requests"
+	response.Observation.Limit = 200
+	response.Observation.Used = 150
+	response.Observation.Remaining = 50
+	response.Observation.Ratio = 0.75
+	agent, runtime := quotaTestAgentRuntime()
+	lookup := QuotaObservationLookup{WorkspaceID: agent.WorkspaceID.String(), AgentID: agent.ID.String(), RuntimeID: runtime.ID.String()}
+	provider, model := "bailian", "deepseek-v4-flash-0731"
+	now := quotaTestNow()
+	if err := validateQuotaObservationEnvelope(response, lookup, provider, model, response.TenantID, now); err != nil {
+		t.Fatalf("governed requests unit must validate: %v", err)
+	}
+	response.Observation.Unit = "credits"
+	if err := validateQuotaObservationEnvelope(response, lookup, provider, model, response.TenantID, now); err == nil {
+		t.Fatal("unknown quota unit must fail closed")
+	}
+}
