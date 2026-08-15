@@ -1,7 +1,9 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"sync"
@@ -175,6 +177,11 @@ func (h *Handler) ValidateMemoryCandidate(w http.ResponseWriter, r *http.Request
 		return
 	}
 	id := r.PathValue("id")
+	// The in-memory store loses candidates across restarts; rehydrate the
+	// owning employee from the durable table before mutating so a
+	// post-restart promotion/revocation doesn't 404 on a candidate that
+	// List just showed.
+	h.hydrateMemoryCandidate(r.Context(), id)
 	c, err := memoryStore().ValidateCandidate(id)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "memory candidate not found")
@@ -185,6 +192,17 @@ func (h *Handler) ValidateMemoryCandidate(w http.ResponseWriter, r *http.Request
 		return
 	}
 	writeJSON(w, http.StatusOK, toMemoryCandidateDTO(c))
+}
+
+// hydrateMemoryCandidate loads the candidate row and hydrates its employee's
+// store partition, so lifecycle mutations work after a server restart.
+// Failures are best-effort: the caller's store call surfaces the 404.
+func (h *Handler) hydrateMemoryCandidate(ctx context.Context, id string) {
+	c, err := h.memoryRepo().LoadCandidate(ctx, id)
+	if err != nil {
+		return
+	}
+	_ = memoryStore().Hydrate(ctx, h.memoryRepo(), c.EmployeeID)
 }
 
 type promoteMemoryRequest struct {
@@ -207,8 +225,16 @@ func (h *Handler) PromoteMemoryCandidate(w http.ResponseWriter, r *http.Request)
 	}
 	p, err := memoryStore().Promote(id, memory.PromotionTarget(req.Target), requestUserID(r), req.Approved, req.Reason)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
+		if errors.Is(err, memory.ErrCandidateNotFound) {
+			// Retry once after rehydrating from the durable table — the
+			// in-memory store starts empty after every server restart.
+			h.hydrateMemoryCandidate(r.Context(), id)
+			p, err = memoryStore().Promote(id, memory.PromotionTarget(req.Target), requestUserID(r), req.Approved, req.Reason)
+		}
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 	}
 	repo := h.memoryRepo()
 	if err := repo.SavePromotion(r.Context(), p); err != nil {
@@ -241,8 +267,14 @@ func (h *Handler) RevokeMemoryCandidate(w http.ResponseWriter, r *http.Request) 
 	}
 	c, err := memoryStore().Revoke(id, req.Reason, requestUserID(r))
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
+		if errors.Is(err, memory.ErrCandidateNotFound) {
+			h.hydrateMemoryCandidate(r.Context(), id)
+			c, err = memoryStore().Revoke(id, req.Reason, requestUserID(r))
+		}
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 	}
 	if err := h.memoryRepo().UpdateStatus(r.Context(), id, c.Status); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to persist revocation")
