@@ -62,7 +62,11 @@ func companyOpsAuthorityBearerTokenFromEnv(ctx context.Context, keychainRead com
 	if keychainRead == nil {
 		keychainRead = readCompanyOpsAuthorityKeychainToken
 	}
-	readCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	// The Swift helper pays driver plus Keychain latency per invocation
+	// (8-14s observed on the formal Mac runtime). Resolution happens once at
+	// startup and the bearer stays in-process, so the bound is startup
+	// patience, not request latency.
+	readCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 	token, err := keychainRead(readCtx, ref)
 	if err != nil || !strictCompanyOpsBearerToken(token) {

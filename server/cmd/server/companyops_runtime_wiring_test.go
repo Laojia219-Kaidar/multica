@@ -28,7 +28,14 @@ func TestSafeCompanyOpsAuthorityURLRequiresTLSOutsideLoopback(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			u, err := url.Parse(test.raw)
 			if err != nil {
-				t.Fatal(err)
+				// Go 1.26 rejects non-numeric ports at parse time; that
+				// rejection is itself the fail-closed outcome the case
+				// asserts, so only an unexpected rejection of a wanted URL
+				// is a failure.
+				if test.want {
+					t.Fatal(err)
+				}
+				return
 			}
 			if got := isSafeCompanyOpsAuthorityURL(u); got != test.want {
 				t.Fatalf("isSafeCompanyOpsAuthorityURL(%q) = %v, want %v", test.raw, got, test.want)
