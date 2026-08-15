@@ -72,4 +72,38 @@ describe("ProjectParticipants", () => {
     expect(screen.getByText("EXT-42")).toBeInTheDocument();
     expect(screen.queryByText(/^DE-/)).toBeNull();
   });
+
+  it("renders carrier/host/session/base/model from the project-scoped read model", () => {
+    render(
+      <ProjectParticipants
+        data={{
+          source: "work_entry_participants",
+          project_id: "proj-1",
+          pending_project_scope: false,
+          participants: [
+            makeParticipant({
+              actor_type: "external_agent",
+              actor_id: "EXT-dgx-003",
+              employee_id: undefined,
+              carrier_id: "hermes",
+              runtime_id: "dgx-hermes",
+              model_ref: "local-27b",
+              base_id: "底座基地",
+              host_id: "spark-b398",
+              session_id: "dgx-s3",
+            }),
+          ],
+        }}
+      />,
+    );
+    expect(screen.getByText("hermes")).toBeInTheDocument();
+    expect(screen.getByText("dgx-hermes")).toBeInTheDocument();
+    expect(screen.getByText("local-27b")).toBeInTheDocument();
+    expect(screen.getByText("底座基地")).toBeInTheDocument();
+    expect(screen.getByText("spark-b398")).toBeInTheDocument();
+    expect(screen.getByText("dgx-s3")).toBeInTheDocument();
+    // The project-scoped source must not show the stale "待后端" notice.
+    expect(screen.queryByText(/待后端聚合端点部署后接通/)).toBeNull();
+    expect(screen.getByText(/项目级参与者聚合/)).toBeInTheDocument();
+  });
 });

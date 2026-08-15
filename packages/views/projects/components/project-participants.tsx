@@ -140,9 +140,9 @@ export function ProjectParticipants({
       )}
 
       <p className="border-t px-3 py-2 text-[11px] leading-relaxed text-muted-foreground">
-        现数据源：workforce_base_runtime 员工读模型（员工 → 智能体 → 运行时 →
-        基地）；项目级聚合与外部智能体 / 载体 / 主机 / 会话 / 下一动作维度
-        待后端聚合端点部署后接通。
+        {data?.source === "work_entry_participants"
+          ? "现数据源：项目级参与者聚合（登记回执账本 → actor / carrier / runtime / model / base / host / session / task）。"
+          : "现数据源：workforce_base_runtime 员工读模型（员工 → 智能体 → 运行时 → 基地）；项目级聚合与外部智能体 / 载体 / 主机 / 会话 / 下一动作维度待后端聚合端点部署后接通。"}
       </p>
     </section>
   );
