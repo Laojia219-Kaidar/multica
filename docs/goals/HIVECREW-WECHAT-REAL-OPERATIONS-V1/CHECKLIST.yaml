@@ -102,14 +102,22 @@ p0_gates:
     evidence_refs: [EV-WO00-CORRECTION]
   - id: P0-GATE-04
     name: isolated_candidate_store_formal_authority_proof
-    status: frozen_read_only_contract_decision
+    status: proven
     statement: >
       Candidate store vs formal HiveCosm Artifact/Outcome authority isolation is UNKNOWN in WO-00. The
       candidate DB artifact_replica_location ledger and artifact_candidate rows must be proven isolated
       from formal authority before any promotion claim. Marked READ_ONLY / contract-decision required;
       WO-00 authorizes no promotion and no formal authority write.
+      WO-15 resolution: PROVEN_ISOLATED over current code paths and observed candidate config (single
+      DATABASE_URL entry main.go:216, only two pools dbstats.go:83,222; candidate .env.worktree binds
+      multica_hivecrew_operations_workflow_v2_512 and defines no HIVECOSM_* variable so promotion is
+      fail-closed 503; the only formal-authority write is one POST to HIVECOSM_AUTHORITY_BASE_URL which
+      is constructor-configurable to a loopback fake). Canary-time assertions 2/3/4/6/8 are deferred to
+      WO-50; open risks (default-DSN fallback, no code guard on authority URL, shared-instance
+      isolation, engine-3104 inference, CWD-sensitive object store) are recorded and must be handled in
+      the WO-50 runbook.
     verifier: candidate_formal_authority_isolation_proof
-    evidence_refs: [EV-WO00-CORRECTION]
+    evidence_refs: [EV-WO00-CORRECTION, EV-ISOLATION]
 mutex_and_reservation:
   exact_file_dir_mutex_only: true
   uncertain_surfaces: READ_ONLY_or_contract_decision_required
@@ -171,8 +179,8 @@ work_orders:
       note: contract freeze only; this is NOT business-slice completion.
   - id: WO-15
     phase_ref: PHASE-2
-    status: ready
-    stage: ready
+    status: completed
+    stage: proof_recorded
     required: true
     worker_role: integrator
     read_scope: [server/internal/companyops/hivecosm_formal_artifact_client.go, server/internal/companyops/artifact_lifecycle.go, server/internal/companyops/artifact_materializer.go, server/internal/companyops/artifact_persistence.go, server/internal/companyops/artifact_runtime_repository.go, server/internal/companyops/artifact_storage.go, server/internal/service/companyops_artifact_outcome.go, server/internal/service/companyops_outcome_center.go, server/pkg/db/queries/companyops_artifact.sql, loopback candidate config and effective endpoints]
@@ -184,6 +192,7 @@ work_orders:
     acceptance: [executable_assertions_over_current_code_paths, no_promotion_until_proven]
     verification: [candidate_formal_authority_isolation_proof]
     p0_gate_ref: P0-GATE-04
+    evidence_refs: [EV-ISOLATION]
   - id: WO-20
     phase_ref: PHASE-2
     status: ready
@@ -268,6 +277,7 @@ evidence:
   - {id: EV-WO00-CORRECTION, kind: readback, source: wo00_correction_code_path_verification, method: exact_source_function_and_unknown_verification, observed_at: "2026-08-15T07:26:48Z", revision: 62e6cf517f9c45123d0c792e20710184da994dcb, result: recorded, path: docs/goals/HIVECREW-WECHAT-REAL-OPERATIONS-V1/WO-00-CORRECTION.md}
   - {id: EV-WO00-ACCEPTANCE, kind: readback, source: coordinator_independent_acceptance_verification, method: formal_goal_present_yaml_parse_all_p0_text_git_diff_v2_untouched_diary_marker, observed_at: "2026-08-15T07:39:23Z", revision: 62e6cf517f9c45123d0c792e20710184da994dcb, result: passed, path: docs/goals/HIVECREW-WECHAT-REAL-OPERATIONS-V1/WO-00-COORDINATOR-ACCEPTANCE.md}
   - {id: EV-CONTRACT, kind: test, source: core_and_go_tests, method: strict_contract_and_failure_tests_plus_independent_readonly_review, observed_at: "2026-08-15T09:30:00Z", revision: 62e6cf517f9c45123d0c792e20710184da994dcb, result: passed, path: docs/goals/HIVECREW-WECHAT-REAL-OPERATIONS-V1/evidence/WO-10R-CONTRACT-EVIDENCE.md, note: vitest 44/44, tsc clean, gofmt clean, go vet clean, go test ok; independent review round 1 NEEDS_REPAIR (Go offset range), repaired, round 2 PASS}
+  - {id: EV-ISOLATION, kind: readback, source: wo15_candidate_isolation_proof, method: readonly_code_path_research_plus_executable_assertions, observed_at: "2026-08-15T10:05:00Z", revision: 62e6cf517f9c45123d0c792e20710184da994dcb, result: passed, path: docs/goals/HIVECREW-WECHAT-REAL-OPERATIONS-V1/evidence/WO-15-CANDIDATE-ISOLATION-PROOF.md, note: "verdict PROVEN_ISOLATED; assertions 1/5/7 executed and passed (single DSN entry, authority client tests, nil-authority fail-closed); assertions 2/3/4/6/8 deferred to WO-50 canary; open risks recorded (default-DSN fallback, authority URL config discipline, shared-instance isolation, engine-3104 inference, CWD-sensitive object store)"}
   - {id: EV-UI, kind: browser, source: candidate_browser, method: owner_operating_journey, observed_at: null, revision: null, result: pending, path: null}
   - {id: EV-EXECUTION, kind: readback, source: existing_task_run_authority, method: task_run_and_output_cross_readback, observed_at: null, revision: null, result: pending, path: null}
   - {id: EV-OUTCOME, kind: readback, source: existing_outcome_center, method: artifact_lineage_and_formal_outcome_cross_readback, observed_at: null, revision: null, result: pending, path: null}
@@ -301,20 +311,20 @@ edges:
 runtime:
   current_phase_ref: PHASE-2
   current_wave_id: WO-15-20-30-40A_PARALLEL
-  frontier: {ready: [WO-15, WO-20, WO-30, WO-40], running: [], waiting: [], blocked: [], join_ref: null}
+  frontier: {ready: [WO-20, WO-30, WO-40], running: [], waiting: [], blocked: [], join_ref: null}
   critical_path: [WO-00, WO-10, WO-30, WO-40, WO-50, WO-60]
-  refreshed_at: "2026-08-15T09:45:00Z"
-  graph_hash: wo10r_verified_frontier_expanded
+  refreshed_at: "2026-08-15T10:05:00Z"
+  graph_hash: wo10r_verified_gate04_proven
 resume_package:
   goal_version: 1
   current_controller: executor
   current_phase: PHASE-2
-  ready_nodes: [WO-15, WO-20, WO-30, WO-40]
+  ready_nodes: [WO-20, WO-30, WO-40]
   running_nodes: []
   blocked_nodes: []
   waiting_nodes: []
-  evidence_index: [EV-WO00-AUDIT, EV-WO00-CORRECTION, EV-WO00-ACCEPTANCE, EV-CONTRACT]
+  evidence_index: [EV-WO00-AUDIT, EV-WO00-CORRECTION, EV-WO00-ACCEPTANCE, EV-CONTRACT, EV-ISOLATION]
   latest_review_ref: REVIEW-WO10R
   latest_journal_ref: JOURNAL-P1
-  dirty_boundaries: [apps/web/next-env.d.ts, packages/views/workflow/workflow-designer.tsx, packages/views/workflow/workflow-designer.test.tsx, packages/core/workflow/content-node-contract.ts, packages/core/workflow/content-node-contract.test.ts, packages/core/workflow/index.ts, packages/core/api/workflow.ts, server/internal/workflow/types.go, server/internal/workflow/wechat_content_contract_decode.go, server/internal/workflow/wechat_content_contract_test.go, docs/goals/HIVECREW-WECHAT-REAL-OPERATIONS-V1]
-  next_action: Run WO-15 (candidate storage isolation proof, read-only), WO-20 (operations UI), WO-30 (Task/Run execution bridge), and WO-40A (artifact/outcome candidate code, promotion held) in parallel. WO-40B and WO-50 stay held until P0-GATE-04 is proven by WO-15. JOIN-1 unified verification follows; then WO-50 canary and WO-60 closure.
+  dirty_boundaries: [apps/web/next-env.d.ts, packages/views/workflow/workflow-designer.tsx, packages/views/workflow/workflow-designer.test.tsx, docs/goals/HIVECREW-WECHAT-REAL-OPERATIONS-V1]
+  next_action: Run WO-20 (operations UI), WO-30 (Task/Run execution bridge), and WO-40A (artifact/outcome candidate code, promotion held until JOIN-1) in parallel. P0-GATE-04 is proven (EV-ISOLATION); WO-40B promotion and WO-50 canary still require JOIN-1 plus the deferred canary-time isolation assertions 2/3/4/6/8 from the WO-15 proof.
