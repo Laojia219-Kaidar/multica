@@ -70,11 +70,15 @@ func FormatWorkRef(workspaceID, projectID, issueID, taskID string) string {
 // DedupeKey builds the frozen dedupe key. Priority follows API-AND-ADAPTER-
 // CONTRACT §3: a Goal/WorkOrder ref wins; otherwise repo+revision+branch/worktree
 // is the selector. workspace_id is always the tenant scope.
-func DedupeKey(workspaceID, goalRef, repo, revision, branchOrWorktree string) string {
+func DedupeKey(workspaceID, actorID, goalRef, repo, revision, branchOrWorktree string) string {
+	// The key is actor-scoped so two different actors working the same Goal can
+	// each register (and resolve/continue onto the same project) without
+	// colliding on the receipt idempotency anchor (VC-08 multi-actor, VC-03
+	// same-actor exact replay).
 	goal := strings.TrimSpace(goalRef)
 	if goal != "" {
-		return "goal:" + workspaceID + ":" + goal
+		return "goal:" + workspaceID + ":" + strings.TrimSpace(actorID) + ":" + goal
 	}
-	return "repo:" + workspaceID + ":" + strings.TrimSpace(repo) + ":" +
-		strings.TrimSpace(revision) + ":" + strings.TrimSpace(branchOrWorktree)
+	return "repo:" + workspaceID + ":" + strings.TrimSpace(actorID) + ":" +
+		strings.TrimSpace(repo) + ":" + strings.TrimSpace(revision) + ":" + strings.TrimSpace(branchOrWorktree)
 }

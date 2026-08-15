@@ -62,7 +62,7 @@ func (s *Service) Register(ctx context.Context, req RegisterRequest) (WorkRegist
 		return WorkRegistrationReceiptV1{}, invalid(err)
 	}
 	ws := req.Actor.WorkspaceID
-	key := DedupeKey(ws, req.Intent.GoalRef, req.Intent.Repo, req.Intent.BaselineRevision, req.Intent.BranchOrWorktree)
+	key := DedupeKey(ws, req.Actor.ActorID, req.Intent.GoalRef, req.Intent.Repo, req.Intent.BaselineRevision, req.Intent.BranchOrWorktree)
 	digest, err := ReceiptDigest(req.Actor, req.Intent)
 	if err != nil {
 		return WorkRegistrationReceiptV1{}, err
@@ -252,7 +252,7 @@ func (s *Service) resolveInternal(ctx context.Context, req ResolveRequest) (Reso
 	if err != nil {
 		return ResolveResult{}, err
 	}
-	key := DedupeKey(req.Actor.WorkspaceID, req.Intent.GoalRef, req.Intent.Repo, req.Intent.BaselineRevision, req.Intent.BranchOrWorktree)
+	key := DedupeKey(req.Actor.WorkspaceID, req.Actor.ActorID, req.Intent.GoalRef, req.Intent.Repo, req.Intent.BaselineRevision, req.Intent.BranchOrWorktree)
 	return s.resolve(ctx, req, key, digest)
 }
 

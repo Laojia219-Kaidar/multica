@@ -338,7 +338,7 @@ func TestReplayReturnsOriginalReceipt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("register: %v", err)
 	}
-	key := DedupeKey(actor.WorkspaceID, intent.GoalRef, intent.Repo, intent.BaselineRevision, intent.BranchOrWorktree)
+	key := DedupeKey(actor.WorkspaceID, actor.ActorID, intent.GoalRef, intent.Repo, intent.BaselineRevision, intent.BranchOrWorktree)
 	replay, err := svc.Replay(ctx, ReplayRequest{WorkspaceID: actor.WorkspaceID, IdempotencyKey: key})
 	if err != nil {
 		t.Fatalf("replay: %v", err)

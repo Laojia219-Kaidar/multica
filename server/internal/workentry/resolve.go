@@ -67,7 +67,7 @@ func (s *Service) ResolvePreview(ctx context.Context, req ResolveRequest) (Resol
 	if err != nil {
 		return ResolveResult{}, err
 	}
-	key := DedupeKey(req.Actor.WorkspaceID, req.Intent.GoalRef, req.Intent.Repo, req.Intent.BaselineRevision, req.Intent.BranchOrWorktree)
+	key := DedupeKey(req.Actor.WorkspaceID, req.Actor.ActorID, req.Intent.GoalRef, req.Intent.Repo, req.Intent.BaselineRevision, req.Intent.BranchOrWorktree)
 	return s.resolve(ctx, req, key, digest)
 }
 
@@ -90,11 +90,18 @@ func (s *Service) resolve(ctx context.Context, req ResolveRequest, key, digest s
 			return ResolveResult{}, err
 		}
 		if link != nil {
+			projectID := ""
+			if link.IssueID != "" {
+				if issue, err := s.store.LookupIssue(ctx, ws, link.IssueID); err == nil && issue != nil {
+					projectID = issue.ProjectID
+				}
+			}
 			result.ResolutionDecision = DecisionContinued
 			result.Matches = append(result.Matches, Match{
-				Kind: MatchWorkOrder, Key: link.WorkOrderRef,
-				WorkRef: FormatWorkRef(link.WorkspaceID, "", link.IssueID, ""),
-				IssueID: link.IssueID,
+				Kind:      MatchWorkOrder, Key: link.WorkOrderRef,
+				WorkRef:   FormatWorkRef(link.WorkspaceID, projectID, link.IssueID, ""),
+				ProjectID: projectID,
+				IssueID:   link.IssueID,
 			})
 			return result, nil
 		}
