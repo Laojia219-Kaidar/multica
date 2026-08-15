@@ -51,6 +51,75 @@ func validDispatchResponseAt(now time.Time) DispatchAuthorizationResponse {
 	return r
 }
 
+func validDirectProjectDispatchResponseAt(now time.Time) DispatchAuthorizationResponse {
+	r := validDispatchResponseAt(now)
+	e := r.Evidence
+	if e == nil {
+		panic("valid response has no evidence")
+	}
+	observed := e.Scope.ObservedAt
+	generated := *e.Scope.SourceGeneratedAt
+	expires := *e.Scope.ExpiresAt
+	eventID, recoveryID := "direct-event-1", "direct-recovery-1"
+	eventRef := "hive://hivecosm/direct-dispatch-authorizations/" + eventID
+	recoveryRef := "hive://hivecosm/direct-dispatch-authorizations/" + recoveryID
+	eventRevision, recoveryRevision := "revision:direct-event-1", "revision:direct-recovery-1"
+	e.Scope.AuthorizationKind = ptr("direct_project")
+	e.Scope.WorkflowID, e.Scope.GoalID = nil, nil
+	e.Scope.SourceRef, e.Scope.SourceRevision = ptr(eventRef), ptr(eventRevision)
+	e.IssueLinkage.SourceRef, e.IssueLinkage.SourceRevision = ptr(eventRef), ptr(eventRevision)
+	e.WorkOrder.SourceRevision = ptr(eventRevision)
+	e.Assignment.SourceRef, e.Assignment.SourceRevision = ptr(eventRef), ptr(eventRevision)
+	e.IdentityBinding.SourceRef, e.IdentityBinding.SourceRevision = ptr(eventRef), ptr(eventRevision)
+	e.Custody.SourceRef, e.Custody.SourceRevision = ptr(eventRef), ptr(eventRevision)
+	e.ContinuousWorkflowAuthorization = dispatchWorkflowEvidence{State: "SOURCE_UNAVAILABLE", Freshness: "unknown", ObservedAt: observed}
+	e.WorkflowAuthority = dispatchAuthorityEvidenceRecord{State: "SOURCE_UNAVAILABLE", Freshness: "unknown", ObservedAt: observed}
+	e.GoalAuthority = dispatchAuthorityEvidenceRecord{State: "SOURCE_UNAVAILABLE", Freshness: "unknown", ObservedAt: observed}
+	e.DirectProjectAuthorization = DispatchDirectProjectAuthorizationEvidence{State: "OBSERVED", Records: []DispatchDirectProjectAuthorizationRecord{
+		{DispatchScope: "event_reconcile", DirectDispatchAuthorizationID: eventID, OwnerDecisionRef: "hive://owner-decisions/direct-event", ProjectID: *e.IssueLinkage.ProjectID, WorkOrderID: *e.Scope.WorkOrderID, IssueID: *e.IssueLinkage.IssueID, WorkspaceID: *e.Scope.WorkspaceID, SourceRef: eventRef, SourceRevision: eventRevision, ObservedAt: observed, SourceGeneratedAt: generated, Freshness: "current", ExpiresAt: expires},
+		{DispatchScope: "recovery_only", DirectDispatchAuthorizationID: recoveryID, OwnerDecisionRef: "hive://owner-decisions/direct-recovery", ProjectID: *e.IssueLinkage.ProjectID, WorkOrderID: *e.Scope.WorkOrderID, IssueID: *e.IssueLinkage.IssueID, WorkspaceID: *e.Scope.WorkspaceID, SourceRef: recoveryRef, SourceRevision: recoveryRevision, ObservedAt: observed, SourceGeneratedAt: generated, Freshness: "current", ExpiresAt: expires},
+	}}
+	r.Scope, r.IssueLinkage = e.Scope, e.IssueLinkage
+	eventRecord, _ := directProjectAuthorizationRecord(*e, "event_reconcile")
+	recoveryRecord, _ := directProjectAuthorizationRecord(*e, "recovery_only")
+	r.Authorization.EventReconcile = DispatchAuthorizationDecision{Eligible: true, Reason: "eligible:all_required_direct_project_authority_evidence_current", SourceRefs: expectedDirectProjectDecisionSourceRefs(*e, eventRecord), SourceRevisions: expectedDirectProjectDecisionSourceRevisions(*e, eventRecord), ObservedAt: observed, Freshness: "current", ExpiresAt: ptr(expires)}
+	r.Authorization.RecoveryOnly = DispatchAuthorizationDecision{Eligible: true, Reason: "eligible:all_required_direct_project_authority_evidence_current", SourceRefs: expectedDirectProjectDecisionSourceRefs(*e, recoveryRecord), SourceRevisions: expectedDirectProjectDecisionSourceRevisions(*e, recoveryRecord), ObservedAt: observed, Freshness: "current", ExpiresAt: ptr(expires)}
+	return r
+}
+
+func TestDispatchAuthorizationClientConsumesExactDirectProjectAuthorityRead(t *testing.T) {
+	now := time.Date(2026, 8, 15, 3, 0, 0, 0, time.UTC)
+	r := validDirectProjectDispatchResponseAt(now)
+	if err := ValidateDispatchAuthorizationResponseAt(r, testLookup(), now); err != nil {
+		t.Fatalf("valid explicit direct project authority response rejected: %v", err)
+	}
+	for _, tt := range []struct {
+		name   string
+		mutate func(*DispatchAuthorizationResponse)
+	}{
+		{"missing recovery authorization", func(r *DispatchAuthorizationResponse) {
+			r.Evidence.DirectProjectAuthorization.Records = r.Evidence.DirectProjectAuthorization.Records[:1]
+		}},
+		{"duplicate direct authorization scope", func(r *DispatchAuthorizationResponse) {
+			r.Evidence.DirectProjectAuthorization.Records[1].DispatchScope = "event_reconcile"
+		}},
+		{"direct authorization issue drift", func(r *DispatchAuthorizationResponse) {
+			r.Evidence.DirectProjectAuthorization.Records[0].IssueID = "01972f7e-7e8d-77ef-a13d-1b0ce3e9c099"
+		}},
+		{"direct authorization provenance drift", func(r *DispatchAuthorizationResponse) {
+			r.Authorization.EventReconcile.SourceRefs = []string{"hive://hivecosm/direct-dispatch-authorizations/direct-event-1"}
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			mutated := validDirectProjectDispatchResponseAt(now)
+			tt.mutate(&mutated)
+			if err := ValidateDispatchAuthorizationResponseAt(mutated, testLookup(), now); err == nil {
+				t.Fatal("accepted invalid direct project authority response")
+			}
+		})
+	}
+}
+
 func TestDispatchAuthorizationClientConsumesExactAuthorityRead(t *testing.T) {
 	lookup := testLookup()
 	valid := validDispatchResponse()
