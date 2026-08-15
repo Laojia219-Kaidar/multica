@@ -457,15 +457,29 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	if continuousDispatchErr != nil {
 		slog.Warn("continuous dispatch writer disabled", "error", continuousDispatchErr)
 	} else {
+		continuousDispatchDispatcher := service.NewContinuousDispatchService(continuousDispatchBackend)
 		continuousDispatchTrigger := service.NewContinuousDispatchTriggerService(
 			continuousDispatchShadow,
-			service.NewContinuousDispatchService(continuousDispatchBackend),
+			continuousDispatchDispatcher,
 		)
 		// Review dispatches are a formal Authority boundary. Keep the gate enabled
 		// even before the canonical Authority identity provider is installed: an
 		// incomplete runtime configuration must yield source_gap before any review
-		// Task or receipt write, never fall back to local inference.
-		continuousDispatchTrigger = continuousDispatchTrigger.WithAuthorityReviewDispatchGate(nil, nil)
+		// Task or receipt write, never fall back to local inference. The only
+		// interim exception is William's Option C decision (2026-08-15): a fully
+		// env-configured, TTL-bounded, single-issue server-only canary provider
+		// may satisfy the identity seam until the Authority by-issue reverse
+		// lookup (Option A) replaces it.
+		reviewCanaryProvider := reviewCanaryIdentityProviderFromEnv(time.Now)
+		if reviewCanaryProvider != nil && h.CompanyOpsDispatchAuthorization != nil {
+			continuousDispatchTrigger = continuousDispatchTrigger.WithAuthorityReviewDispatchGate(
+				service.NewAuthorityReviewDispatchGate(h.CompanyOpsDispatchAuthorization, continuousDispatchDispatcher),
+				reviewCanaryProvider,
+			)
+			slog.Warn("companyops review canary identity provider enabled", "expires_at", reviewCanaryProvider.expiresAt.Format(time.RFC3339))
+		} else {
+			continuousDispatchTrigger = continuousDispatchTrigger.WithAuthorityReviewDispatchGate(nil, nil)
+		}
 		h.ContinuousDispatchTrigger = continuousDispatchTrigger
 		h.ReviewDispatch = service.NewReviewDispatchBatchService(
 			continuousDispatchShadow,
