@@ -55,6 +55,12 @@ func NewPGStore(queries *db.Queries, pool *pgxpool.Pool) *PGStore {
 
 func (p *PGStore) uuid(s string) (pgtype.UUID, error) { return util.ParseUUID(s) }
 
+// escapeLike escapes LIKE wildcards so a caller-supplied query is matched
+// literally (F10). PostgreSQL's default LIKE escape character is backslash.
+func escapeLike(s string) string {
+	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(s)
+}
+
 func (p *PGStore) LookupWorkOrder(ctx context.Context, workspaceID, workOrderRef string) (*ExternalWorkOrderLink, error) {
 	ws, err := p.uuid(workspaceID)
 	if err != nil {
@@ -181,7 +187,7 @@ func (p *PGStore) SearchSimilar(ctx context.Context, workspaceID, query string, 
 	if limit <= 0 {
 		limit = 5
 	}
-	pattern := "%" + strings.ToLower(q) + "%"
+	pattern := "%" + escapeLike(strings.ToLower(q)) + "%"
 	var out []SimilarMatch
 	appendRows := func(rows pgx.Rows, kind string) error {
 		defer rows.Close()
