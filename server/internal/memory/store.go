@@ -75,6 +75,21 @@ func (s *Store) ValidateCandidate(id string) (MemoryCandidate, error) {
 	return *c, nil
 }
 
+// RejectCandidate moves a pending candidate to rejected (batch 27B review
+// path). Idempotent; returns the updated candidate.
+func (s *Store) RejectCandidate(id string) (MemoryCandidate, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, ok := s.candidates[id]
+	if !ok {
+		return MemoryCandidate{}, ErrCandidateNotFound
+	}
+	if c.Status == StatusPending {
+		c.Status = StatusRejected
+	}
+	return *c, nil
+}
+
 // Promote records a promotion proposal receipt. The reviewer must be
 // independent (never the author), and the candidate must be validated.
 // Approved -> promoted; rejected -> rejected. This is a PROPOSAL, not a write

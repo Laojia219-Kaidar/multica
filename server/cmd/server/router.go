@@ -1530,6 +1530,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			// Employee memory candidate layer (Slice-M1) + workflow kernel (Slice-W1/W2)
 			r.Post("/api/memory/candidates", h.CreateMemoryCandidate)
 			r.Get("/api/memory/candidates", h.ListMemoryCandidates)
+			r.Post("/api/memory/candidates/validate-batch", h.ValidateMemoryCandidatesBatch)
 			r.Post("/api/memory/candidates/{id}/validate", h.ValidateMemoryCandidate)
 			r.Post("/api/memory/candidates/{id}/promote", h.PromoteMemoryCandidate)
 			r.Post("/api/memory/candidates/{id}/revoke", h.RevokeMemoryCandidate)
