@@ -3,7 +3,6 @@ package service
 import (
 	"testing"
 
-	"github.com/multica-ai/multica/server/internal/util"
 
 	"github.com/jackc/pgx/v5/pgtype"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -60,13 +59,7 @@ func TestValidateProjectControl_ContinueOk(t *testing.T) {
 	}
 }
 
-func mustUUID(t *testing.T, s string) pgtype.UUID {
-	u, err := util.ParseUUID(s)
-	if err != nil {
-		t.Fatalf("parse uuid: %v", err)
-	}
-	return u
-}
+// mustUUID is defined in project_autostart_unit_test.go.
 
 func validateProjectControlAt(proj db.Project, action ControlAction, seed map[string]string) []string {
 	orig := frozenSupersessions
