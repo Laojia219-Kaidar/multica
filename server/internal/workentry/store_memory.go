@@ -24,6 +24,7 @@ type MemoryStore struct {
 	repoMatchesMap map[string]RepoMatch          // workspaceID + "\x00" + repo + "\x00" + revision + "\x00" + branch
 	campaigns      map[string]*CampaignMatch     // workspaceID + "\x00" + upper(campaignRef)
 	repoRefs       []RepoRef                     // repo ownership refs for inventory
+	projectLeads   []ProjectLead                 // project owner/lead projections for steward
 	seq        int64
 }
 
@@ -41,6 +42,7 @@ func NewMemoryStore() *MemoryStore {
 		repoMatchesMap: make(map[string]RepoMatch),
 		campaigns:      make(map[string]*CampaignMatch),
 		repoRefs:       []RepoRef{},
+		projectLeads:   []ProjectLead{},
 	}
 }
 
@@ -379,6 +381,34 @@ func (m *MemoryStore) InventorySnapshot(_ context.Context, workspaceID string) (
 		}
 	}
 	return snap, nil
+}
+
+// SeedLead seeds a project owner/lead projection for steward diagnostics.
+func (m *MemoryStore) SeedLead(l ProjectLead) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.projectLeads = append(m.projectLeads, l)
+}
+
+// StewardSnapshot implements stewardSource (read-only).
+func (m *MemoryStore) StewardSnapshot(ctx context.Context, workspaceID string) (*StewardSnapshot, error) {
+	inv, err := m.InventorySnapshot(ctx, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var leads []ProjectLead
+	for _, l := range m.projectLeads {
+		// projectLeads is not keyed by workspace; filter by project membership in snapshot.
+		for _, p := range inv.Projects {
+			if l.ProjectID == p.ID {
+				leads = append(leads, l)
+				break
+			}
+		}
+	}
+	return &StewardSnapshot{InventorySnapshot: *inv, ProjectLeads: leads}, nil
 }
 
 // SeedRepoMatch seeds a step-3 repo+revision+branch exact match for tests.

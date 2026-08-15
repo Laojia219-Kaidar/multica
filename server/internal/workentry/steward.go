@@ -1,0 +1,159 @@
+package workentry
+
+import (
+	"context"
+	"sort"
+	"strconv"
+	"strings"
+)
+
+// Project Steward read-only diagnostics (VC-10): no-owner / no-next-action /
+// orphan / duplicate detection over the same projection snapshot used by the
+// Portfolio Reconciler. Pure computation; never writes, never fabricates.
+
+// ProjectLead is the owner/lead projection for one project (project.lead_type /
+// lead_id in the existing schema).
+type ProjectLead struct {
+	ProjectID string `json:"project_id"`
+	LeadType  string `json:"lead_type,omitempty"`
+	LeadID    string `json:"lead_id,omitempty"`
+}
+
+// StewardSnapshot extends InventorySnapshot with project lead ownership.
+type StewardSnapshot struct {
+	InventorySnapshot
+	ProjectLeads []ProjectLead `json:"project_leads"`
+}
+
+// StewardDiagnosticKind is the closed set of portfolio/steward findings.
+type StewardDiagnosticKind string
+
+const (
+	StewardNoOwner       StewardDiagnosticKind = "no_owner"
+	StewardNoNextAction  StewardDiagnosticKind = "no_next_action"
+	StewardOrphan        StewardDiagnosticKind = "orphan"
+	StewardDuplicate     StewardDiagnosticKind = "duplicate"
+	StewardStale         StewardDiagnosticKind = "stale"
+	StewardOrphanCandidate StewardDiagnosticKind = "orphan_candidate"
+	StewardMissingReview StewardDiagnosticKind = "missing_review"
+)
+
+// StewardDiagnostic is one bounded, evidence-backed finding.
+type StewardDiagnostic struct {
+	WorkspaceID string                 `json:"workspace_id"`
+	Kind        StewardDiagnosticKind  `json:"kind"`
+	RefKind     string                 `json:"ref_kind"` // project | issue
+	RefID       string                 `json:"ref_id"`
+	Title       string                 `json:"title"`
+	Detail      string                 `json:"detail,omitempty"`
+}
+
+// closedIssueStatus marks an issue that no longer counts as an open next action.
+func closedIssueStatus(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "done", "cancelled", "canceled", "closed", "archived":
+		return true
+	default:
+		return false
+	}
+}
+
+// stewardSource is the optional read-only Store capability backing
+// Service.StewardDiagnostics. Stores without it return ErrUnavailable.
+type stewardSource interface {
+	StewardSnapshot(ctx context.Context, workspaceID string) (*StewardSnapshot, error)
+}
+
+// StewardDiagnostics computes the VC-10 portfolio diagnostics (read-only).
+func (s *Service) StewardDiagnostics(ctx context.Context, workspaceID string) ([]StewardDiagnostic, error) {
+	if s == nil || s.store == nil {
+		return nil, ErrUnavailable
+	}
+	if strings.TrimSpace(workspaceID) == "" {
+		return nil, ErrInvalidRequest
+	}
+	src, ok := s.store.(stewardSource)
+	if !ok {
+		return nil, ErrUnavailable
+	}
+	snap, err := src.StewardSnapshot(ctx, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	return ComputeSteward(workspaceID, snap), nil
+}
+
+// ComputeSteward is the pure VC-10 diagnostic computation over a snapshot.
+func ComputeSteward(workspaceID string, snap *StewardSnapshot) []StewardDiagnostic {
+	out := []StewardDiagnostic{}
+	if snap == nil {
+		return out
+	}
+
+	leadByProject := map[string]ProjectLead{}
+	for _, l := range snap.ProjectLeads {
+		leadByProject[l.ProjectID] = l
+	}
+	openIssueByProject := map[string]bool{}
+	for _, i := range snap.Issues {
+		if i.ProjectID != "" && !closedIssueStatus(i.Status) {
+			openIssueByProject[i.ProjectID] = true
+		}
+	}
+	linkedIssues := map[string]bool{}
+	linkedProjects := map[string]bool{}
+	for _, l := range snap.Links {
+		if l.IssueID != "" {
+			linkedIssues[l.IssueID] = true
+		}
+	}
+	for _, i := range snap.Issues {
+		if linkedIssues[i.ID] && i.ProjectID != "" {
+			linkedProjects[i.ProjectID] = true
+		}
+	}
+
+	for _, p := range snap.Projects {
+		lead, hasLead := leadByProject[p.ID]
+		if !hasLead || strings.TrimSpace(lead.LeadID) == "" {
+			out = append(out, StewardDiagnostic{
+				WorkspaceID: workspaceID, Kind: StewardNoOwner, RefKind: "project",
+				RefID: p.ID, Title: p.Title, Detail: "project has no accountable owner/lead",
+			})
+		}
+		if !openIssueByProject[p.ID] {
+			out = append(out, StewardDiagnostic{
+				WorkspaceID: workspaceID, Kind: StewardNoNextAction, RefKind: "project",
+				RefID: p.ID, Title: p.Title, Detail: "project has no open issue/task as next action",
+			})
+		}
+		if !linkedProjects[p.ID] {
+			out = append(out, StewardDiagnostic{
+				WorkspaceID: workspaceID, Kind: StewardOrphan, RefKind: "project",
+				RefID: p.ID, Title: p.Title, Detail: "project has no active Goal/work-order ownership link",
+			})
+		}
+	}
+
+	// Duplicate findings reuse the inventory computation.
+	inv := ComputeInventory(workspaceID, &snap.InventorySnapshot)
+	for _, d := range inv.Duplicates {
+		out = append(out, StewardDiagnostic{
+			WorkspaceID: workspaceID, Kind: StewardDuplicate, RefKind: d.Kind,
+			RefID: d.RefA, Title: d.TitleA,
+			Detail: "duplicate of " + d.RefB + " (" + d.TitleB + "), similarity " + trimFloat(d.Similarity),
+		})
+	}
+
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Kind != out[j].Kind {
+			return out[i].Kind < out[j].Kind
+		}
+		return out[i].RefID < out[j].RefID
+	})
+	return out
+}
+
+func trimFloat(f float64) string {
+	return strconv.FormatFloat(f, 'f', 2, 64)
+}
