@@ -56,6 +56,7 @@ export type NavLabelKey =
   | "autopilots"
   | "agents"
   | "squads"
+  | "bases"
   | "usage"
   | "runtimes"
   | "skills"
@@ -73,6 +74,7 @@ export type WorkspacePageKey =
   | "autopilots"
   | "agents"
   | "squads"
+  | "bases"
   | "usage"
   | "runtimes"
   | "skills"
@@ -102,6 +104,7 @@ export const WORKSPACE_PAGES: Record<WorkspacePageKey, WorkspacePage> = {
   autopilots: { segment: "autopilots", icon: "Zap", navKey: "autopilots" },
   agents: { segment: "agents", icon: "Bot", navKey: "agents" },
   squads: { segment: "squads", icon: "Users", navKey: "squads" },
+  bases: { segment: "bases", icon: "Server", navKey: "bases" },
   usage: { segment: "usage", icon: "BarChart3", navKey: "usage" },
   runtimes: { segment: "runtimes", icon: "Monitor", navKey: "runtimes" },
   skills: { segment: "skills", icon: "BookOpenText", navKey: "skills" },

@@ -33,6 +33,7 @@ describe("diagnostic route", () => {
 describe("bucketDiagnosticPath", () => {
   it("replaces the workspace slug", () => {
     expect(bucketDiagnosticPath("/acme/issues")).toBe("/:slug/issues");
+    expect(bucketDiagnosticPath("/acme/bases")).toBe("/:slug/bases");
   });
 
   it("templates every workspace detail route", () => {
