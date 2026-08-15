@@ -34,6 +34,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/storage"
 	"github.com/multica-ai/multica/server/internal/util"
 	"github.com/multica-ai/multica/server/internal/util/secretbox"
+	"github.com/multica-ai/multica/server/internal/workentry"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/featureflag"
 	"github.com/multica-ai/multica/server/pkg/llm"
@@ -202,6 +203,9 @@ type Handler struct {
 		pgtype.UUID,
 		companyops.AuthoritySnapshot,
 	) (db.Issue, error)
+	// WorkEntry is the Universal Work Registration Kernel service. Nil when not
+	// wired; the /api/work/* routes fail closed with 503 in that state.
+	WorkEntry            *workentry.Service
 	AutopilotService      *service.AutopilotService
 	EmailService          *service.EmailService
 	UpdateStore           UpdateStore

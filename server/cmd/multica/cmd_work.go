@@ -1,0 +1,557 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"os"
+
+	"github.com/spf13/cobra"
+
+	"github.com/multica-ai/multica/server/internal/cli"
+	"github.com/multica-ai/multica/server/internal/workentry"
+)
+
+// ---------------------------------------------------------------------------
+// multica work — Universal Work Registration Kernel (offline candidate ledger)
+//
+// Every subcommand runs against an in-memory MemoryStore; the optional
+// --state file persists the ledger so resolve → register → status can be
+// exercised across invocations without a live database. This slice is the
+// reuse-only first cut: no migration, no PostgreSQL writes.
+// ---------------------------------------------------------------------------
+
+var workCmd = &cobra.Command{
+	Use:   "work",
+	Short: "Register and track work entries (resolve/start/status/heartbeat/event/handoff/finish/sync/doctor)",
+}
+
+var workResolveCmd = &cobra.Command{
+	Use:   "resolve",
+	Short: "Resolve ownership and dedupe disposition (read-only)",
+	RunE:  runWorkResolve,
+}
+
+var workRegisterCmd = &cobra.Command{
+	Use:   "register",
+	Short: "Register work and return a work_ref (idempotent)",
+	RunE:  runWorkRegister,
+}
+
+var workStartCmd = &cobra.Command{
+	Use:   "start <work_ref>",
+	Short: "Mark execution start for a work_ref (appends a started event)",
+	Args:  exactArgs(1),
+	RunE:  runWorkStart,
+}
+
+var workStatusCmd = &cobra.Command{
+	Use:   "status <work_ref>",
+	Short: "Read the current status for a work_ref",
+	Args:  exactArgs(1),
+	RunE:  runWorkStatus,
+}
+
+var workHeartbeatCmd = &cobra.Command{
+	Use:   "heartbeat",
+	Short: "Report terminal/presence heartbeat",
+	RunE:  runWorkHeartbeat,
+}
+
+var workEventCmd = &cobra.Command{
+	Use:   "event",
+	Short: "Append a structured work event",
+	RunE:  runWorkEvent,
+}
+
+var workHandoffCmd = &cobra.Command{
+	Use:   "handoff",
+	Short: "Submit a candidate handoff package",
+	RunE:  runWorkHandoff,
+}
+
+var workFinishCmd = &cobra.Command{
+	Use:   "finish",
+	Short: "Submit a completion candidate for independent review",
+	RunE:  runWorkFinish,
+}
+
+var workSyncCmd = &cobra.Command{
+	Use:   "sync",
+	Short: "Replay an ordered offline spool (idempotent)",
+	RunE:  runWorkSync,
+}
+
+var workDoctorCmd = &cobra.Command{
+	Use:   "doctor",
+	Short: "Diagnose the unclaimed inbox (list/attach/ignore)",
+	RunE:  runWorkDoctor,
+}
+
+var workDoctorAttachCmd = &cobra.Command{
+	Use:   "attach",
+	Short: "Attach an unclaimed inbox entry to a project/issue",
+	RunE:  runWorkDoctorAttach,
+}
+
+var workDoctorIgnoreCmd = &cobra.Command{
+	Use:   "ignore",
+	Short: "Ignore an unclaimed inbox entry",
+	RunE:  runWorkDoctorIgnore,
+}
+
+var workReplayCmd = &cobra.Command{
+	Use:   "replay",
+	Short: "Replay the original receipt or event for an idempotency key",
+	RunE:  runWorkReplay,
+}
+
+func init() {
+	workCmd.GroupID = groupCore
+	rootCmd.AddCommand(workCmd)
+
+	workCmd.PersistentFlags().String("state", "", "Path to the offline candidate ledger snapshot (JSON); empty = ephemeral in-memory store")
+	workCmd.PersistentFlags().String("output", "json", "Output format: json (default) or table")
+
+	workCmd.AddCommand(
+		workResolveCmd, workRegisterCmd, workStartCmd, workStatusCmd,
+		workHeartbeatCmd, workEventCmd, workHandoffCmd, workFinishCmd,
+		workSyncCmd, workDoctorCmd, workReplayCmd,
+	)
+
+	addRequestFlags(workResolveCmd)
+	addRequestFlags(workRegisterCmd)
+	workRegisterCmd.Flags().Bool("confirm-create", false, "Authorize step-7 creation when ownership is not confirmed")
+
+	workStartCmd.Flags().String("session-id", "", "Executing session id")
+	workStartCmd.Flags().String("run-id", "", "Executing run id (task id)")
+	workStartCmd.Flags().String("actor-id", "", "Actor id")
+
+	workHeartbeatCmd.Flags().String("actor-id", "", "Actor id (required)")
+	workHeartbeatCmd.Flags().String("session-id", "", "Session id (required)")
+	workHeartbeatCmd.Flags().String("host", "", "Physical host / machine title")
+	workHeartbeatCmd.Flags().String("session-name", "", "Terminal session name")
+	workHeartbeatCmd.Flags().Int("window-index", 0, "Terminal window index")
+	workHeartbeatCmd.Flags().Int("pane-index", 0, "Terminal pane index")
+	workHeartbeatCmd.Flags().String("current-command", "", "Current command")
+	workHeartbeatCmd.Flags().String("agent-hint", "", "Agent hint")
+
+	addRequestFlags(workEventCmd)
+	addRequestFlags(workHandoffCmd)
+	addRequestFlags(workFinishCmd)
+	addRequestFlags(workSyncCmd)
+
+	workDoctorCmd.AddCommand(workDoctorAttachCmd, workDoctorIgnoreCmd)
+	workDoctorAttachCmd.Flags().String("inbox-id", "", "Inbox entry id (required)")
+	workDoctorAttachCmd.Flags().String("project-id", "", "Target project id")
+	workDoctorAttachCmd.Flags().String("issue-id", "", "Target issue id")
+	workDoctorIgnoreCmd.Flags().String("inbox-id", "", "Inbox entry id (required)")
+	workDoctorIgnoreCmd.Flags().String("reason", "", "Ignore reason")
+
+	workReplayCmd.Flags().String("idempotency-key", "", "Idempotency key (dedupe_key or event idempotency_key; required)")
+	workReplayCmd.Flags().String("kind", "receipt", "Replay kind: receipt or event")
+	workReplayCmd.Flags().String("work-ref", "", "work_ref (required for event replay)")
+}
+
+// addRequestFlags registers the shared JSON request body flags.
+func addRequestFlags(cmd *cobra.Command) {
+	cmd.Flags().String("request", "", "Request body as JSON")
+	cmd.Flags().Bool("request-stdin", false, "Read request body from stdin")
+	cmd.Flags().String("request-file", "", "Read request body from a JSON file")
+	cmd.Flags().Bool("allow-external-file", false, "Allow --request-file outside the current working directory")
+}
+
+// readRequestJSON resolves the --request/--request-stdin/--request-file body
+// and unmarshals it into dst.
+func readRequestJSON(cmd *cobra.Command, dst any) error {
+	body, ok, err := resolveTextFlag(cmd, "request")
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("provide --request '<json>', --request-stdin, or --request-file <path>")
+	}
+	if err := json.Unmarshal([]byte(body), dst); err != nil {
+		return fmt.Errorf("parse request JSON: %w", err)
+	}
+	return nil
+}
+
+func workOutput(cmd *cobra.Command) string {
+	out, _ := cmd.Flags().GetString("output")
+	if out == "" {
+		return "json"
+	}
+	return out
+}
+
+func workWorkspace(cmd *cobra.Command) string {
+	return cli.FlagOrEnv(cmd, "workspace-id", "MULTICA_WORKSPACE_ID", "")
+}
+
+func workLoadStore(cmd *cobra.Command) (*workentry.MemoryStore, error) {
+	store := workentry.NewMemoryStore()
+	statePath, _ := cmd.Flags().GetString("state")
+	if statePath == "" {
+		return store, nil
+	}
+	data, err := os.ReadFile(statePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return store, nil
+		}
+		return nil, fmt.Errorf("read --state file: %w", err)
+	}
+	var snap workentry.MemorySnapshot
+	if err := json.Unmarshal(data, &snap); err != nil {
+		return nil, fmt.Errorf("parse --state file %q: %w", statePath, err)
+	}
+	store.Restore(snap)
+	return store, nil
+}
+
+func workSaveStore(cmd *cobra.Command, store *workentry.MemoryStore) error {
+	statePath, _ := cmd.Flags().GetString("state")
+	if statePath == "" {
+		return nil
+	}
+	data, err := json.MarshalIndent(store.Snapshot(), "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode --state snapshot: %w", err)
+	}
+	if err := os.WriteFile(statePath, data, 0o600); err != nil {
+		return fmt.Errorf("write --state file: %w", err)
+	}
+	return nil
+}
+
+func workPrintJSON(v any) error { return cli.PrintJSON(os.Stdout, v) }
+
+func runWorkResolve(cmd *cobra.Command, _ []string) error {
+	store, err := workLoadStore(cmd)
+	if err != nil {
+		return err
+	}
+	svc := workentry.NewService(store)
+
+	var req workentry.ResolveRequest
+	if err := readRequestJSON(cmd, &req); err != nil {
+		return err
+	}
+	if req.Actor.WorkspaceID == "" {
+		req.Actor.WorkspaceID = workWorkspace(cmd)
+	}
+
+	res, err := svc.ResolvePreview(context.Background(), req)
+	if err != nil {
+		return err
+	}
+	return workPrintJSON(res)
+}
+
+func runWorkRegister(cmd *cobra.Command, _ []string) error {
+	store, err := workLoadStore(cmd)
+	if err != nil {
+		return err
+	}
+	svc := workentry.NewService(store)
+
+	var req workentry.RegisterRequest
+	if err := readRequestJSON(cmd, &req); err != nil {
+		return err
+	}
+	if req.Actor.WorkspaceID == "" {
+		req.Actor.WorkspaceID = workWorkspace(cmd)
+	}
+	if confirm, _ := cmd.Flags().GetBool("confirm-create"); confirm {
+		req.ConfirmCreate = true
+	}
+
+	receipt, err := svc.Register(context.Background(), req)
+	if err != nil {
+		return err
+	}
+	if err := workSaveStore(cmd, store); err != nil {
+		return err
+	}
+	return workPrintJSON(receipt)
+}
+
+func runWorkStart(cmd *cobra.Command, args []string) error {
+	store, err := workLoadStore(cmd)
+	if err != nil {
+		return err
+	}
+	svc := workentry.NewService(store)
+
+	sessionID, _ := cmd.Flags().GetString("session-id")
+	runID, _ := cmd.Flags().GetString("run-id")
+	actorID, _ := cmd.Flags().GetString("actor-id")
+
+	res, err := svc.Start(context.Background(), workentry.StartRequest{
+		WorkRef:     args[0],
+		SessionID:   sessionID,
+		RunID:       runID,
+		ActorID:     actorID,
+		WorkspaceID: workWorkspace(cmd),
+	})
+	if err != nil {
+		return err
+	}
+	if err := workSaveStore(cmd, store); err != nil {
+		return err
+	}
+	return workPrintJSON(res)
+}
+
+func runWorkStatus(cmd *cobra.Command, args []string) error {
+	store, err := workLoadStore(cmd)
+	if err != nil {
+		return err
+	}
+	svc := workentry.NewService(store)
+
+	ws := workWorkspace(cmd)
+	if ws == "" {
+		return fmt.Errorf("--workspace-id (or MULTICA_WORKSPACE_ID) is required")
+	}
+	res, err := svc.Status(context.Background(), workentry.StatusRequest{WorkRef: args[0], WorkspaceID: ws})
+	if err != nil {
+		return err
+	}
+	if workOutput(cmd) == "table" {
+		headers := []string{"WORK_REF", "FOUND", "DECISION", "PROJECT_ID", "ISSUE_ID", "TASK_ID"}
+		rows := [][]string{{
+			res.WorkRef, fmt.Sprintf("%v", res.Found), string(res.Decision),
+			res.ProjectID, res.IssueID, res.TaskID,
+		}}
+		cli.PrintTable(os.Stdout, headers, rows)
+		return nil
+	}
+	return workPrintJSON(res)
+}
+
+func runWorkHeartbeat(cmd *cobra.Command, _ []string) error {
+	store, err := workLoadStore(cmd)
+	if err != nil {
+		return err
+	}
+	svc := workentry.NewService(store)
+
+	ws := workWorkspace(cmd)
+	if ws == "" {
+		return fmt.Errorf("--workspace-id (or MULTICA_WORKSPACE_ID) is required")
+	}
+	actorID, _ := cmd.Flags().GetString("actor-id")
+	if actorID == "" {
+		return fmt.Errorf("--actor-id is required")
+	}
+	sessionID, _ := cmd.Flags().GetString("session-id")
+	if sessionID == "" {
+		return fmt.Errorf("--session-id is required")
+	}
+	window, _ := cmd.Flags().GetInt("window-index")
+	pane, _ := cmd.Flags().GetInt("pane-index")
+	host, _ := cmd.Flags().GetString("host")
+	sessionName, _ := cmd.Flags().GetString("session-name")
+	currentCommand, _ := cmd.Flags().GetString("current-command")
+	agentHint, _ := cmd.Flags().GetString("agent-hint")
+
+	res, err := svc.Heartbeat(context.Background(), workentry.HeartbeatRecord{
+		WorkspaceID:    ws,
+		ActorID:        actorID,
+		SessionID:      sessionID,
+		Host:           host,
+		SessionName:    sessionName,
+		WindowIndex:    window,
+		PaneIndex:      pane,
+		CurrentCommand: currentCommand,
+		AgentHint:      agentHint,
+	})
+	if err != nil {
+		return err
+	}
+	return workPrintJSON(res)
+}
+
+func runWorkEvent(cmd *cobra.Command, _ []string) error {
+	store, err := workLoadStore(cmd)
+	if err != nil {
+		return err
+	}
+	svc := workentry.NewService(store)
+
+	var event workentry.WorkEventV1
+	if err := readRequestJSON(cmd, &event); err != nil {
+		return err
+	}
+	res, err := svc.Event(context.Background(), event)
+	if err != nil {
+		return err
+	}
+	if err := workSaveStore(cmd, store); err != nil {
+		return err
+	}
+	return workPrintJSON(res)
+}
+
+func runWorkHandoff(cmd *cobra.Command, _ []string) error {
+	store, err := workLoadStore(cmd)
+	if err != nil {
+		return err
+	}
+	svc := workentry.NewService(store)
+
+	var pkg workentry.WorkHandoffV1
+	if err := readRequestJSON(cmd, &pkg); err != nil {
+		return err
+	}
+	res, err := svc.Handoff(context.Background(), pkg)
+	if err != nil {
+		return err
+	}
+	if err := workSaveStore(cmd, store); err != nil {
+		return err
+	}
+	return workPrintJSON(res)
+}
+
+func runWorkFinish(cmd *cobra.Command, _ []string) error {
+	store, err := workLoadStore(cmd)
+	if err != nil {
+		return err
+	}
+	svc := workentry.NewService(store)
+
+	var completion workentry.WorkCompletionV1
+	if err := readRequestJSON(cmd, &completion); err != nil {
+		return err
+	}
+	res, err := svc.Finish(context.Background(), completion)
+	if err != nil {
+		return err
+	}
+	if err := workSaveStore(cmd, store); err != nil {
+		return err
+	}
+	return workPrintJSON(res)
+}
+
+func runWorkSync(cmd *cobra.Command, _ []string) error {
+	store, err := workLoadStore(cmd)
+	if err != nil {
+		return err
+	}
+	svc := workentry.NewService(store)
+
+	var entries []workentry.SyncEntry
+	if err := readRequestJSON(cmd, &entries); err != nil {
+		return err
+	}
+	res, err := svc.Sync(context.Background(), entries)
+	if err != nil {
+		return err
+	}
+	if err := workSaveStore(cmd, store); err != nil {
+		return err
+	}
+	return workPrintJSON(res)
+}
+
+func runWorkDoctor(cmd *cobra.Command, _ []string) error {
+	store, err := workLoadStore(cmd)
+	if err != nil {
+		return err
+	}
+	svc := workentry.NewService(store)
+
+	ws := workWorkspace(cmd)
+	if ws == "" {
+		return fmt.Errorf("--workspace-id (or MULTICA_WORKSPACE_ID) is required")
+	}
+	items, err := svc.Reconcile(context.Background(), ws)
+	if err != nil {
+		return err
+	}
+	if workOutput(cmd) == "table" {
+		headers := []string{"INBOX_ID", "WORK_REF"}
+		rows := make([][]string, 0, len(items))
+		for _, it := range items {
+			rows = append(rows, []string{it.ID, it.WorkRef})
+		}
+		cli.PrintTable(os.Stdout, headers, rows)
+		return nil
+	}
+	return workPrintJSON(items)
+}
+
+func runWorkDoctorAttach(cmd *cobra.Command, _ []string) error {
+	store, err := workLoadStore(cmd)
+	if err != nil {
+		return err
+	}
+	svc := workentry.NewService(store)
+
+	ws := workWorkspace(cmd)
+	inboxID, _ := cmd.Flags().GetString("inbox-id")
+	projectID, _ := cmd.Flags().GetString("project-id")
+	issueID, _ := cmd.Flags().GetString("issue-id")
+
+	res, err := svc.Attach(context.Background(), workentry.AttachRequest{
+		WorkspaceID: ws, InboxID: inboxID, ProjectID: projectID, IssueID: issueID,
+	})
+	if err != nil {
+		return err
+	}
+	if err := workSaveStore(cmd, store); err != nil {
+		return err
+	}
+	return workPrintJSON(res)
+}
+
+func runWorkDoctorIgnore(cmd *cobra.Command, _ []string) error {
+	store, err := workLoadStore(cmd)
+	if err != nil {
+		return err
+	}
+	svc := workentry.NewService(store)
+
+	ws := workWorkspace(cmd)
+	inboxID, _ := cmd.Flags().GetString("inbox-id")
+	reason, _ := cmd.Flags().GetString("reason")
+
+	res, err := svc.Ignore(context.Background(), workentry.IgnoreRequest{
+		WorkspaceID: ws, InboxID: inboxID, Reason: reason,
+	})
+	if err != nil {
+		return err
+	}
+	if err := workSaveStore(cmd, store); err != nil {
+		return err
+	}
+	return workPrintJSON(res)
+}
+
+func runWorkReplay(cmd *cobra.Command, _ []string) error {
+	store, err := workLoadStore(cmd)
+	if err != nil {
+		return err
+	}
+	svc := workentry.NewService(store)
+
+	ws := workWorkspace(cmd)
+	key, _ := cmd.Flags().GetString("idempotency-key")
+	if key == "" {
+		return fmt.Errorf("--idempotency-key is required")
+	}
+	kind, _ := cmd.Flags().GetString("kind")
+	workRef, _ := cmd.Flags().GetString("work-ref")
+
+	res, err := svc.Replay(context.Background(), workentry.ReplayRequest{
+		WorkspaceID: ws, IdempotencyKey: key, Kind: kind, WorkRef: workRef,
+	})
+	if err != nil {
+		return err
+	}
+	return workPrintJSON(res)
+}

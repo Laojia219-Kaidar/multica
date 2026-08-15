@@ -1,0 +1,407 @@
+package workentry
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/util"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
+)
+
+// pgExecutor is the raw-SQL seam the PG store uses for tables that have no
+// generated query yet (project_lifecycle_receipt). *pgxpool.Pool satisfies it.
+type pgExecutor interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+// PGStore implements Store against the existing HiveCrew tables:
+//
+//	resolve:  external_work_order_link, project, issue, ILIKE similarity
+//	register: project_lifecycle_receipt idempotency anchor + project/issue reuse
+//	heartbeat: terminal_presence upsert
+//
+// Events/handoff/finish/inbox persistence return ErrUnavailable in this slice
+// because no reusable table exists without either crossing the workflow
+// boundary or adding a migration (deferred to P1-join, ≥400).
+type PGStore struct {
+	queries *db.Queries
+	exec    pgExecutor
+}
+
+// NewPGStore binds the generated queries and the raw executor.
+func NewPGStore(queries *db.Queries, exec pgExecutor) *PGStore {
+	return &PGStore{queries: queries, exec: exec}
+}
+
+func (p *PGStore) uuid(s string) (pgtype.UUID, error) { return util.ParseUUID(s) }
+
+func (p *PGStore) LookupWorkOrder(ctx context.Context, workspaceID, workOrderRef string) (*ExternalWorkOrderLink, error) {
+	ws, err := p.uuid(workspaceID)
+	if err != nil {
+		return nil, ErrInvalidRequest
+	}
+	row, err := p.queries.GetExternalWorkOrderLink(ctx, db.GetExternalWorkOrderLinkParams{
+		WorkspaceID: ws, WorkOrderRef: workOrderRef,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("lookup external work order link: %w", err)
+	}
+	return &ExternalWorkOrderLink{
+		WorkspaceID:    util.UUIDToString(row.WorkspaceID),
+		WorkOrderRef:   row.WorkOrderRef,
+		LinkedRevision: row.LinkedRevision,
+		LinkedDigest:   row.LinkedDigest,
+		IssueID:        util.UUIDToString(row.IssueID),
+	}, nil
+}
+
+func (p *PGStore) PutWorkOrderLink(ctx context.Context, link ExternalWorkOrderLink) error {
+	ws, err := p.uuid(link.WorkspaceID)
+	if err != nil {
+		return ErrInvalidRequest
+	}
+	issueID, err := p.uuid(link.IssueID)
+	if err != nil {
+		return ErrInvalidRequest
+	}
+	_, err = p.queries.InsertExternalWorkOrderLink(ctx, db.InsertExternalWorkOrderLinkParams{
+		WorkspaceID:      ws,
+		WorkOrderRef:     link.WorkOrderRef,
+		LinkedRevision:   link.LinkedRevision,
+		LinkedDigest:     link.LinkedDigest,
+		SourceObservedAt: pgtype.Timestamptz{Time: time.Now().UTC(), Valid: true},
+		FreshnessAtLink:  "current",
+		IssueID:          issueID,
+	})
+	if err != nil {
+		return fmt.Errorf("insert external work order link: %w", err)
+	}
+	return nil
+}
+
+func (p *PGStore) LookupProject(ctx context.Context, workspaceID, projectID string) (*ProjectRef, error) {
+	ws, err := p.uuid(workspaceID)
+	if err != nil {
+		return nil, ErrInvalidRequest
+	}
+	id, err := p.uuid(projectID)
+	if err != nil {
+		return nil, ErrInvalidRequest
+	}
+	row, err := p.queries.GetProjectInWorkspace(ctx, db.GetProjectInWorkspaceParams{ID: id, WorkspaceID: ws})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("lookup project: %w", err)
+	}
+	return &ProjectRef{ID: util.UUIDToString(row.ID), WorkspaceID: util.UUIDToString(row.WorkspaceID), Title: row.Title, Status: row.Status}, nil
+}
+
+func (p *PGStore) LookupIssue(ctx context.Context, workspaceID, issueID string) (*IssueRef, error) {
+	ws, err := p.uuid(workspaceID)
+	if err != nil {
+		return nil, ErrInvalidRequest
+	}
+	id, err := p.uuid(issueID)
+	if err != nil {
+		return nil, ErrInvalidRequest
+	}
+	row, err := p.queries.GetIssueInWorkspace(ctx, db.GetIssueInWorkspaceParams{ID: id, WorkspaceID: ws})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("lookup issue: %w", err)
+	}
+	return &IssueRef{ID: util.UUIDToString(row.ID), WorkspaceID: util.UUIDToString(row.WorkspaceID), Title: row.Title, Status: row.Status, ProjectID: util.UUIDToString(row.ProjectID)}, nil
+}
+
+// LookupRepoRevisionBranch has no reusable table/index without a new migration;
+// it always reports no match in this slice.
+func (p *PGStore) LookupRepoRevisionBranch(_ context.Context, _, _, _, _ string) (*RepoMatch, error) {
+	return nil, nil
+}
+
+func (p *PGStore) SearchSimilar(ctx context.Context, workspaceID, query string, limit int) ([]SimilarMatch, error) {
+	ws, err := p.uuid(workspaceID)
+	if err != nil {
+		return nil, ErrInvalidRequest
+	}
+	q := strings.TrimSpace(query)
+	if q == "" {
+		return nil, nil
+	}
+	if limit <= 0 {
+		limit = 5
+	}
+	pattern := "%" + strings.ToLower(q) + "%"
+	var out []SimilarMatch
+	appendRows := func(rows pgx.Rows, kind string) error {
+		defer rows.Close()
+		for rows.Next() {
+			var id pgtype.UUID
+			var title string
+			if err := rows.Scan(&id, &title); err != nil {
+				return err
+			}
+			out = append(out, SimilarMatch{
+				Kind: kind, RefID: util.UUIDToString(id), Title: title,
+				WorkspaceID: workspaceID, Similarity: similarityScore(title, q),
+			})
+		}
+		return rows.Err()
+	}
+	rows, err := p.exec.Query(ctx,
+		"SELECT id, title FROM project WHERE workspace_id = $1 AND LOWER(title) LIKE $2 ORDER BY title LIMIT $3",
+		ws, pattern, limit)
+	if err != nil {
+		return nil, fmt.Errorf("search similar projects: %w", err)
+	}
+	if err := appendRows(rows, "project"); err != nil {
+		return nil, fmt.Errorf("scan similar projects: %w", err)
+	}
+	rows2, err := p.exec.Query(ctx,
+		"SELECT id, title FROM issue WHERE workspace_id = $1 AND LOWER(title) LIKE $2 ORDER BY title LIMIT $3",
+		ws, pattern, limit)
+	if err != nil {
+		return nil, fmt.Errorf("search similar issues: %w", err)
+	}
+	if err := appendRows(rows2, "issue"); err != nil {
+		return nil, fmt.Errorf("scan similar issues: %w", err)
+	}
+	return out, nil
+}
+
+// workRegisterAction encodes the decision suffix into the receipt action value
+// so the anchor round-trips through project_lifecycle_receipt without a new
+// column.
+const workRegisterActionPrefix = "work_register:"
+
+func (p *PGStore) GetReceipt(ctx context.Context, workspaceID, dedupeKey string) (*ReceiptRecord, error) {
+	ws, err := p.uuid(workspaceID)
+	if err != nil {
+		return nil, ErrInvalidRequest
+	}
+	var (
+		id             pgtype.UUID
+		projectID      pgtype.UUID
+		action         string
+		idemKey        string
+		payloadDigest  string
+		taskID         pgtype.UUID
+		issueID        pgtype.UUID
+	)
+	err = p.exec.QueryRow(ctx,
+		"SELECT id, project_id, action, idempotency_key, payload_digest, task_id, issue_id FROM project_lifecycle_receipt WHERE workspace_id = $1 AND idempotency_key = $2 AND action LIKE $3 ORDER BY created_at DESC LIMIT 1",
+		ws, dedupeKey, workRegisterActionPrefix+"%").Scan(&id, &projectID, &action, &idemKey, &payloadDigest, &taskID, &issueID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read work registration receipt: %w", err)
+	}
+	decision := DecisionContinued
+	switch strings.TrimPrefix(action, workRegisterActionPrefix) {
+	case "created":
+		decision = DecisionCreated
+	case "continued":
+		decision = DecisionContinued
+	default:
+		decision = DecisionContinued
+	}
+	return &ReceiptRecord{
+		WorkspaceID: workspaceID,
+		DedupeKey:   idemKey,
+		Digest:      payloadDigest,
+		ProjectID:   util.UUIDToString(projectID),
+		IssueID:     util.UUIDToString(issueID),
+		TaskID:      util.UUIDToString(taskID),
+		Decision:    decision,
+	}, nil
+}
+
+func (p *PGStore) PutReceipt(ctx context.Context, receipt ReceiptRecord) error {
+	// project_lifecycle_receipt requires project_id NOT NULL. For a continued
+	// work with no project, the existing object (issue/link) is the anchor;
+	// no receipt row is written in that case.
+	if strings.TrimSpace(receipt.ProjectID) == "" {
+		return nil
+	}
+	ws, err := p.uuid(receipt.WorkspaceID)
+	if err != nil {
+		return ErrInvalidRequest
+	}
+	projectID, err := p.uuid(receipt.ProjectID)
+	if err != nil {
+		return ErrInvalidRequest
+	}
+	action := workRegisterActionPrefix + string(receipt.Decision)
+	var issueID, taskID pgtype.UUID
+	if receipt.IssueID != "" {
+		if issueID, err = p.uuid(receipt.IssueID); err != nil {
+			return ErrInvalidRequest
+		}
+	}
+	if receipt.TaskID != "" {
+		if taskID, err = p.uuid(receipt.TaskID); err != nil {
+			return ErrInvalidRequest
+		}
+	}
+	_, err = p.exec.Exec(ctx,
+		"INSERT INTO project_lifecycle_receipt (workspace_id, project_id, action, idempotency_key, payload_digest, before_status, after_status, task_id, issue_id, blockers, applied, replayed) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'[]'::jsonb,true,false) ON CONFLICT (workspace_id, idempotency_key) DO NOTHING",
+		ws, projectID, action, receipt.DedupeKey, receipt.Digest, "", "", taskID, issueID)
+	if err != nil {
+		return fmt.Errorf("insert work registration receipt: %w", err)
+	}
+	// Re-read to detect a same-key/different-digest conflict.
+	stored, err := p.GetReceipt(ctx, receipt.WorkspaceID, receipt.DedupeKey)
+	if err != nil {
+		return err
+	}
+	if stored == nil {
+		// A concurrent conflicting insert may have been skipped; re-read once.
+		stored, err = p.GetReceipt(ctx, receipt.WorkspaceID, receipt.DedupeKey)
+		if err != nil {
+			return err
+		}
+	}
+	if stored != nil && stored.Digest != receipt.Digest {
+		return ErrConflict
+	}
+	return nil
+}
+
+func (p *PGStore) FindReceiptByWorkRef(ctx context.Context, workspaceID, workRef string) (*ReceiptRecord, error) {
+	ws, err := p.uuid(workspaceID)
+	if err != nil {
+		return nil, ErrInvalidRequest
+	}
+	rows, err := p.exec.Query(ctx,
+		"SELECT idempotency_key, payload_digest, project_id, issue_id, task_id, action FROM project_lifecycle_receipt WHERE workspace_id = $1 AND action LIKE $2",
+		ws, workRegisterActionPrefix+"%")
+	if err != nil {
+		return nil, fmt.Errorf("scan work registration receipts: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var idemKey, digest, action string
+		var projectID, issueID, taskID pgtype.UUID
+		if err := rows.Scan(&idemKey, &digest, &projectID, &issueID, &taskID, &action); err != nil {
+			return nil, err
+		}
+		decision := DecisionContinued
+		if strings.HasSuffix(action, ":created") {
+			decision = DecisionCreated
+		}
+		rec := &ReceiptRecord{
+			WorkspaceID: workspaceID, DedupeKey: idemKey, Digest: digest,
+			ProjectID: util.UUIDToString(projectID), IssueID: util.UUIDToString(issueID),
+			TaskID: util.UUIDToString(taskID), Decision: decision,
+		}
+		rebuilt := FormatWorkRef(workspaceID, rec.ProjectID, rec.IssueID, rec.TaskID)
+		if rebuilt == workRef {
+			return rec, nil
+		}
+	}
+	return nil, rows.Err()
+}
+
+func (p *PGStore) AppendEvent(_ context.Context, _ EventRecord) (*EventRecord, error) {
+	return nil, ErrUnavailable
+}
+
+func (p *PGStore) GetEvent(_ context.Context, _, _, _ string) (*EventRecord, error) {
+	return nil, ErrUnavailable
+}
+
+func (p *PGStore) UpsertHeartbeat(ctx context.Context, hb HeartbeatRecord) error {
+	ws, err := p.uuid(hb.WorkspaceID)
+	if err != nil {
+		return ErrInvalidRequest
+	}
+	return p.queries.UpsertTerminalPresence(ctx, db.UpsertTerminalPresenceParams{
+		WorkspaceID:    ws,
+		Host:           hb.Host,
+		SessionName:    hb.SessionName,
+		WindowIndex:    int32(hb.WindowIndex),
+		PaneIndex:      int32(hb.PaneIndex),
+		PanePid:        0,
+		CurrentCommand: hb.CurrentCommand,
+		AgentHint:      hb.ActorID,
+	})
+}
+
+func (p *PGStore) SaveHandoff(_ context.Context, _ HandoffRecord) error {
+	return ErrUnavailable
+}
+
+func (p *PGStore) SaveCompletion(_ context.Context, _ CompletionRecord) error {
+	return ErrUnavailable
+}
+
+func (p *PGStore) ListInbox(_ context.Context, _ string) ([]InboxItem, error) {
+	return nil, ErrUnavailable
+}
+
+func (p *PGStore) AttachInbox(_ context.Context, _, _, _, _ string) error {
+	return ErrUnavailable
+}
+
+func (p *PGStore) IgnoreInbox(_ context.Context, _, _, _ string) error {
+	return ErrUnavailable
+}
+
+func (p *PGStore) CreateWork(ctx context.Context, req CreateWorkRequest) (*CreateWorkResult, error) {
+	ws, err := p.uuid(req.WorkspaceID)
+	if err != nil {
+		return nil, ErrInvalidRequest
+	}
+	projectID := req.ProjectID
+	if projectID == "" {
+		project, err := p.queries.CreateProject(ctx, db.CreateProjectParams{
+			WorkspaceID: ws,
+			Title:       req.Title,
+			Description: pgtype.Text{String: req.Description, Valid: req.Description != ""},
+			Status:      "planned",
+			Priority:    "none",
+		})
+		if err != nil {
+			return nil, fmt.Errorf("create project: %w", err)
+		}
+		projectID = util.UUIDToString(project.ID)
+	}
+	pid, err := p.uuid(projectID)
+	if err != nil {
+		return nil, ErrInvalidRequest
+	}
+	number, err := p.queries.IncrementIssueCounter(ctx, ws)
+	if err != nil {
+		return nil, fmt.Errorf("allocate issue number: %w", err)
+	}
+	issue, err := p.queries.CreateIssue(ctx, db.CreateIssueParams{
+		WorkspaceID: ws,
+		Title:       req.Title,
+		Description: pgtype.Text{String: req.Description, Valid: req.Description != ""},
+		Status:      "todo",
+		Priority:    "none",
+		CreatorType: "agent",
+		Number:      number,
+		ProjectID:   pid,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create issue: %w", err)
+	}
+	return &CreateWorkResult{ProjectID: projectID, IssueID: util.UUIDToString(issue.ID)}, nil
+}
