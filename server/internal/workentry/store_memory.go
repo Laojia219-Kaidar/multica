@@ -26,6 +26,7 @@ type MemoryStore struct {
 	repoRefs       []RepoRef                     // repo ownership refs for inventory
 	projectLeads   []ProjectLead                 // project owner/lead projections for steward
 	heartbeats     []HeartbeatRef                // presence heartbeats for steward stale detection
+	candidates     []CandidateRef                // artifact candidates for steward review diagnostics
 	seq        int64
 }
 
@@ -45,6 +46,7 @@ func NewMemoryStore() *MemoryStore {
 		repoRefs:       []RepoRef{},
 		projectLeads:   []ProjectLead{},
 		heartbeats:     []HeartbeatRef{},
+		candidates:     []CandidateRef{},
 	}
 }
 
@@ -385,6 +387,13 @@ func (m *MemoryStore) InventorySnapshot(_ context.Context, workspaceID string) (
 	return snap, nil
 }
 
+// SeedCandidate seeds an artifact candidate with its lifecycle events.
+func (m *MemoryStore) SeedCandidate(c CandidateRef) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.candidates = append(m.candidates, c)
+}
+
 // SeedHeartbeat seeds a presence heartbeat (Stale flag already computed).
 func (m *MemoryStore) SeedHeartbeat(h HeartbeatRef) {
 	m.mu.Lock()
@@ -417,7 +426,7 @@ func (m *MemoryStore) StewardSnapshot(ctx context.Context, workspaceID string) (
 			}
 		}
 	}
-	return &StewardSnapshot{InventorySnapshot: *inv, ProjectLeads: leads, Heartbeats: m.heartbeats}, nil
+	return &StewardSnapshot{InventorySnapshot: *inv, ProjectLeads: leads, Heartbeats: m.heartbeats, Candidates: m.candidates}, nil
 }
 
 // SeedRepoMatch seeds a step-3 repo+revision+branch exact match for tests.

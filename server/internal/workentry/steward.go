@@ -29,12 +29,20 @@ type HeartbeatRef struct {
 	Stale           bool   `json:"stale"`
 }
 
-// StewardSnapshot extends InventorySnapshot with project lead ownership and
-// presence heartbeats.
+// CandidateRef is one artifact candidate with its lifecycle event types.
+type CandidateRef struct {
+	CandidateID string   `json:"candidate_id"`
+	LineageID   string   `json:"lineage_id"`
+	Events      []string `json:"events"`
+}
+
+// StewardSnapshot extends InventorySnapshot with project lead ownership,
+// presence heartbeats, and artifact candidates.
 type StewardSnapshot struct {
 	InventorySnapshot
-	ProjectLeads []ProjectLead `json:"project_leads"`
+	ProjectLeads []ProjectLead  `json:"project_leads"`
 	Heartbeats   []HeartbeatRef `json:"heartbeats"`
+	Candidates   []CandidateRef `json:"candidates"`
 }
 
 // StewardDiagnosticKind is the closed set of portfolio/steward findings.
@@ -155,6 +163,36 @@ func ComputeSteward(workspaceID string, snap *StewardSnapshot) []StewardDiagnost
 				WorkspaceID: workspaceID, Kind: StewardStale, RefKind: "session",
 				RefID: h.Host + ":" + h.SessionName, Title: h.SessionName,
 				Detail: "presence heartbeat stale (last " + h.LastHeartbeatAt + ")",
+			})
+		}
+	}
+
+	// Artifact candidate diagnostics: a candidate with no lifecycle event has
+	// never entered review (orphan_candidate); one that was submitted but never
+	// got a terminal verdict (approved/rejected/changes_requested) is stuck in
+	// review without a decision (missing_review). VC-10.
+	for _, c := range snap.Candidates {
+		submitted := false
+		terminal := false
+		for _, e := range c.Events {
+			switch e {
+			case "submitted", "promotion_requested":
+				submitted = true
+			case "approved", "rejected", "changes_requested":
+				terminal = true
+			}
+		}
+		if !submitted && !terminal {
+			out = append(out, StewardDiagnostic{
+				WorkspaceID: workspaceID, Kind: StewardOrphanCandidate, RefKind: "candidate",
+				RefID: c.CandidateID, Title: c.LineageID,
+				Detail: "candidate has no lifecycle event (never entered review)",
+			})
+		} else if submitted && !terminal {
+			out = append(out, StewardDiagnostic{
+				WorkspaceID: workspaceID, Kind: StewardMissingReview, RefKind: "candidate",
+				RefID: c.CandidateID, Title: c.LineageID,
+				Detail: "candidate submitted but no review verdict (approved/rejected/changes_requested)",
 			})
 		}
 	}

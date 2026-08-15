@@ -90,3 +90,37 @@ func TestStewardStaleHeartbeat(t *testing.T) {
 		t.Fatalf("expected exactly 1 stale diagnostic, got %d (%+v)", stale, res)
 	}
 }
+
+func TestStewardCandidateDiagnostics(t *testing.T) {
+	store := NewMemoryStore()
+	svc := NewService(store)
+	ctx := context.Background()
+	const ws = "ws-1"
+
+	store.SeedCandidate(CandidateRef{CandidateID: "c-orphan", LineageID: "lineage-1", Events: []string{}})
+	store.SeedCandidate(CandidateRef{CandidateID: "c-stuck", LineageID: "lineage-2", Events: []string{"submitted"}})
+	store.SeedCandidate(CandidateRef{CandidateID: "c-done", LineageID: "lineage-3", Events: []string{"submitted", "approved"}})
+
+	res, err := svc.StewardDiagnostics(ctx, ws)
+	if err != nil {
+		t.Fatalf("steward: %v", err)
+	}
+	orphan, stuck := 0, 0
+	for _, d := range res {
+		switch d.Kind {
+		case StewardOrphanCandidate:
+			orphan++
+			if d.RefID != "c-orphan" {
+				t.Fatalf("expected orphan for c-orphan, got %s", d.RefID)
+			}
+		case StewardMissingReview:
+			stuck++
+			if d.RefID != "c-stuck" {
+				t.Fatalf("expected missing_review for c-stuck, got %s", d.RefID)
+			}
+		}
+	}
+	if orphan != 1 || stuck != 1 {
+		t.Fatalf("expected 1 orphan + 1 missing_review, got %d/%d (%+v)", orphan, stuck, res)
+	}
+}
