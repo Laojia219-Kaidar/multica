@@ -132,9 +132,9 @@ func configureCompanyOps(h *handler.Handler, queries *db.Queries, pool *pgxpool.
 		slog.Warn("companyops authority adapter disabled", "error", "HIVECOSM_AUTHORITY_BASE_URL is invalid")
 		return runtimeSources
 	}
-	token := os.Getenv("HIVECOSM_AUTHORITY_BEARER_TOKEN")
-	if !strictCompanyOpsBearerToken(token) {
-		slog.Warn("companyops authority adapter disabled", "error", "HIVECOSM_AUTHORITY_BEARER_TOKEN is unavailable")
+	token, tokenErr := companyOpsAuthorityBearerTokenFromEnv(context.Background(), nil)
+	if tokenErr != nil {
+		slog.Warn("companyops authority adapter disabled", "error", companyOpsAuthorityTokenSourceError(tokenErr))
 		return runtimeSources
 	}
 
