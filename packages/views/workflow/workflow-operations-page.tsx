@@ -10,6 +10,7 @@ import { WorkflowDesigner } from "./workflow-designer";
 import { WorkflowRuntimeGraph } from "./workflow-runtime-graph";
 import { WorkflowWorkbench, type WorkflowWorkbenchProps } from "./workflow-workbench";
 import { WorkflowProgramSettings, type WorkflowProgramSettingsProps } from "./workflow-program-settings";
+import { WechatProductionPanel, type WechatProductionPanelProps } from "./wechat-production-panel";
 
 export type WorkflowOperationsSection = "overview" | "plan" | "workflow" | "instances" | "artifacts" | "review" | "settings";
 
@@ -42,6 +43,13 @@ export interface WorkflowOperationsPageProps {
   onPublishDefinition?: (definition: WorkflowDefinitionDraft) => void;
   publishReceipt?: { definitionId: string; version: number; changed: boolean } | null;
   publishError?: string | null;
+  /**
+   * Optional WeChat content production operations surface (WO-20), rendered
+   * on the L4 project's 生产计划 section. The integrator supplies the
+   * server-resolved authority context, published definition pins, and the
+   * server-side production read models; omitting it keeps the placeholder.
+   */
+  wechatProduction?: Omit<WechatProductionPanelProps, "projectId" | "projectName"> | null;
   /** Pure view callbacks for L3 subject and L4 Project classification. */
   programManagement?: {
     onCreateProgram?: (input: { name: string; description?: string }) => void | Promise<void>;
@@ -110,6 +118,7 @@ export function WorkflowOperationsPage({
   onPublishDefinition,
   publishReceipt,
   publishError,
+  wechatProduction,
   programManagement,
 }: WorkflowOperationsPageProps) {
   const [uncontrolledSelection, setUncontrolledSelection] = useState<WorkflowContextSelection | undefined>(initialSelection);
@@ -164,7 +173,7 @@ export function WorkflowOperationsPage({
           <div className="mb-4 flex flex-wrap items-center gap-1 border-b pb-2" role="tablist" aria-label="项目工作区">
             {sectionLabels.map(({ id, label, icon: Icon }) => <button type="button" role="tab" aria-selected={section === id} key={id} onClick={() => selectSection(id)} className={`inline-flex items-center gap-1 rounded px-2 py-1.5 text-xs hover:bg-accent ${section === id ? "bg-accent font-medium" : "text-muted-foreground"}`}><Icon className="h-3.5 w-3.5" />{label}</button>)}
           </div>
-          {!selection ? <EmptyProjectState /> : selection.kind === "program" && section === "settings" && program ? <WorkflowProgramSettings program={program} projects={projects} onUpdateProgram={programManagement?.onUpdateProgram} programUpdateState={programManagement?.programUpdateState} programUpdateError={programManagement?.programUpdateError} onDeleteProgram={programManagement?.onDeleteProgram} programDeletionState={programManagement?.programDeletionState} programDeletionError={programManagement?.programDeletionError} onAssignProject={programManagement?.onAssignProject} onUnassignProject={programManagement?.onUnassignProject} projectMutationState={programManagement?.projectMutationState} projectMutationError={programManagement?.projectMutationError} /> : section === "workflow" && project ? <WorkflowDefinitionsPanel project={project} drafts={projectDrafts} selectedDraft={selectedDraft} onSelectDefinition={onSelectDefinition} onCreateDefinition={onCreateDefinition} onChangeDefinition={onChangeDefinition} onPublishDefinition={onPublishDefinition} publishReceipt={publishReceipt} publishError={publishError} /> : section === "instances" ? <WorkflowWorkbench instances={instances} definitions={definitions} {...workbench} /> : section === "artifacts" && !project ? <NoProjectArtifactState /> : section === "artifacts" ? <ArtifactList artifacts={artifacts} outcomes={outcomes} loading={outcomesLoading} sourceError={outcomesError} outcomeHref={outcomeHref} artifactLocationsByOutcome={artifactLocationsByOutcome} /> : <ProjectSection section={section} project={project} program={program} />}
+          {!selection ? <EmptyProjectState /> : selection.kind === "program" && section === "settings" && program ? <WorkflowProgramSettings program={program} projects={projects} onUpdateProgram={programManagement?.onUpdateProgram} programUpdateState={programManagement?.programUpdateState} programUpdateError={programManagement?.programUpdateError} onDeleteProgram={programManagement?.onDeleteProgram} programDeletionState={programManagement?.programDeletionState} programDeletionError={programManagement?.programDeletionError} onAssignProject={programManagement?.onAssignProject} onUnassignProject={programManagement?.onUnassignProject} projectMutationState={programManagement?.projectMutationState} projectMutationError={programManagement?.projectMutationError} /> : section === "workflow" && project ? <WorkflowDefinitionsPanel project={project} drafts={projectDrafts} selectedDraft={selectedDraft} onSelectDefinition={onSelectDefinition} onCreateDefinition={onCreateDefinition} onChangeDefinition={onChangeDefinition} onPublishDefinition={onPublishDefinition} publishReceipt={publishReceipt} publishError={publishError} /> : section === "instances" ? <WorkflowWorkbench instances={instances} definitions={definitions} {...workbench} /> : section === "artifacts" && !project ? <NoProjectArtifactState /> : section === "artifacts" ? <ArtifactList artifacts={artifacts} outcomes={outcomes} loading={outcomesLoading} sourceError={outcomesError} outcomeHref={outcomeHref} artifactLocationsByOutcome={artifactLocationsByOutcome} /> : section === "plan" && project && wechatProduction ? <WechatProductionPanel projectId={project.formalProjectId} projectName={project.name} {...wechatProduction} /> : <ProjectSection section={section} project={project} program={program} />}
           {runtime && section === "instances" ? <div className="mt-4"><WorkflowRuntimeGraph graph={runtimeGraph ?? selectedDraft?.graph ?? { nodes: [], edges: [] }} runtime={runtime} /></div> : null}
         </main>
         {runtime && section !== "instances" ? <aside className="hidden w-72 shrink-0 border-l p-3 xl:block" data-testid="workflow-inspector"><WorkflowRuntimeGraph graph={runtimeGraph ?? selectedDraft?.graph ?? { nodes: [], edges: [] }} runtime={runtime} /></aside> : null}

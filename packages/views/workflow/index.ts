@@ -10,3 +10,15 @@ export { WorkflowDesigner } from "./workflow-designer";
 export type { WorkflowDesignerProps } from "./workflow-designer";
 export { WorkflowRuntimeGraph } from "./workflow-runtime-graph";
 export type { WorkflowRuntimeGraphProps } from "./workflow-runtime-graph";
+export { WechatProductionPanel, WECHAT_PRODUCTION_NODE_ORDER } from "./wechat-production-panel";
+export type {
+  WechatProductionAuthorityView,
+  WechatProductionNodeState,
+  WechatProductionNodeView,
+  WechatProductionPanelProps,
+  WechatProductionReviewDecision,
+  WechatProductionStartReceipt,
+  WechatProductionStatus,
+  WechatProductionView,
+  WechatPublishedDefinitionPin,
+} from "./wechat-production-panel";
