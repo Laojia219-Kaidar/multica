@@ -27,6 +27,9 @@ import urllib.request
 INTERVAL = int(os.environ.get("TERMINAL_PRESENCE_INTERVAL", "10"))
 TAIL_LINES = int(os.environ.get("TERMINAL_PRESENCE_TAIL_LINES", "25"))
 API = os.environ.get("TERMINAL_PRESENCE_API", "http://127.0.0.1:8080/api/work-wall/terminal-presence")
+# workspace 中间件从 X-Workspace-Slug header 或 workspace_slug query 参数解析工作区，
+# 不读 JSON body，所以这里用 query 参数带上。
+WORKSPACE_SLUG = os.environ.get("TERMINAL_PRESENCE_WORKSPACE", "hivecosm")
 CONFIG = os.environ.get("TERMINAL_PRESENCE_CONFIG", os.path.expanduser("~/.multica/config.json"))
 
 SECRET_PATTERNS = [
@@ -99,12 +102,15 @@ def report(panes):
     except (OSError, json.JSONDecodeError):
         return False
     body = json.dumps({
-        "workspace_slug": "hivecosm",
+        "workspace_slug": WORKSPACE_SLUG,
         "host": socket.gethostname(),
         "sessions": panes,
     }).encode()
-    req = urllib.request.Request(API, data=body, method="POST",
+    sep = "&" if "?" in API else "?"
+    url = f"{API}{sep}workspace_slug={WORKSPACE_SLUG}"
+    req = urllib.request.Request(url, data=body, method="POST",
                                  headers={"Content-Type": "application/json",
+                                          "X-Workspace-Slug": WORKSPACE_SLUG,
                                           "Authorization": f"Bearer {token}"})
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
