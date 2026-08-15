@@ -43,6 +43,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/util"
 	"github.com/multica-ai/multica/server/internal/util/secretbox"
 	"github.com/multica-ai/multica/server/internal/workflow"
+	"github.com/multica-ai/multica/server/internal/workentry"
 	composiosdk "github.com/multica-ai/multica/server/pkg/composio"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/featureflag"
@@ -722,6 +723,10 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	}
 	h := handler.New(queries, pool, hub, bus, emailSvc, store, cfSigner, analyticsClient, signupConfig, daemonHub)
 	configureCompanyOps(h, queries, pool)
+	// Universal Work Registration Kernel (Phase-1). Reuses the existing
+	// project/issue/external_work_order_link/project_lifecycle_receipt/
+	// terminal_presence tables; no new task/run table set.
+	h.WorkEntry = workentry.NewService(workentry.NewPGStore(queries, pool))
 	h.CompanyOpsOutcomeCenter = service.NewCompanyOpsOutcomeCenterService(queries)
 	h.Metrics = opts.BusinessMetrics
 	h.FeatureFlags = opts.FeatureFlags
@@ -1631,6 +1636,32 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			r.Post("/assignments", h.CreateCompanyOpsAssignment)
 			r.Post("/artifact-reviews", h.CreateCompanyOpsArtifactReview)
 			r.Post("/formal-artifact-promotions", h.CreateCompanyOpsFormalArtifactPromotion)
+		})
+
+		// Universal Work Registration Kernel. Workspace membership guards tenant
+		// isolation; machine identity (PAT/daemon token) is the auth path, so
+		// there is no human-actor requirement here (external agents and
+		// automations register their own actor identity in the body).
+		r.Route("/api/work", func(r chi.Router) {
+			r.Use(middleware.RequireWorkspaceMember(queries))
+			r.Post("/resolve", h.WorkEntryResolve)
+			r.Post("/register", h.WorkEntryRegister)
+			r.Post("/start", h.WorkEntryStart)
+			r.Get("/status", h.WorkEntryStatus)
+			r.Post("/heartbeat", h.WorkEntryHeartbeat)
+			r.Post("/event", h.WorkEntryEvent)
+			r.Post("/handoff", h.WorkEntryHandoff)
+			r.Post("/finish", h.WorkEntryFinish)
+			r.Post("/review", h.WorkEntryReview)
+			r.Post("/sync", h.WorkEntrySync)
+			r.Get("/reconcile", h.WorkEntryReconcile)
+			r.Get("/participants", h.WorkEntryParticipants)
+			r.Get("/steward", h.WorkEntrySteward)
+			r.Post("/attach", h.WorkEntryAttach)
+			r.Post("/ignore", h.WorkEntryIgnore)
+			r.Get("/replay", h.WorkEntryReplay)
+			r.Get("/mcp/tools", h.WorkEntryMCPTools)
+			r.Post("/mcp/call", h.WorkEntryMCPCall)
 		})
 
 		// --- Workspace-scoped routes (all require workspace membership) ---

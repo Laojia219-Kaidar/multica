@@ -10,6 +10,7 @@ import { toast } from "sonner";
 import type { ProjectStatus, ProjectPriority } from "@multica/core/types";
 import { useAuthStore } from "@multica/core/auth";
 import { projectDetailOptions } from "@multica/core/projects/queries";
+import { projectParticipantsOptions } from "@multica/core/work-entry";
 import { useUpdateProject, useDeleteProject } from "@multica/core/projects/mutations";
 import { pinListOptions } from "@multica/core/pins";
 import { useCreatePin, useDeletePin } from "@multica/core/pins";
@@ -25,6 +26,7 @@ import { useNavigation } from "../../navigation";
 import { TitleEditor, ContentEditor, type ContentEditorRef } from "../../editor";
 import { PriorityIcon } from "../../issues/components/priority-icon";
 import { ProjectResourcesSection } from "./project-resources-section";
+import { ProjectParticipants } from "./project-participants";
 import { ProjectControlActions } from "./project-control-actions";
 import { ProjectStartDatePicker } from "./project-start-date-picker";
 import { ProjectDueDatePicker } from "./project-due-date-picker";
@@ -107,6 +109,9 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
   const router = useNavigation();
   const userId = useAuthStore((s) => s.user?.id);
   const { data: project, isLoading } = useQuery(projectDetailOptions(wsId, projectId));
+  const { data: participants, isLoading: participantsLoading } = useQuery(
+    projectParticipantsOptions(wsId, projectId),
+  );
   const recordRecentContext = useRecentContextStore((s) => s.recordVisit);
   useEffect(() => {
     if (project) {
@@ -443,6 +448,9 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
         <div className="mb-2 px-2 text-xs font-medium text-muted-foreground">项目控制</div>
         <ProjectControlActions project={project} workspaceId={wsId} />
       </div>
+
+      {/* Participants / executors (VC-04 first cut) */}
+      <ProjectParticipants data={participants} isLoading={participantsLoading} />
 
       {/* Description */}
       <div>

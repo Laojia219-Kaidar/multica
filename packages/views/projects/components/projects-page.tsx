@@ -39,8 +39,13 @@ import { useWorkspaceId } from "@multica/core/hooks";
 import { useWorkspacePaths } from "@multica/core/paths";
 import { useAuthStore } from "@multica/core/auth";
 import { useActorName } from "@multica/core/workspace/hooks";
+import {
+  workInboxOptions,
+  useAttachWorkInbox,
+  useIgnoreWorkInbox,
+} from "@multica/core/work-entry";
 import { ProjectHealthBadge, HealthBucketSummary } from "./project-health";
-import type { ProjectLifecycleSnapshot } from "@multica/core/types";
+import type { ProjectLifecycleSnapshot, WorkInboxItem } from "@multica/core/types";
 
 import { memberListOptions } from "@multica/core/workspace/queries";
 import { useModalStore } from "@multica/core/modals";
@@ -112,6 +117,7 @@ import { matchesPinyin } from "../../editor/extensions/pinyin-match";
 import { useFormatRelativeDate } from "./labels";
 import { ProjectStatusBadge, ProjectPriorityBadge } from "./project-badge";
 import { ProjectLeadPicker } from "./project-lead-picker";
+import { ProjectUnclaimedInbox } from "./project-unclaimed-inbox";
 
 // Sort order maps for the enum columns (header sort needs a total order).
 const PRIORITY_ORDER: Record<ProjectPriority, number> = {
@@ -823,6 +829,11 @@ export function ProjectsPage() {
 
   const { data: projects = [], isLoading } = useQuery(projectListOptions(wsId));
   const { data: lifecycle = [] } = useQuery(projectLifecycleListOptions(wsId));
+  const { data: unclaimedInbox = [], isLoading: inboxLoading } = useQuery(
+    workInboxOptions(wsId),
+  );
+  const attachWorkInbox = useAttachWorkInbox();
+  const ignoreWorkInbox = useIgnoreWorkInbox();
   const lifecycleById = useMemo(() => {
     const m = new Map<string, ProjectLifecycleSnapshot>();
     for (const s of lifecycle) m.set(s.project_id, s);
@@ -833,6 +844,29 @@ export function ProjectsPage() {
     ...pinListOptions(wsId, currentUser?.id ?? ""),
     enabled: !!wsId && !!currentUser?.id,
   });
+  const inboxBusy = attachWorkInbox.isPending && attachWorkInbox.variables
+    ? ({ id: attachWorkInbox.variables.inbox_id, kind: "attach" } as const)
+    : ignoreWorkInbox.isPending && ignoreWorkInbox.variables
+      ? ({ id: ignoreWorkInbox.variables.inbox_id, kind: "ignore" } as const)
+      : null;
+  const handleAttachInbox = (item: WorkInboxItem, projectId: string) => {
+    attachWorkInbox.mutate(
+      { inbox_id: item.ID, project_id: projectId },
+      {
+        onError: (err) =>
+          toast.error(err instanceof Error ? err.message : String(err)),
+      },
+    );
+  };
+  const handleIgnoreInbox = (item: WorkInboxItem) => {
+    ignoreWorkInbox.mutate(
+      { inbox_id: item.ID },
+      {
+        onError: (err) =>
+          toast.error(err instanceof Error ? err.message : String(err)),
+      },
+    );
+  };
   const openCreateProject = () => useModalStore.getState().open("create-project");
 
   const isWorkspaceAdmin = useMemo(() => {
@@ -1235,6 +1269,15 @@ export function ProjectsPage() {
           </div>
 
           <HealthBucketSummary items={lifecycle} />
+
+          <ProjectUnclaimedInbox
+            items={unclaimedInbox}
+            projects={projects}
+            isLoading={inboxLoading}
+            busy={inboxBusy}
+            onAttach={handleAttachInbox}
+            onIgnore={handleIgnoreInbox}
+          />
 
           {/* Body */}
           {isLoading ? (

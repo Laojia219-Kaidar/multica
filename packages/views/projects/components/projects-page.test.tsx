@@ -14,6 +14,8 @@ const mocks = vi.hoisted(() => ({
   pins: [] as Array<{ item_type: string; item_id: string }>,
   updateProject: vi.fn(),
   deleteProject: vi.fn(),
+  attachWorkInbox: vi.fn(),
+  ignoreWorkInbox: vi.fn(),
   createPin: vi.fn(),
   deletePin: vi.fn(),
   openModal: vi.fn(),
@@ -68,6 +70,20 @@ vi.mock("@multica/core/pins", () => ({
   pinListOptions: () => ({ queryKey: ["pins"] }),
   useCreatePin: () => ({ mutate: mocks.createPin }),
   useDeletePin: () => ({ mutate: mocks.deletePin }),
+}));
+
+vi.mock("@multica/core/work-entry", () => ({
+  workInboxOptions: () => ({ queryKey: ["work-inbox"] }),
+  useAttachWorkInbox: () => ({
+    mutate: mocks.attachWorkInbox,
+    isPending: false,
+    variables: null,
+  }),
+  useIgnoreWorkInbox: () => ({
+    mutate: mocks.ignoreWorkInbox,
+    isPending: false,
+    variables: null,
+  }),
 }));
 
 vi.mock("@multica/core/hooks", () => ({

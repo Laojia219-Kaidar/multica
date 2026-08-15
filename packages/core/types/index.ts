@@ -278,6 +278,21 @@ export {
   COMPANY_OPS_ORGANIZATION_SCHEMA_VERSION,
 } from "./companyops";
 export type {
+  WorkActorType,
+  WorkInboxItem,
+  WorkAttachRequest,
+  WorkAttachResult,
+  WorkIgnoreRequest,
+  WorkIgnoreResult,
+  WorkStatusResult,
+  WorkforceBaseRuntimeRow,
+  WorkforceBaseRuntimeResponse,
+  WorkParticipant,
+  ProjectParticipantsSource,
+  ProjectParticipantsData,
+} from "./work-entry";
+export { WORKFORCE_BASE_RUNTIME_SCHEMA_VERSION } from "./work-entry";
+export type {
   BillingBalance,
   BillingTransaction,
   BillingTransactionsPage,
