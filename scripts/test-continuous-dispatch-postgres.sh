@@ -56,14 +56,23 @@ container_id="$(docker run -d --rm --name "$container_name" \
   -p "127.0.0.1:${test_port}:5432" \
   pgvector/pgvector:pg17)"
 
+ready=false
 for _ in $(seq 1 30); do
-  if docker exec "$container_name" pg_isready -U hivecrew_test -d "$database_name" >/dev/null 2>&1; then
-    break
-  fi
-  sleep 1
+	if docker exec "$container_name" pg_isready -U hivecrew_test -d "$database_name" >/dev/null 2>&1; then
+		# The image briefly accepts a local probe during its initdb handoff on
+		# some Docker Desktop runs. Require a second clean probe before applying
+		# migrations so the integration test never mistakes that transition for a
+		# stable database.
+		sleep 1
+		if docker exec "$container_name" pg_isready -U hivecrew_test -d "$database_name" >/dev/null 2>&1; then
+			ready=true
+			break
+		fi
+	fi
+	sleep 1
 done
 
-if ! docker exec "$container_name" pg_isready -U hivecrew_test -d "$database_name" >/dev/null 2>&1; then
+if [[ "$ready" != "true" ]]; then
   echo "isolated PostgreSQL did not become ready" >&2
   exit 1
 fi

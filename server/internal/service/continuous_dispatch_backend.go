@@ -174,6 +174,13 @@ func (tx *productionContinuousDispatchTx) VerifyReviewSource(
 		(sourceTask.HandoffNote.Valid && strings.HasPrefix(sourceTask.HandoffNote.String, "review_dispatch ")) {
 		return ErrContinuousDispatchReviewLineageDrift
 	}
+	// The reviewer must be independent from the completed implementation
+	// author. Keep this in the transaction-local source check rather than
+	// trusting an upstream selector: every review entry point must preserve the
+	// same non-self-review invariant before it can create a Task or receipt.
+	if req.Route.LocalAgentID == sourceTask.AgentID {
+		return ErrContinuousDispatchReviewLineageDrift
+	}
 	var contextValue shadowTaskContext
 	if len(sourceTask.Context) == 0 || json.Unmarshal(sourceTask.Context, &contextValue) != nil ||
 		!contextValue.ContinuousDispatch.Complete() || contextValue.ContinuousDispatch.Stage != "implementation" ||
