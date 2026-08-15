@@ -3,6 +3,7 @@ import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { I18nProvider } from "@multica/core/i18n/react";
+import { configStore } from "@multica/core/config";
 import enCommon from "@multica/views/locales/en/common.json";
 import enAuth from "@multica/views/locales/en/auth.json";
 import enSettings from "@multica/views/locales/en/settings.json";
@@ -25,6 +26,7 @@ const {
   mockSendCode,
   mockVerifyCode,
   mockIssueCliToken,
+  mockStartLocalOperatorSession,
   mockListWorkspaces,
   mockListMyInvitations,
   mockPush,
@@ -35,6 +37,7 @@ const {
   mockSendCode: vi.fn(),
   mockVerifyCode: vi.fn(),
   mockIssueCliToken: vi.fn(),
+  mockStartLocalOperatorSession: vi.fn(),
   mockListWorkspaces: vi.fn(),
   mockListMyInvitations: vi.fn(),
   mockPush: vi.fn(),
@@ -91,6 +94,7 @@ vi.mock("@multica/core/api", () => ({
     setToken: vi.fn(),
     getMe: vi.fn(),
     issueCliToken: mockIssueCliToken,
+    startLocalOperatorSession: mockStartLocalOperatorSession,
   },
 }));
 
@@ -102,6 +106,10 @@ describe("LoginPage", () => {
     searchParamsState.params = new URLSearchParams();
     authStateRef.state.user = null;
     authStateRef.state.isLoading = false;
+    configStore.setState({
+      localOperatorSessionAvailable: false,
+      authConfigLoaded: true,
+    });
     mockListWorkspaces.mockResolvedValue([]);
     mockListMyInvitations.mockResolvedValue([]);
   });
@@ -115,6 +123,22 @@ describe("LoginPage", () => {
     expect(
       screen.getByRole("button", { name: "Continue" })
     ).toBeInTheDocument();
+  });
+
+  it("automatically opens an advertised local operator session", async () => {
+    configStore.setState({
+      localOperatorSessionAvailable: true,
+      authConfigLoaded: true,
+    });
+    mockStartLocalOperatorSession.mockReturnValueOnce(new Promise(() => {}));
+
+    render(<LoginPage />, { wrapper: createWrapper() });
+
+    await waitFor(() => {
+      expect(mockStartLocalOperatorSession).toHaveBeenCalledTimes(1);
+    });
+    expect(screen.getByText("正在进入本地工作台")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Email")).not.toBeInTheDocument();
   });
 
   it("does not call sendCode when email is empty", async () => {

@@ -104,6 +104,41 @@ func TestGetConfigIncludesRuntimeAuthConfig(t *testing.T) {
 	}
 }
 
+func TestGetConfigOnlyAdvertisesLocalOperatorSessionToLoopbackCandidate(t *testing.T) {
+	origCfg := testHandler.cfg
+	t.Cleanup(func() { testHandler.cfg = origCfg })
+	testHandler.cfg.LocalOperatorSessionEnabled = true
+	testHandler.cfg.LocalOperatorUserID = parseUUID(testUserID)
+	t.Setenv("APP_ENV", "development")
+
+	fetch := func(remoteAddr string) AppConfig {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, "/api/config", nil)
+		req.RemoteAddr = remoteAddr
+		w := httptest.NewRecorder()
+		testHandler.GetConfig(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("GetConfig: expected 200, got %d: %s", w.Code, w.Body.String())
+		}
+		var cfg AppConfig
+		if err := json.Unmarshal(w.Body.Bytes(), &cfg); err != nil {
+			t.Fatalf("decode config: %v", err)
+		}
+		return cfg
+	}
+
+	if !fetch("127.0.0.1:3210").LocalOperatorSessionAvailable {
+		t.Fatal("loopback candidate config must advertise the local session capability")
+	}
+	if fetch("192.0.2.1:3210").LocalOperatorSessionAvailable {
+		t.Fatal("non-loopback config must not advertise the local session capability")
+	}
+	t.Setenv("APP_ENV", "production")
+	if fetch("127.0.0.1:3210").LocalOperatorSessionAvailable {
+		t.Fatal("production config must not advertise the local session capability")
+	}
+}
+
 func TestGetConfigHonorsVCSIntegrationSwitch(t *testing.T) {
 	origCfg := testHandler.cfg
 	t.Cleanup(func() { testHandler.cfg = origCfg })

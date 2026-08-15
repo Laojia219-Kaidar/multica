@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/multica-ai/multica/server/internal/analytics"
+	"github.com/multica-ai/multica/server/internal/auth"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/realtime"
 	"github.com/multica-ai/multica/server/internal/service"
@@ -2701,6 +2702,68 @@ func TestVerifyCode(t *testing.T) {
 	}
 	if resp.User.Email != email {
 		t.Fatalf("VerifyCode: expected email '%s', got '%s'", email, resp.User.Email)
+	}
+}
+
+func TestStartLocalOperatorSessionIsLoopbackOriginAndEnvironmentBound(t *testing.T) {
+	origCfg := testHandler.cfg
+	t.Cleanup(func() {
+		testHandler.cfg = origCfg
+	})
+	t.Setenv("APP_ENV", "development")
+	testHandler.cfg.LocalOperatorSessionEnabled = true
+	testHandler.cfg.LocalOperatorUserID = parseUUID(testUserID)
+
+	loopbackRequest := func() *http.Request {
+		req := httptest.NewRequest(http.MethodPost, "/auth/local-operator-session", nil)
+		req.RemoteAddr = "127.0.0.1:43123"
+		req.Header.Set("Origin", "http://127.0.0.1:13512")
+		return req
+	}
+
+	w := httptest.NewRecorder()
+	testHandler.StartLocalOperatorSession(w, loopbackRequest())
+	if w.Code != http.StatusNoContent || w.Body.Len() != 0 {
+		t.Fatalf("StartLocalOperatorSession: expected empty 204, got %d: %s", w.Code, w.Body.String())
+	}
+	if got := w.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("Cache-Control: want no-store, got %q", got)
+	}
+	var foundSessionCookie bool
+	for _, cookie := range w.Result().Cookies() {
+		if cookie.Name == auth.AuthCookieName && cookie.HttpOnly {
+			foundSessionCookie = true
+		}
+	}
+	if !foundSessionCookie {
+		t.Fatal("local session must issue the normal HttpOnly browser session cookie")
+	}
+
+	for _, tc := range []struct {
+		name   string
+		mutate func(*http.Request)
+	}{
+		{"non-loopback", func(req *http.Request) { req.RemoteAddr = "192.0.2.1:43123" }},
+		{"forwarded", func(req *http.Request) { req.Header.Set("X-Forwarded-For", "198.51.100.10") }},
+		{"missing-origin", func(req *http.Request) { req.Header.Del("Origin") }},
+		{"non-loopback-origin", func(req *http.Request) { req.Header.Set("Origin", "http://localhost.evil.com") }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			req := loopbackRequest()
+			tc.mutate(req)
+			testHandler.StartLocalOperatorSession(w, req)
+			if w.Code != http.StatusNotFound {
+				t.Fatalf("%s: expected 404, got %d", tc.name, w.Code)
+			}
+		})
+	}
+
+	t.Setenv("APP_ENV", "production")
+	w = httptest.NewRecorder()
+	testHandler.StartLocalOperatorSession(w, loopbackRequest())
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("production local session: expected 404, got %d", w.Code)
 	}
 }
 

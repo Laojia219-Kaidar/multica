@@ -9,6 +9,8 @@ interface ConfigState {
   cdnSigned: boolean;
   allowSignup: boolean;
   googleClientId: string;
+  localOperatorSessionAvailable: boolean;
+  authConfigLoaded: boolean;
   daemonServerUrl: string;
   daemonAppUrl: string;
   // Self-host gate (#3433): when true, every "Create workspace" affordance
@@ -29,6 +31,7 @@ interface ConfigState {
   setAuthConfig: (config: {
     allowSignup: boolean;
     googleClientId?: string;
+    localOperatorSessionAvailable?: boolean;
     workspaceCreationDisabled?: boolean;
     vcsIntegrationAvailable?: boolean;
   }) => void;
@@ -38,6 +41,7 @@ interface ConfigState {
   }) => void;
   setFeatureFlags: (flags?: Record<string, boolean>) => void;
   setServerVersion: (version?: string) => void;
+  setAuthConfigLoaded: () => void;
 }
 
 export const configStore = createStore<ConfigState>((set) => ({
@@ -45,6 +49,8 @@ export const configStore = createStore<ConfigState>((set) => ({
   cdnSigned: false,
   allowSignup: true,
   googleClientId: "",
+  localOperatorSessionAvailable: false,
+  authConfigLoaded: false,
   daemonServerUrl: "",
   daemonAppUrl: "",
   workspaceCreationDisabled: false,
@@ -55,9 +61,18 @@ export const configStore = createStore<ConfigState>((set) => ({
   setAuthConfig: ({
     allowSignup,
     googleClientId = "",
+    localOperatorSessionAvailable = false,
     workspaceCreationDisabled = false,
     vcsIntegrationAvailable = false,
-  }) => set({ allowSignup, googleClientId, workspaceCreationDisabled, vcsIntegrationAvailable }),
+  }) =>
+    set({
+      allowSignup,
+      googleClientId,
+      localOperatorSessionAvailable,
+      workspaceCreationDisabled,
+      vcsIntegrationAvailable,
+    }),
+  setAuthConfigLoaded: () => set({ authConfigLoaded: true }),
   setDaemonConfig: ({ daemonServerUrl = "", daemonAppUrl = "" }) =>
     set({ daemonServerUrl, daemonAppUrl }),
   setFeatureFlags: (flags = {}) => set({ featureFlags: { ...flags } }),

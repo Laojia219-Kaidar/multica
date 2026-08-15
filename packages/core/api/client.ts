@@ -1289,6 +1289,10 @@ export class ApiClient {
     });
   }
 
+  async startLocalOperatorSession(): Promise<void> {
+    await this.fetch("/auth/local-operator-session", { method: "POST" });
+  }
+
   async googleLogin(code: string, redirectUri: string): Promise<LoginResponse> {
     return this.fetch("/auth/google", {
       method: "POST",

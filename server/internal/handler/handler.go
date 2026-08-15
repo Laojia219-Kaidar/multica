@@ -61,6 +61,16 @@ type Config struct {
 	AllowSignup         bool
 	AllowedEmails       []string
 	AllowedEmailDomains []string
+	// LocalOperatorSessionEnabled permits one already-existing, explicitly
+	// configured local operator to open a normal browser session without the
+	// email-code transport. The endpoint additionally requires an explicit
+	// local/development/test environment, direct loopback peer, and loopback
+	// Origin. It is never enabled in production.
+	LocalOperatorSessionEnabled bool
+	// LocalOperatorUserID is the sole existing identity the local session may
+	// resolve. It is server-only configuration and must never be returned from
+	// /api/config or placed in a frontend bundle.
+	LocalOperatorUserID pgtype.UUID
 	// DisableWorkspaceCreation, when true, makes POST /api/workspaces return
 	// 403 for every caller. There is no role/owner exception because the repo
 	// has no platform-admin concept; operators bootstrap the workspace with
