@@ -61,6 +61,31 @@ func escapeLike(s string) string {
 	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(s)
 }
 
+// nullString returns nil for an empty string (nullable text column) and the
+// string itself otherwise.
+func nullString(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
+}
+
+// parseTimestamptz parses an RFC3339 string into a nullable pgtype.Timestamptz.
+// An empty string yields an invalid (NULL) value.
+func parseTimestamptz(s string) (pgtype.Timestamptz, error) {
+	var t pgtype.Timestamptz
+	if strings.TrimSpace(s) == "" {
+		return t, nil
+	}
+	tm, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return t, err
+	}
+	t.Time = tm
+	t.Valid = true
+	return t, nil
+}
+
 func (p *PGStore) LookupWorkOrder(ctx context.Context, workspaceID, workOrderRef string) (*ExternalWorkOrderLink, error) {
 	ws, err := p.uuid(workspaceID)
 	if err != nil {
@@ -383,12 +408,77 @@ func (p *PGStore) FindReceiptByWorkRef(ctx context.Context, workspaceID, workRef
 	return nil, rows.Err()
 }
 
-func (p *PGStore) AppendEvent(_ context.Context, _ EventRecord) (*EventRecord, error) {
-	return nil, ErrUnavailable
+func (p *PGStore) AppendEvent(ctx context.Context, event EventRecord) (*EventRecord, error) {
+	ws, err := p.uuid(event.WorkspaceID)
+	if err != nil {
+		return nil, ErrInvalidRequest
+	}
+	payloadJSON, err := json.Marshal(event.EventPayload)
+	if err != nil {
+		return nil, fmt.Errorf("encode event payload: %w", err)
+	}
+	occurredAt, err := parseTimestamptz(event.OccurredAt)
+	if err != nil {
+		return nil, fmt.Errorf("parse occurred_at: %w", err)
+	}
+	observedAt, err := parseTimestamptz(event.ObservedAt)
+	if err != nil {
+		return nil, fmt.Errorf("parse observed_at: %w", err)
+	}
+	_, err = p.exec.Exec(ctx,
+		"INSERT INTO work_event (workspace_id, work_ref, session_id, run_id, event_type, event_payload, blocker_reason, receiver, idempotency_key, occurred_at, observed_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT (workspace_id, work_ref, idempotency_key) DO NOTHING",
+		ws, event.WorkRef, nullString(event.SessionID), nullString(event.RunID), string(event.EventType),
+		payloadJSON, nullString(event.BlockerReason), nullString(event.Receiver), event.IdempotencyKey, occurredAt, observedAt)
+	if err != nil {
+		return nil, fmt.Errorf("append work event: %w", err)
+	}
+	stored, err := p.GetEvent(ctx, event.WorkspaceID, event.WorkRef, event.IdempotencyKey)
+	if err != nil {
+		return nil, err
+	}
+	if stored == nil {
+		return nil, fmt.Errorf("work event insert did not persist")
+	}
+	if !eventEqual(stored, &event) {
+		return nil, ErrConflict
+	}
+	return stored, nil
 }
 
-func (p *PGStore) GetEvent(_ context.Context, _, _, _ string) (*EventRecord, error) {
-	return nil, ErrUnavailable
+func (p *PGStore) GetEvent(ctx context.Context, workspaceID, workRef, idempotencyKey string) (*EventRecord, error) {
+	ws, err := p.uuid(workspaceID)
+	if err != nil {
+		return nil, ErrInvalidRequest
+	}
+	var (
+		rec           EventRecord
+		eventType     string
+		payloadJSON   []byte
+		blockerReason *string
+		receiver      *string
+		occurredAt    pgtype.Timestamptz
+		observedAt    pgtype.Timestamptz
+	)
+	err = p.exec.QueryRow(ctx,
+		"SELECT work_ref, session_id, run_id, event_type, event_payload, blocker_reason, receiver, idempotency_key, occurred_at, observed_at FROM work_event WHERE workspace_id = $1 AND work_ref = $2 AND idempotency_key = $3",
+		ws, workRef, idempotencyKey).Scan(&rec.WorkRef, &rec.SessionID, &rec.RunID, &eventType,
+		&payloadJSON, &blockerReason, &receiver, &rec.IdempotencyKey, &occurredAt, &observedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read work event: %w", err)
+	}
+	rec.WorkspaceID = workspaceID
+	rec.EventType = WorkEventType(eventType)
+	_ = json.Unmarshal(payloadJSON, &rec.EventPayload)
+	if blockerReason != nil {
+		rec.BlockerReason = *blockerReason
+	}
+	if receiver != nil {
+		rec.Receiver = *receiver
+	}
+	return &rec, nil
 }
 
 func (p *PGStore) UpsertHeartbeat(ctx context.Context, hb HeartbeatRecord) error {
@@ -408,24 +498,91 @@ func (p *PGStore) UpsertHeartbeat(ctx context.Context, hb HeartbeatRecord) error
 	})
 }
 
-func (p *PGStore) SaveHandoff(_ context.Context, _ HandoffRecord) error {
-	return ErrUnavailable
+func (p *PGStore) SaveHandoff(ctx context.Context, h HandoffRecord) error {
+	return p.saveDocument(ctx, h.WorkspaceID, h.WorkRef, "handoff", h.Package, false)
 }
 
-func (p *PGStore) SaveCompletion(_ context.Context, _ CompletionRecord) error {
-	return ErrUnavailable
+func (p *PGStore) SaveCompletion(ctx context.Context, c CompletionRecord) error {
+	return p.saveDocument(ctx, c.WorkspaceID, c.WorkRef, "completion", c.Package, c.RoutedToReview)
 }
 
-func (p *PGStore) ListInbox(_ context.Context, _ string) ([]InboxItem, error) {
-	return nil, ErrUnavailable
+func (p *PGStore) saveDocument(ctx context.Context, workspaceID, workRef, kind string, pkg any, routed bool) error {
+	ws, err := p.uuid(workspaceID)
+	if err != nil {
+		return ErrInvalidRequest
+	}
+	jsonPkg, err := json.Marshal(pkg)
+	if err != nil {
+		return fmt.Errorf("encode work document: %w", err)
+	}
+	_, err = p.exec.Exec(ctx,
+		"INSERT INTO work_document (workspace_id, work_ref, kind, package, routed_to_review) VALUES ($1,$2,$3,$4,$5) ON CONFLICT (workspace_id, work_ref, kind) DO NOTHING",
+		ws, workRef, kind, jsonPkg, routed)
+	if err != nil {
+		return fmt.Errorf("save work document: %w", err)
+	}
+	return nil
 }
 
-func (p *PGStore) AttachInbox(_ context.Context, _, _, _, _ string) error {
-	return ErrUnavailable
+func (p *PGStore) ListInbox(ctx context.Context, workspaceID string) ([]InboxItem, error) {
+	ws, err := p.uuid(workspaceID)
+	if err != nil {
+		return nil, ErrInvalidRequest
+	}
+	rows, err := p.exec.Query(ctx,
+		"SELECT id, COALESCE(work_ref, '') FROM work_inbox WHERE workspace_id = $1 AND state = 'unclaimed' ORDER BY created_at",
+		ws)
+	if err != nil {
+		return nil, fmt.Errorf("list work inbox: %w", err)
+	}
+	defer rows.Close()
+	var out []InboxItem
+	for rows.Next() {
+		var id pgtype.UUID
+		var ref string
+		if err := rows.Scan(&id, &ref); err != nil {
+			return nil, err
+		}
+		out = append(out, InboxItem{ID: util.UUIDToString(id), WorkspaceID: workspaceID, WorkRef: ref})
+	}
+	return out, rows.Err()
 }
 
-func (p *PGStore) IgnoreInbox(_ context.Context, _, _, _ string) error {
-	return ErrUnavailable
+func (p *PGStore) AttachInbox(ctx context.Context, workspaceID, inboxID, projectID, issueID string) error {
+	return p.setInboxState(ctx, workspaceID, inboxID, "attached", projectID, issueID)
+}
+
+func (p *PGStore) IgnoreInbox(ctx context.Context, workspaceID, inboxID, reason string) error {
+	return p.setInboxState(ctx, workspaceID, inboxID, "ignored", "", "")
+}
+
+func (p *PGStore) setInboxState(ctx context.Context, workspaceID, inboxID, state, projectID, issueID string) error {
+	ws, err := p.uuid(workspaceID)
+	if err != nil {
+		return ErrInvalidRequest
+	}
+	id, err := p.uuid(inboxID)
+	if err != nil {
+		return ErrInvalidRequest
+	}
+	var projectUUID, issueUUID pgtype.UUID
+	if projectID != "" {
+		if projectUUID, err = p.uuid(projectID); err != nil {
+			return ErrInvalidRequest
+		}
+	}
+	if issueID != "" {
+		if issueUUID, err = p.uuid(issueID); err != nil {
+			return ErrInvalidRequest
+		}
+	}
+	_, err = p.exec.Exec(ctx,
+		"UPDATE work_inbox SET state = $3, project_id = $4, issue_id = $5 WHERE workspace_id = $1 AND id = $2 AND state = 'unclaimed'",
+		ws, id, state, projectUUID, issueUUID)
+	if err != nil {
+		return fmt.Errorf("update work inbox: %w", err)
+	}
+	return nil
 }
 
 func (p *PGStore) CreateWork(ctx context.Context, req CreateWorkRequest) (*CreateWorkResult, error) {

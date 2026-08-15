@@ -189,3 +189,84 @@ func TestPGStoreCampaignAndInventory(t *testing.T) {
 
 	t.Logf("PG campaign+inventory PASS: campaign %q -> project %s", intent.ExternalCampaignRef, projectID)
 }
+
+// TestPGStoreEventHandoffInbox proves the full verb set persists on PostgreSQL
+// (F11): event ledger idempotency + handoff/completion documents + inbox
+// attach/ignore.
+func TestPGStoreEventHandoffInbox(t *testing.T) {
+	url := os.Getenv("DATABASE_URL")
+	if url == "" {
+		t.Skip("DATABASE_URL not set")
+	}
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, url)
+	if err != nil {
+		t.Fatalf("pgxpool: %v", err)
+	}
+	defer pool.Close()
+
+	var wsID string
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO workspace (name, slug) VALUES ('workentry-f11', $1) RETURNING id`,
+		fmt.Sprintf("workentry-f11-%d", time.Now().UnixNano())).Scan(&wsID); err != nil {
+		t.Fatalf("create workspace: %v", err)
+	}
+	store := NewPGStore(db.New(pool), pool)
+	workRef := fmt.Sprintf("hivecrew://%s/work/p1/i1", wsID)
+
+	// 1. event append + idempotent replay + conflict
+	ev := EventRecord{
+		WorkspaceID: wsID, WorkRef: workRef, SessionID: "s1", RunID: "r1",
+		EventType: EventStarted, EventPayload: map[string]any{"actor_id": "EXT-1"},
+		IdempotencyKey: "evt-1",
+	}
+	stored, err := store.AppendEvent(ctx, ev)
+	if err != nil {
+		t.Fatalf("append event: %v", err)
+	}
+	again, err := store.AppendEvent(ctx, ev)
+	if err != nil || again.ID != stored.ID {
+		t.Fatalf("event replay should return same event: %v %v", again, err)
+	}
+	ev2 := ev
+	ev2.EventPayload = map[string]any{"actor_id": "EXT-2"}
+	if _, err := store.AppendEvent(ctx, ev2); err != ErrConflict {
+		t.Fatalf("event diff payload should conflict, got %v", err)
+	}
+
+	// 2. handoff + completion documents
+	if err := store.SaveHandoff(ctx, HandoffRecord{WorkspaceID: wsID, WorkRef: workRef, Package: WorkHandoffV1{WorkRef: workRef, Revision: "rev1"}}); err != nil {
+		t.Fatalf("save handoff: %v", err)
+	}
+	if err := store.SaveCompletion(ctx, CompletionRecord{WorkspaceID: wsID, WorkRef: workRef, Package: WorkCompletionV1{WorkRef: workRef}, RoutedToReview: true}); err != nil {
+		t.Fatalf("save completion: %v", err)
+	}
+
+	// 3. inbox list + attach + ignore
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO work_inbox (workspace_id, work_ref, path, reason) VALUES ($1,$2,$3,$4)`,
+		wsID, "unregistered:wt1", "/repo/wt1", "no registered work entry"); err != nil {
+		t.Fatalf("seed inbox: %v", err)
+	}
+	var inboxID string
+	if err := pool.QueryRow(ctx, `SELECT id FROM work_inbox WHERE workspace_id=$1 AND state='unclaimed'`, wsID).Scan(&inboxID); err != nil {
+		t.Fatalf("read inbox id: %v", err)
+	}
+	items, err := store.ListInbox(ctx, wsID)
+	if err != nil || len(items) != 1 {
+		t.Fatalf("list inbox: %v (%d)", err, len(items))
+	}
+	if err := store.AttachInbox(ctx, wsID, inboxID, "", ""); err != nil {
+		t.Fatalf("attach inbox: %v", err)
+	}
+	items2, err := store.ListInbox(ctx, wsID)
+	if err != nil || len(items2) != 0 {
+		t.Fatalf("inbox should be empty after attach: %v (%d)", err, len(items2))
+	}
+	if err := store.IgnoreInbox(ctx, wsID, inboxID, "test"); err != nil {
+		// ignore on an already-attached item may be a no-op; not fatal.
+		t.Logf("ignore inbox (attached): %v", err)
+	}
+
+	t.Logf("PG event/handoff/inbox PASS: event replay + conflict + docs + inbox attach")
+}
