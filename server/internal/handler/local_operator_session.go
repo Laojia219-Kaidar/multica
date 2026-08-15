@@ -51,7 +51,39 @@ func isDirectLoopbackRequest(r *http.Request) bool {
 		host = strings.TrimSpace(r.RemoteAddr)
 	}
 	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
+	if ip == nil {
+		return false
+	}
+	if ip.IsLoopback() {
+		return true
+	}
+	// Docker self-host: the same-machine Next.js frontend reaches the backend
+	// through the compose network, and host-originated requests traverse the
+	// bridge gateway (e.g. 172.17.0.1). Both show up as private-range source
+	// addresses that no off-machine client can produce on a loopback-bound
+	// deployment. Keep this narrower than RFC1918: the compose default pools
+	// and the bridge gateway only.
+	if isComposeNetworkSource(ip) {
+		return true
+	}
+	return false
+}
+
+// isComposeNetworkSource reports whether ip belongs to the Docker compose
+// default networks (172.16/12 and 10.x as used by compose's default address
+// pools) or the docker bridge gateway. Off-machine traffic can only appear
+// here if the operator published the backend port beyond loopback AND opened
+// a firewall path — both outside this deployment's contract.
+func isComposeNetworkSource(ip net.IP) bool {
+	if ip.To4() == nil {
+		return false
+	}
+	for _, cidr := range []string{"172.16.0.0/12", "10.0.0.0/8"} {
+		if _, network, err := net.ParseCIDR(cidr); err == nil && network.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 func isLoopbackOrigin(r *http.Request) bool {
