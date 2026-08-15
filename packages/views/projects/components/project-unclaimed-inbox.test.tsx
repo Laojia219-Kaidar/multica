@@ -49,7 +49,10 @@ describe("ProjectUnclaimedInbox", () => {
   it("lists work refs and states the no-progress rule", () => {
     render(
       <ProjectUnclaimedInbox
-        items={[makeInboxItem(), makeInboxItem({ ID: "inbox-2" })]}
+        items={[
+          makeInboxItem(),
+          makeInboxItem({ ID: "inbox-2", WorkRef: "hivecrew://ws-1/work/inbox/def456" }),
+        ]}
         projects={[makeProject("proj-1", "多基地经营中心")]}
         onAttach={vi.fn()}
         onIgnore={vi.fn()}

@@ -33,7 +33,7 @@ describe("ProjectParticipants", () => {
     render(<ProjectParticipants data={data} />);
 
     expect(screen.getByText("注册员工")).toBeInTheDocument();
-    expect(screen.getByText("DE-ALICE")).toBeInTheDocument();
+    expect(screen.getByTitle("员工编号")).toHaveTextContent("DE-ALICE");
     expect(screen.getByText("runtime-uuid")).toBeInTheDocument();
     expect(screen.getByText("qwen3.6-27b")).toBeInTheDocument();
     expect(screen.getByText("Mac mini M5X")).toBeInTheDocument();
