@@ -456,6 +456,31 @@ func (h *Handler) StartWorkflowInstance(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, "invalid body")
 		return
 	}
+	// The operations surface scopes instances by context.project_id and
+	// intentionally hides project-less ones, so a start without a Project
+	// reference would create an invisible instance (the 8/14 empty-ProjectID
+	// backlog). Same contract as StartPublishedWorkflowGraphInstance.
+	if req.Context.ProjectID == "" {
+		writeError(w, http.StatusBadRequest, "context.project_id is required")
+		return
+	}
+	projectUUID, err := uuid.Parse(req.Context.ProjectID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "context.project_id must be a canonical UUID")
+		return
+	}
+	workspaceUUID, err := uuid.Parse(workspaceID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "workspace scope is invalid")
+		return
+	}
+	if _, err := h.Queries.GetProjectInWorkspace(r.Context(), db.GetProjectInWorkspaceParams{
+		ID:          pgtype.UUID{Bytes: projectUUID, Valid: true},
+		WorkspaceID: pgtype.UUID{Bytes: workspaceUUID, Valid: true},
+	}); err != nil {
+		writeError(w, http.StatusBadRequest, "context.project_id is not a Project in the current workspace")
+		return
+	}
 	defID := req.DefinitionID
 	if defID == "" {
 		defID = workflow.ProjectLifecycleDefinition().ID
