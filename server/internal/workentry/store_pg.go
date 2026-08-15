@@ -2,6 +2,7 @@ package workentry
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -237,46 +238,40 @@ func (p *PGStore) getReceipt(ctx context.Context, exec pgExecutor, workspaceID, 
 		return nil, ErrInvalidRequest
 	}
 	var (
-		id            pgtype.UUID
-		projectID     pgtype.UUID
-		action        string
-		idemKey       string
-		payloadDigest string
-		taskID        pgtype.UUID
-		issueID       pgtype.UUID
+		projectID  pgtype.UUID
+		issueID    pgtype.UUID
+		taskID     pgtype.UUID
+		workRef    string
+		idemKey    string
+		digest     string
+		decision   string
+		actorJSON  []byte
+		intentJSON []byte
 	)
 	err = exec.QueryRow(ctx,
-		"SELECT id, project_id, action, idempotency_key, payload_digest, task_id, issue_id FROM project_lifecycle_receipt WHERE workspace_id = $1 AND idempotency_key = $2 AND action LIKE $3 ORDER BY created_at DESC LIMIT 1",
-		ws, dedupeKey, workRegisterActionPrefix+"%").Scan(&id, &projectID, &action, &idemKey, &payloadDigest, &taskID, &issueID)
+		"SELECT work_ref, dedupe_key, payload_digest, project_id, issue_id, task_id, decision, actor, intent FROM work_registration_receipt WHERE workspace_id = $1 AND dedupe_key = $2",
+		ws, dedupeKey).Scan(&workRef, &idemKey, &digest, &projectID, &issueID, &taskID, &decision, &actorJSON, &intentJSON)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("read work registration receipt: %w", err)
 	}
-	decision := DecisionContinued
-	switch strings.TrimPrefix(action, workRegisterActionPrefix) {
-	case "created":
-		decision = DecisionCreated
-	case "continued":
-		decision = DecisionContinued
-	default:
-		decision = DecisionContinued
-	}
-	projectStr, issueStr, taskStr := util.UUIDToString(projectID), util.UUIDToString(issueID), util.UUIDToString(taskID)
+	var actor WorkActorIdentityV1
+	var intent WorkIntentV1
+	_ = json.Unmarshal(actorJSON, &actor)
+	_ = json.Unmarshal(intentJSON, &intent)
 	return &ReceiptRecord{
 		WorkspaceID: workspaceID,
 		DedupeKey:   idemKey,
-		Digest:      payloadDigest,
-		// WorkRef is derived, not stored; recompute it from the persisted lineage
-		// so replay returns the exact same work_ref (VC-03). The actor/intent
-		// snapshot is NOT recoverable from project_lifecycle_receipt — that is a
-		// known gap deferred to the ≥400 work_registration_receipt join.
-		WorkRef:   FormatWorkRef(workspaceID, projectStr, issueStr, taskStr),
-		ProjectID: projectStr,
-		IssueID:   issueStr,
-		TaskID:    taskStr,
-		Decision:  decision,
+		Digest:      digest,
+		WorkRef:     workRef,
+		ProjectID:   util.UUIDToString(projectID),
+		IssueID:     util.UUIDToString(issueID),
+		TaskID:      util.UUIDToString(taskID),
+		Decision:    ResolutionDecision(decision),
+		Actor:       actor,
+		Intent:      intent,
 	}, nil
 }
 
@@ -291,22 +286,16 @@ func (p *PGStore) PutReceipt(ctx context.Context, receipt ReceiptRecord) error {
 // pool-backed PutReceipt and the transaction-backed register path. It returns
 // ErrConflict when the same dedupe key already holds a different digest.
 func (p *PGStore) putReceipt(ctx context.Context, exec pgExecutor, receipt ReceiptRecord) error {
-	// project_lifecycle_receipt requires project_id NOT NULL. For a continued
-	// work with no project, the existing object (issue/link) is the anchor;
-	// no receipt row is written in that case.
-	if strings.TrimSpace(receipt.ProjectID) == "" {
-		return nil
-	}
 	ws, err := p.uuid(receipt.WorkspaceID)
 	if err != nil {
 		return ErrInvalidRequest
 	}
-	projectID, err := p.uuid(receipt.ProjectID)
-	if err != nil {
-		return ErrInvalidRequest
+	var projectID, issueID, taskID pgtype.UUID
+	if receipt.ProjectID != "" {
+		if projectID, err = p.uuid(receipt.ProjectID); err != nil {
+			return ErrInvalidRequest
+		}
 	}
-	action := workRegisterActionPrefix + string(receipt.Decision)
-	var issueID, taskID pgtype.UUID
 	if receipt.IssueID != "" {
 		if issueID, err = p.uuid(receipt.IssueID); err != nil {
 			return ErrInvalidRequest
@@ -317,9 +306,17 @@ func (p *PGStore) putReceipt(ctx context.Context, exec pgExecutor, receipt Recei
 			return ErrInvalidRequest
 		}
 	}
+	actorJSON, err := json.Marshal(receipt.Actor)
+	if err != nil {
+		return fmt.Errorf("encode actor snapshot: %w", err)
+	}
+	intentJSON, err := json.Marshal(receipt.Intent)
+	if err != nil {
+		return fmt.Errorf("encode intent snapshot: %w", err)
+	}
 	_, err = exec.Exec(ctx,
-		"INSERT INTO project_lifecycle_receipt (workspace_id, project_id, action, idempotency_key, payload_digest, before_status, after_status, task_id, issue_id, blockers, applied, replayed) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'[]'::jsonb,true,false) ON CONFLICT (workspace_id, idempotency_key) DO NOTHING",
-		ws, projectID, action, receipt.DedupeKey, receipt.Digest, "", "", taskID, issueID)
+		"INSERT INTO work_registration_receipt (workspace_id, work_ref, dedupe_key, payload_digest, project_id, issue_id, task_id, decision, actor, intent, applied, replayed) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,true,false) ON CONFLICT (workspace_id, dedupe_key) DO NOTHING",
+		ws, receipt.WorkRef, receipt.DedupeKey, receipt.Digest, projectID, issueID, taskID, string(receipt.Decision), actorJSON, intentJSON)
 	if err != nil {
 		return fmt.Errorf("insert work registration receipt: %w", err)
 	}
@@ -347,29 +344,33 @@ func (p *PGStore) FindReceiptByWorkRef(ctx context.Context, workspaceID, workRef
 		return nil, ErrInvalidRequest
 	}
 	rows, err := p.exec.Query(ctx,
-		"SELECT idempotency_key, payload_digest, project_id, issue_id, task_id, action FROM project_lifecycle_receipt WHERE workspace_id = $1 AND action LIKE $2",
-		ws, workRegisterActionPrefix+"%")
+		"SELECT work_ref, dedupe_key, payload_digest, project_id, issue_id, task_id, decision, actor, intent FROM work_registration_receipt WHERE workspace_id = $1 AND work_ref = $2",
+		ws, workRef)
 	if err != nil {
 		return nil, fmt.Errorf("scan work registration receipts: %w", err)
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var idemKey, digest, action string
+		var storedRef, idemKey, digest, decision string
 		var projectID, issueID, taskID pgtype.UUID
-		if err := rows.Scan(&idemKey, &digest, &projectID, &issueID, &taskID, &action); err != nil {
+		var actorJSON, intentJSON []byte
+		if err := rows.Scan(&storedRef, &idemKey, &digest, &projectID, &issueID, &taskID, &decision, &actorJSON, &intentJSON); err != nil {
 			return nil, err
 		}
-		decision := DecisionContinued
-		if strings.HasSuffix(action, ":created") {
-			decision = DecisionCreated
+		if storedRef != workRef {
+			continue
 		}
+		var actor WorkActorIdentityV1
+		var intent WorkIntentV1
+		_ = json.Unmarshal(actorJSON, &actor)
+		_ = json.Unmarshal(intentJSON, &intent)
 		rec := &ReceiptRecord{
-			WorkspaceID: workspaceID, DedupeKey: idemKey, Digest: digest,
+			WorkspaceID: workspaceID, DedupeKey: idemKey, Digest: digest, WorkRef: storedRef,
 			ProjectID: util.UUIDToString(projectID), IssueID: util.UUIDToString(issueID),
-			TaskID: util.UUIDToString(taskID), Decision: decision,
+			TaskID: util.UUIDToString(taskID), Decision: ResolutionDecision(decision),
+			Actor: actor, Intent: intent,
 		}
-		rebuilt := FormatWorkRef(workspaceID, rec.ProjectID, rec.IssueID, rec.TaskID)
-		if rebuilt == workRef {
+		if rec.WorkRef == workRef {
 			return rec, nil
 		}
 	}

@@ -370,7 +370,7 @@ func (s *Service) Event(ctx context.Context, event WorkEventV1) (EventResult, er
 	}
 	rec := EventRecord{
 		ID:             event.EventID,
-		WorkspaceID:    workspaceFromWorkRef(event.WorkRef),
+		WorkspaceID:    WorkspaceFromWorkRef(event.WorkRef),
 		WorkRef:        event.WorkRef,
 		SessionID:      event.SessionID,
 		RunID:          event.RunID,
@@ -390,7 +390,7 @@ func (s *Service) Event(ctx context.Context, event WorkEventV1) (EventResult, er
 }
 
 // workspaceFromWorkRef extracts the workspace id from hivecrew://<ws>/...
-func workspaceFromWorkRef(workRef string) string {
+func WorkspaceFromWorkRef(workRef string) string {
 	rest := strings.TrimPrefix(workRef, "hivecrew://")
 	if idx := strings.Index(rest, "/"); idx > 0 {
 		return rest[:idx]
@@ -440,7 +440,7 @@ func (s *Service) Handoff(ctx context.Context, pkg WorkHandoffV1) (HandoffResult
 		return HandoffResult{}, err
 	}
 	if err := s.store.SaveHandoff(ctx, HandoffRecord{
-		WorkspaceID: workspaceFromWorkRef(pkg.WorkRef),
+		WorkspaceID: WorkspaceFromWorkRef(pkg.WorkRef),
 		WorkRef:     pkg.WorkRef,
 		Package:     pkg,
 	}); err != nil {
@@ -483,7 +483,7 @@ func (s *Service) Finish(ctx context.Context, c WorkCompletionV1) (CompletionRes
 		return CompletionResult{}, err
 	}
 	if err := s.store.SaveCompletion(ctx, CompletionRecord{
-		WorkspaceID:    workspaceFromWorkRef(c.WorkRef),
+		WorkspaceID:    WorkspaceFromWorkRef(c.WorkRef),
 		WorkRef:        c.WorkRef,
 		Package:        c,
 		RoutedToReview: true,

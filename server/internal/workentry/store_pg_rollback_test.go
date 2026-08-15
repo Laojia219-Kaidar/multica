@@ -60,8 +60,8 @@ func TestPGStoreCommitWorkRegistrationRollback(t *testing.T) {
 	digestA := "sha256:" + fmt.Sprintf("%064x", 1)
 	digestB := "sha256:" + fmt.Sprintf("%064x", 2)
 	if _, err := pool.Exec(ctx,
-		`INSERT INTO project_lifecycle_receipt (workspace_id, project_id, action, idempotency_key, payload_digest, before_status, after_status) VALUES ($1,$2,'work_register:created',$3,$4,'','')`,
-		wsID, seedProjectID, dedupeKey, digestA); err != nil {
+		`INSERT INTO work_registration_receipt (workspace_id, work_ref, dedupe_key, payload_digest, project_id, decision, actor, intent) VALUES ($1,$2,$3,$4,$5,'created','{}'::jsonb,'{}'::jsonb)`,
+		wsID, fmt.Sprintf("hivecrew://%s/work/%s", wsID, seedProjectID), dedupeKey, digestA, seedProjectID); err != nil {
 		t.Fatalf("seed receipt: %v", err)
 	}
 

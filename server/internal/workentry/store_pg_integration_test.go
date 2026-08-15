@@ -96,6 +96,11 @@ func TestPGStoreRegisterIdempotency(t *testing.T) {
 	if !r2.Replay.Replayed || r2.WorkRef != r1.WorkRef {
 		t.Fatalf("register 2 should replay the same work_ref, got %+v", r2)
 	}
+	// F3: replay must return the original actor_identity snapshot (contract §4.3).
+	if r2.ActorIdentity.ActorID != r1.ActorIdentity.ActorID || r2.ActorIdentity.ActorType != ActorExternalAgent {
+		t.Fatalf("replay must preserve actor_identity, got %+v want %+v", r2.ActorIdentity, r1.ActorIdentity)
+	}
+
 
 	// 4. register same key DIFFERENT digest -> 409 conflict
 	intent2 := intent

@@ -57,6 +57,18 @@ func decodeWorkRequest(w http.ResponseWriter, r *http.Request, dst any) bool {
 	return true
 }
 
+// requireWorkRefTenant fails closed (403) when the workspace embedded in a
+// caller-supplied work_ref does not match the authenticated workspace member
+// tenant. Caller-supplied work_ref is never authority for tenant isolation.
+func (h *Handler) requireWorkRefTenant(w http.ResponseWriter, r *http.Request, workRef string) bool {
+	ws := workentry.WorkspaceFromWorkRef(workRef)
+	if ws == "" || ws != h.resolveWorkspaceID(r) {
+		writeJSON(w, http.StatusForbidden, workEntryErrorResponse{Error: "work_ref workspace does not match authenticated tenant", ReasonCode: "forbidden"})
+		return false
+	}
+	return true
+}
+
 // requireWorkEntry fails closed with 503 when the kernel service is unwired.
 func (h *Handler) requireWorkEntry(w http.ResponseWriter) bool {
 	if h.WorkEntry == nil {
@@ -173,6 +185,9 @@ func (h *Handler) WorkEntryStart(w http.ResponseWriter, r *http.Request) {
 	if !h.scopeWorkspace(w, r, &req.WorkspaceID) {
 		return
 	}
+	if !h.requireWorkRefTenant(w, r, req.WorkRef) {
+		return
+	}
 	res, err := h.WorkEntry.Start(r.Context(), workentry.StartRequest(req))
 	if err != nil {
 		writeWorkEntryError(w, err)
@@ -226,6 +241,9 @@ func (h *Handler) WorkEntryEvent(w http.ResponseWriter, r *http.Request) {
 	if !decodeWorkRequest(w, r, &event) {
 		return
 	}
+	if !h.requireWorkRefTenant(w, r, event.WorkRef) {
+		return
+	}
 	res, err := h.WorkEntry.Event(r.Context(), event)
 	if err != nil {
 		writeWorkEntryError(w, err)
@@ -247,6 +265,9 @@ func (h *Handler) WorkEntryHandoff(w http.ResponseWriter, r *http.Request) {
 	if !decodeWorkRequest(w, r, &pkg) {
 		return
 	}
+	if !h.requireWorkRefTenant(w, r, pkg.WorkRef) {
+		return
+	}
 	res, err := h.WorkEntry.Handoff(r.Context(), pkg)
 	if err != nil {
 		writeWorkEntryError(w, err)
@@ -262,6 +283,9 @@ func (h *Handler) WorkEntryFinish(w http.ResponseWriter, r *http.Request) {
 	}
 	var c workentry.WorkCompletionV1
 	if !decodeWorkRequest(w, r, &c) {
+		return
+	}
+	if !h.requireWorkRefTenant(w, r, c.WorkRef) {
 		return
 	}
 	res, err := h.WorkEntry.Finish(r.Context(), c)
