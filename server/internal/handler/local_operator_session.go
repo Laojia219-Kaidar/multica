@@ -42,9 +42,16 @@ func hasForwardingHeader(r *http.Request) bool {
 // isDirectLoopbackRequest refuses every proxied request. A backend behind a
 // reverse proxy sees the proxy as loopback, so trusting forwarding headers
 // would turn this candidate-only entry into a remote session issuer.
+//
+// One same-machine exception: the self-host Next.js frontend. Its rewrite
+// layer stamps X-Forwarded-* on every hop, and its forwarding chain always
+// originates on the compose network or the host itself. Accept that chain
+// only when the first forwarded hop is a compose-network/loopback source AND
+// the forwarded Host is loopback — a real reverse proxy fronting a public
+// origin fails both checks.
 func isDirectLoopbackRequest(r *http.Request) bool {
 	if hasForwardingHeader(r) {
-		return false
+		return isSameMachineForwardedChain(r)
 	}
 	host, _, err := net.SplitHostPort(strings.TrimSpace(r.RemoteAddr))
 	if err != nil {
@@ -67,6 +74,35 @@ func isDirectLoopbackRequest(r *http.Request) bool {
 		return true
 	}
 	return false
+}
+
+// isSameMachineForwardedChain accepts X-Forwarded-* chains only when the
+// first forwarded hop came from the compose network / host and the forwarded
+// Host names a loopback origin. The Next.js same-origin proxy produces
+// exactly this shape; anything fronting an external origin does not.
+func isSameMachineForwardedChain(r *http.Request) bool {
+	forwardedHost := strings.TrimSpace(r.Header.Get("X-Forwarded-Host"))
+	if forwardedHost == "" {
+		return false
+	}
+	if host, _, err := net.SplitHostPort(forwardedHost); err == nil {
+		forwardedHost = host
+	}
+	if h := net.ParseIP(forwardedHost); h == nil || !h.IsLoopback() {
+		if !strings.EqualFold(forwardedHost, "localhost") {
+			return false
+		}
+	}
+
+	firstHop := strings.TrimSpace(r.Header.Get("X-Forwarded-For"))
+	if idx := strings.IndexAny(firstHop, ","); idx >= 0 {
+		firstHop = strings.TrimSpace(firstHop[:idx])
+	}
+	ip := net.ParseIP(firstHop)
+	if ip == nil {
+		return false
+	}
+	return ip.IsLoopback() || isComposeNetworkSource(ip)
 }
 
 // isComposeNetworkSource reports whether ip belongs to the Docker compose
