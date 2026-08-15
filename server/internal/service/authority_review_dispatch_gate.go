@@ -164,10 +164,31 @@ func bindAuthorityReviewDispatchCandidate(
 	if request.reviewProvenance == nil || request.reviewProvenance.SourceIssueID != *response.IssueLinkage.IssueID {
 		return ErrAuthorityReviewDispatchSourceGap
 	}
-	// Authority's current read contract has no candidate_revision or generation
-	// fields. Those values remain protected by validateContinuousDispatchRequest
-	// and the existing transactional lineage check; the upstream contract must
-	// expose them before this gate can bind them to Authority evidence.
+	reviewEvidence := response.Evidence.ReviewDispatch
+	if reviewEvidence.State != "OBSERVED" || request.reviewProvenance == nil {
+		return ErrAuthorityReviewDispatchSourceGap
+	}
+	matches := 0
+	for _, record := range reviewEvidence.Records {
+		if record.WorkspaceID != request.Identity.WorkspaceID ||
+			record.IssueID != request.Identity.IssueID ||
+			record.Stage != request.Identity.Stage ||
+			record.CandidateRevision != request.Identity.CandidateRevision ||
+			record.Generation != request.Identity.Generation ||
+			record.SourceCommentRef != request.reviewProvenance.SourceRef ||
+			record.SourceIssueID != request.reviewProvenance.SourceIssueID ||
+			record.SourceTaskID != request.reviewProvenance.SourceTaskID ||
+			record.InitiatorSource != request.reviewProvenance.InitiatorSource {
+			continue
+		}
+		matches++
+	}
+	// The Authority must attest exactly one immutable review lineage. Zero
+	// records is a source gap; duplicates are a formal ambiguity, not a local
+	// tie-break opportunity.
+	if matches != 1 {
+		return ErrAuthorityReviewDispatchSourceGap
+	}
 	return nil
 }
 

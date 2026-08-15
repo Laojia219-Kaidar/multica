@@ -50,9 +50,12 @@ func authorityReviewDispatchFixture(seed byte) (AuthorityReviewDispatchIdentity,
 	request.Route.EmployeeRef = continuousDispatchEmployeeRefPrefix + "EMP-REVIEW"
 	request.requireInReview = true
 	request.reviewProvenance = &ContinuousDispatchReviewProvenance{
-		SourceRef:       continuousDispatchReviewCommentRef(dispatchReceiptUUID(seed + 5)),
+		// dispatchReceiptUUID deliberately produces byte fixtures, not canonical
+		// RFC UUIDs. Authority provenance must use the same canonical IDs that a
+		// real Comment and Task carry.
+		SourceRef:       continuousDispatchReviewCommentRef(parseDispatchUUID("01972f7e-7e8d-77ef-a13d-1b0ce3e9c015")),
 		SourceIssueID:   request.Identity.IssueID,
-		SourceTaskID:    shadowUUIDString(dispatchReceiptUUID(seed + 6)),
+		SourceTaskID:    "01972f7e-7e8d-77ef-a13d-1b0ce3e9c016",
 		InitiatorSource: continuousDispatchReviewInitiatorSourceV1,
 	}
 	identity := AuthorityReviewDispatchIdentity{
@@ -120,6 +123,21 @@ func authorityReviewDispatchGateResponse(lookup companyopsapi.DispatchAuthorizat
 	e.WorkflowAuthority.ObservedAt, e.WorkflowAuthority.SourceGeneratedAt, e.WorkflowAuthority.Freshness, e.WorkflowAuthority.ExpiresAt = observed, authorityReviewDispatchStringPtr(generated), "current", authorityReviewDispatchStringPtr(expires)
 	e.GoalAuthority.State, e.GoalAuthority.GoalID, e.GoalAuthority.SourceRef, e.GoalAuthority.SourceRevision = "OBSERVED", authorityReviewDispatchStringPtr(goalID), authorityReviewDispatchStringPtr(goalRef), authorityReviewDispatchStringPtr(revision)
 	e.GoalAuthority.ObservedAt, e.GoalAuthority.SourceGeneratedAt, e.GoalAuthority.Freshness, e.GoalAuthority.ExpiresAt = observed, authorityReviewDispatchStringPtr(generated), "current", authorityReviewDispatchStringPtr(expires)
+	provenance := request.reviewProvenance
+	e.ReviewDispatch = companyopsapi.DispatchReviewDispatchEvidence{
+		State: "OBSERVED",
+		Records: []companyopsapi.DispatchReviewDispatchEvidenceRecord{{
+			ReviewDispatchID: "review-dispatch-1",
+			SourceRef:        authorityReviewDispatchStringPtr("hive://review-dispatches/review-dispatch-1"),
+			SourceRevision:   authorityReviewDispatchStringPtr(revision),
+			ObservedAt:       observed, SourceGeneratedAt: authorityReviewDispatchStringPtr(generated),
+			Freshness: "current", ExpiresAt: authorityReviewDispatchStringPtr(expires),
+			WorkspaceID: workspaceID, IssueID: issueID, Stage: "review",
+			CandidateRevision: request.Identity.CandidateRevision, Generation: request.Identity.Generation,
+			SourceCommentRef: provenance.SourceRef, SourceIssueID: provenance.SourceIssueID,
+			SourceTaskID: provenance.SourceTaskID, InitiatorSource: provenance.InitiatorSource,
+		}},
+	}
 	sourceRefs := []string{scopeRef, issueRef, lookup.ExecutionIdentity.WorkOrderSourceRef, assignmentRef, bindingRef, custodyRef, authorizationRef, ownerDecisionRef, workflowRef, goalRef}
 	response.Authorization.EventReconcile = companyopsapi.DispatchAuthorizationDecision{Eligible: true, Reason: "eligible:all_required_authority_evidence_current", SourceRefs: sourceRefs, SourceRevisions: []string{revision}, ObservedAt: observed, Freshness: "current", ExpiresAt: authorityReviewDispatchStringPtr(expires)}
 	response.Authorization.RecoveryOnly = companyopsapi.DispatchAuthorizationDecision{Eligible: false, Reason: "blocked:authorization_scope_mismatch", SourceRefs: sourceRefs, SourceRevisions: []string{revision}, ObservedAt: observed, Freshness: "current", ExpiresAt: authorityReviewDispatchStringPtr(expires)}
@@ -335,6 +353,49 @@ func TestAuthorityReviewDispatchGateBindsCandidateToAuthorityIssueAndWorkspace(t
 			}
 			if dispatcher.calls != 0 {
 				t.Fatalf("dispatcher calls = %d, want 0", dispatcher.calls)
+			}
+		})
+	}
+}
+
+func TestAuthorityReviewDispatchGateRequiresOneExactAuthorityReviewProvenanceRecord(t *testing.T) {
+	identity, candidate := authorityReviewDispatchFixture(180)
+	lookup, err := identity.lookup()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name   string
+		mutate func(*companyopsapi.DispatchAuthorizationResponse)
+	}{
+		{name: "unavailable", mutate: func(r *companyopsapi.DispatchAuthorizationResponse) {
+			r.Evidence.ReviewDispatch = companyopsapi.DispatchReviewDispatchEvidence{State: "SOURCE_UNAVAILABLE", Records: []companyopsapi.DispatchReviewDispatchEvidenceRecord{}}
+		}},
+		{name: "candidate revision", mutate: func(r *companyopsapi.DispatchAuthorizationResponse) {
+			r.Evidence.ReviewDispatch.Records[0].CandidateRevision = "candidate-other"
+		}},
+		{name: "generation", mutate: func(r *companyopsapi.DispatchAuthorizationResponse) {
+			r.Evidence.ReviewDispatch.Records[0].Generation = "generation-other"
+		}},
+		{name: "comment ref", mutate: func(r *companyopsapi.DispatchAuthorizationResponse) {
+			r.Evidence.ReviewDispatch.Records[0].SourceCommentRef = continuousDispatchReviewCommentRef(dispatchReceiptUUID(250))
+		}},
+		{name: "source task", mutate: func(r *companyopsapi.DispatchAuthorizationResponse) {
+			r.Evidence.ReviewDispatch.Records[0].SourceTaskID = shadowUUIDString(dispatchReceiptUUID(251))
+		}},
+		{name: "duplicate exact record", mutate: func(r *companyopsapi.DispatchAuthorizationResponse) {
+			r.Evidence.ReviewDispatch.Records = append(r.Evidence.ReviewDispatch.Records, r.Evidence.ReviewDispatch.Records[0])
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			response := authorityReviewDispatchGateResponse(lookup, candidate.request)
+			tt.mutate(&response)
+			authorizer := &authorityReviewDispatchAuthorizerFake{response: response}
+			dispatcher := &authorityReviewDispatchDispatcherFake{}
+			_, err := NewAuthorityReviewDispatchGate(authorizer, dispatcher).DispatchReview(context.Background(), identity, candidate)
+			if !errors.Is(err, ErrAuthorityReviewDispatchSourceGap) || dispatcher.calls != 0 {
+				t.Fatalf("DispatchReview error/calls = %v/%d, want source gap/0", err, dispatcher.calls)
 			}
 		})
 	}

@@ -26,6 +26,7 @@ var (
 	dispatchWorkOrderRef     = regexp.MustCompile(`^hive://hivecosm/delivery/project/([A-Za-z0-9][A-Za-z0-9@._:-]{0,191})/work-order/([A-Za-z0-9][A-Za-z0-9@._:-]{0,191})$`)
 	dispatchRevision         = regexp.MustCompile(`^(?:xmin:[1-9][0-9]*|revision:[A-Za-z0-9][A-Za-z0-9@._:-]{0,191}|sha256:[a-f0-9]{64}|receipt:[A-Za-z0-9][A-Za-z0-9@._:-]{0,191})$`)
 	dispatchOwnerDecisionRef = regexp.MustCompile(`^hive://owner-decisions/[A-Za-z0-9][A-Za-z0-9@._:-]{0,191}$`)
+	dispatchReviewCommentRef = regexp.MustCompile(`^hivecrew://comments/[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
 )
 
 // The five selectors are one indivisible execution identity. No local object
@@ -136,6 +137,33 @@ type dispatchAuthorityEvidenceRecord struct {
 	Freshness         string  `json:"freshness"`
 	ExpiresAt         *string `json:"expires_at"`
 }
+
+// DispatchReviewDispatchEvidenceRecord is one immutable HiveCosm Authority
+// attestation for a review candidate. It does not grant ordinary dispatch;
+// the review Gate selects exactly one matching record before it may create a
+// review Task.
+type DispatchReviewDispatchEvidenceRecord struct {
+	ReviewDispatchID  string  `json:"review_dispatch_id"`
+	SourceRef         *string `json:"source_ref"`
+	SourceRevision    *string `json:"source_revision"`
+	ObservedAt        string  `json:"observed_at"`
+	SourceGeneratedAt *string `json:"source_generated_at"`
+	Freshness         string  `json:"freshness"`
+	ExpiresAt         *string `json:"expires_at"`
+	WorkspaceID       string  `json:"workspace_id"`
+	IssueID           string  `json:"issue_id"`
+	Stage             string  `json:"stage"`
+	CandidateRevision string  `json:"candidate_revision"`
+	Generation        string  `json:"generation"`
+	SourceCommentRef  string  `json:"source_comment_ref"`
+	SourceIssueID     string  `json:"source_issue_id"`
+	SourceTaskID      string  `json:"source_task_id"`
+	InitiatorSource   string  `json:"initiator_source"`
+}
+type DispatchReviewDispatchEvidence struct {
+	State   string                                 `json:"state"`
+	Records []DispatchReviewDispatchEvidenceRecord `json:"records"`
+}
 type DispatchAuthorizationEvidence struct {
 	Scope                           DispatchAuthorizationScope        `json:"scope"`
 	IssueLinkage                    DispatchAuthorizationIssueLinkage `json:"issue_linkage"`
@@ -146,6 +174,7 @@ type DispatchAuthorizationEvidence struct {
 	ContinuousWorkflowAuthorization dispatchWorkflowEvidence          `json:"continuous_workflow_authorization"`
 	WorkflowAuthority               dispatchAuthorityEvidenceRecord   `json:"workflow_authority"`
 	GoalAuthority                   dispatchAuthorityEvidenceRecord   `json:"goal_authority"`
+	ReviewDispatch                  DispatchReviewDispatchEvidence    `json:"review_dispatch"`
 }
 type DispatchAuthorizationDecision struct {
 	Eligible        bool     `json:"eligible"`
@@ -379,7 +408,49 @@ func validateEvidence(e DispatchAuthorizationEvidence, tenant string, l Dispatch
 	if err := validateWorkflowOrGoalEvidence(e.GoalAuthority, *e.Scope.GoalID, false, now); err != nil {
 		return err
 	}
+	if err := validateReviewDispatchEvidence(e.ReviewDispatch, now); err != nil {
+		return err
+	}
 	return nil
+}
+
+func validateReviewDispatchEvidence(e DispatchReviewDispatchEvidence, now time.Time) error {
+	if e.State == "SOURCE_UNAVAILABLE" {
+		if len(e.Records) != 0 {
+			return errors.New("dispatch authorization unavailable review evidence must be empty")
+		}
+		return nil
+	}
+	if e.State != "OBSERVED" {
+		return errors.New("dispatch authorization review evidence state is invalid")
+	}
+	for _, record := range e.Records {
+		if err := validateSafeID(record.ReviewDispatchID, "review_dispatch.review_dispatch_id"); err != nil {
+			return err
+		}
+		if !dispatchUUID.MatchString(record.WorkspaceID) || !dispatchUUID.MatchString(record.IssueID) ||
+			!dispatchUUID.MatchString(record.SourceIssueID) || !dispatchUUID.MatchString(record.SourceTaskID) ||
+			record.Stage != "review" || !canonicalNonblank(record.CandidateRevision) ||
+			!canonicalNonblank(record.Generation) || !canonicalReviewCommentRef(record.SourceCommentRef) ||
+			record.SourceIssueID != record.IssueID || record.InitiatorSource != "owner_admin_review_dispatch/v1" ||
+			record.SourceRef == nil || !matchesHivePath(*record.SourceRef, "review-dispatches", record.ReviewDispatchID) {
+			return errors.New("dispatch authorization review evidence is malformed")
+		}
+		if err := validateEvidenceRecord(dispatchEvidenceRecord{
+			// The state belongs to the enclosing review_dispatch evidence set.
+			// Reaching this branch already requires that set to be OBSERVED.
+			State: "OBSERVED", SourceRef: record.SourceRef, SourceRevision: record.SourceRevision,
+			ObservedAt: record.ObservedAt, SourceGeneratedAt: record.SourceGeneratedAt,
+			Freshness: record.Freshness, ExpiresAt: record.ExpiresAt,
+		}, now); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func canonicalReviewCommentRef(value string) bool {
+	return dispatchReviewCommentRef.MatchString(value)
 }
 func validateEvidenceRecord(r dispatchEvidenceRecord, now time.Time) error {
 	if r.State != "OBSERVED" || r.Freshness != "current" || r.SourceRef == nil || r.SourceRevision == nil || !canonicalSourceRef(*r.SourceRef) || !canonicalRevision(*r.SourceRevision) {

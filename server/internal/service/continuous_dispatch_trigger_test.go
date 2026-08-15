@@ -206,7 +206,11 @@ func TestContinuousDispatchReviewTriggerAuthorityModeRunsResolverGateBeforeDispa
 	workspaceID := parseDispatchUUID("01972f7e-7e8d-77ef-a13d-1b0ce3e9c010")
 	projectID := dispatchReceiptUUID(69)
 	issueID := parseDispatchUUID("01972f7e-7e8d-77ef-a13d-1b0ce3e9c011")
-	sourceTaskID, sourceCommentID := dispatchReceiptUUID(71), dispatchReceiptUUID(72)
+	// Authority validates the same canonical UUID form that will be persisted
+	// in the review receipt; do not use byte-only dispatchReceiptUUID fixtures
+	// for this end-to-end Gate path.
+	sourceTaskID := parseDispatchUUID("01972f7e-7e8d-77ef-a13d-1b0ce3e9c017")
+	sourceCommentID := parseDispatchUUID("01972f7e-7e8d-77ef-a13d-1b0ce3e9c018")
 	agentID := parseDispatchUUID("01972f7e-7e8d-77ef-a13d-1b0ce3e9c001")
 	runtimeID := dispatchReceiptUUID(74)
 	item := triggerShadowItem(workspaceID, issueID, agentID, runtimeID)
@@ -231,7 +235,17 @@ func TestContinuousDispatchReviewTriggerAuthorityModeRunsResolverGateBeforeDispa
 	if err != nil {
 		t.Fatal(err)
 	}
-	authorizer := &authorityReviewDispatchAuthorizerFake{response: authorityReviewDispatchGateResponse(lookup, ContinuousDispatchRequest{Identity: item.DispatchIdentity})}
+	expectedProvenance := &ContinuousDispatchReviewProvenance{
+		SourceRef:       item.SourceRef,
+		SourceIssueID:   item.IssueID,
+		SourceTaskID:    item.SourceTaskID,
+		InitiatorSource: continuousDispatchReviewInitiatorSourceV1,
+	}
+	authorizer := &authorityReviewDispatchAuthorizerFake{response: authorityReviewDispatchGateResponse(lookup, ContinuousDispatchRequest{
+		Identity:         item.DispatchIdentity,
+		requireInReview:  true,
+		reviewProvenance: expectedProvenance,
+	})}
 	provider := &triggerAuthorityIdentityProviderFixture{identity: identity}
 	gate := NewAuthorityReviewDispatchGate(authorizer, dispatcher)
 	trigger := NewContinuousDispatchTriggerService(inspector, dispatcher).WithAuthorityReviewDispatchGate(gate, provider)
