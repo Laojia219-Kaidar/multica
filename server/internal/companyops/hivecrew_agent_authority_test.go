@@ -27,12 +27,20 @@ func TestBuildHiveCrewAgentAuthoritySnapshotExact(t *testing.T) {
 		t.Fatalf("BuildHiveCrewAgentAuthoritySnapshot() error = %v", err)
 	}
 
-	const canonical = `{"id":"22222222-2222-4222-8222-222222222222","workspace_id":"11111111-1111-4111-8111-111111111111","runtime_id":"33333333-3333-4333-8333-333333333333","runtime_mode":"local","model":"gpt-5.6","status":"idle","max_concurrent_tasks":6,"permission_mode":"private","kind":"worker","system_key":"hivecrew-auditor","updated_at":"2026-08-11T02:11:12.123456789Z"}`
-	sum := sha256.Sum256([]byte(canonical))
+	identity := hiveCrewAgentAuthorityDigest{
+		ID: "22222222-2222-4222-8222-222222222222", WorkspaceID: "11111111-1111-4111-8111-111111111111",
+		RuntimeID: "33333333-3333-4333-8333-333333333333", RuntimeMode: "local", Model: "gpt-5.6",
+		MaxConcurrentTasks: 6, PermissionMode: "private", Kind: "worker", SystemKey: "hivecrew-auditor",
+	}
+	identityJSON, err := json.Marshal(identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(identityJSON)
 	want := AuthoritySnapshot{
 		Kind:          "Agent",
 		SourceRef:     "/api/agents/22222222-2222-4222-8222-222222222222",
-		Revision:      "updated_at:2026-08-11T02:11:12.123456789Z",
+		Revision:      "sha256:" + hex.EncodeToString(sum[:]),
 		ContentDigest: "sha256:" + hex.EncodeToString(sum[:]),
 		Freshness:     "current",
 		DisplayName:   "Audit Worker",
@@ -135,12 +143,14 @@ func TestBuildHiveCrewAgentAuthoritySnapshotDigestTracksExecutionFields(t *testi
 		{name: "runtime id", mutate: func(agent *db.Agent) { agent.RuntimeID = util.MustParseUUID("66666666-6666-4666-8666-666666666666") }},
 		{name: "runtime mode", mutate: func(agent *db.Agent) { agent.RuntimeMode = "remote" }},
 		{name: "model", mutate: func(agent *db.Agent) { agent.Model = authorityTextValue("gpt-5.7") }},
-		{name: "status", mutate: func(agent *db.Agent) { agent.Status = "working" }},
+		// status and updated_at are execution liveness, not identity: the
+		// digest intentionally no longer tracks them so a real run cannot
+		// invalidate its own sealed assignment receipt.
 		{name: "max concurrency", mutate: func(agent *db.Agent) { agent.MaxConcurrentTasks++ }},
 		{name: "permission mode", mutate: func(agent *db.Agent) { agent.PermissionMode = "public_to" }},
 		{name: "kind", mutate: func(agent *db.Agent) { agent.Kind = "manager" }},
 		{name: "system key", mutate: func(agent *db.Agent) { agent.SystemKey = authorityTextValue("hivecrew-manager") }},
-		{name: "updated at", mutate: func(agent *db.Agent) { agent.UpdatedAt.Time = agent.UpdatedAt.Time.Add(time.Nanosecond) }},
+
 	}
 
 	for _, test := range tests {

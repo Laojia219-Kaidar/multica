@@ -66,6 +66,12 @@ func BuildHiveCrewAgentAuthoritySnapshot(
 
 	agentID := util.UUIDToString(agent.ID)
 	updatedAt := agent.UpdatedAt.Time.UTC().Format(time.RFC3339Nano)
+	// The digest covers stable identity and configuration only. Status and
+	// updated_at are deliberately excluded: a real execution flips the Agent
+	// status between idle and working, which would invalidate an assignment
+	// receipt sealed before the run and permanently block promotion of the
+	// run's own outcome. Liveness stays observable through the snapshot's
+	// UpdatedAt field; authority matching stays bound to identity.
 	canonical := hiveCrewAgentAuthorityDigest{
 		ID:                 agentID,
 		WorkspaceID:        util.UUIDToString(agent.WorkspaceID),
@@ -79,17 +85,21 @@ func BuildHiveCrewAgentAuthoritySnapshot(
 		SystemKey:          authorityText(agent.SystemKey),
 		UpdatedAt:          updatedAt,
 	}
-	canonicalJSON, err := json.Marshal(canonical)
+	identityOnly := canonical
+	identityOnly.Status = ""
+	identityOnly.UpdatedAt = ""
+	identityJSON, err := json.Marshal(identityOnly)
 	if err != nil {
-		return AuthoritySnapshot{}, fmt.Errorf("%w: canonical digest JSON: %w", ErrInvalidHiveCrewAgentAuthority, err)
+		return AuthoritySnapshot{}, fmt.Errorf("%w: identity digest JSON: %w", ErrInvalidHiveCrewAgentAuthority, err)
 	}
-	sum := sha256.Sum256(canonicalJSON)
+	identitySum := sha256.Sum256(identityJSON)
+	identityDigest := "sha256:" + hex.EncodeToString(identitySum[:])
 
 	return AuthoritySnapshot{
 		Kind:          authorityKindAgent,
 		SourceRef:     "/api/agents/" + agentID,
-		Revision:      "updated_at:" + updatedAt,
-		ContentDigest: "sha256:" + hex.EncodeToString(sum[:]),
+		Revision:      identityDigest,
+		ContentDigest: identityDigest,
 		Freshness:     currentFreshness,
 		DisplayName:   agent.Name,
 		Model:         authorityText(agent.Model),
