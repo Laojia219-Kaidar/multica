@@ -1,4 +1,5 @@
 export * from "./queries";
+export * from "./bases";
 export * from "./profiles";
 export * from "./mutations";
 export * from "./models";

@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS workflow_definition_version_definition_version_uidx;

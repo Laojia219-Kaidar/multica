@@ -1,0 +1,3 @@
+ALTER TABLE agent DROP COLUMN IF EXISTS fallback_base_id;
+ALTER TABLE agent DROP COLUMN IF EXISTS home_base_id;
+DROP TABLE IF EXISTS base;

@@ -1,4 +1,9 @@
-export type { Issue, IssueStatus, IssuePriority, IssueAssigneeType, IssueMetadata, IssueMetadataValue, IssueReaction } from "./issue";
+export type { Issue, IssueStatus, IssuePriority, IssueAssigneeType, IssueMetadata, IssueMetadataValue, IssueReaction, IssueDispatchPreview, IssueDispatchReceipt, IssueStopReceipt, IssueReviewReceipt } from "./issue";
+export type {
+  BaseRuntimeInfo,
+  BaseOverview,
+  MigrateRuntimeAgentsResponse,
+} from "./bases";
 export type {
   Agent,
   AgentStatus,
@@ -125,6 +130,14 @@ export type {
   CreateProjectResourceRequest,
   UpdateProjectResourceRequest,
   ListProjectResourcesResponse,
+  ProjectHealth,
+  ProjectLifecycleSnapshot,
+  ProjectLifecycleFrontierTask,
+  ListProjectLifecycleResponse,
+  ProjectControlAction,
+  ProjectControlReceipt,
+  ContinuePreview,
+  ProjectClosurePackage,
 } from "./project";
 export type {
   WorkConservingAuthoritySnapshot,
@@ -251,6 +264,8 @@ export type {
   CompanyOpsOutcomeRun,
   CompanyOpsOutcomeDetail,
   CompanyOpsOutcomeListResponse,
+  CompanyOpsArtifactReplicaLocation,
+  CompanyOpsArtifactReplicaLocationsResponse,
   CompanyOpsBindingState,
   CompanyOpsDepartmentAppointment,
   CompanyOpsDepartmentPosition,
@@ -271,6 +286,21 @@ export {
   COMPANY_OPS_OUTCOME_CENTER_SCHEMA_VERSION,
   COMPANY_OPS_ORGANIZATION_SCHEMA_VERSION,
 } from "./companyops";
+export type {
+  WorkActorType,
+  WorkInboxItem,
+  WorkAttachRequest,
+  WorkAttachResult,
+  WorkIgnoreRequest,
+  WorkIgnoreResult,
+  WorkStatusResult,
+  WorkforceBaseRuntimeRow,
+  WorkforceBaseRuntimeResponse,
+  WorkParticipant,
+  ProjectParticipantsSource,
+  ProjectParticipantsData,
+} from "./work-entry";
+export { WORKFORCE_BASE_RUNTIME_SCHEMA_VERSION } from "./work-entry";
 export type {
   BillingBalance,
   BillingTransaction,

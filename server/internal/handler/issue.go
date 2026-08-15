@@ -3565,3 +3565,270 @@ func (h *Handler) BatchDeleteIssues(w http.ResponseWriter, r *http.Request) {
 	slog.Info("batch delete issues", append(logger.RequestAttrs(r), "count", deleted)...)
 	writeJSON(w, http.StatusOK, map[string]any{"deleted": deleted})
 }
+
+// Owner issue control plane (Lane A): dispatch-preview / dispatch / stop /
+// send-to-review. Each write returns an operation receipt so the owner surface
+// can show exactly what happened. rerun stays on the frozen
+// POST /api/issues/{id}/rerun route (TaskService.RerunIssue) to avoid changing
+// the CLI contract.
+// ---------------------------------------------------------------------------
+
+// IssueDispatchRequest is the optional body of POST /api/issues/{id}/dispatch.
+type IssueDispatchRequest struct {
+	IdempotencyKey string `json:"idempotency_key,omitempty"`
+	HandoffNote    string `json:"handoff_note,omitempty"`
+}
+
+// IssueDispatchPreview is the read-only dispatch decision surfaced by
+// dispatch-preview. It never mutates state.
+type IssueDispatchPreview struct {
+	Dispatchable     bool   `json:"dispatchable"`
+	AlreadyPending   bool   `json:"already_pending"`
+	TargetAgentID    string `json:"target_agent_id"`
+	AssigneeType     string `json:"assignee_type"`
+	Reason           string `json:"reason,omitempty"`
+	HandoffSupported bool   `json:"handoff_supported"`
+}
+
+// IssueDispatchReceipt is the write receipt returned by dispatch.
+type IssueDispatchReceipt struct {
+	Operation      string  `json:"operation"`
+	IssueID        string  `json:"issue_id"`
+	WorkspaceID    string  `json:"workspace_id"`
+	TaskID         *string `json:"task_id,omitempty"`
+	AlreadyPending bool    `json:"already_pending"`
+	TargetAgentID  string  `json:"target_agent_id"`
+	AssigneeType   string  `json:"assignee_type"`
+	IdempotencyKey string  `json:"idempotency_key,omitempty"`
+	PerformedAt    string  `json:"performed_at"`
+	ActorType      string  `json:"actor_type"`
+	ActorID        string  `json:"actor_id"`
+}
+
+// IssueStopReceipt is the write receipt returned by stop.
+type IssueStopReceipt struct {
+	Operation   string   `json:"operation"`
+	IssueID     string   `json:"issue_id"`
+	WorkspaceID string   `json:"workspace_id"`
+	Cancelled   []string `json:"cancelled_task_ids"`
+	PerformedAt string   `json:"performed_at"`
+	ActorType   string   `json:"actor_type"`
+	ActorID     string   `json:"actor_id"`
+}
+
+// IssueReviewReceipt is the write receipt returned by send-to-review.
+type IssueReviewReceipt struct {
+	Operation   string `json:"operation"`
+	IssueID     string `json:"issue_id"`
+	WorkspaceID string `json:"workspace_id"`
+	FromStatus  string `json:"from_status"`
+	ToStatus    string `json:"to_status"`
+	PerformedAt string `json:"performed_at"`
+	ActorType   string `json:"actor_type"`
+	ActorID     string `json:"actor_id"`
+}
+
+// PreviewIssueDispatch handles POST /api/issues/{id}/dispatch-preview. It
+// reports whether the issue's current assignee can be dispatched right now and
+// who would run, with no side effects.
+func (h *Handler) PreviewIssueDispatch(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	issue, ok := h.loadIssueForUser(w, r, id)
+	if !ok {
+		return
+	}
+	decision := h.IssueService.EvaluateIssueDispatch(r.Context(), issue)
+	preview := IssueDispatchPreview{
+		Dispatchable:   decision.Dispatchable,
+		AlreadyPending: decision.AlreadyPending,
+		TargetAgentID:  uuidToString(decision.TargetAgentID),
+		AssigneeType:   decision.AssigneeType,
+		Reason:         decision.Reason,
+	}
+	if decision.Dispatchable {
+		preview.HandoffSupported = h.runtimeSupportsHandoff(r.Context(), decision.TargetAgentID)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"issue_id": uuidToString(issue.ID), "preview": preview})
+}
+
+// DispatchIssue handles POST /api/issues/{id}/dispatch. It enqueues a run for
+// the issue's current assignee (agent or squad leader) and returns a receipt.
+// Re-dispatching an already-pending run is an idempotent no-op
+// (already_pending=true, no new task).
+func (h *Handler) DispatchIssue(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	issue, ok := h.loadIssueForUser(w, r, id)
+	if !ok {
+		return
+	}
+
+	var req IssueDispatchRequest
+	if r.ContentLength != 0 {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err != io.EOF {
+			writeError(w, http.StatusBadRequest, "invalid request body")
+			return
+		}
+	}
+
+	userID, ok := requireUserID(w, r)
+	if !ok {
+		return
+	}
+	workspaceID := uuidToString(issue.WorkspaceID)
+	actorType, actorID := h.resolveActor(r, userID, workspaceID)
+
+	decision := h.IssueService.EvaluateIssueDispatch(r.Context(), issue)
+	if !decision.Dispatchable {
+		writeError(w, http.StatusConflict, "cannot dispatch: "+decision.Reason)
+		return
+	}
+
+	// Re-validate the operator's invoke permission on the resolved target agent
+	// before enqueuing (MUL-4525): issue visibility must not grant the right to
+	// dispatch a private agent.
+	originatorUserID := h.invokeOriginatorFromRequest(r, actorType, actorID)
+	canInvoke := func(agent db.Agent) bool {
+		return h.canInvokeAgent(r.Context(), agent, actorType, actorID, originatorUserID, workspaceID)
+	}
+	if decision.TargetAgentID.Valid {
+		if target, err := h.Queries.GetAgent(r.Context(), decision.TargetAgentID); err == nil && !canInvoke(target) {
+			h.writeDispatchBlocked(w, http.StatusForbidden, ReasonInvocationNotAllowed)
+			return
+		}
+	}
+
+	actorUserID := memberActorUserID(actorType, actorID)
+	task, alreadyPending, err := h.IssueService.DispatchIssue(r.Context(), issue, req.HandoffNote, actorUserID)
+	if err != nil {
+		slog.Warn("issue dispatch failed", "issue_id", id, "error", err)
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+
+	receipt := IssueDispatchReceipt{
+		Operation:      "dispatch",
+		IssueID:        uuidToString(issue.ID),
+		WorkspaceID:    workspaceID,
+		AlreadyPending: alreadyPending,
+		TargetAgentID:  uuidToString(decision.TargetAgentID),
+		AssigneeType:   decision.AssigneeType,
+		IdempotencyKey: req.IdempotencyKey,
+		PerformedAt:    time.Now().UTC().Format(time.RFC3339Nano),
+		ActorType:      actorType,
+		ActorID:        actorID,
+	}
+
+	status := http.StatusCreated
+	if alreadyPending {
+		status = http.StatusOK
+	} else {
+		tid := uuidToString(task.ID)
+		receipt.TaskID = &tid
+		writeJSON(w, status, map[string]any{
+			"receipt": receipt,
+			"task":    taskToResponse(task, workspaceID),
+		})
+		return
+	}
+	writeJSON(w, status, map[string]any{"receipt": receipt})
+}
+
+// StopIssue handles POST /api/issues/{id}/stop. It cancels every active task
+// (queued/dispatched/running/waiting_local_directory) on the issue and returns
+// a receipt with the cancelled task IDs. It never touches issue status — the
+// status machine remains the owner's separate decision.
+func (h *Handler) StopIssue(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	issue, ok := h.loadIssueForUser(w, r, id)
+	if !ok {
+		return
+	}
+
+	userID, ok := requireUserID(w, r)
+	if !ok {
+		return
+	}
+	workspaceID := uuidToString(issue.WorkspaceID)
+	actorType, actorID := h.resolveActor(r, userID, workspaceID)
+
+	active, err := h.Queries.ListActiveTasksByIssue(r.Context(), issue.ID)
+	if err != nil {
+		slog.Warn("issue stop: list active tasks failed", "issue_id", id, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to list active tasks")
+		return
+	}
+	cancelledIDs := make([]string, 0, len(active))
+	for _, t := range active {
+		cancelledIDs = append(cancelledIDs, uuidToString(t.ID))
+	}
+
+	if len(active) > 0 {
+		if err := h.TaskService.CancelTasksForIssue(r.Context(), issue.ID); err != nil {
+			slog.Warn("issue stop failed", "issue_id", id, "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to cancel tasks")
+			return
+		}
+	}
+
+	receipt := IssueStopReceipt{
+		Operation:   "stop",
+		IssueID:     uuidToString(issue.ID),
+		WorkspaceID: workspaceID,
+		Cancelled:   cancelledIDs,
+		PerformedAt: time.Now().UTC().Format(time.RFC3339Nano),
+		ActorType:   actorType,
+		ActorID:     actorID,
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"receipt": receipt})
+}
+
+// SendIssueToReview handles POST /api/issues/{id}/send-to-review. It moves the
+// issue into in_review with a receipt. Terminal issues cannot be re-reviewed;
+// a status change is an idempotent transition (in_review -> in_review is a
+// no-op receipt).
+func (h *Handler) SendIssueToReview(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	issue, ok := h.loadIssueForUser(w, r, id)
+	if !ok {
+		return
+	}
+
+	userID, ok := requireUserID(w, r)
+	if !ok {
+		return
+	}
+	workspaceID := uuidToString(issue.WorkspaceID)
+	actorType, actorID := h.resolveActor(r, userID, workspaceID)
+
+	receipt := IssueReviewReceipt{
+		Operation:   "send-to-review",
+		IssueID:     uuidToString(issue.ID),
+		WorkspaceID: workspaceID,
+		FromStatus:  issue.Status,
+		ToStatus:    "in_review",
+		PerformedAt: time.Now().UTC().Format(time.RFC3339Nano),
+		ActorType:   actorType,
+		ActorID:     actorID,
+	}
+
+	if issue.Status == "done" || issue.Status == "cancelled" {
+		writeError(w, http.StatusConflict, "cannot send a terminal issue to review")
+		return
+	}
+	if issue.Status == "in_review" {
+		writeJSON(w, http.StatusOK, map[string]any{"receipt": receipt})
+		return
+	}
+
+	if _, err := h.Queries.UpdateIssueStatus(r.Context(), db.UpdateIssueStatusParams{
+		ID:          issue.ID,
+		Status:      "in_review",
+		WorkspaceID: issue.WorkspaceID,
+	}); err != nil {
+		slog.Warn("send to review failed", "issue_id", id, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to move issue to review")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"receipt": receipt})
+}

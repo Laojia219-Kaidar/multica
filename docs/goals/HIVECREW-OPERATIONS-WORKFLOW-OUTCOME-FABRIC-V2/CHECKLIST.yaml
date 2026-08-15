@@ -1,0 +1,78 @@
+schema_version: hivecosm.goal-graph/v2
+meta:
+  goal_id: HIVECREW-OPERATIONS-WORKFLOW-OUTCOME-FABRIC-V2
+  goal_version: 2
+  title: HiveCrew production operations workflow and outcome fabric
+  owner: William
+  parent_goal: HIVECREW-OWNER-OPERATING-WORKBENCH-V1
+  state: candidate_ready_waiting_owner_acceptance
+truth_contract:
+  progress_truth: docs/goals/HIVECREW-OPERATIONS-WORKFLOW-OUTCOME-FABRIC-V2/CHECKLIST.yaml
+  code_truth:
+    repository: /Volumes/HiveData/hivecosm/HQ-50-代码仓库/01-源码下载/multica
+    worktree: /Users/jiawei/hivecosm-worktrees/hivecrew-operations-workflow-v2
+    branch: work/hivecrew-operations-workflow-v2
+    baseline_commit: 8c45692399bc460edc1aefbfdf10ee7dc8a6344f
+  projections_are_non_authoritative: true
+boundaries:
+  candidate_only: true
+  forbidden:
+    - main_merge
+    - production_deploy
+    - production_db_migration
+    - real_platform_publish
+    - real_trading
+    - nas_or_cloud_write_without_owner_authority
+    - destructive_storage_action
+nodes:
+  - id: WO-00-CONTROL-AND-ENVIRONMENT
+    status: completed
+    owner: integrator
+    mutex: [goal-control, candidate-worktree]
+    deliverables: [GOAL.md, CHECKLIST.yaml, candidate-env-receipt]
+    verification: [isolated-worktree, candidate-db, candidate-port-readback]
+  - id: WO-10-WORKFLOW-KERNEL
+    status: completed
+    owner: luna-backend
+    depends_on: [WO-00-CONTROL-AND-ENVIRONMENT]
+    mutex: [workflow-kernel, workflow-schema]
+    write_scope: [server/internal/workflow, server/internal/handler/workflow.go, server/pkg/db/queries]
+    deliverables: [persisted-instance-list, versioned-definition-contract, immutable-visual-graph]
+    verification: [go-tests, migration-readback, restart-hydration, concurrent-publish]
+  - id: WO-20-OPERATIONS-UI
+    status: completed
+    owner: luna-frontend
+    depends_on: [WO-00-CONTROL-AND-ENVIRONMENT]
+    mutex: [workflow-ui]
+    write_scope: [packages/core/workflow, packages/views/workflow]
+    deliverables: [operations-workbench, context-tree, graph-designer]
+    verification: [view-tests, typecheck, route-source-contract]
+  - id: WO-30-OUTCOME-STORAGE
+    status: completed
+    owner: luna-artifact-storage
+    depends_on: [WO-00-CONTROL-AND-ENVIRONMENT]
+    mutex: [artifact-storage]
+    write_scope: [server/internal/companyops, server/internal/service, packages/views/outcomes]
+    deliverables: [workflow-artifact-lineage, location-ledger, fixture-store]
+    verification: [artifact-tests, checksum-and-recovery-fixture]
+  - id: WO-40-INTEGRATION
+    status: completed
+    owner: integrator
+    depends_on: [WO-10-WORKFLOW-KERNEL, WO-20-OPERATIONS-UI, WO-30-OUTCOME-STORAGE]
+    mutex: [shared-api-router-navigation, integration]
+    deliverables: [integrated-candidate, guarded-linear-runtime, durable-control-receipts, outcome-location-read-model, persistent-l3-registry]
+    verification: [typecheck, build, focused-tests, race-tests, candidate-db-readback, artifact-location-route, l3-concurrency-and-native-project-delete-tests]
+  - id: WO-50-CANARY-AND-REVIEW
+    status: completed
+    owner: integrator
+    depends_on: [WO-40-INTEGRATION]
+    mutex: [candidate-acceptance]
+    deliverables: [wechat-canary, authenticated-browser-login-evidence, l3-browser-management-review, candidate-handoff]
+    verification: [restart-replay-canary, failure-path-canary, candidate-db-readback, login-component-regression, canonical-loopback-login-regression, authenticated-browser-review]
+resume_package:
+  current_controller: codex
+  current_frontier: []
+  exact_implementation_revision: 9249b3e00
+  current_candidate_db: multica_hivecrew_operations_workflow_v2_512
+  verified_migrations: [362, 363, 364, 365, 366, 367, 368, 369, 370]
+  next_action: Owner reviews this candidate-only revision. Before any merge or deployment, independently rerun the full views suite and triage the four unscoped failures observed on 2026-08-15; this state is not production or Owner acceptance.

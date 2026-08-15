@@ -109,12 +109,17 @@ type NavKey =
   | "myIssues"
   | "issues"
   | "projects"
+  | "workflow"
   | "outcomes"
   | "organization"
   | "autopilots"
   | "agents"
   | "squads"
   | "bases"
+  | "workrooms"
+  | "workWall"
+  | "employees"
+  | "datasets"
   | "usage"
   | "runtimes"
   | "skills"
@@ -128,45 +133,85 @@ type NavLabelKey =
   | "my_issues"
   | "issues"
   | "projects"
+  | "workflow"
   | "outcomes"
   | "organization"
   | "autopilots"
   | "agents"
   | "squads"
   | "bases"
+  | "workrooms"
+  | "workWall"
+  | "employees"
+  | "datasets"
   | "usage"
   | "runtimes"
   | "skills"
   | "settings";
 
+// 11 能力域栏目分组标签键（VC-13）
+type NavGroupLabelKey =
+  | "group_ceo"
+  | "group_work"
+  | "group_production_workflow"
+  | "group_outcomes"
+  | "group_org"
+  | "group_employee_factory"
+  | "group_workroom"
+  | "group_data_knowledge"
+  | "group_model_intelligence"
+  | "group_base_infra"
+  | "group_governance"
+  | "group_settings";
+
 // Nav icons are NOT declared here: they are derived from each item's
 // destination path at render time, so the sidebar and the desktop tab bar
 // always agree. See route-icon-components.tsx.
-const personalNav: { key: NavKey; labelKey: NavLabelKey }[] = [
-  { key: "inbox", labelKey: "inbox" },
-  { key: "chat", labelKey: "chat" },
-  { key: "myIssues", labelKey: "my_issues" },
-];
-
-const workspaceNav: { key: NavKey; labelKey: NavLabelKey }[] = [
-  { key: "issues", labelKey: "issues" },
-  { key: "projects", labelKey: "projects" },
-  { key: "outcomes", labelKey: "outcomes" },
-  { key: "organization", labelKey: "organization" },
-  { key: "autopilots", labelKey: "autopilots" },
-  { key: "agents", labelKey: "agents" },
-  { key: "squads", labelKey: "squads" },
-  { key: "bases", labelKey: "bases" },
-  { key: "usage", labelKey: "usage" },
-];
-
-const configureNav: { key: NavKey; labelKey: NavLabelKey }[] = [
-  { key: "runtimes", labelKey: "runtimes" },
-  { key: "skills", labelKey: "skills" },
-  { key: "settings", labelKey: "settings" },
-];
-
-function DraftDot() {
+/** 11 能力域栏目（VC-13）——公司操作系统信息架构重组。 */
+const navGroups: { key: string; labelKey: NavGroupLabelKey; items: { key: NavKey; labelKey: NavLabelKey }[] }[] = [
+  { key: "ceo", labelKey: "group_ceo", items: [] },
+  { key: "work", labelKey: "group_work", items: [
+    { key: "inbox", labelKey: "inbox" },
+    { key: "chat", labelKey: "chat" },
+    { key: "myIssues", labelKey: "my_issues" },
+    { key: "issues", labelKey: "issues" },
+    { key: "projects", labelKey: "projects" },
+    { key: "autopilots", labelKey: "autopilots" },
+  ]},
+  { key: "productionWorkflow", labelKey: "group_production_workflow", items: [
+    { key: "workflow", labelKey: "workflow" },
+  ]},
+  { key: "outcomes", labelKey: "group_outcomes", items: [
+    { key: "outcomes", labelKey: "outcomes" },
+  ]},
+  { key: "org", labelKey: "group_org", items: [
+    { key: "organization", labelKey: "organization" },
+  ]},
+  { key: "employeeFactory", labelKey: "group_employee_factory", items: [
+    { key: "employees", labelKey: "employees" },
+    { key: "agents", labelKey: "agents" },
+    { key: "skills", labelKey: "skills" },
+    { key: "squads", labelKey: "squads" },
+  ]},
+  { key: "workroom", labelKey: "group_workroom", items: [
+    { key: "workrooms", labelKey: "workrooms" },
+    { key: "workWall", labelKey: "workWall" },
+  ]},
+  { key: "dataKnowledge", labelKey: "group_data_knowledge", items: [
+    { key: "datasets", labelKey: "datasets" },
+  ]},
+  { key: "modelIntelligence", labelKey: "group_model_intelligence", items: [
+    { key: "usage", labelKey: "usage" },
+  ]},
+  { key: "baseInfra", labelKey: "group_base_infra", items: [
+    { key: "bases", labelKey: "bases" },
+    { key: "runtimes", labelKey: "runtimes" },
+  ]},
+  { key: "governance", labelKey: "group_governance", items: [] },
+  { key: "settings", labelKey: "group_settings", items: [
+    { key: "settings", labelKey: "settings" },
+  ]},
+];function DraftDot() {
   const hasDraft = useIssueDraftStore((s) => s.hasDraft());
   if (!hasDraft) return null;
   return <span className="absolute top-0 right-0 size-1.5 rounded-full bg-brand" />;
@@ -667,43 +712,46 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
 
         {/* Navigation */}
         <SidebarContent ref={sidebarScrollRef} style={sidebarFadeStyle}>
-          <SidebarGroup>
-            <SidebarGroupContent>
-              <SidebarMenu className="gap-0.5">
-                {personalNav.map((item) => {
-                  const href = p[item.key]();
-                  const Icon = routeIconForPath(href);
-                  const isActive = isNavActive(pathname, href);
-                  return (
-                    <SidebarMenuItem key={item.key}>
-                      <SidebarMenuButton
-                        isActive={isActive}
-                        render={<AppLink href={href} />}
-                        className="text-muted-foreground hover:not-data-active:bg-sidebar-accent/70 data-active:bg-sidebar-accent data-active:text-sidebar-accent-foreground"
-                      >
-                        <Icon />
-                        <span>{t(($) => $.nav[item.labelKey])}</span>
-                        {item.key === "inbox" && unreadCount > 0 && (
-                          <CappedNumberFlow
-                            value={unreadCount}
-                            animated={false}
-                            className="ml-auto text-xs"
-                          />
-                        )}
-                        {item.key === "chat" && chatUnreadCount > 0 && (
-                          <CappedNumberFlow
-                            value={chatUnreadCount}
-                            animated={false}
-                            className="ml-auto text-xs"
-                          />
-                        )}
-                      </SidebarMenuButton>
-                    </SidebarMenuItem>
-                  );
-                })}
-              </SidebarMenu>
-            </SidebarGroupContent>
-          </SidebarGroup>
+          {navGroups.map((group) => (
+            <SidebarGroup key={group.key}>
+              <SidebarGroupLabel>{t(($) => $.sidebar[group.labelKey])}</SidebarGroupLabel>
+              <SidebarGroupContent>
+                <SidebarMenu className="gap-0.5">
+                  {group.items.map((item) => {
+                    const href = p[item.key]();
+                    const Icon = routeIconForPath(href);
+                    const isActive = !isActivePinnedRoute && isNavActive(pathname, href);
+                    return (
+                      <SidebarMenuItem key={item.key}>
+                        <SidebarMenuButton
+                          isActive={isActive}
+                          render={<AppLink href={href} />}
+                          className="text-muted-foreground hover:not-data-active:bg-sidebar-accent/70 data-active:bg-sidebar-accent data-active:text-sidebar-accent-foreground"
+                        >
+                          <Icon />
+                          <span>{t(($) => $.nav[item.labelKey])}</span>
+                          {item.key === "inbox" && unreadCount > 0 && (
+                            <CappedNumberFlow
+                              value={unreadCount}
+                              animated={false}
+                              className="ml-auto text-xs"
+                            />
+                          )}
+                          {item.key === "chat" && chatUnreadCount > 0 && (
+                            <CappedNumberFlow
+                              value={chatUnreadCount}
+                              animated={false}
+                              className="ml-auto text-xs"
+                            />
+                          )}
+                        </SidebarMenuButton>
+                      </SidebarMenuItem>
+                    );
+                  })}
+                </SidebarMenu>
+              </SidebarGroupContent>
+            </SidebarGroup>
+          ))}
 
           {visiblePinned.length > 0 && (
             <Collapsible defaultOpen>
@@ -740,55 +788,7 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
             </Collapsible>
           )}
 
-          <SidebarGroup>
-            <SidebarGroupLabel>{t(($) => $.sidebar.workspace_group)}</SidebarGroupLabel>
-            <SidebarGroupContent>
-              <SidebarMenu className="gap-0.5">
-                {workspaceNav.map((item) => {
-                  const href = p[item.key]();
-                  const Icon = routeIconForPath(href);
-                  const isActive = !isActivePinnedRoute && isNavActive(pathname, href);
-                  return (
-                    <SidebarMenuItem key={item.key}>
-                      <SidebarMenuButton
-                        isActive={isActive}
-                        render={<AppLink href={href} />}
-                        className="text-muted-foreground hover:not-data-active:bg-sidebar-accent/70 data-active:bg-sidebar-accent data-active:text-sidebar-accent-foreground"
-                      >
-                        <Icon />
-                        <span>{t(($) => $.nav[item.labelKey])}</span>
-                      </SidebarMenuButton>
-                    </SidebarMenuItem>
-                  );
-                })}
-              </SidebarMenu>
-            </SidebarGroupContent>
-          </SidebarGroup>
 
-          <SidebarGroup>
-            <SidebarGroupLabel>{t(($) => $.sidebar.configure_group)}</SidebarGroupLabel>
-            <SidebarGroupContent>
-              <SidebarMenu className="gap-0.5">
-                {configureNav.map((item) => {
-                  const href = p[item.key]();
-                  const Icon = routeIconForPath(href);
-                  const isActive = isNavActive(pathname, href);
-                  return (
-                    <SidebarMenuItem key={item.key}>
-                      <SidebarMenuButton
-                        isActive={isActive}
-                        render={<AppLink href={href} />}
-                        className="text-muted-foreground hover:not-data-active:bg-sidebar-accent/70 data-active:bg-sidebar-accent data-active:text-sidebar-accent-foreground"
-                      >
-                        <Icon />
-                        <span>{t(($) => $.nav[item.labelKey])}</span>
-                      </SidebarMenuButton>
-                    </SidebarMenuItem>
-                  );
-                })}
-              </SidebarMenu>
-            </SidebarGroupContent>
-          </SidebarGroup>
         </SidebarContent>
 
         <SidebarFooter className="p-2">

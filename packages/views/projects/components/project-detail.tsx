@@ -10,6 +10,7 @@ import { toast } from "sonner";
 import type { ProjectStatus, ProjectPriority } from "@multica/core/types";
 import { useAuthStore } from "@multica/core/auth";
 import { projectDetailOptions } from "@multica/core/projects/queries";
+import { projectParticipantsOptions } from "@multica/core/work-entry";
 import { useUpdateProject, useDeleteProject } from "@multica/core/projects/mutations";
 import { pinListOptions } from "@multica/core/pins";
 import { useCreatePin, useDeletePin } from "@multica/core/pins";
@@ -25,6 +26,9 @@ import { useNavigation } from "../../navigation";
 import { TitleEditor, ContentEditor, type ContentEditorRef } from "../../editor";
 import { PriorityIcon } from "../../issues/components/priority-icon";
 import { ProjectResourcesSection } from "./project-resources-section";
+import { ProjectParticipants } from "./project-participants";
+import { ProjectControlActions } from "./project-control-actions";
+import { ProjectPipelineProvider, PipelineCapabilityBar } from "./pipeline-projection";
 import { ProjectStartDatePicker } from "./project-start-date-picker";
 import { ProjectDueDatePicker } from "./project-due-date-picker";
 import { IssueSurface } from "../../issues/surface/issue-surface";
@@ -107,6 +111,9 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
   const router = useNavigation();
   const userId = useAuthStore((s) => s.user?.id);
   const { data: project, isLoading } = useQuery(projectDetailOptions(wsId, projectId));
+  const { data: participants, isLoading: participantsLoading } = useQuery(
+    projectParticipantsOptions(wsId, projectId),
+  );
   const recordRecentContext = useRecentContextStore((s) => s.recordVisit);
   useEffect(() => {
     if (project) {
@@ -438,6 +445,15 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
         );
       })()}
 
+      {/* Project control (Slice 2 owner operations) */}
+      <div>
+        <div className="mb-2 px-2 text-xs font-medium text-muted-foreground">项目控制</div>
+        <ProjectControlActions project={project} workspaceId={wsId} />
+      </div>
+
+      {/* Participants / executors (VC-04 first cut) */}
+      <ProjectParticipants data={participants} isLoading={participantsLoading} />
+
       {/* Description */}
       <div>
         <button
@@ -469,6 +485,7 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
   );
 
   return (
+    <ProjectPipelineProvider projectId={projectId}>
     <>
     <ResizablePanelGroup orientation="horizontal" className="flex-1 min-h-0" defaultLayout={defaultLayout} onLayoutChanged={onLayoutChanged}>
       <ResizablePanel id="content" minSize="50%">
@@ -544,6 +561,12 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
           />
 
           {!isMobile && <WorkConservingPanel projectId={projectId} />}
+          {/* HIV-367 (P0-E): fail-closed capability surface (§6). Shows
+              "能力待接入" for canonical actions not yet wired server-side. */}
+          <div className="px-4 pt-2">
+            <PipelineCapabilityBar />
+          </div>
+
           <IssueSurface
             scope={issueScope}
             modes={["board", "list", "table", "swimlane", "gantt"]}
@@ -598,5 +621,6 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
         </AlertDialog>
       )}
     </>
+    </ProjectPipelineProvider>
   );
 }

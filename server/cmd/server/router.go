@@ -3,7 +3,10 @@ package main
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/netip"
@@ -40,6 +43,8 @@ import (
 	"github.com/multica-ai/multica/server/internal/storage"
 	"github.com/multica-ai/multica/server/internal/util"
 	"github.com/multica-ai/multica/server/internal/util/secretbox"
+	"github.com/multica-ai/multica/server/internal/workentry"
+	"github.com/multica-ai/multica/server/internal/workflow"
 	composiosdk "github.com/multica-ai/multica/server/pkg/composio"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/featureflag"
@@ -309,6 +314,398 @@ func strictCompanyOpsBearerToken(value string) bool {
 	return strictCompanyOpsConfigText(value)
 }
 
+// ---------------------------------------------------------------------------
+// WeChat content production slice (HIVECREW-WECHAT-REAL-OPERATIONS-V1, WO-50
+// integrator wiring). The executor below is the narrow seam between the WO-30
+// orchestrator and the existing CompanyOps authorities: Issue projection,
+// assignment Dispatch, execution receipts, artifact materialization, and Owner
+// review. It creates no new queue, table, or registry.
+// ---------------------------------------------------------------------------
+
+// wechatProductionExecutor implements workflow.WechatNodeExecutor over the
+// handler's already-configured CompanyOps services. It is built per request so
+// the acting Owner and the request's authority context stay exact.
+type wechatProductionExecutor struct {
+	authority   *service.CompanyOpsAuthorityResolver
+	ensureIssue func(ctx context.Context, workspaceID pgtype.UUID, actorUserID pgtype.UUID, workOrder companyopsapi.AuthoritySnapshot) (db.Issue, error)
+	assignment  *service.CompanyOpsAssignmentService
+	artifacts   *service.CompanyOpsArtifactService
+	queries     *db.Queries
+	actor       pgtype.UUID
+	authContext workflow.WechatContentAuthorityContext
+}
+
+// resolve re-observes the external authority chain for one node WorkOrder.
+// Permanent authority failures (not_found/unsupported/invalid/conflict) wrap
+// workflow.ErrWechatNodeAuthorityRejected so the orchestrator fails the node
+// closed instead of retrying; source_gap stays transient.
+func (e *wechatProductionExecutor) resolve(ctx context.Context, workspaceID pgtype.UUID, workOrderSourceRef string) (service.ResolvedCompanyOpsAuthority, error) {
+	resolved, err := e.authority.Resolve(ctx, workspaceID, companyopsapi.HiveCosmAuthorityLookup{
+		WorkOrderSourceRef: workOrderSourceRef,
+		EmployeeID:         e.authContext.EmployeeID,
+		IdentityBindingID:  e.authContext.IdentityBindingID,
+		AgentID:            e.authContext.AgentID,
+	})
+	if err != nil {
+		var authErr *companyopsapi.HiveCosmAuthorityError
+		if errors.As(err, &authErr) && authErr.Kind != companyopsapi.HiveCosmAuthoritySourceGap {
+			return service.ResolvedCompanyOpsAuthority{}, fmt.Errorf("%w: %v", workflow.ErrWechatNodeAuthorityRejected, err)
+		}
+		return service.ResolvedCompanyOpsAuthority{}, err
+	}
+	return resolved, nil
+}
+
+func (e *wechatProductionExecutor) EnsureNodeIssue(ctx context.Context, workspaceID string, plan workflow.WechatNodeExecutionPlan) (string, error) {
+	ws, err := util.ParseUUID(workspaceID)
+	if err != nil {
+		return "", err
+	}
+	resolved, err := e.resolve(ctx, ws, plan.WorkOrderSourceRef)
+	if err != nil {
+		return "", err
+	}
+	issue, err := e.ensureIssue(ctx, ws, e.actor, resolved.WorkOrder)
+	if err != nil {
+		return "", err
+	}
+	return util.UUIDToString(issue.ID), nil
+}
+
+func (e *wechatProductionExecutor) DispatchNode(ctx context.Context, workspaceID string, plan workflow.WechatNodeExecutionPlan, issueID string) (workflow.WechatNodeDispatch, error) {
+	ws, err := util.ParseUUID(workspaceID)
+	if err != nil {
+		return workflow.WechatNodeDispatch{}, err
+	}
+	issueUUID, err := util.ParseUUID(issueID)
+	if err != nil {
+		return workflow.WechatNodeDispatch{}, err
+	}
+	commandUUID, err := util.ParseUUID(plan.CommandID)
+	if err != nil {
+		return workflow.WechatNodeDispatch{}, err
+	}
+	resolved, err := e.resolve(ctx, ws, plan.WorkOrderSourceRef)
+	if err != nil {
+		return workflow.WechatNodeDispatch{}, err
+	}
+	receipt, err := e.assignment.Dispatch(ctx, resolved.AssignmentRequest(commandUUID, ws, issueUUID, e.actor, plan.HandoffNote))
+	if err != nil {
+		var authErr *companyopsapi.HiveCosmAuthorityError
+		if errors.As(err, &authErr) && authErr.Kind != companyopsapi.HiveCosmAuthoritySourceGap {
+			return workflow.WechatNodeDispatch{}, fmt.Errorf("%w: %v", workflow.ErrWechatNodeAuthorityRejected, err)
+		}
+		return workflow.WechatNodeDispatch{}, err
+	}
+	return workflow.WechatNodeDispatch{
+		CommandID: plan.CommandID,
+		IssueID:   issueID,
+		TaskID:    util.UUIDToString(receipt.InitialTaskID),
+	}, nil
+}
+
+func (e *wechatProductionExecutor) ReadNodeExecution(ctx context.Context, workspaceID string, issueID string, taskID string) (workflow.WechatNodeExecutionObservation, error) {
+	ws, err := util.ParseUUID(workspaceID)
+	if err != nil {
+		return workflow.WechatNodeExecutionObservation{}, err
+	}
+	issueUUID, err := util.ParseUUID(issueID)
+	if err != nil {
+		return workflow.WechatNodeExecutionObservation{}, err
+	}
+	taskUUID, err := util.ParseUUID(taskID)
+	if err != nil {
+		return workflow.WechatNodeExecutionObservation{}, err
+	}
+	task, err := e.queries.GetAgentTask(ctx, taskUUID)
+	if err != nil {
+		return workflow.WechatNodeExecutionObservation{}, err
+	}
+	state := task.Status
+	switch task.Status {
+	case "queued":
+		state = "awaiting_claim"
+	case "claimed", "in_progress", "preparing":
+		state = "running"
+	}
+	receiptCompleted := false
+	if receipt, receiptErr := service.NewCompanyOpsPersistenceRepositoryWithQueries(e.queries).GetExecutionReceipt(ctx, taskUUID); receiptErr == nil &&
+		receipt.Terminal != nil && receipt.Terminal.Status == "completed" {
+		receiptCompleted = true
+	}
+	candidateID := ""
+	if outcome, outcomeErr := e.artifacts.GetIssueOutcome(ctx, ws, issueUUID); outcomeErr == nil &&
+		outcome != nil && outcome.Candidate != nil {
+		candidateID = outcome.Candidate.ID
+	}
+	return workflow.WechatNodeExecutionObservation{
+		State:            state,
+		ReceiptCompleted: receiptCompleted,
+		CandidateID:      candidateID,
+	}, nil
+}
+
+func (e *wechatProductionExecutor) MaterializeNodeCandidate(ctx context.Context, workspaceID string, taskID string) (string, error) {
+	taskUUID, err := util.ParseUUID(taskID)
+	if err != nil {
+		return "", err
+	}
+	task, err := e.queries.GetAgentTask(ctx, taskUUID)
+	if err != nil {
+		return "", err
+	}
+	outcome, err := e.artifacts.MaterializeCompletedTask(ctx, workspaceID, task, wechatTaskOutputText(task.Result), "")
+	if err != nil {
+		return "", err
+	}
+	if outcome == nil || outcome.Candidate == nil {
+		return "", fmt.Errorf("materialize Run %s produced no candidate", taskID)
+	}
+	return outcome.Candidate.ID, nil
+}
+
+func (e *wechatProductionExecutor) ReviewNodeCandidate(ctx context.Context, workspaceID string, issueID string, candidateID string, decision workflow.WechatProductionReviewDecision, reviewID string) error {
+	ws, err := util.ParseUUID(workspaceID)
+	if err != nil {
+		return err
+	}
+	issueUUID, err := util.ParseUUID(issueID)
+	if err != nil {
+		return err
+	}
+	feedback := ""
+	if decision == workflow.WechatReviewChangesRequested {
+		// The existing ReviewArtifact path requires non-empty rework feedback;
+		// the exact Owner rationale lives in the workflow event ledger under
+		// this review id, so the feedback pins that receipt.
+		feedback = fmt.Sprintf("Owner requested changes on the WeChat production surface (review %s); rework is tracked on the same issue.", reviewID)
+	}
+	_, err = e.artifacts.ReviewArtifact(ctx, ws, issueUUID, service.CompanyOpsArtifactReview{
+		CandidateID:   candidateID,
+		Decision:      companyopsapi.ArtifactEventType(decision),
+		IdempotencyID: reviewID,
+		Feedback:      feedback,
+		ActorUserID:   e.actor,
+	})
+	return err
+}
+
+// wechatTaskOutputText extracts the operator-visible output a completing Run
+// reported. An empty result stays empty so materialization fails closed
+// instead of synthesizing content.
+func wechatTaskOutputText(result []byte) string {
+	trimmed := strings.TrimSpace(string(result))
+	if trimmed == "" {
+		return ""
+	}
+	var payload struct {
+		Output string `json:"output"`
+	}
+	if err := json.Unmarshal(result, &payload); err == nil {
+		return payload.Output
+	}
+	return trimmed
+}
+
+// wechatProductionAPI is the per-request assembly the HTTP handlers use.
+type wechatProductionAPI struct {
+	orchestrator *workflow.WechatProductionOrchestrator
+	workspaceID  string
+	actor        string
+}
+
+// wechatProductionAPIForRequest fail-closed builds the orchestrator over the
+// configured CompanyOps services. Any missing writer keeps the endpoints
+// registered but unavailable (503), matching the existing CompanyOps posture.
+func wechatProductionAPIForRequest(h *handler.Handler, w http.ResponseWriter, r *http.Request, authContext workflow.WechatContentAuthorityContext) *wechatProductionAPI {
+	userID := strings.TrimSpace(r.Header.Get("X-User-ID"))
+	if userID == "" {
+		writeWechatProductionError(w, http.StatusUnauthorized, "unauthorized", "user not authenticated")
+		return nil
+	}
+	workspaceIDString := middleware.ResolveWorkspaceIDFromRequest(r, h.Queries)
+	workspaceID, err := util.ParseUUID(workspaceIDString)
+	if err != nil || !workspaceID.Valid {
+		writeWechatProductionError(w, http.StatusBadRequest, "invalid_request", "workspace_id is required")
+		return nil
+	}
+	actorUserID, err := util.ParseUUID(userID)
+	if err != nil || !actorUserID.Valid {
+		writeWechatProductionError(w, http.StatusUnauthorized, "unauthorized", "user is not a canonical member")
+		return nil
+	}
+	if h.CompanyOpsAuthority == nil || h.CompanyOpsEnsureWorkOrderIssue == nil || h.CompanyOpsAssignment == nil || h.CompanyOpsArtifacts == nil {
+		writeWechatProductionError(w, http.StatusServiceUnavailable, "writer_unavailable", "CompanyOps writers are not configured")
+		return nil
+	}
+	executor := &wechatProductionExecutor{
+		authority:   h.CompanyOpsAuthority,
+		ensureIssue: h.CompanyOpsEnsureWorkOrderIssue,
+		assignment:  h.CompanyOpsAssignment,
+		artifacts:   h.CompanyOpsArtifacts,
+		queries:     h.Queries,
+		actor:       actorUserID,
+		authContext: authContext,
+	}
+	orchestrator, err := workflow.NewWechatProductionOrchestrator(workflow.NewRepository(h.Queries), executor)
+	if err != nil {
+		writeWechatProductionError(w, http.StatusServiceUnavailable, "writer_unavailable", err.Error())
+		return nil
+	}
+	return &wechatProductionAPI{
+		orchestrator: orchestrator,
+		workspaceID:  util.UUIDToString(workspaceID),
+		actor:        userID,
+	}
+}
+
+// decodeWechatProductionRequest strictly decodes one production request: no
+// unknown fields, no trailing JSON values, canonical wire shape only.
+func decodeWechatProductionRequest(w http.ResponseWriter, r *http.Request) (workflow.WechatContentProductionRequest, bool) {
+	var req workflow.WechatContentProductionRequest
+	decoder := json.NewDecoder(io.LimitReader(r.Body, 1<<20))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
+		writeWechatProductionError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return workflow.WechatContentProductionRequest{}, false
+	}
+	var extra any
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		writeWechatProductionError(w, http.StatusBadRequest, "invalid_request", "request contains multiple JSON values")
+		return workflow.WechatContentProductionRequest{}, false
+	}
+	if err := workflow.ValidateWechatContentProductionRequest(req); err != nil {
+		writeWechatProductionError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return workflow.WechatContentProductionRequest{}, false
+	}
+	return req, true
+}
+
+func writeWechatProductionJSON(w http.ResponseWriter, status int, payload any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(payload)
+}
+
+func writeWechatProductionError(w http.ResponseWriter, status int, code string, message string) {
+	writeWechatProductionJSON(w, status, map[string]string{"error": code, "message": message})
+}
+
+// writeWechatProductionServiceError maps orchestrator failures onto stable
+// HTTP statuses without leaking internals.
+func writeWechatProductionServiceError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, workflow.ErrWechatProductionNotFound):
+		writeWechatProductionError(w, http.StatusNotFound, "not_found", err.Error())
+	case errors.Is(err, workflow.ErrWechatDefinitionPin):
+		writeWechatProductionError(w, http.StatusConflict, "definition_pin_conflict", err.Error())
+	case errors.Is(err, workflow.ErrWechatReviewUnavailable):
+		writeWechatProductionError(w, http.StatusConflict, "review_unavailable", err.Error())
+	default:
+		writeWechatProductionError(w, http.StatusInternalServerError, "internal", err.Error())
+	}
+}
+
+// wechatProductionStartHandler starts (or idempotently replays) one frozen
+// WeChat content production. Node 1 dispatches inside the same call.
+func wechatProductionStartHandler(h *handler.Handler) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		req, ok := decodeWechatProductionRequest(w, r)
+		if !ok {
+			return
+		}
+		api := wechatProductionAPIForRequest(h, w, r, req.Authority)
+		if api == nil {
+			return
+		}
+		view, err := api.orchestrator.StartProduction(r.Context(), api.workspaceID, req, api.actor)
+		if err != nil {
+			writeWechatProductionServiceError(w, err)
+			return
+		}
+		writeWechatProductionJSON(w, http.StatusOK, map[string]any{
+			"schema_version":  "hivecrew.wechat-content-production.v1",
+			"instance_id":     view.InstanceID,
+			"idempotency_key": req.IdempotencyKey,
+			"production":      view,
+		})
+	}
+}
+
+// wechatProductionReconcileHandler poll-drives one production forward. The
+// brief is not ledger-persisted, so the caller resends the exact same request;
+// any drift fails closed inside the orchestrator.
+func wechatProductionReconcileHandler(h *handler.Handler) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		req, ok := decodeWechatProductionRequest(w, r)
+		if !ok {
+			return
+		}
+		api := wechatProductionAPIForRequest(h, w, r, req.Authority)
+		if api == nil {
+			return
+		}
+		view, err := api.orchestrator.ReconcileProduction(r.Context(), api.workspaceID, r.PathValue("instanceId"), req, api.actor)
+		if err != nil {
+			writeWechatProductionServiceError(w, err)
+			return
+		}
+		writeWechatProductionJSON(w, http.StatusOK, map[string]any{
+			"schema_version": "hivecrew.wechat-content-production.v1",
+			"production":     view,
+		})
+	}
+}
+
+func wechatProductionGetHandler(h *handler.Handler) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		api := wechatProductionAPIForRequest(h, w, r, workflow.WechatContentAuthorityContext{})
+		if api == nil {
+			return
+		}
+		view, err := api.orchestrator.GetProduction(r.Context(), api.workspaceID, r.PathValue("instanceId"))
+		if err != nil {
+			writeWechatProductionServiceError(w, err)
+			return
+		}
+		writeWechatProductionJSON(w, http.StatusOK, map[string]any{
+			"schema_version": "hivecrew.wechat-content-production.v1",
+			"production":     view,
+		})
+	}
+}
+
+// wechatProductionReviewHandler records the Owner decision at the approval
+// gate (node 3) or on the terminal publication package (node 4).
+func wechatProductionReviewHandler(h *handler.Handler) http.HandlerFunc {
+	type reviewRequest struct {
+		Decision string `json:"decision"`
+		ReviewID string `json:"review_id"`
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		var body reviewRequest
+		decoder := json.NewDecoder(io.LimitReader(r.Body, 1<<16))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&body); err != nil {
+			writeWechatProductionError(w, http.StatusBadRequest, "invalid_request", err.Error())
+			return
+		}
+		api := wechatProductionAPIForRequest(h, w, r, workflow.WechatContentAuthorityContext{})
+		if api == nil {
+			return
+		}
+		view, err := api.orchestrator.ReviewProduction(r.Context(), api.workspaceID, r.PathValue("instanceId"), workflow.WechatProductionReviewDecision(body.Decision), body.ReviewID, api.actor)
+		if err != nil {
+			writeWechatProductionServiceError(w, err)
+			return
+		}
+		writeWechatProductionJSON(w, http.StatusOK, map[string]any{
+			"schema_version": "hivecrew.wechat-content-production.v1",
+			"production":     view,
+		})
+	}
+}
+
 // parseTrustedProxies parses a comma-separated list of CIDR prefixes from the
 // MULTICA_TRUSTED_PROXIES env var. Invalid entries are dropped with a single
 // warn-line per entry rather than crashing the server — a typo in one CIDR
@@ -446,6 +843,10 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	}
 	h := handler.New(queries, pool, hub, bus, emailSvc, store, cfSigner, analyticsClient, signupConfig, daemonHub)
 	runtimeSources := configureCompanyOps(h, queries, pool)
+	// Universal Work Registration Kernel (Phase-1). Reuses the existing
+	// project/issue/external_work_order_link/project_lifecycle_receipt/
+	// terminal_presence tables; no new task/run table set.
+	h.WorkEntry = workentry.NewService(workentry.NewPGStore(queries, pool))
 	continuousDispatchShadow := service.NewContinuousDispatchShadowService(
 		queries,
 		h.CompanyOpsDirectory,
@@ -512,6 +913,13 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	h.TaskService.FeatureFlags = opts.FeatureFlags
 	h.TaskService.Metrics = opts.BusinessMetrics
 	h.IssueService.Metrics = opts.BusinessMetrics
+	// Review cell (Lane B / P2): construct the acceptance-axis service only when
+	// the feature switch is on. When off, h.ReviewCellService stays nil, no
+	// review routes are registered, and every terminal-status interpretation
+	// keeps its legacy behavior.
+	if cfg := reviewCellConfigFromEnv(); cfg.Enabled {
+		h.ReviewCellService = service.NewReviewCellService(queries, pool, bus, cfg)
+	}
 	if opts.BusinessMetrics != nil {
 		// Wire the BusinessMetrics receiver into the cloud runtime client
 		// so every outbound Fleet/Gateway request feeds the
@@ -1398,12 +1806,42 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			r.Get("/work-context", h.GetCompanyOpsWorkContext)
 			r.Get("/outcomes", h.GetCompanyOpsOutcomes)
 			r.Get("/outcomes/{commandId}", h.GetCompanyOpsOutcome)
+			r.Get("/outcomes/{commandId}/artifact-locations", h.GetCompanyOpsArtifactReplicaLocations)
 			r.Get("/organization", h.GetCompanyOpsOrganization)
 			r.Get("/employees", h.GetCompanyOpsEmployees)
 			r.Get("/employees/{employeeId}", h.GetCompanyOpsEmployee)
+			r.Get("/workforce-base-runtime", h.GetCompanyOpsWorkforceBaseRuntime)
+			r.Get("/usage", h.GetProviderPlanUsage)
+			r.Put("/usage/quota", h.PutProviderUsageQuota)
 			r.Post("/assignments", h.CreateCompanyOpsAssignment)
 			r.Post("/artifact-reviews", h.CreateCompanyOpsArtifactReview)
 			r.Post("/formal-artifact-promotions", h.CreateCompanyOpsFormalArtifactPromotion)
+		})
+
+		// Universal Work Registration Kernel. Workspace membership guards tenant
+		// isolation; machine identity (PAT/daemon token) is the auth path, so
+		// there is no human-actor requirement here (external agents and
+		// automations register their own actor identity in the body).
+		r.Route("/api/work", func(r chi.Router) {
+			r.Use(middleware.RequireWorkspaceMember(queries))
+			r.Post("/resolve", h.WorkEntryResolve)
+			r.Post("/register", h.WorkEntryRegister)
+			r.Post("/start", h.WorkEntryStart)
+			r.Get("/status", h.WorkEntryStatus)
+			r.Post("/heartbeat", h.WorkEntryHeartbeat)
+			r.Post("/event", h.WorkEntryEvent)
+			r.Post("/handoff", h.WorkEntryHandoff)
+			r.Post("/finish", h.WorkEntryFinish)
+			r.Post("/review", h.WorkEntryReview)
+			r.Post("/sync", h.WorkEntrySync)
+			r.Get("/reconcile", h.WorkEntryReconcile)
+			r.Get("/participants", h.WorkEntryParticipants)
+			r.Get("/steward", h.WorkEntrySteward)
+			r.Post("/attach", h.WorkEntryAttach)
+			r.Post("/ignore", h.WorkEntryIgnore)
+			r.Get("/replay", h.WorkEntryReplay)
+			r.Get("/mcp/tools", h.WorkEntryMCPTools)
+			r.Post("/mcp/call", h.WorkEntryMCPCall)
 		})
 
 		// --- Workspace-scoped routes (all require workspace membership) ---
@@ -1431,11 +1869,26 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Post("/preview-trigger", h.PreviewIssueTrigger)
 				r.Post("/batch-update", h.BatchUpdateIssues)
 				r.Post("/batch-delete", h.BatchDeleteIssues)
+				// Review cell (Lane B / P2): review-queue is a static path and
+				// must register before the /{id} route. Registered only when the
+				// review cell is enabled — flag-off behavior is unchanged.
+				if h.ReviewCellService != nil {
+					r.Get("/review-queue", h.ListReviewQueue)
+				}
 				r.Route("/{id}", func(r chi.Router) {
 					r.Get("/", h.GetIssue)
 					r.Put("/", h.UpdateIssue)
 					r.Post("/move", h.MoveIssue)
 					r.Delete("/", h.DeleteIssue)
+					// Lane A owner issue control plane (dispatch view):
+					//   POST /api/issues/{id}/dispatch-preview
+					//   POST /api/issues/{id}/dispatch
+					//   POST /api/issues/{id}/stop
+					//   POST /api/issues/{id}/send-to-review
+					r.Post("/dispatch-preview", h.PreviewIssueDispatch)
+					r.Post("/dispatch", h.DispatchIssue)
+					r.Post("/stop", h.StopIssue)
+					r.Post("/send-to-review", h.SendIssueToReview)
 					r.Post("/comments/trigger-preview", h.PreviewCommentTriggers)
 					r.Post("/comments", h.CreateComment)
 					r.Get("/comments", h.ListComments)
@@ -1444,8 +1897,14 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Post("/subscribe", h.SubscribeToIssue)
 					r.Post("/unsubscribe", h.UnsubscribeFromIssue)
 					r.Get("/active-task", h.GetActiveTaskForIssue)
+					// HIV-404: read-only "ready frontier" queue sensor. Classifies
+					// the issue + its tasks ready/running/waiting/blocked/superseded
+					// from canonical data; no new writer, no schema change.
+					r.Get("/frontier", h.GetIssueFrontier)
 					r.Post("/tasks/{taskId}/cancel", h.CancelTask)
 					r.Post("/rerun", h.RerunIssue)
+					r.Post("/dispatch-preview", h.DispatchPreview)
+					r.Post("/dispatch", h.Dispatch)
 					r.Get("/task-runs", h.ListTasksByIssue)
 					r.Get("/usage", h.GetIssueUsage)
 					r.Post("/reactions", h.AddIssueReaction)
@@ -1461,6 +1920,10 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Put("/properties/{propertyId}", h.SetIssueProperty)
 					r.Delete("/properties/{propertyId}", h.DeleteIssueProperty)
 					r.Get("/pull-requests", h.ListPullRequestsForIssue)
+					if h.ReviewCellService != nil {
+						r.Post("/review-verdict", h.WriteReviewVerdict)
+						r.Post("/review-requeue", h.RequeueReview)
+					}
 				})
 			})
 
@@ -1491,6 +1954,12 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			// Projects
 			r.Route("/api/projects", func(r chi.Router) {
 				r.Get("/search", h.SearchProjects)
+				// Project lifecycle closure read model (derived health /
+				// frontier / outcome coverage projection, HIV-553 contract).
+				r.Get("/lifecycle", h.ListProjectLifecycle)
+				// Self-operation diagnosis (VC-12 four broken-chain detectors).
+				r.Get("/reconciler", h.ListProjectLifecycleReconciler)
+				r.Post("/reconciler/dispatch", h.DispatchProjectLifecycleReconcileAction)
 				r.Get("/", h.ListProjects)
 				r.Post("/", h.CreateProject)
 				r.Route("/{id}", func(r chi.Router) {
@@ -1501,6 +1970,19 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Post("/review-dispatch/dispatch", h.DispatchProjectReviewBatch)
 					r.Put("/", h.UpdateProject)
 					r.Delete("/", h.DeleteProject)
+					// HIV-367 (P0-E): read-only pipeline projection. Composes
+					// issue + agent_task_queue + comment under exact workspace
+					// scoping; no new writer.
+					r.Get("/pipeline", h.GetProjectPipeline)
+					r.Get("/lifecycle", h.GetProjectLifecycle)
+					// Slice 2 owner control operations (preview-first).
+					r.Post("/lifecycle/actions/{action}", h.ProjectLifecycleAction)
+					// Slice 4 project closure package (candidate, read-only).
+					r.Post("/closure-package", h.ProjectClosurePackage)
+					r.Post("/closure-package/review", h.ReviewProjectClosurePackage)
+					// HIV-405: bounded Project start/continue control.
+					r.Post("/start-preview", h.ProjectStartPreview)
+					r.Post("/start", h.ProjectStart)
 					r.Get("/resources", h.ListProjectResources)
 					r.Post("/resources", h.CreateProjectResource)
 					r.Put("/resources/{resourceId}", h.UpdateProjectResource)
@@ -1662,11 +2144,61 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 
 			// Runtimes
 			r.Get("/api/bases", h.ListBases)
+			r.Get("/api/bases/company", h.GetCompanyBases)
 			r.Post("/api/bases/operational-mode", h.SetBaseOperationalMode)
+			// Cockpit federation — read-only projection of the DGX 1421 owner cockpit
+			r.Get("/api/bases/cockpit-projection", h.GetCockpitProjection)
+			r.Get("/api/work-wall/snapshot", h.GetWorkWallSnapshot)
+			r.Get("/api/work-wall/stream", h.GetWorkWallStream)
+			// Terminal presence (read-only projection of live host panes)
+			r.Get("/api/work-wall/terminal-presence", h.ListTerminalPresence)
+			r.Post("/api/work-wall/terminal-presence", h.ReportTerminalPresence)
+			// Employee memory candidate layer (Slice-M1) + workflow kernel (Slice-W1/W2)
+			r.Post("/api/memory/candidates", h.CreateMemoryCandidate)
+			r.Get("/api/memory/candidates", h.ListMemoryCandidates)
+			r.Post("/api/memory/candidates/validate-batch", h.ValidateMemoryCandidatesBatch)
+			r.Post("/api/memory/candidates/{id}/validate", h.ValidateMemoryCandidate)
+			r.Post("/api/memory/candidates/{id}/promote", h.PromoteMemoryCandidate)
+			r.Post("/api/memory/candidates/{id}/revoke", h.RevokeMemoryCandidate)
+			r.Get("/api/memory/promoted", h.ListPromotedMemories)
+			r.Get("/api/memory/retrieve", h.RetrieveMemories)
+			r.Get("/api/workflow/definitions", h.ListWorkflowDefinitions)
+			r.Get("/api/workflow/operating-programs", h.ListWorkflowOperatingPrograms)
+			r.Post("/api/workflow/operating-programs", h.CreateWorkflowOperatingProgram)
+			r.Patch("/api/workflow/operating-programs/{id}", h.UpdateWorkflowOperatingProgram)
+			r.Delete("/api/workflow/operating-programs/{id}", h.DeleteWorkflowOperatingProgram)
+			r.Post("/api/workflow/operating-programs/{id}/projects", h.AssignWorkflowOperatingProgramProject)
+			r.Delete("/api/workflow/operating-programs/{id}/projects/{projectId}", h.UnassignWorkflowOperatingProgramProject)
+			r.Post("/api/workflow/definitions/{id}/versions", h.PublishWorkflowDefinitionVersion)
+			r.Get("/api/workflow/definitions/{id}/versions/{version}", h.GetWorkflowDefinitionVersion)
+			r.Post("/api/workflow/definitions/{id}/versions/{version}/instances", h.StartPublishedWorkflowGraphInstance)
+			r.Get("/api/workflow/instances", h.ListWorkflowInstances)
+			r.Post("/api/workflow/instances", h.StartWorkflowInstance)
+			r.Get("/api/workflow/instances/{id}", h.GetWorkflowInstance)
+			r.Post("/api/workflow/instances/{id}/advance", h.AdvanceWorkflowInstance)
+			r.Get("/api/workflow/instances/{id}/events", h.WorkflowInstanceEvents)
+			r.Route("/api/workflow/wechat-productions", func(r chi.Router) {
+				r.Post("/", wechatProductionStartHandler(h))
+				r.Get("/{instanceId}", wechatProductionGetHandler(h))
+				r.Post("/{instanceId}/reconcile", wechatProductionReconcileHandler(h))
+				r.Post("/{instanceId}/review", wechatProductionReviewHandler(h))
+			})
+			r.Get("/api/workrooms", h.ListWorkrooms)
+			r.Post("/api/workrooms", h.CreateWorkroom)
+			r.Get("/api/workrooms/{id}", h.GetWorkroom)
+			r.Get("/api/ia/object-ownership", h.GetObjectOwnership)
+			r.Get("/api/employees", h.ListEmployees)
+			r.Post("/api/employees", h.CreateEmployee)
+			r.Patch("/api/employees/{id}", h.UpdateEmployeeBinding)
+			r.Get("/api/datasets", h.ListDatasets)
+			r.Post("/api/datasets", h.CreateDataset)
+			r.Patch("/api/datasets/{id}", h.UpdateDatasetAuthorization)
 			r.Route("/api/runtimes", func(r chi.Router) {
 				r.Get("/", h.ListAgentRuntimes)
+				r.Get("/bases", h.ListRuntimeBases)
 				r.Route("/{runtimeId}", func(r chi.Router) {
 					r.Patch("/", h.UpdateAgentRuntime)
+					r.Post("/migrate", h.MigrateRuntimeAgents)
 					r.Get("/usage", h.GetRuntimeUsage)
 					r.Get("/usage/by-agent", h.GetRuntimeUsageByAgent)
 					r.Get("/usage/by-hour", h.GetRuntimeUsageByHour)

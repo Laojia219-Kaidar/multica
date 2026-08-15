@@ -131,7 +131,8 @@
       "labs": "실험실",
       "members": "멤버",
       "labels": "레이블",
-      "properties": "속성"
+      "properties": "속성",
+      "ia": "정보 아키텍처"
     }
   },
   "properties": {

@@ -50,6 +50,13 @@ type ProjectResourceData struct {
 	Label        string          `json:"label,omitempty"`
 }
 
+// EmployeeMemoryData mirrors handler.EmployeeMemoryData — one promoted
+// employee memory delivered on the claim response.
+type EmployeeMemoryData struct {
+	Kind    string `json:"kind"`
+	Content string `json:"content"`
+}
+
 // ConnectedAppData keeps the claim-response field local to daemon types while
 // sharing the canonical JSON shape with the runtime app metadata package.
 type ConnectedAppData = runtimeapps.ConnectedApp
@@ -67,6 +74,10 @@ type Task struct {
 	// regardless of task kind so the daemon can inject `## Workspace Context`
 	// into the brief. Empty when the owner hasn't set one.
 	WorkspaceContext              string                 `json:"workspace_context,omitempty"`
+	// EmployeeMemories are this agent's PROMOTED memories; the daemon renders
+	// them into the runtime brief as `## Employee Memories` so past lessons
+	// directly shape future runs. Empty for agents with none.
+	EmployeeMemories              []EmployeeMemoryData   `json:"employee_memories,omitempty"`
 	ThreadName                    string                 `json:"thread_name,omitempty"` // semantic title for provider-native session/thread history
 	Agent                         *AgentData             `json:"agent,omitempty"`
 	ConnectedApps                 []ConnectedAppData     `json:"connected_apps,omitempty"` // per-run app capabilities mounted through runtime MCP overlays

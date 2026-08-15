@@ -34,6 +34,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/storage"
 	"github.com/multica-ai/multica/server/internal/util"
 	"github.com/multica-ai/multica/server/internal/util/secretbox"
+	"github.com/multica-ai/multica/server/internal/workentry"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/featureflag"
 	"github.com/multica-ai/multica/server/pkg/llm"
@@ -170,6 +171,10 @@ type Handler struct {
 	Bus                    *events.Bus
 	TaskService            *service.TaskService
 	IssueService           *service.IssueService
+	// ReviewCellService is the P2 review cell (reviewer != implementer,
+	// PASS/REVISE/repair/re-review). Nil when the feature switch is off; the
+	// review routes fail closed with 503 in that state.
+	ReviewCellService *service.ReviewCellService
 	// CompanyOpsAuthority resolves the exact HiveCosm WorkOrder, Employee and
 	// IdentityBinding together with one HiveCrew-local executable Agent.
 	// Nil means the cross-system authority adapter is not configured; the
@@ -179,6 +184,14 @@ type Handler struct {
 	// Owner-to-Run slice. It atomically assigns the local Issue, enqueues the
 	// initial task and appends the immutable dispatch receipt.
 	CompanyOpsAssignment *service.CompanyOpsAssignmentService
+	// OwnerDispatchService implements the Owner explicit-dispatch commands
+	// (HIV-355): dispatch-preview (read-only) and dispatch (idempotent write).
+	// Nil when not wired; the handlers return 503 in that case.
+	OwnerDispatchService *service.OwnerDispatchService
+	// ProjectAutoStartService implements the bounded Project start/continue
+	// control slice (HIV-405): dependency-ready wave preview + idempotent
+	// batch dispatch. Nil when not wired; handlers return 503.
+	ProjectAutoStartService *service.ProjectAutoStartService
 	// CompanyOpsArtifacts materializes completed canonical Runs into temporary
 	// artifact candidates and appends exact Owner review decisions.
 	CompanyOpsArtifacts *service.CompanyOpsArtifactService
@@ -229,6 +242,9 @@ type Handler struct {
 		pgtype.UUID,
 		companyops.AuthoritySnapshot,
 	) (db.Issue, error)
+	// WorkEntry is the Universal Work Registration Kernel service. Nil when not
+	// wired; the /api/work/* routes fail closed with 503 in that state.
+	WorkEntry            *workentry.Service
 	AutopilotService      *service.AutopilotService
 	EmailService          *service.EmailService
 	UpdateStore           UpdateStore
@@ -394,6 +410,8 @@ func New(queries *db.Queries, txStarter txStarter, hub *realtime.Hub, bus *event
 		Bus:                          bus,
 		TaskService:                  taskSvc,
 		IssueService:                 service.NewIssueService(queries, txStarter, bus, analyticsClient, taskSvc),
+		OwnerDispatchService:         service.NewOwnerDispatchService(queries, txStarter, taskSvc),
+		ProjectAutoStartService:      nil, // wired below after OwnerDispatchService is available
 		AutopilotService:             service.NewAutopilotService(queries, txStarter, bus, taskSvc),
 		EmailService:                 emailService,
 		UpdateStore:                  NewInMemoryUpdateStore(),
@@ -432,6 +450,9 @@ func New(queries *db.Queries, txStarter txStarter, hub *realtime.Hub, bus *event
 		slog.Warn("github: PR snapshot pipeline disabled (invalid App private key)", "err", err)
 	}
 	h.PRRefresh = ghsnapshot.NewManager(ghClient, queries, txStarter, h.broadcastPRSnapshotApplied)
+
+	// HIV-405: wire ProjectAutoStartService reusing the same OwnerDispatchService.
+	h.ProjectAutoStartService = service.NewProjectAutoStartService(queries, h.OwnerDispatchService)
 
 	return h
 }

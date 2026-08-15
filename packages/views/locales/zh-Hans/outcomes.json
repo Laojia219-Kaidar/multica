@@ -18,7 +18,9 @@
     "status_filter_label": "状态",
     "total_other": "{{count}} 个成果",
     "collapse": "收起列表",
-    "expand": "展开列表"
+    "expand": "展开列表",
+    "load_history": "加载更多历史成果",
+    "loading_history": "加载中…"
   },
   "detail": {
     "back": "返回成果中心",

@@ -1600,3 +1600,126 @@ SET status = CASE WHEN EXISTS (
     updated_at = now()
 WHERE a.id = $1
 RETURNING *;
+
+
+-- name: CreateReviewTask :one
+-- Creates the idempotent review task for a delivered candidate. The ON CONFLICT
+-- arbiter targets the partial unique index idx_agent_task_review_open_unique
+-- ((issue_id, review_target_task_id) over open review tasks), so concurrent
+-- EventIssueUpdated deliveries, at-least-once bus redelivery, double consumers,
+-- and a first task parked in waiting_local_directory by the daemon all collapse
+-- into a single open review task; the losing insert returns no rows
+-- (pgx.ErrNoRows) and the caller treats it as a no-op. The 282 CHECK guarantees
+-- review_target_task_id is never NULL for a review row, so the arbiter can never
+-- be bypassed by NULL semantics.
+INSERT INTO agent_task_queue (
+    agent_id, runtime_id, issue_id, status, priority, task_kind, review_target_task_id,
+    trigger_summary, context, originator_source, trigger_evidence_kind, trigger_evidence_ref_id
+)
+VALUES (
+    @agent_id, @runtime_id, @issue_id, 'queued', @priority, 'review', @review_target_task_id,
+    sqlc.narg(trigger_summary), @context, 'unattributed'::text, 'issue_delivery'::text, @review_target_task_id
+)
+ON CONFLICT (issue_id, review_target_task_id)
+    WHERE task_kind = 'review' AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory')
+DO NOTHING
+RETURNING *;
+
+-- name: GetOpenReviewTaskForIssue :one
+-- The current open review task for an issue (the task whose agent_id is the
+-- reviewer). At most one open review task per issue is kept by cancelling
+-- superseded candidates, so the latest-by-created_at row is authoritative.
+SELECT * FROM agent_task_queue
+WHERE issue_id = $1
+  AND task_kind = 'review'
+  AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory')
+ORDER BY created_at DESC
+LIMIT 1;
+
+-- name: CompleteReviewTask :one
+-- Completes a review task with the structured verdict receipt. Only an open
+-- task can be completed: a verdict that arrives after the task was cancelled
+-- (superseded, status rollback) matches zero rows and is rejected.
+UPDATE agent_task_queue
+SET status = 'completed', completed_at = now(), result = @result::jsonb
+WHERE id = @id
+  AND task_kind = 'review'
+  AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory')
+RETURNING *;
+
+-- name: CancelOpenReviewTasksForIssue :many
+-- Cancels every open review task for an issue. Used when the issue leaves
+-- in_review (repair rework, status rollback) and by supersede when a newer
+-- candidate replaces an in-flight review round.
+UPDATE agent_task_queue
+SET status = 'cancelled', completed_at = now()
+WHERE issue_id = $1
+  AND task_kind = 'review'
+  AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory')
+RETURNING *;
+
+-- name: CountOpenReviewTasks :one
+SELECT count(*) FROM agent_task_queue
+WHERE agent_id = $1
+  AND task_kind = 'review'
+  AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory');
+
+-- name: CreateRepairTask :one
+-- Creates the rework delivery task for a REVISE verdict. It targets the
+-- candidate's implementer (reviewer != implementer is enforced by the review
+-- cell before this insert) and pins the review verdict event as trigger
+-- evidence so the repair round is auditable and replayable.
+INSERT INTO agent_task_queue (
+    agent_id, runtime_id, issue_id, status, priority, task_kind, review_target_task_id,
+    trigger_summary, context, originator_source, trigger_evidence_kind, trigger_evidence_ref_id
+)
+VALUES (
+    @agent_id, @runtime_id, @issue_id, 'queued', @priority, 'repair', @review_target_task_id,
+    sqlc.narg(trigger_summary), @context, 'unattributed'::text, 'review_repair'::text, @trigger_evidence_ref_id
+)
+RETURNING *;
+
+-- name: GetOpenRepairTaskForIssue :one
+-- The current open repair task for an issue, if any. Idempotency guard for
+-- duplicate REVISE verdicts.
+SELECT * FROM agent_task_queue
+WHERE issue_id = $1
+  AND task_kind = 'repair'
+  AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory')
+ORDER BY created_at DESC
+LIMIT 1;
+
+-- name: GetRepairTaskByEvidence :one
+-- Resolves the exact repair task pinned to a review verdict event.
+SELECT * FROM agent_task_queue
+WHERE issue_id = $1
+  AND task_kind = 'repair'
+  AND trigger_evidence_kind = 'review_repair'
+  AND trigger_evidence_ref_id = $2
+ORDER BY created_at DESC
+LIMIT 1;
+
+
+-- name: ListReviewerCandidates :many
+-- Workspace-local reviewer candidates for automatic reviewer selection
+-- (reviewer != implementer). Each row carries the agent's current open-review
+-- load so the review cell can pick the least-loaded available reviewer.
+-- Archived agents and agents without a claimable runtime are excluded.
+SELECT
+    a.id,
+    a.workspace_id,
+    a.name,
+    a.runtime_id,
+    (
+        SELECT count(*)
+        FROM agent_task_queue r
+        WHERE r.agent_id = a.id
+          AND r.task_kind = 'review'
+          AND r.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory')
+    ) AS open_review_tasks
+FROM agent a
+WHERE a.workspace_id = $1
+  AND a.archived_at IS NULL
+  AND a.runtime_id IS NOT NULL
+  AND a.id <> $2
+ORDER BY open_review_tasks ASC, a.created_at ASC;

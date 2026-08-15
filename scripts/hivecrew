@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# hivecrew — formal brand wrapper for the multica CLI.
+#
+# The official executable is `multica`; `hivecrew` is a thin passthrough alias
+# that does NOT duplicate the client. It exists so carriers and humans can type
+# `hivecrew work resolve|start|status|heartbeat|event|handoff|finish|sync|doctor`
+# (and any other multica command) without a second client codebase.
+set -euo pipefail
+
+if command -v multica >/dev/null 2>&1; then
+  exec multica "$@"
+fi
+
+# Fallback: multica not on PATH — point to the repo-built binary if present.
+if [ -x "$(dirname "$0")/../server/multica" ]; then
+  exec "$(dirname "$0")/../server/multica" "$@"
+fi
+
+echo "hivecrew: multica binary not found on PATH or in repo" >&2
+exit 127

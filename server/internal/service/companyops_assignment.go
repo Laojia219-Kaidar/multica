@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/companyops"
+	"github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -18,6 +19,15 @@ const assignmentDispatchEvidenceKind = "assignment_dispatch"
 // ErrCompanyOpsAssignmentConflict means an idempotency command was already
 // committed with a different immutable assignment payload.
 var ErrCompanyOpsAssignmentConflict = errors.New("companyops assignment command payload conflict")
+
+// ErrCompanyOpsCapacityReject / ErrCompanyOpsCapacityDefer are returned by
+// Dispatch when the Lane D capacity router fails the bound agent closed or
+// asks the caller to retry later. They carry the router's stable reason via
+// the wrapped %w chain.
+var (
+	ErrCompanyOpsCapacityReject = errors.New("companyops assignment rejected by capacity router")
+	ErrCompanyOpsCapacityDefer  = errors.New("companyops assignment deferred by capacity router")
+)
 
 // CompanyOpsAssignmentRequest carries authoritative observations plus the
 // local HiveCrew projection and execution carrier selected for one assignment.
@@ -37,6 +47,13 @@ type CompanyOpsAssignmentRequest struct {
 	Employee    companyops.AuthoritySnapshot
 	Bindings    []companyops.IdentityBinding
 	Agents      []companyops.AuthoritySnapshot
+
+	// CapacityCandidate is an optional observation of the bound agent's
+	// current capacity (remaining quota, health, role, base, concurrency
+	// slots). Nil preserves the legacy dispatch path (no capacity gate); when
+	// set, Dispatch consults the capacity router before opening the write
+	// transaction and maps defer/reject to the sentinel errors above.
+	CapacityCandidate *metrics.CapacityCandidate
 }
 
 // AssignmentDispatchReceipt is the immutable result of assigning one local
@@ -81,10 +98,25 @@ type CompanyOpsAssignmentBackend interface {
 // local assignment, Run creation, and immutable receipt append.
 type CompanyOpsAssignmentService struct {
 	backend CompanyOpsAssignmentBackend
+	// capacity is the Lane D gate consulted only when the request carries a
+	// CapacityCandidate. The default is the deterministic static router; it is
+	// nil-safe and never changes the authority-frozen target.
+	capacity metrics.CapacityRouter
 }
 
 func NewCompanyOpsAssignmentService(backend CompanyOpsAssignmentBackend) *CompanyOpsAssignmentService {
-	return &CompanyOpsAssignmentService{backend: backend}
+	return &CompanyOpsAssignmentService{
+		backend:  backend,
+		capacity: metrics.NewStaticCapacityRouter(),
+	}
+}
+
+// WithCapacityRouter replaces the default static capacity router. Used by
+// tests and by future wiring that supplies richer signal collection; a nil
+// router disables the gate entirely.
+func (s *CompanyOpsAssignmentService) WithCapacityRouter(router metrics.CapacityRouter) *CompanyOpsAssignmentService {
+	s.capacity = router
+	return s
 }
 
 // Dispatch performs no write until the full authority chain and exact local
@@ -132,6 +164,10 @@ func (s *CompanyOpsAssignmentService) Dispatch(
 			req.LocalAgentSourceRef,
 			target.AgentRef,
 		)
+	}
+
+	if err := gateCapacityDispatch(ctx, s, req, target); err != nil {
+		return AssignmentDispatchReceipt{}, err
 	}
 
 	var (
@@ -234,4 +270,43 @@ func assignmentReceiptMatches(
 		receipt.LocalAgentID == req.LocalAgentID &&
 		receipt.InitialTaskID.Valid &&
 		receipt.Target == target
+}
+
+// gateCapacityDispatch consults the Lane D capacity router for the bound agent
+// before any write. The authority-frozen target never changes: the router only
+// grants, defers, or rejects the exact bound agent based on the caller-supplied
+// capacity observation. No observation means no gate.
+func gateCapacityDispatch(
+	ctx context.Context,
+	s *CompanyOpsAssignmentService,
+	req CompanyOpsAssignmentRequest,
+	target companyops.ExecutionTargetSnapshot,
+) error {
+	if req.CapacityCandidate == nil {
+		return nil
+	}
+	if s == nil || s.capacity == nil {
+		return fmt.Errorf("capacity router is required when a capacity candidate is supplied")
+	}
+	if req.CapacityCandidate.AgentID != util.UUIDToString(req.LocalAgentID) {
+		return fmt.Errorf("%w: capacity candidate agent %q does not match bound agent %q",
+			ErrCompanyOpsCapacityReject,
+			req.CapacityCandidate.AgentID,
+			util.UUIDToString(req.LocalAgentID))
+	}
+	decision := s.capacity.RouteCapacity(ctx, metrics.CapacityRouteRequest{
+		TaskID:      util.UUIDToString(req.CommandID),
+		EmployeeRef: target.EmployeeRef,
+		Candidates:  []metrics.CapacityCandidate{*req.CapacityCandidate},
+	})
+	switch decision.Decision {
+	case metrics.CapacityDecisionGrant:
+		return nil
+	case metrics.CapacityDecisionDefer:
+		return fmt.Errorf("%w: %s", ErrCompanyOpsCapacityDefer, decision.Reason)
+	case metrics.CapacityDecisionReject:
+		return fmt.Errorf("%w: %s", ErrCompanyOpsCapacityReject, decision.Reason)
+	default:
+		return fmt.Errorf("%w: unknown decision %q", ErrCompanyOpsCapacityReject, decision.Decision)
+	}
 }

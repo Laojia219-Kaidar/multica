@@ -7,6 +7,7 @@ import { Input } from "@multica/ui/components/ui/input";
 import { NativeSelect, NativeSelectOption } from "@multica/ui/components/ui/native-select";
 import { Skeleton } from "@multica/ui/components/ui/skeleton";
 import { Badge } from "@multica/ui/components/ui/badge";
+import { Button } from "@multica/ui/components/ui/button";
 import type { CompanyOpsOutcomeSummary } from "@multica/core/types";
 import { useT } from "../i18n";
 import { isOutcomeFormal } from "./outcome-actions";
@@ -15,6 +16,10 @@ export interface OutcomeListProps {
   outcomes: CompanyOpsOutcomeSummary[];
   total: number;
   loading: boolean;
+  /** True while a history (older) page is being appended. */
+  loadingMore: boolean;
+  /** True when more history pages exist beyond the current window. */
+  hasMore: boolean;
   error: unknown;
   selectedCommandId: string;
   q: string;
@@ -22,6 +27,7 @@ export interface OutcomeListProps {
   onQChange: (q: string) => void;
   onStatusChange: (status: string) => void;
   onSelect: (summary: CompanyOpsOutcomeSummary) => void;
+  onLoadMore: () => void;
 }
 
 const STATUS_OPTIONS = [
@@ -61,6 +67,8 @@ export function OutcomeList({
   outcomes,
   total,
   loading,
+  loadingMore,
+  hasMore,
   error,
   selectedCommandId,
   q,
@@ -68,6 +76,7 @@ export function OutcomeList({
   onQChange,
   onStatusChange,
   onSelect,
+  onLoadMore,
 }: OutcomeListProps) {
   const { t } = useT("outcomes");
 
@@ -221,6 +230,21 @@ export function OutcomeList({
               );
             })}
           </ul>
+        )}
+        {hasMore && (
+          <div className="flex justify-center px-2 py-3">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={onLoadMore}
+              disabled={loadingMore}
+              className="w-full"
+            >
+              {loadingMore
+                ? t(($) => $.list.loading_history)
+                : t(($) => $.list.load_history)}
+            </Button>
+          </div>
         )}
       </div>
     </div>

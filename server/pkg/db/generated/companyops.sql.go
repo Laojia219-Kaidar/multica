@@ -13,11 +13,15 @@ import (
 
 const countCompanyOpsOutcomeRows = `-- name: CountCompanyOpsOutcomeRows :one
 SELECT COUNT(*) FROM assignment_dispatch_receipt adr
-LEFT JOIN issue i ON i.id = adr.issue_id
+LEFT JOIN issue i ON i.id = adr.issue_id AND i.workspace_id = adr.workspace_id
 LEFT JOIN workspace w ON w.id = adr.workspace_id
-LEFT JOIN agent a ON a.id = adr.local_agent_id
+LEFT JOIN agent a ON a.id = adr.local_agent_id AND a.workspace_id = adr.workspace_id
 LEFT JOIN agent_task_queue t ON t.id = adr.initial_task_id
+    AND t.issue_id = adr.issue_id AND i.id = t.issue_id
 LEFT JOIN execution_receipt er ON er.task_id = adr.initial_task_id
+    AND er.workspace_id = adr.workspace_id
+    AND er.issue_id = adr.issue_id
+    AND er.assignment_command_id = adr.command_id
 LEFT JOIN LATERAL (
     SELECT ac.id, ac.content_type
     FROM artifact_candidate ac
@@ -35,7 +39,7 @@ LEFT JOIN LATERAL (
 ) le ON true
 LEFT JOIN agent_task_queue ct ON ct.id = COALESCE(
     (SELECT atq.id FROM agent_task_queue atq
-     WHERE atq.issue_id = adr.issue_id
+     WHERE atq.issue_id = adr.issue_id AND i.id = atq.issue_id
        AND atq.trigger_evidence_kind = 'artifact_revision'
        AND atq.trigger_evidence_ref_id = (
            SELECT ae2.id FROM artifact_event ae2
@@ -48,7 +52,11 @@ LEFT JOIN agent_task_queue ct ON ct.id = COALESCE(
     lc.id,
     adr.initial_task_id
 )
+    AND ct.issue_id = adr.issue_id AND i.id = ct.issue_id
 LEFT JOIN execution_receipt cer ON cer.task_id = ct.id
+    AND cer.workspace_id = adr.workspace_id
+    AND cer.issue_id = adr.issue_id
+    AND cer.assignment_command_id = adr.command_id
 WHERE adr.workspace_id = $1
     AND ($2::text IS NULL OR
          i.title ILIKE '%' || $2 || '%' OR
@@ -271,7 +279,7 @@ func (q *Queries) GetAssignmentDispatchReceiptByCommand(ctx context.Context, com
 }
 
 const getCompanyOpsTaskByTriggerEvidence = `-- name: GetCompanyOpsTaskByTriggerEvidence :one
-SELECT id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id FROM agent_task_queue
+SELECT id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, task_kind, review_target_task_id FROM agent_task_queue
 WHERE issue_id = $1
   AND trigger_evidence_kind = $2
   AND trigger_evidence_ref_id = $3
@@ -338,6 +346,8 @@ func (q *Queries) GetCompanyOpsTaskByTriggerEvidence(ctx context.Context, arg Ge
 		&i.AccountableUserID,
 		&i.SessionRolloutMissing,
 		&i.RetiredSessionID,
+		&i.TaskKind,
+		&i.ReviewTargetTaskID,
 	)
 	return i, err
 }
@@ -722,11 +732,15 @@ SELECT
     latest_event_at.max_event_at AS latest_event_at,
     rtc.rework_task_count AS rework_task_count
 FROM assignment_dispatch_receipt adr
-LEFT JOIN issue i ON i.id = adr.issue_id
+LEFT JOIN issue i ON i.id = adr.issue_id AND i.workspace_id = adr.workspace_id
 LEFT JOIN workspace w ON w.id = adr.workspace_id
-LEFT JOIN agent a ON a.id = adr.local_agent_id
+LEFT JOIN agent a ON a.id = adr.local_agent_id AND a.workspace_id = adr.workspace_id
 LEFT JOIN agent_task_queue t ON t.id = adr.initial_task_id
+    AND t.issue_id = adr.issue_id AND i.id = t.issue_id
 LEFT JOIN execution_receipt er ON er.task_id = adr.initial_task_id
+    AND er.workspace_id = adr.workspace_id
+    AND er.issue_id = adr.issue_id
+    AND er.assignment_command_id = adr.command_id
 LEFT JOIN LATERAL (
     SELECT ac.id, ac.revision, ac.durable_object_ref, ac.digest, ac.content_type
     FROM artifact_candidate ac
@@ -755,7 +769,7 @@ LEFT JOIN LATERAL (
 LEFT JOIN LATERAL (
     SELECT COUNT(*)::int AS rework_task_count
     FROM agent_task_queue atq
-    WHERE atq.issue_id = adr.issue_id
+    WHERE atq.issue_id = adr.issue_id AND i.id = atq.issue_id
       AND atq.trigger_evidence_kind = 'artifact_revision'
       AND atq.trigger_evidence_ref_id = (
           SELECT ae2.id FROM artifact_event ae2
@@ -767,7 +781,7 @@ LEFT JOIN LATERAL (
 ) rtc ON true
 LEFT JOIN agent_task_queue ct ON ct.id = COALESCE(
     (SELECT atq.id FROM agent_task_queue atq
-     WHERE atq.issue_id = adr.issue_id
+     WHERE atq.issue_id = adr.issue_id AND i.id = atq.issue_id
        AND atq.trigger_evidence_kind = 'artifact_revision'
        AND atq.trigger_evidence_ref_id = (
            SELECT ae2.id FROM artifact_event ae2
@@ -780,7 +794,11 @@ LEFT JOIN agent_task_queue ct ON ct.id = COALESCE(
     lc.id,
     adr.initial_task_id
 )
+    AND ct.issue_id = adr.issue_id AND i.id = ct.issue_id
 LEFT JOIN execution_receipt cer ON cer.task_id = ct.id
+    AND cer.workspace_id = adr.workspace_id
+    AND cer.issue_id = adr.issue_id
+    AND cer.assignment_command_id = adr.command_id
 WHERE adr.workspace_id = $1
     AND ($2::text IS NULL OR
          i.title ILIKE '%' || $2 || '%' OR

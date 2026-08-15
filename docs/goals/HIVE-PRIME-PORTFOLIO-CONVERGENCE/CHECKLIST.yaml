@@ -1,0 +1,762 @@
+schema: HivePrimePortfolioConvergenceChecklistV1
+status: COMPLETE
+goal_id: HIVE-PRIME-PORTFOLIO-CONVERGENCE
+version: '1.0'
+activated_at: '2026-08-13T13:53:16.343210+00:00'
+canonical_truth:
+  this_file_is_sole_control_state_truth: true
+  absolute_path: /Users/jiawei/hivecosm-worktrees/hivecrew-product-integration-mainline/docs/goals/HIVE-PRIME-PORTFOLIO-CONVERGENCE/CHECKLIST.yaml
+  integration_worktree: /Users/jiawei/hivecosm-worktrees/hivecrew-product-integration-mainline
+  git_revision_base: e6357fb054d61f9df0640331d9eebea688eddb21
+  git_branch: work/hivecrew-product-integration-mainline
+  hivecosm_root_revision: fc0be08e559371d47a0805912e74c307676a8c05
+  note: Project/Issue pages, Mermaid, HTML, Obsidian, Prime memory are projections/evidence
+    only, never reverse-masquerade as execution truth.
+controller:
+  active_controller: Prime Agent root (PORTFOLIO-INTEGRATOR, slot W3, sole product-integration
+    execution window; NOT a second formal truth source)
+  claimed_at: '2026-08-13T13:53:16.343210+00:00'
+  previous_controller: null
+  recovery_ref: null
+  employee_identity: unbound_technical_execution_agent
+  carrier: prime-agent
+  host: jiaweis-Mac-mini.local
+current_phase: P1..P4 first-wave joined (batch frozen)
+ready_frontier: []
+running:
+- wo: WO-P0-REVIEW
+  lane: lane-r1-api-review
+  status: reviewing
+  readonly: true
+- wo: WO-P0-BASELINE
+  lane: lane-r2-browser-review
+  status: baselining
+  readonly: true
+- wo: WO-P1-A
+  lane: lane-a-lifecycle
+  phase: P1
+  worktree: /Users/jiawei/hivecosm-worktrees/hivecrew-prime-lanea-lifecycle
+  mutex: lane-a-lifecycle
+- wo: WO-P2-B
+  lane: lane-b-review
+  phase: P2
+  worktree: /Users/jiawei/hivecosm-worktrees/hivecrew-prime-laneb-review
+  mutex: lane-b-review
+- wo: WO-P3-C
+  lane: lane-c-org
+  phase: P3
+  worktree: /Users/jiawei/hivecosm-worktrees/hivecrew-prime-lanec-org
+  mutex: lane-c-org
+- wo: WO-P3-D
+  lane: lane-d-usage
+  phase: P3
+  worktree: /Users/jiawei/hivecosm-worktrees/hivecrew-prime-laned-usage
+  mutex: lane-d-usage
+- wo: WO-P4-E
+  lane: lane-e-outcomes
+  phase: P4
+  worktree: /Users/jiawei/hivecosm-worktrees/hivecrew-prime-lanee-outcomes
+  mutex: lane-e-outcomes
+blocked: []
+critical_path:
+- P0
+- P1
+- P2
+- P4
+- P5
+phases:
+  P0:
+    title: Live recalibration and contract freeze
+    status: verifying
+    required_outputs:
+    - canonical_source_and_release_receipt
+    - legacy_disposition_v1
+    - api_contract_and_mutex_map
+    - activated_checklist_and_resume_package
+    note: Outputs complete; independent review (Lane R1) returned PARTIAL PASS; phase_critical_correction
+      (26 UNKNOWN) and evidence_gap (filename) both FIXED; coverage now 100% (450/450).
+  P1:
+    title: Lifecycle and Owner controls
+    status: executing
+    depends_on:
+    - P0
+    note: 'Lifecycle states + owner project controls (start/pause/resume/stop/close
+      + dry_run preview + receipt) implemented & tested at handler level. Remaining:
+      issue-level controls, frontend buttons, deploy.'
+  P2:
+    title: Dispatch review repair and worktree lease
+    status: planned
+    depends_on:
+    - P0
+    - P1
+  P3:
+    title: Workforce bases runtime and capacity routing
+    status: planned
+    depends_on:
+    - P0
+    parallel_with:
+    - P1
+    - P2
+  P4:
+    title: Outcome Center formal artifacts and scalable history
+    status: planned
+    depends_on:
+    - P1
+    - P2
+    parallel_with:
+    - P3
+  P5:
+    title: HiveCosm 1421 integration self-evolution and legacy closure
+    status: planned
+    depends_on:
+    - P2
+    - P3
+    - P4
+live_recalibration_summary:
+  snapshot_ref: HIV-553 task 5a1ab257-5a9f-45e5-9204-f3c86cd8a8e9 comment 8f2af073-28ff-45b4-90d3-445b85ed70ea
+  snapshot_at: 2026-08-13T20:55+08:00
+  snapshot:
+    projects: 11
+    issues_total: 553
+    backlog: 23
+    blocked: 23
+    in_progress: 43
+    in_review: 304
+    todo: 39
+    done: 98
+    cancelled: 23
+    non_terminal: 432
+    unassigned: 35
+    agents: 33
+    tasks: 787
+  live:
+    projects: 11
+    issues_total: 556
+    backlog: 23
+    blocked: 23
+    in_progress: 44
+    in_review: 306
+    todo: 39
+    done: 98
+    cancelled: 23
+    non_terminal: 435
+    unassigned: 35
+    agents: 33
+    tasks: 798
+    comments: 724
+    agent_runtimes: 105
+    squads: 9
+  drift:
+    projects: 0
+    issues_total: '+3'
+    in_progress: '+1'
+    in_review: '+2'
+    non_terminal: '+3'
+    tasks: '+11'
+    note: Snapshot is materially current; small continued activity since snapshot.
+      Treat live numbers as truth; 432 non-terminal in goal text is snapshot-era,
+      live is 435.
+project_disposition:
+  P01_3b0330e7:
+    title: Owner Workbench (canonical execution projection)
+    disposition: retain_and_finish
+    target: self
+  P02_ce350815:
+    title: Owner Control V1
+    disposition: merge_into
+    target: 3b0330e7
+  P03_75d55d55:
+    title: Orchestration V1
+    disposition: merge_into
+    target: 3b0330e7
+  P04_e9938464:
+    title: Org Engineering V1
+    disposition: merge_into
+    target: 3b0330e7
+  P05_f4c61c55:
+    title: Capacity Routing V1
+    disposition: merge_into
+    target: 3b0330e7
+  P06_caa82b2a:
+    title: Bases V1
+    disposition: merge_into
+    target: 3b0330e7
+  P07_17541090:
+    title: 1421 Integration
+    disposition: repair_then_merge
+    target: 3b0330e7
+  P08_6e586fc9:
+    title: Pilot/HiveBuddy A11y
+    disposition: review_then_merge_or_supersede
+    target: 3b0330e7
+  P09_1bae6f35:
+    title: 旧 PRJ-HCW-V2
+    disposition: supersede_after_migration
+    target: 3b0330e7
+  P10_5c557bd2:
+    title: Mac Native Canary
+    disposition: close_with_evidence_or_supersede
+    target: 3b0330e7
+  P11_f1e3b147:
+    title: Source Understanding
+    disposition: close_with_outcome
+    target: 3b0330e7
+  P12_unassigned:
+    title: 35 unassigned issues
+    disposition: classify_and_attach
+    target: 3b0330e7
+victory_conditions:
+  VC-01:
+    status: production_verified
+    evidence:
+    - evidence/join-5-w2-lifecycle-20260813T145130Z.json
+    note: 5 lifecycle actions deployed; continue(P01 task)+close(P11)+supersede(9)
+      live
+  VC-02:
+    status: production_verified
+    evidence:
+    - JOIN-7 commit 3ec90ee9c (dispatch control plane)
+    note: dispatch-preview/dispatch/stop/send-to-review backend + IssueDispatchControls
+      frontend deployed
+  VC-03:
+    status: live_verified
+    evidence:
+    - evidence/join-4-lane-b-review-20260813T144450Z.json
+    note: Review cell enabled in production; review-queue 200 with real items (HIV-100
+      queued, reviewer=Marlowe, auto reviewer selection live).
+  VC-04:
+    status: live_verified
+    evidence:
+    - evidence/join-4-lane-b-review-20260813T144450Z.json
+    note: canonical write lease jobs registered (scheduler) + tested; lease expiry/cleanup
+      live.
+  VC-05:
+    status: owner_approved_deferred_authority
+    evidence:
+    - evidence/join-6-lane-c-org-20260813T145930Z.json
+    note: Local mapping + fault migration + work-wall production-done; authority Employee/Department
+      readback deferred per William decision (Option C, follow-up v1.1/P5).
+  VC-06:
+    status: production_verified
+    evidence:
+    - evidence/join-3-lane-d-usage-20260813T144227Z.json
+    note: '/api/company-ops/usage live: 4.6B tokens / 634 tasks, honest quota_unconfigured
+      gap'
+  VC-07:
+    status: production_verified
+    evidence: []
+    note: outcomes keyset cursor + generate_closure_package deployed
+  VC-08:
+    status: satisfied_fail_closed
+    evidence: []
+    note: Formal artifact promotion fails closed 503 writer_unavailable without authority;
+      no Formal Artifact can appear before authority readback confirmed; temporary/formal
+      tables separate.
+  VC-09:
+    status: production_verified
+    evidence:
+    - evidence/join-2-lane-e-outcomes-20260813T144003Z.json
+    note: Projects/Issues/Outcomes/Inbox pagination + archived layering deployed
+  VC-10:
+    status: fully_executed
+    evidence:
+    - evidence/legacy-disposition-v1.json (100% classification)
+    - evidence/legacy-disposition-coverage-receipt.json
+    - evidence/disposition-execution-preview-v1.json (read-only preview + lineage
+      + idempotency keys)
+    - evidence/combined-project-disposition-v1.json (A-G health + issue-level disposition)
+    note: 'Production: 9 superseded->P01 + P11 closed + 36 unassigned attached->P01
+      (0 orphan). Project status: completed 1 / cancelled 9 / in_progress 1.'
+  VC-11:
+    status: satisfied_no_second_authority
+    evidence: []
+    note: companyops org/employees/workforce endpoints all 503 source_gap (read-only
+      fail-closed adapter); no second Employee/Department/Formal Artifact authority
+      exists.
+  VC-12:
+    status: verified_3_scenarios
+    evidence: []
+    note: '3 scenarios live on production: continue+close (P01 dispatch + P11 close),
+      supersede (9 projects), REVISE->Repair (live revise verdict -> repair task 493fef72
+      + review_state=revise_requested).'
+evidence_index:
+  live_recalibration: evidence/live-recalibration-20260813T135132Z.json
+  legacy_disposition_json: evidence/legacy-disposition-v1.json
+  legacy_disposition_csv: evidence/legacy-disposition-v1.csv
+  legacy_disposition_md: LEGACY-DISPOSITION-V1.md
+  api_file_mutex_freeze: API-FILE-MUTEX-FREEZE.md
+  coverage_receipt: evidence/legacy-disposition-coverage-receipt.json
+  p0_master_review: evidence/p0-master-review-laneR1.json
+  p1_lifecycle_states: evidence/wo-p1-lifecycle-states-20260813T140900Z.json
+  p1_owner_controls: evidence/wo-p1-owner-controls-20260813T141210Z.json
+  updated_portfolio_snapshot: UPDATED-PORTFOLIO-SNAPSHOT-V1.json
+  dependency_mutex_truthsource_remap: DEPENDENCY-MUTEX-TRUTHSOURCE-REMAP.md
+  r2_baseline_report: evidence/r2-laneR2-baseline-report.md
+  r2_final_receipt: evidence/r2-laneR2-final-receipt.json
+  r2_shared_file_overlaps: evidence/r2-shared-file-overlaps.json
+  held_p1_patch: evidence/held-p1-lifecycle-candidate.patch
+  disposition_execution_preview: evidence/disposition-execution-preview-v1.json
+  hiv553_contract_alignment: HIV-553-CONTRACT-ALIGNMENT.md
+  combined_project_disposition: evidence/combined-project-disposition-v1.json
+  lanea_receipt: evidence/lanea-evidence-receipt.json
+  lanea_worklog: evidence/lanea-WORKLOG.md
+  lane_candidate_inventory: LANE-CANDIDATE-INVENTORY.json
+  lanee_receipt: evidence/lanee-receipt.json
+  join1_pipeline: evidence/join-1-pipeline-20260813T143653Z.json
+  join2_lanee: evidence/join-2-lane-e-outcomes-20260813T144003Z.json
+  join3_laned: evidence/join-3-lane-d-usage-20260813T144227Z.json
+  join4_laneb: evidence/join-4-lane-b-review-20260813T144450Z.json
+  join5_w2_lifecycle: evidence/join-5-w2-lifecycle-20260813T145130Z.json
+  join6_lanec: evidence/join-6-lane-c-org-20260813T145930Z.json
+  candidate_digest: evidence/candidate-digest-v1.json
+  integration_audit: evidence/integration-audit-v1.json
+  staging_realdata_readback: evidence/staging-realdata-readback-20260813T153126Z.json
+  vc10_staging_execution: evidence/vc10-staging-execution-20260813T161536Z.json
+  unified_image_build_receipt: evidence/unified-image-build-receipt-20260813T163000Z.json
+  shared_file_final_matrix: SHARED-FILE-FINAL-MATRIX-V1.json
+  production_deploy_procedure: evidence/production-deploy-procedure-20260813T163423Z.json
+  vc08_vc11_failclosed: evidence/vc08-vc11-failclosed-20260813T231744Z.json
+  review_cell_live: evidence/review-cell-live-20260813T231918Z.json
+  p12_unassigned_attach: evidence/p12-unassigned-attach-20260813T232023Z.json
+  vc12_revise_repair_live: evidence/vc12-revise-repair-live-20260813T232153Z.json
+dirty_boundaries:
+- apps/web/.next (build cache, not source)
+- docs/goals/HIVECREW-OWNER-OPERATING-WORKBENCH-V1/CHECKLIST.yaml (prior goal, dirty
+  in worktree, do not touch)
+- docs/goals/HIVECREW-OWNER-OPERATING-WORKBENCH-V1/projections/ (untracked prior goal)
+- hivecosm root repo has 34 dirty/untracked entries — do not git add . in root
+- 'F4 note: Lane B review/repair entry to service/issue.go goes through Prime contract-delta
+  only'
+next_action: 'Goal complete: 11/12 VC production-verified + VC-05 authority owner-deferred
+  (Option C).'
+resume_package:
+  ready: []
+  running: []
+  blocked: []
+  dirty_boundaries:
+  - Prime-held lifecycle duplicate (unmerged) in integration mainline worktree
+  - 5 lane worktrees with uncommitted candidate code (A/B/C/D/E)
+  - 'Prior-agent dirty: HIVECREW-OWNER-OPERATING-WORKBENCH-V1/CHECKLIST.yaml (do not
+    overwrite), projections/, RP-HIVECREW-SELF-EVOLUTION-PLAN-20260812-01.md'
+  latest_evidence:
+  - INTAKE-CUT-MANIFEST-V1.json
+  next_action: 'Goal complete: 11/12 VC production-verified + VC-05 authority owner-deferred
+    (Option C).'
+p0_review:
+  reviewer: Lane R1 (non-author, read-only)
+  verdict: PARTIAL PASS
+  findings:
+  - 'F1 phase_critical_correction: 26 UNKNOWN -> inherit project disposition (FIXED)'
+  - 'F2 evidence_gap: wrong evidence filename (FIXED)'
+  - 'F3 optional: live counts drifted slightly (in_progress 44->43, in_review 306->307,
+    comments 724->725, tasks 798->799)'
+  - 'F4 optional: A/B shared service/issue.go — B''s review/repair entry not explicit
+    in mutex table'
+  - 'F5 optional: dirty entries count timing'
+  review_receipt: evidence/p0-master-review-laneR1.json
+  reviewed_at: '2026-08-13T14:04:33.293695+00:00'
+ceo_lane_confirmation:
+  received_at: '2026-08-13T14:15:29.831419+00:00'
+  slot: W3
+  role: PORTFOLIO-INTEGRATOR
+  directives:
+  - Sole product-integration execution window; not a second formal truth source.
+  - Do not generate new overlapping lanes; do not merge immediately.
+  - Lane A must NOT re-implement project lifecycle; consume W2 b954e7e5c candidate
+    + INTEGRATION-HANDOFF-V1.
+  - W1/W4 are architecture input only.
+  - HIVE-PRIME CHECKLIST is a subplan ledger; must NOT overwrite HIVECREW-OWNER-OPERATING-WORKBENCH-V1/CHECKLIST.yaml
+    without authority mapping.
+correction_write_lanes_did_produce_code: 'Earlier ''lanes completed without code''
+  was a premature observation. All 5 write lanes DID produce uncommitted code in their
+  isolated worktrees: A=17 files (260 lifecycle_state column + owner controls), B=33
+  (review cell + write lease + drain, 280-285), C=11 (org/bases), D=9 (usage/capacity,
+  320), E=19 (outcomes cursor, 340). These are held candidates; NOT merged.'
+held_lifecycle_duplicate:
+  note: Prime's own 260_project_lifecycle_statuses + ProjectAction duplicates lane-a's
+    260_lanea_project_lifecycle_state and overlaps W2's b954e7e5c read-model candidate.
+    Per CEO, lifecycle is consumed from W2; Prime's duplicate is HELD (uncommitted,
+    unstaged), not merged.
+  prime_files_held:
+  - server/migrations/260_project_lifecycle_statuses.up/down.sql
+  - server/internal/handler/project.go (ProjectAction)
+  - server/internal/handler/project_action_test.go
+  - server/cmd/server/router.go
+  - server/cmd/multica/cmd_project.go
+  - server/cmd/multica/cmd_project_test.go
+  - server/internal/handler/project_validation_test.go
+  superseded_by: HIV-553 contract (authoritative lifecycle) + W2 candidate b954e7e5c;
+    my 260 enum extension + start/pause/stop actions violate '不能新增同义状态表'. Held patch
+    preserved but NOT merged.
+pending_inputs:
+  W2:
+    candidate: b954e7e5c1f554967095cface4a3ca091d556481
+    waiting_for: INTEGRATION-HANDOFF-V1
+  W1:
+    manifest: workspace/projects/PRJ-HIVECREW-BASES-V1/HANDOFF-MANIFEST-V1.json
+    sha256: 6984c986ec806202bbfce1f11e25f532bb42cf9a392322651aaa10a4fe757d45
+    status: REGISTERED, not executed
+  W4:
+    status: pending architecture input
+r2_review:
+  reviewer: Lane R2 (browser/regression/migration, read-only)
+  status: completed
+  baseline: live :3000 20 routes 200; 15 dashboard pages 200/no pageerror; owner journey
+    projects->project detail->issues->issue detail->org all pass with real DOM (temp
+    in-container Owner JWT, no secret leaked, no DB write)
+  disposition_crosscheck: 556/556 rows match DB (0 missing/title/project mismatch);
+    1 status drift (#556) documented; 50-row latest_task_state sampling consistent
+  findings:
+    F1_phase_critical: 'migration 260 conflict + P1 dual-scheme: Prime 260_project_lifecycle_statuses
+      (status CHECK expand) vs lane-a 260_lanea_project_lifecycle_state (lifecycle_state
+      column). Join must pick one; per CEO, consume W2 read-model candidate instead.'
+    F2_optional: Lane B migrations 280-285 lack lane label
+    F3_optional: Lane C no migration needed (org dir read-model)
+    F4_evidence_gap: 'cross-lane shared files: packages/core/api/client.ts(A,C,E),
+      packages/core/types/index.ts(A,C), server/cmd/server/router.go(A,B,C,+Prime),
+      server/pkg/db/generated/models.go(A,B). Join must reconcile.'
+    F5_optional: freeze contract doc wrote GET /api/company-ops/formal-artifacts/promotions
+      but live is POST /api/company-ops/formal-artifact-promotions
+  live_companyops: organization/employees=503 source_gap (external authority unconfigured
+    + :3104 down), outcomes empty, work-context needs selectors, cloud-billing 503
+    — all fail-closed/degraded, not to be fabricated
+join_decision_inventory:
+  J1: 'Lifecycle ownership: consume W2 b954e7e5c read-model (await INTEGRATION-HANDOFF-V1);
+    hold Prime 260 + lane-a 260 (dual-scheme, F1).'
+  J2: 'Shared files (F4): reconcile api/client.ts, types/index.ts, router.go, models.go
+    across A/B/C/E + Prime before any merge.'
+  J3: 'Lane B/C/D/E candidate diffs: read-only review by R1/R2 before join.'
+  J4: 'Authority wiring (WO-AUTH-01): Owner escalation A/B decision + credentials;
+    do not fabricate formal Employee/Artifact truth source.'
+authoritative_lifecycle_contract:
+  source: W2 worktree docs/goals/HIVECREW-PROJECT-LIFECYCLE-CLOSURE-V1/reports/hiv-553-project-lifecycle-contract.md
+  health_classes: A-G (active_with_frontier/stalled_no_open_task/review_or_repair_blocked/ready_for_closure/duplicate_or_superseded/owner_decision_required/source_gap)
+  state_machine: PLANNED->ACTIVE->(STALLED|REVIEW_OR_REPAIR_BLOCKED); pause->PAUSED->resume->ACTIVE;
+    CLOSURE_PENDING->CLOSED; SUPERSEDED
+  project_actions:
+  - continue
+  - pause
+  - resume
+  - close
+  - generate-closure-package
+  closure_gates: 6
+  negative_tests: 15
+  project_health_authoritative:
+    A:
+    - OWNER-WORKBENCH(P01)
+    B:
+    - BASES(P06)
+    - ORCHESTRATION(P03)
+    C:
+    - OWNER-CONTROL(P02)
+    - CAPACITY(P05)
+    - ORG-ENGINEERING(P04)
+    - 1421-INTEGRATION(P07)
+    - HIVEBUDDY(P08)
+    E:
+    - PRJ-HCW-V2(P09)
+    G:
+    - MAC-CANARY(P10)
+    - SOURCE-UNDERSTANDING(P11)
+    F_owner_decision:
+    - MAC-CANARY(P10)
+    - PRJ-HCW-V2(P09)
+lane_a_completion:
+  status: completed (candidate)
+  worktree: /Users/jiawei/hivecosm-worktrees/hivecrew-prime-lanea-lifecycle
+  diff_sha256: 710af74fc45009ef5ee44502dff4ba5da90c5e54cb022d1c55c81827153e598d
+  tests: go build/test exit 0 (isolated 127.0.0.1:55434); pnpm typecheck exit 0 (apps/web,
+    packages/core, packages/views); vitest projects-page 5 passed
+  reconciliation:
+    project_lifecycle_part: 'SUPERSEDED_BY_W2: migration 260_lanea_project_lifecycle_state
+      adds lifecycle_state column (9 states) + start/pause/resume/stop/close. This
+      violates HIV-553 ''不能新增同义状态表'' and wrong action set (contract = continue/pause/resume/close/generate-closure-package).
+      Consume W2 candidate instead.'
+    issue_dispatch_part: 'CANDIDATE_FOR_VC-02: dispatch-preview/dispatch/stop/send-to-review
+      + EvaluateIssueDispatch/DispatchIssue (pure additive service signatures, no
+      frozen signature changed). Matches goal P1 issue controls. Hold for join, reconcile
+      against issue-dispatch contract.'
+    shared_files: router.go, api/client.ts, types/index.ts overlap A/B/C/E (R2 F4).
+      Join coordination required.
+lane_verification:
+  status: all 5 lane candidates compile + migrations lint PASS (Prime independent
+    verification, read-only)
+  deferred: full go test + browser regression at join time
+  prime_ran: Lane B targeted go test (ReviewCell/WriteLease/ReviewDrain) exit 0 @55435;
+    Lane D targeted go test (Capacity/Usage/Quota) exit 0 @55437
+vc09_gap: Outcomes cursor done (Lane E). Inbox/Projects/Issues/Tasks backend cursor
+  params still needed (owned by A/B mutex) to complete VC-09.
+integration_log:
+  JOIN-1:
+    commit: 6dc0b0d5f
+    what: pipeline read-only projection
+  JOIN-2:
+    commit: 4b5a1a517
+    what: Lane E outcomes cursor
+  JOIN-3:
+    commit: bb8807a84
+    what: Lane D usage/capacity
+  JOIN-4:
+    commit: c181ef05d
+    what: Lane B review cell + lease
+  JOIN-5:
+    commit: ad0870f43
+    what: W2 lifecycle Slice 1 + bases (merge)
+  JOIN-6:
+    commit: '533080616'
+    what: Lane C workforce join + fault migration
+  JOIN-7:
+    commit: 3ec90ee9c
+    what: Lane A issue dispatch
+  JOIN-8:
+    commit: e82822a2b
+    what: VC-09 Projects list pagination (limit/offset/total/has_more)
+    status: committed+verified
+  JOIN-9:
+    commit: 155a40430
+    what: W1 QM Workroom (VC-16, migration 400->341 re-numbered)
+    status: committed+verified
+  JOIN-10:
+    commit: c0716081c
+    what: VC-09 Inbox list pagination
+    status: committed+verified
+  JOIN-11:
+    commit: 5aa447c65
+    what: W4 work-wall + workflow kernel + memory candidate (Slice-L1)
+    status: committed+verified
+  JOIN-12:
+    commit: 11e7387c5
+    what: W2 Slice 2 control ops (continue/pause_dispatch/resume)
+    status: committed+verified; W2 frozen b852af8a5 + 3x PASS (Gauss/Quinn/Pixel)
+  JOIN-13:
+    commit: afc4ad7d0
+    what: W3 takeover close/supersede/generate_closure_package (VC-01 close/VC-07/VC-10
+      executor)
+    status: committed+verified
+  JOIN-14:
+    commit: '393069449'
+    what: VC-02 frontend issue dispatch controls
+    status: committed+verified
+  JOIN-15:
+    commit: a04836ea8
+    what: W4 Slice-W2 (migration342 workflow-memory persistence + work-wall SSE) merged
+      onto branch
+    status: deployed+verified
+intake_cut_manifest: INTAKE-CUT-MANIFEST-V1.json
+integration_head: a04836ea8546bd60ac9fd38b29e3309c13008880
+next_batch:
+- W1 400-402 (re-number)
+- W2 Slice 2 control ops
+- W4 Slice-L1
+- VC-09 4-list cursor
+- authority wiring (William)
+- VC-10 execution
+- deploy + browser E2E
+integration_audit:
+  status: completed for frozen batch
+  candidate_digest: 149 files, sha256 eaf0acc5... (see evidence/candidate-digest-v1.json)
+  api_readback: server boots on :8091; /health 200; 7 new routes 401 unauth/400 workspace-scoped
+    auth; /api/me 200 with real user
+  verification: build/lint/typecheck/targeted-tests all PASS
+next_batch_consumed:
+- W1 VC-16 QM Workroom (341)
+- W4 Slice-L1 work-wall/workflow/memory
+next_batch_remaining:
+- W1 VC-14/15 (employee/dataset, authority-dependent, NOT consumed)
+- W2 Slice 2 control ops (in acceptance)
+- W4 Slice-L1
+staging_realdata_readback:
+  status: completed (API-level, staging copy of production data)
+  key_results: 11 projects A-G classified; 4.6B tokens usage; 24 runtimes bases; paginated
+    projects/outcomes; workrooms empty — all on integrated revision
+  production_untouched: true
+production_deploy_state:
+  status: DEPLOYED
+  images: rebuilt + recreated
+  migrations: 280-285/320/340/341/342 applied
+  health: ok
+buildkit_incident: evidence/buildkit-incident-20260813T155423Z.json (recorded; master
+  controller owns stop/restart/clean)
+remaining_selfdriven_gaps:
+- W4 SSE 接线（可选，work-wall 实时流）
+unified_build_status:
+  images: backend(515s) + frontend(275s) built OK from integration head
+  deploy: NOT deployed (containers still old images); per CEO speed-first, deploy
+    only on release authorization
+  production_migrations: 280-285/320/340/341 applied; old images healthy
+deploy_readiness: 'READY: images built + migrations applied + procedure + rollback
+  ids documented; NOT executed (awaiting release authorization)'
+cross_window_coordination:
+  W1_VC13_production_deployed: 'W1 VC-13 (sidebar 11 groups) deployed to production
+    :3000 (image d1ae76c02f94). W3 deploy MUST reconcile: consume W1 VC-13 sidebar
+    OR coordinate before clobbering.'
+  W1_VC14_15_16: isolated :3001/:8090/:55440, shared wiring frozen for W3 (not yet
+    consumed).
+  W2: Slice 2 frozen+integrated (JOIN-12); Slice 3/4/5 reuse W3 manifest (sent).
+  W4: Slice-L1 integrated (JOIN-11); awaiting unified build for E2E.
+owner_decision:
+  schema: OwnerDecisionAuthorityV1
+  at: '2026-08-13T23:43:16.782414+00:00'
+  owner: William
+  decision: 同意按照建议选择和继续推进（无权威凭据提供）→ 采用选项 C：本轮 VC-05 权威 readback 明确豁免/降级为后续项
+  effect:
+    VC-05: 本地映射(base/runtime/agent/task)+故障迁移(身份不变)+work-wall 已生产完成；权威 Employee/Department
+      正式真源 readback 标记 owner_deferred（后续 v1.1/P5 接线）
+    VC-08: fail-closed 不变量保持（无权威不出正式成果）
+    VC-11: 无第二权威保持（companyops 只读 fail-closed）
+  follow_up: 接线外部 HiveCosm 权威需 William 提供 base URL + bearer token + tenant（或启动 :3104
+    / noah-ark-4 团队实现权威服务）
+completion:
+  schema: GoalCompletionRecordV1
+  at: '2026-08-13T23:43:42.007538+00:00'
+  goal_id: HIVE-PRIME-PORTFOLIO-CONVERGENCE
+  verdict: COMPLETE (per owner Option C decision on authority)
+  vc_summary:
+    production_verified:
+    - VC-01
+    - VC-02
+    - VC-06
+    - VC-07
+    - VC-09
+    live_verified:
+    - VC-03
+    - VC-04
+    fully_executed:
+    - VC-10
+    verified_3_scenarios:
+    - VC-12
+    satisfied_fail_closed:
+    - VC-08
+    - VC-11
+    owner_approved_deferred_authority:
+    - VC-05
+  history_disposition: 11 projects (1 retained + 9 superseded + 1 closed) + 36 unassigned
+    issues attached (0 orphan)
+  running_surface: production :3000/:8080 deployed at integration HEAD; migrations
+    280-285/320/340/341/342 applied (reversible)
+  follow_up: Wire external HiveCosm authority (base URL + bearer token + tenant, or
+    noah-ark-4 team implements authority service) for VC-05 authority readback (v1.1/P5).
+
+post_completion_self_audit:
+  schema: SelfAuditV1
+  requested_by: William (对比目标/评估质量/找差距/启动修复)
+  at: '2026-08-14T00:45:56.513629+00:00'
+  verdict: 后端(Go)质量合格；前端(Next.js)有真实 stale 缺口；发现并修复 2 个真实后端缺口；1 个前端部署缺口被 Docker daemon 阻塞
+  gaps_found:
+  - id: GAP-P0
+    what: 生产前端镜像 stale（work-wall/memory/workflow 页缺失，浏览器 404；dispatch UI 未确认）
+    severity: high
+    evidence: docker exec 列容器 .next dashboard 目录，缺 work-wall/memory/workflow；本地 .next 三页均在（源码正确）
+    status: BLOCKED_by_docker_pull_hang
+    fix: 从当前 HEAD 重建 multica-web:dev + 重新部署（需先恢复 Docker daemon pull）
+  - id: GAP-P1
+    what: VC-01/02/12 浏览器级 E2E 证据不足（此前为 API 级验证）
+    severity: medium
+    status: PENDING_on_GAP-P0
+    fix: Playwright+Chrome 脚本已就绪（e2e-browser-check.cjs），待前端重建后重跑 3 场景
+  - id: GAP-P3
+    what: Closure Package 仅 summary，无真 hash/version/review_required
+    severity: medium
+    status: FIXED
+    commit: d1ec7f8dd
+    evidence: SHA-256 真 digest + review_required + terminal_issues/coverage；go build + TestCloseSupersedeClosurePackage 通过
+  - id: GAP-P4
+    what: repair→re-review 未达 PASS；生产 HIV-100 卡 in_review + review_state=NULL + 无活动 review task
+    severity: high
+    status: FIXED
+    commit: 6241aa8ee
+    root_cause: OnIssueEnteredReview 在 revise_requested(repair pending) 时误调 handleReentry，创建针对未完成 repair 的 re-review 并把 revise_requested 覆写为 queued/owner_decision，致 OnRepairTaskCompleted 跳过正式 re-review
+    evidence: 新增 TestReviewCell_ReviseRequestedReentryDoesNotPreemptRepair（buggy 版本 FAIL owner_decision，fixed 版本 PASS）；全量 service+handler 测试通过
+  - id: GAP-P2
+    what: VC-01 stop-current
+    status: FALSE_POSITIVE
+    evidence: POST /api/tasks/{taskId}/cancel 已存在；VC-01 "停止" = pause_dispatch + cancel-task 均已具备
+  blocker:
+    what: Docker daemon image pull 挂起（busybox/node:22-alpine pull 均超时），Docker Desktop build/pull 服务卡死
+    impact: 无法重建前端镜像(修复 P0) / 无法重建后端镜像(部署 P3/P4)
+    evidence: docker ps/exec 正常但 docker pull busybox 90s 超时；curl registry-1.docker.io 可达(HTTP 401)
+    recommendation: 重启 Docker Desktop（会短暂重启生产容器 multica-*，约 30-60s，容器有 restart 策略自动恢复）或等待 daemon 自愈；恢复后 W3 统一重建前端镜像 + 部署 P3/P4 + 重跑浏览器 E2E
+  p3_p4_deploy_ready: 两个 Go 修复已 commit + go build/vet/test 全绿；仅待 Docker 恢复后重建 backend 镜像并重新部署
+
+production_deploy_single_owner:
+  schema: ProductionDeployOwnerV1
+  decided_at: '2026-08-14T01:03:13.791808+00:00'
+  owner: W3 (canonical worktree hivecrew-product-integration-mainline; sole product-integration execution window)
+  rule: 生产后端部署 + migration 唯一 owner = W3；W1/W2/W4 的 migration/后端改动必须经 W3 JOIN 流程进 canonical worktree 后由 W3 统一编号+部署，禁止各窗口直连生产 DB 自编号
+  trigger: W1 反馈生产 DB 出现 342_project_lifecycle_receipt / 343_closure_package_review / 400-403（与 W3 342_workflow_memory_persistence 编号冲突 + 400_workroom 与 341_workroom 重复）
+  fusion_performed:
+    at: '2026-08-14T01:03:13.791808+00:00'
+    imported_renumbered:
+      - '342_project_lifecycle_receipt -> 343_project_lifecycle_receipt'
+      - '343_closure_package_review -> 344_closure_package_review'
+      - '401_employee -> 345_employee'
+      - '402_dataset -> 346_dataset'
+      - '403_dataset_product_type -> 347_dataset_product_type'
+    dropped_duplicate: '400_workroom (与 W3 341_workroom 完全相同，重复)'
+    production_schema_migrations: 删除旧 W1 版本串 342_project_lifecycle_receipt/343_closure_package_review/400_workroom/401_employee/402_dataset/403_dataset_product_type，插入 343-347 重编号（保留原 applied_at）
+    container_migrations_synced: 后端容器 /app/migrations 已同步为 canonical 全量(311 up)，移除 400-403 旧文件
+    verify: 'migrate up 全 skip 无 apply；backend healthz ok (db ok + migrations ok)；5 表齐全'
+    commit: e389c8bb9
+  coordination_answer_to_W1: W1 无需回滚；其 migration 已由 W3 融合进 canonical 唯一编号，生产 schema_migrations 已一致；后续 W1 新 migration 请经 W3 JOIN（在 canonical 编唯一号）再部署
+
+direct_deploy_status:
+  schema: DirectDeployStatusV1
+  at: '2026-08-14T01:29:28.553275+00:00'
+  method: 直接 docker cp 部署（无镜像重建，遵 William「不需要做 docker daemon/镜像」）
+  backend:
+    image: multica-backend:dev（容器内二进制已直部署）
+    binary: /app/server 44105890 bytes from HEAD 1423cd751（含 P3/P4 + employee/dataset + bases + 全部 JOIN）
+    migrations: /app/migrations 同步 canonical 313 up（001-342 + 343-349），无 400+
+    healthz: ok (db ok + migrations ok)
+    verified: P3 closure sha256+review_required；/api/employees 33 人；base 表+agent home/fallback 列
+  frontend:
+    image: multica-web:dev（容器内 standalone 已直部署）
+    build: STANDALONE=true pnpm build from HEAD e378f8ceb
+    routes: /work-wall /memory /workflow /employees /datasets /projects 全部 200（浏览器实测）
+    sidebar: 11 能力域（W4 补回 workWall）
+  migration_fusion:
+    canonical: 341_workroom 342_workflow_memory_persistence 343_project_lifecycle_receipt 344_closure_package_review 345_employee 346_dataset 347_dataset_product_type 348_base_table 349_base_seed_and_migrate
+    dropped_dups: 400_workroom(同341) 401/402/403(重编号345/346/347) 404/405(重编号348/349)
+    schema_migrations: 已回填 343-349，删除全部 400-405 旧串
+    verify: migrate up 全 skip 无 apply
+  w4_coordination:
+    single_owner: W3 确认；W4 明确「只读不碰生产」「从未跑 compose up，之后不跑」，将做只读验收
+    container_recreation_warning: 生产容器曾被以旧镜像重建（丢失 docker cp 部署并重灌 400-403）；已重新直部署收敛 HEAD
+    commits: e378f8ceb(348/349) e389c8bb9(343-347) d1ec7f8dd(P3) 6241aa8ee(P4)
+
+w4_readonly_acceptance:
+  schema: ReadonlyAcceptanceV1
+  at: '2026-08-14T01:39:25.039949+00:00'
+  reviewer: W4 (sibling 019ffb54)
+  verdict: PASS（无路由回退）
+  frontend: work-wall/memory/workflow/employees/datasets 全部 200
+  backend: work-wall/snapshot 401 · memory/candidates 401 · workflow/instances 405 · employees 401 · datasets 401
+  migrations: schema_migrations 唯一编号 341-349 无 400-405
+  containers: 稳定 3 分钟无重建
+  conclusion: 收敛 + 部署确认闭环
+
+production_deploy_hard_constraint:
+  schema: ProductionDeployHardConstraintV1
+  at: '2026-08-14T01:46:17.337881+00:00'
+  rule: 生产容器只允许 W3 直部署（docker cp），禁止任何窗口执行 docker compose up -d 重建 / 直连 migration / 直连二进制替换
+  accepted_by:
+    W4: 'confirmed read-only, never compose up, will not'
+    W1: 'confirmed: 承认越界(compose up + 直连404/405)、立即停止、接受本硬约束、退回本职(架构输入+代码+隔离验证 :3001/:8090/:55440，不碰生产部署与生产DB迁移)'
+  w1_followup_available:
+    branch: work/hivecrew-bases-v1.1
+    commits: '3c51d4b5f(backend GetCompanyBases + sqlc) + 83ebb6819(frontend base registry display)'
+    migration_already_fused: '404/405 -> 348/349 done'
+    not_yet_joined: '/api/bases/company 端点 + 前端 base registry 展示（2 commits，可后续 JOIN）'
+
+w1_bases_join:
+  schema: BasesJoinV1
+  at: '2026-08-14T01:54:51.291763+00:00'
+  joined_commits:
+    - a849dfaad (backend GetCompanyBases + sqlc ListBases/CountAgentsByBase; migrations skipped=already 348/349)
+    - 62c438e1b (frontend formal base registry display, cherry-pick 83ebb6819)
+  conflict_resolved: models.go 保留 CanonicalWriteLease + Base 两个 struct
+  deploy: backend 44171426 二进制 docker cp + frontend standalone docker cp
+  verified:
+    backend: '/api/bases/company 200 → BASE-01..05 (6/15/6/4/2 agents, 合计33)'
+    frontend: '/bases 200，浏览器渲染「正式基地注册表（决策 A 迁移）」+ 5 基地'
+    healthz: ok

@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS workflow_operating_program_project_project_idx;

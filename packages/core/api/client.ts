@@ -38,6 +38,8 @@ import type {
   WorkspaceWorkingAgentType,
   AgentRuntime,
   RuntimeProfile,
+  BaseOverview,
+  MigrateRuntimeAgentsResponse,
   CreateRuntimeProfileRequest,
   UpdateRuntimeProfileRequest,
   InboxItem,
@@ -64,6 +66,10 @@ import type {
   CreatePersonalAccessTokenResponse,
   RuntimeUsage,
   IssueUsageSummary,
+  IssueDispatchPreview,
+  IssueDispatchReceipt,
+  IssueStopReceipt,
+  IssueReviewReceipt,
   RuntimeHourlyActivity,
   RuntimeUsageByAgent,
   RuntimeUsageByHour,
@@ -96,6 +102,12 @@ import type {
   CreateProjectRequest,
   UpdateProjectRequest,
   ListProjectsResponse,
+  ListProjectLifecycleResponse,
+  ProjectLifecycleSnapshot,
+  ProjectControlAction,
+  ProjectControlReceipt,
+  ContinuePreview,
+  ProjectClosurePackage,
   ProjectResource,
   CreateProjectResourceRequest,
   UpdateProjectResourceRequest,
@@ -175,12 +187,25 @@ import type {
   CompanyOpsOutcomeListParams,
   CompanyOpsOutcomeListResponse,
   CompanyOpsOutcomeDetail,
+  CompanyOpsArtifactReplicaLocationsResponse,
   CompanyOpsOrganization,
   CompanyOpsRosterParams,
   CompanyOpsRosterResponse,
   CompanyOpsEmployeeDossier,
   WorkConservingProjection,
 } from "../types";
+import type {
+  WorkInboxItem,
+  WorkAttachRequest,
+  WorkAttachResult,
+  WorkIgnoreRequest,
+  WorkIgnoreResult,
+  WorkStatusResult,
+  WorkforceBaseRuntimeResponse,
+  WorkParticipant,
+  ProjectParticipantsData,
+  ProjectParticipantsSource,
+} from "../types/work-entry";
 import { z } from "zod";
 import type { OnboardingCompletionPath } from "../onboarding/types";
 import type { CreateFeedbackResponse, FeedbackKind } from "../feedback/types";
@@ -193,6 +218,20 @@ import { type Logger, noopLogger } from "../logger";
 import { createRequestId } from "../utils";
 import { getCurrentSlug } from "../platform/workspace-storage";
 import { parseWithFallback } from "./schema";
+import type { EmployeeLiveActivityV1, TerminalPane } from "./workwall";
+import type { MemoryCandidate, MemoryPromotion } from "./memory";
+import type {
+  PublishedWorkflowDefinitionVersion,
+  PublishedWorkflowGraph,
+  PublishWorkflowDefinitionVersionResponse,
+  WechatContentProductionRequest,
+  WorkflowOperatingProgram,
+  WorkflowOperatingProgramCommandResponse,
+  WorkflowOperatingProgramProjectCommandResponse,
+  WorkflowEvent,
+  WorkflowInstance,
+} from "./workflow";
+import { WECHAT_CONTENT_NODE_KEYS } from "../workflow/content-node-contract";
 
 const CompanyOpsAuthoritySnapshotSchema = z.object({
   kind: z.string().min(1),
@@ -491,6 +530,8 @@ const CompanyOpsOutcomeListResponseSchema = z.object({
   total: z.number().int().nonnegative(),
   limit: z.number().int().nonnegative(),
   offset: z.number().int().nonnegative(),
+  next_cursor: z.string().min(1).nullable().optional(),
+  has_more: z.boolean().optional(),
 });
 
 const CompanyOpsOutcomeDetailSchema = z.object({
@@ -501,6 +542,29 @@ const CompanyOpsOutcomeDetailSchema = z.object({
   runs: z.array(CompanyOpsOutcomeRunSchema),
 });
 
+const CompanyOpsArtifactReplicaLocationsResponseSchema = z.object({
+  schema_version: z.literal("hivecrew.artifact-replica-locations.v1"),
+  workspace_id: z.string().uuid(),
+  outcome_id: z.string().uuid(),
+  items: z.array(z.object({
+    id: z.string().uuid(),
+    outcome_id: z.string().uuid(),
+    candidate_id: z.string().uuid(),
+    candidate_revision: z.number().int().positive(),
+    location_class: z.enum(["local-cache", "nas-primary", "offline-copy", "cloud-replica"]),
+    location_id: z.string().min(1),
+    storage_id: z.string().min(1),
+    object_ref: z.string().min(1),
+    retention_hint: z.string().min(1).optional(),
+    state: z.enum(["fixture", "registered", "pending", "verified", "failed"]),
+    digest: z.string(),
+    metadata_digest: z.string(),
+    size_bytes: z.number().int().nonnegative(),
+    created_at: z.string().min(1),
+    updated_at: z.string().min(1),
+  })),
+});
+
 const CompanyOpsBindingStateSchema = z.enum([
   "available",
   "none",
@@ -509,6 +573,61 @@ const CompanyOpsBindingStateSchema = z.enum([
   "local_agent_missing_or_invalid",
   "source_gap",
 ]);
+
+// WeChat content production read model (HIVECREW-WECHAT-REAL-OPERATIONS-V1 /
+// WO-50). Mirrors the server/internal/workflow WechatProductionView /
+// WechatNodeLineageRecord JSON exactly (snake_case). publication_state is
+// never "published" — the platform has no publication receipt.
+const WechatProductionNodeViewSchema = z
+  .object({
+    node: z.enum(WECHAT_CONTENT_NODE_KEYS),
+    order: z.number().int().positive(),
+    work_order_ref: z.string(),
+    command_id: z.string().optional(),
+    issue_id: z.string().optional(),
+    task_id: z.string().optional(),
+    candidate_id: z.string().optional(),
+    state: z.enum(["pending", "dispatched", "completed", "failed"]),
+    live_state: z.string().optional(),
+    review_decision: z.string().optional(),
+    failure: z.string().optional(),
+  })
+  .strict();
+
+const WechatProductionViewSchema = z
+  .object({
+    instance_id: z.string().min(1),
+    definition_id: z.string().min(1),
+    definition_version: z.number().int().positive(),
+    project_id: z.string().min(1),
+    status: z.enum(["running", "paused", "stopped", "completed", "failed"]),
+    current_node: z.enum(WECHAT_CONTENT_NODE_KEYS).optional(),
+    nodes: z.array(WechatProductionNodeViewSchema),
+    approval_state: z.enum(["none", "awaiting", "approved", "changes_requested"]),
+    publication_state: z.enum(["none", "awaiting_publication"]),
+  })
+  .strict();
+
+const WechatProductionStartResponseSchema = z
+  .object({
+    schema_version: z.literal("hivecrew.wechat-content-production.v1"),
+    instance_id: z.string().min(1),
+    idempotency_key: z.string().min(1),
+    production: WechatProductionViewSchema,
+  })
+  .strict();
+
+const WechatProductionViewResponseSchema = z
+  .object({
+    schema_version: z.literal("hivecrew.wechat-content-production.v1"),
+    production: WechatProductionViewSchema,
+  })
+  .strict();
+
+export type WechatProductionNodeView = z.infer<typeof WechatProductionNodeViewSchema>;
+export type WechatProductionView = z.infer<typeof WechatProductionViewSchema>;
+export type WechatProductionStartResponse = z.infer<typeof WechatProductionStartResponseSchema>;
+export type WechatProductionViewResponse = z.infer<typeof WechatProductionViewResponseSchema>;
 
 // The browser consumes the public Consumer wire, not the Adapter wire. Keep
 // this decoder exact, then project it into the stable view model used by the
@@ -1077,6 +1196,29 @@ export interface ClientRuntimeSnapshot {
   provider_summary?: Record<string, number>;
   online_count?: number;
   offline_count?: number;
+}
+
+// Cockpit federation — one section per aggregated 1421 read-only snapshot.
+// summary payloads stay raw (cockpit-owned schema, versioned upstream).
+export interface CockpitProjectionSection {
+  ok: boolean;
+  generated_at?: string;
+  version?: string;
+  project_id?: string;
+  summary?: Record<string, unknown>;
+  error?: string;
+}
+
+export interface CockpitProjection {
+  fetched_at: string;
+  cockpit_url: string;
+  ok: boolean;
+  sections: {
+    health_surface?: CockpitProjectionSection;
+    runtime_topology?: CockpitProjectionSection;
+    agent_universe?: CockpitProjectionSection;
+    world_entry_snapshot?: CockpitProjectionSection;
+  };
 }
 
 export interface ClientUsageRequest {
@@ -1932,10 +2074,77 @@ export class ApiClient {
     });
   }
 
+  listWorkrooms(): Promise<
+    { id: string; name: string; project_id?: string; issue_id?: string; work_order_id?: string; created_by: string }[]
+  > {
+    return this.fetch("/api/workrooms");
+  }
+
+  createWorkroom(data: { name: string; project_id?: string; issue_id?: string; work_order_id?: string }): Promise<{ id: string }> {
+    return this.fetch("/api/workrooms", { method: "POST", body: JSON.stringify(data) });
+  }
+
+  listEmployees(): Promise<{ id: string; name: string; position?: string; department?: string; agent_id?: string; status: string }[]> {
+    return this.fetch("/api/employees");
+  }
+
+  createEmployee(data: { name: string; position?: string; department?: string; agent_id?: string }): Promise<{ id: string }> {
+    return this.fetch("/api/employees", { method: "POST", body: JSON.stringify(data) });
+  }
+
+  updateEmployeeBinding(id: string, data: { agent_id?: string; status?: string }): Promise<{ id: string; status: string }> {
+    return this.fetch(`/api/employees/${id}`, { method: "PATCH", body: JSON.stringify(data) });
+  }
+
+  listDatasets(): Promise<{ id: string; name: string; domain: string; product_type: string; version: number; authorized_agent_ids: string[] }[]> {
+    return this.fetch("/api/datasets");
+  }
+
+  createDataset(data: { name: string; domain: string; product_type?: string; version?: number }): Promise<{ id: string }> {
+    return this.fetch("/api/datasets", { method: "POST", body: JSON.stringify(data) });
+  }
+
+  updateDatasetAuthorization(id: string, authorized_agent_ids: string[]): Promise<{ id: string }> {
+    return this.fetch(`/api/datasets/${id}`, { method: "PATCH", body: JSON.stringify({ authorized_agent_ids: authorized_agent_ids }) });
+  }
+
+  getObjectOwnership(): Promise<{ domains: { domain: string; domain_key: string; objects: string[]; canonical_writer: string }[]; count: number }> {
+    return this.fetch("/api/ia/object-ownership");
+  }
+
+  getCompanyBases(): Promise<{ id: string; code: string; name: string; device: string; machine_title: string; agents: number }[]> {
+    return this.fetch("/api/bases/company");
+  }
+
+  // Cockpit federation — read-only projection of the DGX 1421 owner cockpit.
+  getCockpitProjection(): Promise<CockpitProjection> {
+    return this.fetch("/api/bases/cockpit-projection");
+  }
+
   listBases(): Promise<
     { machine_title: string; runtime_online: number; runtime_registered: number; employees: number; drained: boolean }[]
   > {
     return this.fetch("/api/bases");
+  }
+
+  // Observed execution bases (Lane C) — read-only grouping of workspace
+  // runtimes by physical machine plus resident agent counts (runtime-level
+  // view distinct from the /api/bases operational-mode view).
+  async listRuntimeBases(): Promise<BaseOverview[]> {
+    return this.fetch("/api/runtimes/bases");
+  }
+
+  // Fault migration: re-points every agent (and their queued/historic tasks)
+  // from a faulted source runtime onto a healthy target runtime without
+  // changing any agent identity.
+  async migrateRuntimeAgents(
+    runtimeId: string,
+    targetRuntimeId: string,
+  ): Promise<MigrateRuntimeAgentsResponse> {
+    return this.fetch(`/api/runtimes/${runtimeId}/migrate`, {
+      method: "POST",
+      body: JSON.stringify({ target_runtime_id: targetRuntimeId }),
+    });
   }
 
   async archiveAgent(id: string): Promise<Agent> {
@@ -2605,6 +2814,41 @@ export class ApiClient {
     });
   }
 
+  // Owner issue control plane (Lane A dispatch view).
+  async previewIssueDispatch(
+    issueId: string,
+  ): Promise<{ issue_id: string; preview: IssueDispatchPreview }> {
+    return this.fetch(`/api/issues/${issueId}/dispatch-preview`, {
+      method: "POST",
+    });
+  }
+
+  async dispatchIssue(
+    issueId: string,
+    data?: { idempotency_key?: string; handoff_note?: string },
+  ): Promise<{ receipt: IssueDispatchReceipt }> {
+    return this.fetch(`/api/issues/${issueId}/dispatch`, {
+      method: "POST",
+      body: JSON.stringify(data ?? {}),
+    });
+  }
+
+  async stopIssue(
+    issueId: string,
+  ): Promise<{ receipt: IssueStopReceipt }> {
+    return this.fetch(`/api/issues/${issueId}/stop`, {
+      method: "POST",
+    });
+  }
+
+  async sendIssueToReview(
+    issueId: string,
+  ): Promise<{ receipt: IssueReviewReceipt }> {
+    return this.fetch(`/api/issues/${issueId}/send-to-review`, {
+      method: "POST",
+    });
+  }
+
   // Inbox
   async listInbox(): Promise<{ items: InboxItem[]; total: number; limit: number; offset: number; has_more: boolean }> {
     return this.fetch("/api/inbox");
@@ -3034,6 +3278,7 @@ export class ApiClient {
     if (params?.formal_visible !== undefined) search.set("formal_visible", String(params.formal_visible));
     if (params?.limit !== undefined) search.set("limit", String(params.limit));
     if (params?.offset !== undefined) search.set("offset", String(params.offset));
+    if (params?.cursor) search.set("cursor", params.cursor);
     const query = search.toString();
     const raw = await this.fetch<unknown>(
       `/api/company-ops/outcomes${query ? `?${query}` : ""}`,
@@ -3062,6 +3307,24 @@ export class ApiClient {
     );
     if (!parsed) {
       throw new Error("Invalid CompanyOps outcome center detail response.");
+    }
+    return parsed;
+  }
+
+  async listCompanyOpsArtifactReplicaLocations(
+    commandId: string,
+  ): Promise<CompanyOpsArtifactReplicaLocationsResponse> {
+    const raw = await this.fetch<unknown>(
+      `/api/company-ops/outcomes/${encodeURIComponent(commandId)}/artifact-locations`,
+    );
+    const parsed = parseWithFallback<CompanyOpsArtifactReplicaLocationsResponse | null>(
+      raw,
+      CompanyOpsArtifactReplicaLocationsResponseSchema,
+      null,
+      { endpoint: "GET /api/company-ops/outcomes/:command_id/artifact-locations" },
+    );
+    if (!parsed) {
+      throw new Error("Invalid CompanyOps artifact replica locations response.");
     }
     return parsed;
   }
@@ -3374,8 +3637,354 @@ export class ApiClient {
     return this.fetch(`/api/projects?${search}`);
   }
 
+  /** Workspace "工作现场" (work wall) snapshot: one row per accessible agent. */
+  async workWallSnapshot(): Promise<EmployeeLiveActivityV1[]> {
+    return this.fetch("/api/work-wall/snapshot");
+  }
+
+  /** Terminal 现场: fresh host terminal panes (read-only projection). */
+  async listTerminalPresence(): Promise<TerminalPane[]> {
+    return this.fetch("/api/work-wall/terminal-presence");
+  }
+
+  // Employee memory candidate layer (Slice-M1). Promotion is proposal-only.
+  async createMemoryCandidate(body: {
+    employee_id: string;
+    position_id?: string;
+    kind: string;
+    content: string;
+    evidence: { type: string; id: string }[];
+    source_refs: string[];
+  }): Promise<MemoryCandidate> {
+    return this.fetch("/api/memory/candidates", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  }
+
+  async listMemoryCandidates(params?: { employee_id?: string; position_id?: string }): Promise<MemoryCandidate[]> {
+    const search = new URLSearchParams();
+    if (params?.employee_id) search.set("employee_id", params.employee_id);
+    if (params?.position_id) search.set("position_id", params.position_id);
+    return this.fetch(`/api/memory/candidates?${search}`);
+  }
+
+  async validateMemoryCandidate(id: string): Promise<MemoryCandidate> {
+    return this.fetch(`/api/memory/candidates/${id}/validate`, { method: "POST" });
+  }
+
+  async promoteMemoryCandidate(
+    id: string,
+    body: { target: string; approved: boolean; reason: string },
+  ): Promise<MemoryPromotion> {
+    return this.fetch(`/api/memory/candidates/${id}/promote`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  }
+
+  async revokeMemoryCandidate(id: string, body: { reason: string }): Promise<MemoryCandidate> {
+    return this.fetch(`/api/memory/candidates/${id}/revoke`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  }
+
+  async listPromotedMemories(target?: string): Promise<MemoryCandidate[]> {
+    const q = target ? `?target=${encodeURIComponent(target)}` : "";
+    return this.fetch(`/api/memory/promoted${q}`);
+  }
+
+  async retrieveMemories(employeeId: string, q?: string): Promise<MemoryCandidate[]> {
+    const search = new URLSearchParams();
+    search.set("employee_id", employeeId);
+    if (q) search.set("q", q);
+    return this.fetch(`/api/memory/retrieve?${search}`);
+  }
+
+  // Workflow kernel (Slice-W1/W2). Drives the W2 HIV-553 project lifecycle.
+  async listWorkflowInstances(): Promise<WorkflowInstance[]> {
+    return this.fetch("/api/workflow/instances");
+  }
+
+  async listPublishedWorkflowDefinitionVersions(latestOnly = true): Promise<PublishedWorkflowDefinitionVersion[]> {
+    const search = new URLSearchParams();
+    if (!latestOnly) search.set("latest_only", "false");
+    return this.fetch(`/api/workflow/definitions?${search}`);
+  }
+
+  /**
+   * L3 workflow organization is a workspace-scoped classification ledger for
+   * existing Projects. These methods never create, update, or delete Project
+   * authority; the server verifies every Project mapping in the workspace.
+   */
+  async listWorkflowOperatingPrograms(): Promise<WorkflowOperatingProgram[]> {
+    return this.fetch("/api/workflow/operating-programs");
+  }
+
+  async createWorkflowOperatingProgram(body: {
+    name: string;
+    description?: string;
+    idempotency_key: string;
+  }): Promise<WorkflowOperatingProgramCommandResponse> {
+    return this.fetch("/api/workflow/operating-programs", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  }
+
+  async updateWorkflowOperatingProgram(
+    programId: string,
+    body: { name: string; description?: string },
+  ): Promise<WorkflowOperatingProgramCommandResponse> {
+    return this.fetch(`/api/workflow/operating-programs/${encodeURIComponent(programId)}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    });
+  }
+
+  async deleteWorkflowOperatingProgram(programId: string): Promise<void> {
+    return this.fetch(`/api/workflow/operating-programs/${encodeURIComponent(programId)}`, {
+      method: "DELETE",
+    });
+  }
+
+  async assignWorkflowOperatingProgramProject(
+    programId: string,
+    projectId: string,
+  ): Promise<WorkflowOperatingProgramProjectCommandResponse> {
+    return this.fetch(`/api/workflow/operating-programs/${encodeURIComponent(programId)}/projects`, {
+      method: "POST",
+      body: JSON.stringify({ project_id: projectId }),
+    });
+  }
+
+  async unassignWorkflowOperatingProgramProject(
+    programId: string,
+    projectId: string,
+  ): Promise<WorkflowOperatingProgramProjectCommandResponse> {
+    return this.fetch(`/api/workflow/operating-programs/${encodeURIComponent(programId)}/projects/${encodeURIComponent(projectId)}`, {
+      method: "DELETE",
+    });
+  }
+
+  async publishWorkflowDefinitionVersion(
+    definitionId: string,
+    body: {
+      project_id?: string;
+      risk: "fast" | "standard" | "owner";
+      stages: Array<{ name: string; sla_ns?: number }>;
+      graph: PublishedWorkflowGraph;
+      idempotency_key: string;
+    },
+  ): Promise<PublishWorkflowDefinitionVersionResponse> {
+    return this.fetch(`/api/workflow/definitions/${encodeURIComponent(definitionId)}/versions`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  }
+
+  async startWorkflowInstance(body: {
+    definition_id?: string;
+    instance_id?: string;
+    context: { project_id?: string; issue_id?: string; outcome_id?: string };
+    idempotency_key?: string;
+  }): Promise<WorkflowInstance> {
+    return this.fetch("/api/workflow/instances", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  }
+
+  /**
+   * Starts the guarded linear-V1 execution plan for one immutable graph
+   * version. The server requires an exact formal Project context and returns
+   * the existing WorkflowInstance receipt; it does not publish or dispatch.
+   */
+  async startPublishedWorkflowGraphInstance(
+    definitionId: string,
+    version: number,
+    body: {
+      instance_id?: string;
+      context: { project_id: string; issue_id?: string; outcome_id?: string };
+      idempotency_key: string;
+    },
+  ): Promise<WorkflowInstance> {
+    return this.fetch(`/api/workflow/definitions/${encodeURIComponent(definitionId)}/versions/${version}/instances`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  }
+
+  async getWorkflowInstance(id: string): Promise<WorkflowInstance> {
+    return this.fetch(`/api/workflow/instances/${id}`);
+  }
+
+  async advanceWorkflowInstance(
+    id: string,
+    body: {
+      review_passed?: boolean;
+      owner_approved?: boolean;
+      decision_outcome?: string;
+      task_id?: string;
+      run_id?: string;
+      notes?: string[];
+      idempotency_key?: string;
+    },
+  ): Promise<WorkflowInstance> {
+    return this.fetch(`/api/workflow/instances/${id}/advance`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  }
+
+  async workflowInstanceEvents(id: string): Promise<WorkflowEvent[]> {
+    return this.fetch(`/api/workflow/instances/${id}/events`);
+  }
+
+  // WeChat content production (HIVECREW-WECHAT-REAL-OPERATIONS-V1 / WO-50).
+  // Start is idempotent on the request's idempotency_key; reconcile
+  // poll-drives one instance and the caller MUST resend the exact same
+  // request DTO (the brief is not ledger-persisted, so drift fails closed
+  // server-side). The server never reports a publication receipt: a
+  // completed production is publication_state "awaiting_publication".
+  // Responses are strictly parsed — a drifting wire throws instead of
+  // falling back to a fabricated production view.
+  async startWechatProduction(
+    request: WechatContentProductionRequest,
+  ): Promise<WechatProductionStartResponse> {
+    const raw = await this.fetch<unknown>("/api/workflow/wechat-productions", {
+      method: "POST",
+      body: JSON.stringify(request),
+    });
+    return WechatProductionStartResponseSchema.parse(raw);
+  }
+
+  async reconcileWechatProduction(
+    instanceId: string,
+    request: WechatContentProductionRequest,
+  ): Promise<WechatProductionViewResponse> {
+    const raw = await this.fetch<unknown>(`/api/workflow/wechat-productions/${encodeURIComponent(instanceId)}/reconcile`, {
+      method: "POST",
+      body: JSON.stringify(request),
+    });
+    return WechatProductionViewResponseSchema.parse(raw);
+  }
+
+  async getWechatProduction(instanceId: string): Promise<WechatProductionViewResponse> {
+    const raw = await this.fetch<unknown>(`/api/workflow/wechat-productions/${encodeURIComponent(instanceId)}`);
+    return WechatProductionViewResponseSchema.parse(raw);
+  }
+
+  async reviewWechatProduction(
+    instanceId: string,
+    body: { decision: "approved" | "changes_requested"; review_id: string },
+  ): Promise<WechatProductionViewResponse> {
+    const raw = await this.fetch<unknown>(`/api/workflow/wechat-productions/${encodeURIComponent(instanceId)}/review`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+    return WechatProductionViewResponseSchema.parse(raw);
+  }
+
   async getProject(id: string): Promise<Project> {
     return this.fetch(`/api/projects/${id}`);
+  }
+
+  /**
+   * HIV-367 (P0-E): read-only pipeline projection. Returns the per-status
+   * column breakdown + per-issue task/receipt payload the project board needs
+   * to render real processing state. Composes Project + Issue +
+   * agent_task_queue + comment server-side; no new writers.
+   */
+  async getProjectPipeline(id: string): Promise<import("../projects/pipeline-types").ProjectPipelineResponse> {
+    return this.fetch(`/api/projects/${id}/pipeline`);
+  }
+
+  // Project lifecycle closure read model (derived health / frontier /
+  // outcome coverage projection).
+  async listProjectLifecycle(): Promise<ListProjectLifecycleResponse> {
+    return this.fetch(`/api/projects/lifecycle`);
+  }
+
+  async getProjectLifecycle(id: string): Promise<ProjectLifecycleSnapshot> {
+    return this.fetch(`/api/projects/${id}/lifecycle`);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Universal Work Registration Kernel (Phase-1). The inbox surface is
+  // read-only + triage (attach/ignore); it never writes project progress.
+  // ---------------------------------------------------------------------------
+
+  /** GET /api/work/reconcile — unclaimed work inbox (read-only diagnostic). */
+  async reconcileWorkInbox(): Promise<WorkInboxItem[]> {
+    return this.fetch("/api/work/reconcile");
+  }
+
+  /** POST /api/work/attach — link an unclaimed entry to an existing project/issue. */
+  async attachWorkInbox(data: WorkAttachRequest): Promise<WorkAttachResult> {
+    return this.fetch("/api/work/attach", {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+  }
+
+  /** POST /api/work/ignore — mark an unclaimed entry as ignored. */
+  async ignoreWorkInbox(data: WorkIgnoreRequest): Promise<WorkIgnoreResult> {
+    return this.fetch("/api/work/ignore", {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+  }
+
+  /** GET /api/work/status — read-only projection for one work_ref. */
+  async getWorkStatus(workRef: string): Promise<WorkStatusResult> {
+    return this.fetch(`/api/work/status?work_ref=${encodeURIComponent(workRef)}`);
+  }
+
+  /**
+   * GET /api/company-ops/workforce-base-runtime — currently-deployed employee →
+   * agent → runtime → base read model. Reused by the project participant panel
+   * as the available subset while the project-scoped aggregation endpoint is
+   * pending backend deployment.
+   */
+  async listWorkforceBaseRuntime(): Promise<WorkforceBaseRuntimeResponse> {
+    return this.fetch("/api/company-ops/workforce-base-runtime");
+  }
+
+  /**
+   * GET /api/work/participants?project_id=... — project-scoped participant/
+   * executor read model (VC-04), aggregated from the registration receipt
+   * ledger: actor_type × carrier/runtime/model/base/host/session/task.
+   */
+  async listProjectParticipants(
+    projectId: string,
+  ): Promise<ProjectParticipantsData> {
+    const raw = await this.fetch<{
+      source: ProjectParticipantsSource;
+      project_id: string;
+      participants: WorkParticipant[];
+    }>(
+      `/api/work/participants?project_id=${encodeURIComponent(projectId)}`,
+    );
+    return {
+      source: raw.source,
+      project_id: raw.project_id,
+      pending_project_scope: false,
+      participants: raw.participants,
+    };
+  }
+
+  // Slice 2 owner control operations (preview-first).
+  async projectLifecycleAction(
+    id: string,
+    action: ProjectControlAction,
+    data: { preview?: boolean; idempotency_key?: string; target_project_id?: string },
+  ): Promise<ProjectControlReceipt | { preview: ContinuePreview }> {
+    return this.fetch(`/api/projects/${id}/lifecycle/actions/${action}`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
   }
 
   /**
@@ -3395,6 +4004,13 @@ export class ApiClient {
       { endpoint: "GET /api/projects/:id/next-actions?projection=work_conserving" },
     );
     return parsed.workConserving;
+  }
+
+  async generateClosurePackage(id: string): Promise<ProjectClosurePackage> {
+    return this.fetch(`/api/projects/${id}/closure-package`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
   }
 
   async createProject(data: CreateProjectRequest): Promise<Project> {

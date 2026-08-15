@@ -512,3 +512,15 @@ UPDATE comment SET
     updated_at = CASE WHEN resolved_at IS NOT NULL THEN now() ELSE updated_at END
 WHERE id = $1
 RETURNING *;
+
+
+-- name: LatestLineageComment :one
+-- The newest delivery comment for an issue: the most recent comment carrying a
+-- machine-readable source_task_id. The review cell resolves the review
+-- candidate from this exact row and independently re-validates the referenced
+-- task (exists / same issue / terminal) — the pinning logic in handler/comment.go
+-- is trusted as a first gate, never as the final authority.
+SELECT * FROM comment
+WHERE issue_id = $1 AND source_task_id IS NOT NULL
+ORDER BY created_at DESC, id DESC
+LIMIT 1;

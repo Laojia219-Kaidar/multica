@@ -56,6 +56,54 @@
     "queued": "Queued",
     "idle": "Idle"
   },
+  "status_explanation": {
+    "title": "Status",
+    "status": {
+      "working": "Working",
+      "idle": "Idle",
+      "waiting": "Waiting",
+      "unavailable": "Unavailable"
+    },
+    "reason": {
+      "agent_archived": "Archived — retired from duty",
+      "runtime_missing": "No runtime registered",
+      "runtime_recently_lost": "Runtime lost contact moments ago — may recover on its own",
+      "runtime_offline": "Runtime offline",
+      "runtime_about_to_gc": "Runtime offline for days — at risk of being reclaimed",
+      "running_tasks_one": "Running {{count}} task",
+      "running_tasks_other": "Running {{count}} tasks",
+      "waiting_local_directory": "Waiting for its working directory to free up",
+      "dispatched_awaiting_start": "Dispatched — waiting for the daemon to start the run",
+      "awaiting_dispatch": "Queued — waiting to be dispatched",
+      "idle_ready": "Nothing on the plate",
+      "idle_backlog_waiting_one": "Free while {{count}} task waits in the workspace queue",
+      "idle_backlog_waiting_other": "Free while {{count}} tasks wait in the workspace queue"
+    },
+    "current_task": "Current run",
+    "capacity": "Capacity",
+    "capacity_value": "{{running}} / {{capacity}} running",
+    "capacity_unknown": "Quota unknown",
+    "runtime_health": "Runtime health",
+    "health": {
+      "online": "Online",
+      "recently_lost": "Recently lost",
+      "offline": "Offline",
+      "about_to_gc": "Long offline",
+      "missing": "No runtime"
+    },
+    "last_seen": "last seen {{ago}} ago",
+    "next_action": "Next",
+    "action": {
+      "none": "None — state is healthy",
+      "unarchive": "Unarchive to restore duty",
+      "restore_runtime": "Check or restart the runtime daemon",
+      "monitor_runtime": "Watch — usually recovers within minutes",
+      "await_path_lock": "Resolves when the occupying run finishes",
+      "await_daemon_start": "No action — the daemon will start the run",
+      "await_dispatch": "No action — the dispatcher will pick it up",
+      "assign_work": "Assign backlog work to this employee"
+    }
+  },
   "archived": {
     "active_link": "Active agents",
     "title": "Archived agents"

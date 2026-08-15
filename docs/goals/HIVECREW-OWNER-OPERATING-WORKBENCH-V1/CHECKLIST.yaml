@@ -1,23 +1,23 @@
 schema_version: hivecosm.goal-graph/v2
 meta:
   goal_id: HIVECREW-OWNER-OPERATING-WORKBENCH-V1
-  goal_version: 1
+  goal_version: 2
   title: 从 HiveCrew 真实底座到可运营公司工作台
   owner: William
   activated_at: 2026-08-11T11:17:08+08:00
 truth_contract:
-  progress_truth: /Users/jiawei/hivecosm-worktrees/hivecrew-b2-design/docs/goals/HIVECREW-OWNER-OPERATING-WORKBENCH-V1/CHECKLIST.yaml
+  progress_truth: /Users/jiawei/hivecosm-worktrees/hivecrew-four-lane-formal-convergence-codex/docs/goals/HIVECREW-OWNER-OPERATING-WORKBENCH-V1/CHECKLIST.yaml
   projections_are_non_authoritative: true
   code_truth:
-    repo: /Users/jiawei/hivecosm-worktrees/hivecrew-b2-design
-    branch_or_worktree: work/wo-hivecrew-b2-foundation-design
-    baseline_commit: 43d7c95dfbf50e3b53a328b2c35a6bd36a5ddf1d
+    repo: /Users/jiawei/hivecosm-worktrees/hivecrew-four-lane-formal-convergence-codex
+    branch_or_worktree: work/hivecrew-four-lane-formal-convergence-codex
+    baseline_commit: f7667c8d7c540217c345d98beac33794e1f3e6d0
 goal_runtime:
   active_controller:
     actor_id: codex-unbound
-    claimed_at: 2026-08-11T11:17:08+08:00
-    previous_controller: null
-    reason: William accepted the reviewed plan and instructed execution to start.
+    claimed_at: 2026-08-14T10:54:25+08:00
+    previous_controller: codex-unbound
+    reason: William instructed Codex to integrate all four Prime lanes with Prime 0813 as the main HiveCrew employee runtime.
   resume_required: true
 outcome:
   id: OUTCOME-01
@@ -73,6 +73,14 @@ victory_conditions:
     artifact_refs: [ART-P7-RELEASE]
     evidence_refs: []
     status: pending
+  - id: VC-07
+    required: true
+    statement: W1-W4 required candidates are consumed into one clean rebuildable HiveCrew revision with visible employee work and Task-linked receipts.
+    observable: Exact source revisions, a clean integration revision, Prime 0813 Task lineage, independent review, browser journeys, runtime revision and rollback target.
+    verifier: {kind: integration_browser_runtime, procedure: Rebuild the exact integration revision, repeat the HiveCrew journeys, read back Task-linked receipts and verify the runtime revision and rollback target.}
+    artifact_refs: [ART-P2F-CONVERGENCE]
+    evidence_refs: []
+    status: pending
 phases:
   - id: P0
     name: 底座、权威和规划冻结
@@ -113,6 +121,16 @@ phases:
     review_ref: REVIEW-P3
     journal_ref: JOURNAL-P3
     projection_refs: []
+  - id: P2F
+    name: Prime 0813 主力驱动的四车道正式融合
+    major: true
+    status: running
+    stage: executing
+    exit_condition_refs: [VC-07]
+    review_ref: REVIEW-P2F
+    journal_ref: JOURNAL-P2F
+    projection_refs: [PROJ-P2F-CONVERGENCE]
+    evidence_refs: [EV-P2F-CANARY, EV-P2F-INTAKE, EV-P2F-SOURCE-SNAPSHOT, EV-P2F-VISUAL, EV-P2F-JOIN, EV-P2F-BROWSER]
   - id: P4
     name: 正式组织与员工
     major: true
@@ -276,6 +294,132 @@ work_orders:
     verification: [focused suites, build, bounded pilot, in-app browser acceptance]
     artifact_refs: [ART-P2-CANDIDATE]
     evidence_refs: []
+  - id: WO-P2F-00-PRIME-CANARY
+    phase_ref: P2F
+    status: held
+    stage: verifying
+    required: true
+    worker_role: Prime 0813 main integrator
+    read_scope: [W1-W4 candidate sources, current HiveCrew project and task truth]
+    write_scope: [Task-linked intake report only]
+    mutex_keys: [prime-main-employee]
+    deliverables: [Prime runtime canary receipt and four-lane intake summary]
+    acceptance: [real HiveCrew Issue creates a Prime Task, Task completes on the declared runtime and a Task-linked Comment is readable]
+    verification: [Task Run readback, runtime profile readback, Comment source_task_id readback]
+    artifact_refs: []
+    evidence_refs: [EV-P2F-CANARY]
+  - id: WO-P2F-01-INTAKE
+    phase_ref: P2F
+    status: ready
+    stage: planned
+    required: true
+    worker_role: portfolio intake team
+    read_scope: [four candidate worktrees, completion reports, tests and evidence]
+    write_scope: [bounded Task-linked reports]
+    mutex_keys: []
+    deliverables: [W1-W4 revision file test risk receiver matrix]
+    acceptance: [every selected change has source revision files evidence exclusions and receiver]
+    verification: [independent source and Git readback]
+    artifact_refs: [ART-P2F-INTAKE]
+    evidence_refs: [EV-P2F-INTAKE]
+  - id: WO-P2F-02-W1-ORG-BASES
+    phase_ref: P2F
+    status: ready
+    stage: planned
+    required: true
+    worker_role: organization and base contract analyst
+    read_scope: [W1 source, current organization agent base and usage surfaces]
+    write_scope: [Task-linked patch manifest and fixtures]
+    mutex_keys: []
+    deliverables: [W1 consumption manifest]
+    acceptance: [no second organization or employee truth and no whole-tree overwrite]
+    verification: [source contract tests and current API comparison]
+    artifact_refs: []
+    evidence_refs: []
+  - id: WO-P2F-03-W2-LIFECYCLE
+    phase_ref: P2F
+    status: ready
+    stage: planned
+    required: true
+    worker_role: project lifecycle contract analyst
+    read_scope: [W2 source, current project issue task run and outcome writers]
+    write_scope: [Task-linked patch manifest and negative tests]
+    mutex_keys: []
+    deliverables: [W2 consumption manifest]
+    acceptance: [project stop continue review repair closure and outcome lineage retain one canonical writer]
+    verification: [focused service and UI behavior tests]
+    artifact_refs: []
+    evidence_refs: []
+  - id: WO-P2F-04-W4-WORKFLOW-WALL
+    phase_ref: P2F
+    status: ready
+    stage: planned
+    required: true
+    worker_role: workflow memory and frontend analyst
+    read_scope: [W4 source, current work wall, workflow and employee surfaces]
+    write_scope: [Task-linked UI manifest fixtures and screenshots]
+    mutex_keys: []
+    deliverables: [W4 consumption and visual manifest]
+    acceptance: [work wall uses live Task Run events and current HiveCrew components]
+    verification: [component tests and browser journey plan]
+    artifact_refs: []
+    evidence_refs: [EV-P2F-VISUAL]
+  - id: WO-P2F-05-INDEPENDENT-MATRIX
+    phase_ref: P2F
+    status: ready
+    stage: planned
+    required: true
+    worker_role: independent test and risk reviewer
+    read_scope: [four intake manifests, current mainline tests and source]
+    write_scope: [Task-linked negative test matrix]
+    mutex_keys: []
+    deliverables: [cross-lane regression authority lineage and failure matrix]
+    acceptance: [reviewer differs from implementer and required failures are executable]
+    verification: [test command and fixture readback]
+    artifact_refs: []
+    evidence_refs: []
+  - id: WO-P2F-06-PRIME-JOIN
+    phase_ref: P2F
+    status: pending
+    stage: planned
+    required: true
+    worker_role: Shard Prime 0813 sole integration writer
+    read_scope: [four exact candidates, intake manifests and independent matrix]
+    write_scope: [integration worktree product code tests docs and generated outputs]
+    mutex_keys: [p2f-join, shared-router, shared-migrations, shared-release-config, goal-control]
+    deliverables: [ART-P2F-CONVERGENCE]
+    acceptance: [one clean revision consumes required W1-W4 changes with source lineage and no forbidden overwrite]
+    verification: [diff audit, focused tests, mainline tests, typecheck, build]
+    artifact_refs: [ART-P2F-CONVERGENCE]
+    evidence_refs: [EV-P2F-JOIN]
+  - id: WO-P2F-07-REVIEW-REPAIR
+    phase_ref: P2F
+    status: pending
+    stage: planned
+    required: true
+    worker_role: Gauss independent review and Atelier repair
+    read_scope: [formal convergence candidate and evidence]
+    write_scope: [isolated repair branch only after REVISE]
+    mutex_keys: [p2f-review-repair]
+    deliverables: [single PASS or REVISE verdict and fresh repair receipts]
+    acceptance: [all required contract errors closed without self-review]
+    verification: [independent rerun and diff provenance]
+    artifact_refs: []
+    evidence_refs: []
+  - id: WO-P2F-08-RUNTIME-APPLY
+    phase_ref: P2F
+    status: pending
+    stage: planned
+    required: true
+    worker_role: runtime and release operator
+    read_scope: [accepted convergence revision, current 3000 and 8080 runtime truth]
+    write_scope: [reversible HiveCrew build and runtime transaction]
+    mutex_keys: [hivecrew-3000-8080-release]
+    deliverables: [runtime revision receipt rollback target and browser evidence]
+    acceptance: [current HiveCrew runs the exact accepted revision and rolls back cleanly]
+    verification: [health, revision, browser journey and rollback rehearsal]
+    artifact_refs: [ART-P2F-CONVERGENCE]
+    evidence_refs: [EV-P2F-BROWSER]
   - id: WO-P3-01-OUTCOME-CENTER
     phase_ref: P3
     status: pending
@@ -361,6 +505,20 @@ work_orders:
     artifact_refs: [ART-P7-RELEASE]
     evidence_refs: []
 artifacts:
+  - id: ART-P2F-INTAKE
+    type: integration_manifest
+    path: docs/goals/HIVECREW-OWNER-OPERATING-WORKBENCH-V1/FOUR-LANE-CONVERGENCE-CONTRACT-V2.md
+    producer_ref: WO-P2F-01-INTAKE
+    verifier_ref: EV-P2F-INTAKE
+    owner: portfolio intake team
+    status: candidate
+  - id: ART-P2F-CONVERGENCE
+    type: software_candidate
+    path: /Users/jiawei/hivecosm-worktrees/hivecrew-four-lane-formal-convergence-codex
+    producer_ref: WO-P2F-06-PRIME-JOIN
+    verifier_ref: EV-P2F-BROWSER
+    owner: Shard Prime 0813 integrator
+    status: planned
   - id: ART-P0-REVIEW
     type: review_package
     path: docs/reviews/RP-HIVECREW-OPERATING-WORKBENCH-20260811-01.md
@@ -418,6 +576,12 @@ artifacts:
     owner: single release integrator
     status: planned
 evidence:
+  - {id: EV-P2F-CANARY, kind: runtime_canary, source: HiveCrew HIV-640, method: Issue Task Prime Run and Task-linked Comment readback, observed_at: '2026-08-14T11:07:20+08:00', revision: null, result: REVISE_OUTPUT_CORRUPTED_AND_LINEAGE_MISSING, path: 'issue:dd56da15-72f6-4e4f-ad90-27e74884502b; task:776aafa4-2293-42a2-ab57-8798446c8aef; receiver:HIV-644'}
+  - {id: EV-P2F-INTAKE, kind: source_intake, source: W1-W4 candidate worktrees, method: exact revision status diff file test and receiver matrix, observed_at: '2026-08-14T10:54:25+08:00', revision: f7667c8d7c540217c345d98beac33794e1f3e6d0, result: started, path: 'docs/goals/HIVECREW-OWNER-OPERATING-WORKBENCH-V1/FOUR-LANE-CONVERGENCE-CONTRACT-V2.md'}
+  - {id: EV-P2F-SOURCE-SNAPSHOT, kind: source_audit, source: W1-W4 Git worktrees, method: exact branch HEAD status diff count ancestry and file intersection, observed_at: '2026-08-14T11:03:00+08:00', revision: f7667c8d7c540217c345d98beac33794e1f3e6d0, result: W3_CLEAN_HEAD_SELECTED_AS_FIRST_CUT, path: 'docs/goals/HIVECREW-OWNER-OPERATING-WORKBENCH-V1/SOURCE-INTAKE-SNAPSHOT-V2.md'}
+  - {id: EV-P2F-VISUAL, kind: visual_contract, source: current HiveCrew visual system, method: tokens components states and browser journeys, observed_at: '2026-08-14T10:54:25+08:00', revision: f7667c8d7c540217c345d98beac33794e1f3e6d0, result: frozen, path: 'docs/goals/HIVECREW-OWNER-OPERATING-WORKBENCH-V1/VISUAL-ACCEPTANCE-V2.md'}
+  - {id: EV-P2F-JOIN, kind: integration, source: formal convergence worktree, method: source lineage diff tests typecheck build and provenance, observed_at: null, revision: null, result: pending, path: '/Users/jiawei/hivecosm-worktrees/hivecrew-four-lane-formal-convergence-codex'}
+  - {id: EV-P2F-BROWSER, kind: browser_and_runtime, source: current HiveCrew 3000 and 8080, method: real journeys runtime revision receipt and rollback readback, observed_at: null, revision: null, result: pending, path: ''}
   - id: EV-P0-REVIEW
     kind: independent_review
     source: visible ChatGPT Pro GPT-5.6 Sol Pro effort
@@ -463,6 +627,7 @@ evidence:
   - {id: EV-P6-JOURNEY, kind: integration, source: QM workroom candidate, method: mixed-actor workroom journey, observed_at: null, revision: null, result: pending, path: ''}
   - {id: EV-P7-FORMAL, kind: production_readback, source: formal 1421, method: UI, service, revision and rollback readback, observed_at: null, revision: null, result: pending, path: ''}
 reviews:
+  - {id: REVIEW-P2F, scope_ref: P2F, reviewer: independent_hivecrew_reviewer, status: scheduled, verdict: null, capability_proof_ref: null, critical_corrections: [], evidence_refs: []}
   - id: REVIEW-P0
     scope_ref: P0
     reviewer: gptpro_verified
@@ -479,6 +644,7 @@ reviews:
   - {id: REVIEW-P6, scope_ref: P6, reviewer: gptpro_verified, status: scheduled, verdict: null, capability_proof_ref: null, critical_corrections: [], evidence_refs: []}
   - {id: REVIEW-P7, scope_ref: P7, reviewer: gptpro_verified, status: scheduled, verdict: null, capability_proof_ref: null, critical_corrections: [], evidence_refs: []}
 journals:
+  - {id: JOURNAL-P2F, work_order_id: WO-HIVECREW-FOUR-LANE-FORMAL-CONVERGENCE, milestone_id: phase-close, marker: '<!-- hivecosm-diary:WO-HIVECREW-FOUR-LANE-FORMAL-CONVERGENCE:phase-close -->', appended_at: null, reread: false, verified: false, evidence_ref: null}
   - id: JOURNAL-P0
     work_order_id: WO-HIVECREW-OPERATING-WORKBENCH-DESIGN
     milestone_id: gptpro-review-20260811
@@ -495,6 +661,12 @@ journals:
   - {id: JOURNAL-P6, work_order_id: WO-HIVECREW-OPERATING-WORKBENCH-P6, milestone_id: phase-close, marker: '<!-- hivecosm-diary:WO-HIVECREW-OPERATING-WORKBENCH-P6:phase-close -->', appended_at: null, reread: false, verified: false, evidence_ref: null}
   - {id: JOURNAL-P7, work_order_id: WO-HIVECREW-OPERATING-WORKBENCH-P7, milestone_id: phase-close, marker: '<!-- hivecosm-diary:WO-HIVECREW-OPERATING-WORKBENCH-P7:phase-close -->', appended_at: null, reread: false, verified: false, evidence_ref: null}
 projections:
+  - id: PROJ-P2F-CONVERGENCE
+    type: mermaid_overview
+    path: docs/goals/HIVECREW-OWNER-OPERATING-WORKBENCH-V1/graph/formal-convergence-v2/formal-convergence-v2.svg
+    source_ref: docs/goals/HIVECREW-OWNER-OPERATING-WORKBENCH-V1/graph/formal-convergence-v2.mmd
+    source_hash: 034e64a1ebda8a5a38017f5da336eeed33649dfd71c191ee418b9e5e9e110924
+    generated_at: 2026-08-14T10:54:25+08:00
   - id: PROJ-GOAL-OVERVIEW
     type: mermaid_overview
     path: docs/goals/HIVECREW-OWNER-OPERATING-WORKBENCH-V1/graph/overview.svg
@@ -502,12 +674,44 @@ projections:
     source_hash: f759465feef705ce5f6ca7b7334bf8ffd638b3a2829f33f250d43dacb5c673a2
     generated_at: 2026-08-11T12:16:00+08:00
 decisions:
+  - id: DECISION-OWNER-PRIME-FOUR-LANE
+    status: accepted
+    stage: completed
+    statement: William instructed Codex to use Prime Agent with DeepSeek V4 Pro 0813 as the main force and integrate all four completed lanes through visible HiveCrew work.
+    evidence_refs: [EV-P2F-CANARY, EV-P2F-INTAKE]
   - id: DECISION-OWNER-ACTIVATE
     status: accepted
     stage: completed
     statement: William accepted the reviewed recommendations and instructed execution to start.
     evidence_refs: [EV-P0-REVIEW]
 edges:
+  - {from: OUTCOME-01, type: decomposes_to, to: P2F}
+  - {from: P2F, type: decomposes_to, to: WO-P2F-00-PRIME-CANARY}
+  - {from: P2F, type: decomposes_to, to: WO-P2F-01-INTAKE}
+  - {from: P2F, type: decomposes_to, to: WO-P2F-02-W1-ORG-BASES}
+  - {from: P2F, type: decomposes_to, to: WO-P2F-03-W2-LIFECYCLE}
+  - {from: P2F, type: decomposes_to, to: WO-P2F-04-W4-WORKFLOW-WALL}
+  - {from: P2F, type: decomposes_to, to: WO-P2F-05-INDEPENDENT-MATRIX}
+  - {from: P2F, type: decomposes_to, to: WO-P2F-06-PRIME-JOIN}
+  - {from: P2F, type: decomposes_to, to: WO-P2F-07-REVIEW-REPAIR}
+  - {from: P2F, type: decomposes_to, to: WO-P2F-08-RUNTIME-APPLY}
+  - {from: WO-P2F-00-PRIME-CANARY, type: parallel_with, to: WO-P2F-01-INTAKE}
+  - {from: WO-P2F-02-W1-ORG-BASES, type: parallel_with, to: WO-P2F-03-W2-LIFECYCLE}
+  - {from: WO-P2F-03-W2-LIFECYCLE, type: parallel_with, to: WO-P2F-04-W4-WORKFLOW-WALL}
+  - {from: WO-P2F-04-W4-WORKFLOW-WALL, type: parallel_with, to: WO-P2F-05-INDEPENDENT-MATRIX}
+  - {from: WO-P2F-06-PRIME-JOIN, type: parallel_with, to: WO-P2F-00-PRIME-CANARY}
+  - {from: WO-P2F-06-PRIME-JOIN, type: depends_on, to: WO-P2F-01-INTAKE}
+  - {from: WO-P2F-06-PRIME-JOIN, type: depends_on, to: WO-P2F-02-W1-ORG-BASES}
+  - {from: WO-P2F-06-PRIME-JOIN, type: depends_on, to: WO-P2F-03-W2-LIFECYCLE}
+  - {from: WO-P2F-06-PRIME-JOIN, type: depends_on, to: WO-P2F-04-W4-WORKFLOW-WALL}
+  - {from: WO-P2F-06-PRIME-JOIN, type: depends_on, to: WO-P2F-05-INDEPENDENT-MATRIX}
+  - {from: WO-P2F-06-PRIME-JOIN, type: produces, to: ART-P2F-CONVERGENCE}
+  - {from: WO-P2F-07-REVIEW-REPAIR, type: depends_on, to: WO-P2F-06-PRIME-JOIN}
+  - {from: WO-P2F-08-RUNTIME-APPLY, type: depends_on, to: WO-P2F-07-REVIEW-REPAIR}
+  - {from: ART-P2F-CONVERGENCE, type: verified_by, to: EV-P2F-BROWSER}
+  - {from: EV-P2F-BROWSER, type: satisfies, to: VC-07}
+  - {from: P2F, type: reviewed_by, to: REVIEW-P2F}
+  - {from: P2F, type: recorded_in, to: JOURNAL-P2F}
   - {from: OUTCOME-01, type: decomposes_to, to: P0}
   - {from: OUTCOME-01, type: decomposes_to, to: P1}
   - {from: OUTCOME-01, type: decomposes_to, to: P2}
@@ -590,26 +794,26 @@ edges:
   - {from: P7, type: reviewed_by, to: REVIEW-P7}
   - {from: P7, type: recorded_in, to: JOURNAL-P7}
 runtime:
-  current_phase_ref: P2
-  current_wave_id: WAVE-P2-WRITERS-AND-OWNER-SURFACE
+  current_phase_ref: P2F
+  current_wave_id: WAVE-P2F-CANARY-AND-INTAKE
   frontier:
-    ready: []
-    running: [WO-P2-02-RUNTIME-LOOP, WO-P2-03-OWNER-SURFACE]
-    waiting: [WO-P2-04-INTEGRATION]
-    blocked: []
+    ready: [WO-P2F-01-INTAKE, WO-P2F-02-W1-ORG-BASES, WO-P2F-03-W2-LIFECYCLE, WO-P2F-04-W4-WORKFLOW-WALL, WO-P2F-05-INDEPENDENT-MATRIX]
+    running: []
+    waiting: [WO-P2F-06-PRIME-JOIN, WO-P2F-07-REVIEW-REPAIR, WO-P2F-08-RUNTIME-APPLY]
+    blocked: [WO-P2F-00-PRIME-CANARY]
     join_ref: null
-  critical_path: [P0, P1, P2, P3, P7, OUTCOME-01]
-  refreshed_at: 2026-08-11T12:51:00+08:00
-  graph_hash: f759465feef705ce5f6ca7b7334bf8ffd638b3a2829f33f250d43dacb5c673a2
+  critical_path: [P2F, P2, P3, P7, OUTCOME-01]
+  refreshed_at: 2026-08-14T10:54:25+08:00
+  graph_hash: 034e64a1ebda8a5a38017f5da336eeed33649dfd71c191ee418b9e5e9e110924
 resume_package:
-  goal_version: 1
+  goal_version: 2
   current_controller: codex-unbound
-  current_phase: P2
-  ready_nodes: []
-  running_nodes: [WO-P2-02-RUNTIME-LOOP, WO-P2-03-OWNER-SURFACE]
-  blocked_nodes: []
-  evidence_index: [EV-P0-REVIEW, EV-P0-JOURNAL, EV-P1-FRONTEND, EV-P1-BACKEND, EV-P1-OUTCOME, EV-P1-CONTRACT, EV-P1-REVIEW, EV-P1-JOURNAL, EV-P2-RED, EV-P2-CONTRACT-GREEN, EV-P2-MATERIALIZER-RED, EV-P2-MATERIALIZER-GREEN, EV-P2-ASSIGNMENT-RED, EV-P2-ASSIGNMENT-GREEN, EV-P2-ASSIGNMENT-BACKEND-RED, EV-P2-ASSIGNMENT-BACKEND-GREEN, EV-P2-OWNER-CARD-RED, EV-P2-OWNER-CARD-GREEN, EV-P2-CHAT-INTEGRATION-RED, EV-P2-CHAT-INTEGRATION-GREEN, EV-P2-EXEC-PERSISTENCE-RED, EV-P2-EXEC-PERSISTENCE-GREEN, EV-P2-ARTIFACT-PERSISTENCE-RED, EV-P2-ARTIFACT-PERSISTENCE-GREEN]
+  current_phase: P2F
+  ready_nodes: [WO-P2F-01-INTAKE, WO-P2F-02-W1-ORG-BASES, WO-P2F-03-W2-LIFECYCLE, WO-P2F-04-W4-WORKFLOW-WALL, WO-P2F-05-INDEPENDENT-MATRIX]
+  running_nodes: []
+  blocked_nodes: [WO-P2F-00-PRIME-CANARY]
+  evidence_index: [EV-P2F-CANARY, EV-P2F-INTAKE, EV-P2F-SOURCE-SNAPSHOT, EV-P2F-VISUAL, EV-P2F-JOIN, EV-P2F-BROWSER]
   latest_review_ref: REVIEW-P1
   latest_journal_ref: JOURNAL-P1
-  dirty_boundaries: [docs/reviews, docs/goals/HIVECREW-OWNER-OPERATING-WORKBENCH-V1]
-  next_action: Connect the existing Issue/Task canonical writers through the qtx adapter, implement the fail-closed HiveCosm authority reader and assignment API, then bind the Chat work-context hook to those real read/write paths.
+  dirty_boundaries: [docs/goals/HIVECREW-OWNER-OPERATING-WORKBENCH-V1]
+  next_action: Keep repairs the M5X Prime adapter and Task-linked lineage in parallel; after Stage 1 manifests are materially delivered, activate Shard Join on the Mac mini fallback without waiting for M5X, while final P2F acceptance still requires the canary contract.

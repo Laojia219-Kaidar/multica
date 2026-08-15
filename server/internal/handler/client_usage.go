@@ -7,10 +7,12 @@ import (
 	"log/slog"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/middleware"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -224,4 +226,155 @@ func validateClientUsageRuntime(probe clientUsageRuntimeProbe) (validatedRuntime
 	validated.OnlineCount = pgtype.Int4{Int32: *probe.OnlineCount, Valid: true}
 	validated.OfflineCount = pgtype.Int4{Int32: *probe.OfflineCount, Valid: true}
 	return validated, nil
+}
+
+// ---------------------------------------------------------------------------
+// Lane D (P3 usage aggregation + capacity routing) — provider/plan usage page.
+//
+// GET /api/company-ops/usage returns the provider -> plan/account/API-key label
+// -> model -> employee -> task hierarchy with configured quota merged in
+// (cycle / total / used / remaining / percentage / reset time). Local models
+// are aggregated from the same task_usage rows (runtime_mode = 'local').
+//
+// PUT /api/company-ops/usage/quota upserts one provider/plan quota row. It is
+// the operator-configured half of the page; the table ships empty so a plan
+// without a configured quota renders as "配额未配置" instead of an invented
+// total.
+// ---------------------------------------------------------------------------
+
+const maxProviderUsageQuotaBody = 8 * 1024
+
+var providerUsageQuotaCycles = map[string]bool{
+	"daily": true, "weekly": true, "monthly": true, "never": true,
+}
+
+type providerUsageQuotaRequest struct {
+	Provider    string `json:"provider"`
+	Plan        string `json:"plan"`
+	Account     string `json:"account"`
+	APIKeyLabel string `json:"api_key_label"`
+	Cycle       string `json:"cycle"`
+	TotalTokens int64  `json:"total_tokens"`
+	ResetDay    *int   `json:"reset_day,omitempty"`
+	LocalModel  bool   `json:"local_model"`
+}
+
+// GetProviderPlanUsage returns the workspace usage hierarchy for the requested
+// period (?days=N, default 30, capped at 365).
+func (h *Handler) GetProviderPlanUsage(w http.ResponseWriter, r *http.Request) {
+	workspaceID := h.resolveWorkspaceID(r)
+	if _, ok := h.workspaceMember(w, r, workspaceID); !ok {
+		return
+	}
+	days := 30
+	if d := r.URL.Query().Get("days"); d != "" {
+		if parsed, err := strconv.Atoi(d); err == nil && parsed > 0 && parsed <= 365 {
+			days = parsed
+		}
+	}
+	since := metrics.SinceBound(days)
+
+	service := metrics.NewUsageService(h.DB)
+	observations, err := service.ListUsageObservations(r.Context(), workspaceID, since)
+	if err != nil {
+		slog.Error("failed to list provider plan usage", "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to list usage")
+		return
+	}
+	quotas, err := service.ListUsageQuota(r.Context(), workspaceID)
+	if err != nil {
+		slog.Error("failed to list provider plan quota", "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to list quota")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, metrics.BuildUsageHierarchy(workspaceID, since, observations, quotas))
+}
+
+// PutProviderUsageQuota upserts one operator-configured provider/plan quota.
+// It is an exact (workspace, provider, plan, account, api-key label) key.
+func (h *Handler) PutProviderUsageQuota(w http.ResponseWriter, r *http.Request) {
+	workspaceID := h.resolveWorkspaceID(r)
+	if _, ok := h.workspaceMember(w, r, workspaceID); !ok {
+		return
+	}
+
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxProviderUsageQuotaBody))
+	decoder.DisallowUnknownFields()
+	var req providerUsageQuotaRequest
+	if err := decoder.Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	req.Provider = strings.TrimSpace(req.Provider)
+	req.Plan = strings.TrimSpace(req.Plan)
+	req.Account = strings.TrimSpace(req.Account)
+	req.APIKeyLabel = strings.TrimSpace(req.APIKeyLabel)
+	req.Cycle = strings.TrimSpace(req.Cycle)
+	if req.Provider == "" || len(req.Provider) > 128 {
+		writeError(w, http.StatusBadRequest, "provider is required")
+		return
+	}
+	if req.Plan == "" || len(req.Plan) > 128 {
+		writeError(w, http.StatusBadRequest, "plan is required")
+		return
+	}
+	if len(req.Account) > 256 || len(req.APIKeyLabel) > 256 {
+		writeError(w, http.StatusBadRequest, "account or api key label is too large")
+		return
+	}
+	if !providerUsageQuotaCycles[req.Cycle] {
+		writeError(w, http.StatusBadRequest, "cycle must be daily, weekly, monthly, or never")
+		return
+	}
+	if req.TotalTokens < 0 {
+		writeError(w, http.StatusBadRequest, "total_tokens must be >= 0")
+		return
+	}
+	if req.ResetDay != nil && (*req.ResetDay < 1 || *req.ResetDay > 28) {
+		writeError(w, http.StatusBadRequest, "reset_day must be between 1 and 28")
+		return
+	}
+	if req.Cycle == "daily" || req.Cycle == "weekly" {
+		req.ResetDay = nil
+	}
+
+	var resetDay pgtype.Int4
+	if req.ResetDay != nil {
+		resetDay = pgtype.Int4{Int32: int32(*req.ResetDay), Valid: true}
+	}
+	if _, err := h.DB.Exec(r.Context(), `
+INSERT INTO provider_usage_quota (
+    workspace_id, provider, plan, account_label, api_key_label,
+    cycle, total_tokens, reset_day, local_model
+) VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9)
+ON CONFLICT (workspace_id, provider, plan, account_label, api_key_label)
+DO UPDATE SET
+    cycle = EXCLUDED.cycle,
+    total_tokens = EXCLUDED.total_tokens,
+    reset_day = EXCLUDED.reset_day,
+    local_model = EXCLUDED.local_model,
+    updated_at = now()
+`,
+		workspaceID,
+		req.Provider,
+		req.Plan,
+		req.Account,
+		req.APIKeyLabel,
+		req.Cycle,
+		req.TotalTokens,
+		resetDay,
+		req.LocalModel,
+	); err != nil {
+		slog.Error("failed to upsert provider usage quota", "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to save quota")
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
 }

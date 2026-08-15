@@ -54,6 +54,52 @@
     "queued": "排队中",
     "idle": "空闲"
   },
+  "status_explanation": {
+    "title": "状态",
+    "status": {
+      "working": "工作中",
+      "idle": "空闲",
+      "waiting": "等待中",
+      "unavailable": "不可用"
+    },
+    "reason": {
+      "agent_archived": "已归档——已退出执勤",
+      "runtime_missing": "未注册运行时",
+      "runtime_recently_lost": "运行时刚刚失联——可能自行恢复",
+      "runtime_offline": "运行时离线",
+      "runtime_about_to_gc": "运行时已离线多日——有被回收的风险",
+      "running_tasks_other": "正在执行 {{count}} 个任务",
+      "waiting_local_directory": "等待其工作目录释放",
+      "dispatched_awaiting_start": "已派发——等待守护进程启动执行",
+      "awaiting_dispatch": "已排队——等待派发",
+      "idle_ready": "当前没有任务",
+      "idle_backlog_waiting_other": "空闲中，工作区队列有 {{count}} 个任务等待"
+    },
+    "current_task": "当前执行",
+    "capacity": "容量",
+    "capacity_value": "运行 {{running}} / {{capacity}}",
+    "capacity_unknown": "配额未知",
+    "runtime_health": "运行时健康",
+    "health": {
+      "online": "在线",
+      "recently_lost": "刚刚失联",
+      "offline": "离线",
+      "about_to_gc": "长期离线",
+      "missing": "无运行时"
+    },
+    "last_seen": "最近在线于 {{ago}}前",
+    "next_action": "下一步",
+    "action": {
+      "none": "无需操作——状态健康",
+      "unarchive": "取消归档以恢复执勤",
+      "restore_runtime": "检查或重启运行时守护进程",
+      "monitor_runtime": "观察——通常几分钟内自行恢复",
+      "await_path_lock": "占用该目录的执行结束后自动恢复",
+      "await_daemon_start": "无需操作——守护进程将启动执行",
+      "await_dispatch": "无需操作——调度器将拾取",
+      "assign_work": "将积压工作派给该员工"
+    }
+  },
   "archived": {
     "active_link": "活跃智能体",
     "title": "已归档智能体"

@@ -115,3 +115,104 @@ export interface ListProjectResourcesResponse {
   resources: ProjectResource[];
   total: number;
 }
+
+// ---- Project lifecycle closure read model (HIV-553 contract) ----
+// A-G health is a DERIVED projection over project/issue/task truth; it never
+// writes project.status. `in_progress` with no live task must render as
+// stalled/review-blocked, never "executing".
+
+export type ProjectHealth =
+  | "active_with_frontier"
+  | "stalled_no_open_task"
+  | "review_or_repair_blocked"
+  | "ready_for_closure"
+  | "duplicate_or_superseded"
+  | "source_gap";
+
+export interface ProjectLifecycleFrontierTask {
+  task_id: string;
+  status: string;
+  agent_id: string | null;
+  issue_id: string | null;
+  issue_number: number;
+  issue_title: string;
+  started_at: string | null;
+}
+
+export interface ProjectLifecycleSnapshot {
+  project_id: string;
+  status: ProjectStatus;
+  health: ProjectHealth;
+  owner_decision_required: boolean;
+  flags: string[];
+  lead_type: "member" | "agent" | null;
+  lead_id: string | null;
+  frontier_issue_ids: string[];
+  frontier_tasks: ProjectLifecycleFrontierTask[];
+  active_task_count: number;
+  nonterminal_issue_count: number;
+  blocked_issue_count: number;
+  review_issue_count: number;
+  terminal_issue_count: number;
+  last_progress_at: string | null;
+  next_action: string;
+  outcome_confirmed: number;
+  outcome_total: number;
+  closure_ready: boolean;
+  closure_blockers: string[];
+  duplicate_of_project_id: string | null;
+}
+
+export interface ListProjectLifecycleResponse {
+  projects: ProjectLifecycleSnapshot[];
+  total: number;
+}
+
+// ---- Slice 2 owner control operations (continue / pause_dispatch / resume) ----
+
+export type ProjectControlAction = "continue" | "pause_dispatch" | "resume" | "stop_current" | "close" | "supersede" | "generate_closure_package";
+
+export interface ProjectControlReceipt {
+  action: string;
+  project_id: string;
+  applied: boolean;
+  replayed: boolean;
+  idempotency_key: string;
+  before_status: string;
+  after_status: string;
+  task_id?: string | null;
+  issue_id?: string | null;
+  recovery_of?: string | null;
+  blockers?: string[];
+}
+
+export interface ContinuePreview {
+  project_id: string;
+  health: string;
+  lead_type: "member" | "agent" | null;
+  lead_id: string | null;
+  target_issue_id: string;
+  target_issue_number: number;
+  target_agent_id: string | null;
+  blockers: string[];
+}
+
+// ---- Slice 4 project closure package (candidate, derived read model) ----
+
+export interface ProjectClosurePackage {
+  package_id: string;
+  project_id: string;
+  status: string;
+  lead_type: "member" | "agent" | null;
+  lead_id: string | null;
+  terminal_issue_count: number;
+  nonterminal_issue_count: number;
+  active_task_count: number;
+  outcome_confirmed: number;
+  outcome_total: number;
+  duplicate_of_project_id: string | null;
+  review_required: boolean;
+  closure_ready: boolean;
+  blockers: string[];
+  digest: string;
+}

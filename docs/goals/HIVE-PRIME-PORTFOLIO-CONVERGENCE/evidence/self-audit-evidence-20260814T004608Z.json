@@ -1,0 +1,97 @@
+{
+  "schema": "SelfAuditEvidenceV1",
+  "at": "2026-08-14T00:46:08.296731+00:00",
+  "frontend_container_pages_missing": [
+    "work-wall",
+    "memory",
+    "workflow"
+  ],
+  "frontend_container_dashboard_dirs": [
+    "agents",
+    "autopilots",
+    "bases",
+    "billing",
+    "chat",
+    "datasets",
+    "employees",
+    "inbox",
+    "issues",
+    "members",
+    "my-issues",
+    "organization",
+    "outcomes",
+    "projects",
+    "runtimes",
+    "settings",
+    "skills",
+    "squads",
+    "usage",
+    "workrooms"
+  ],
+  "local_next_build_has_missing_pages": {
+    "work-wall": true,
+    "memory": true,
+    "workflow": true
+  },
+  "source_routes_exist": {
+    "work-wall/page.tsx": true,
+    "memory/page.tsx": true,
+    "workflow/page.tsx": true
+  },
+  "docker_pull_hang": {
+    "busybox_pull_90s": "TIMEOUT",
+    "node22_alpine_pull_60s": "TIMEOUT",
+    "docker_exec_ps": "OK",
+    "registry_docker_io_curl": "HTTP_401_reachable",
+    "diagnosis": "Docker Desktop build/pull service hung; container runtime responsive"
+  },
+  "hiv100_task_chain": {
+    "issue_id": "3bcd9afb-51e3-482a-b447-13c27faff32c",
+    "issue_status": "in_review",
+    "review_state": null,
+    "tasks": [
+      {
+        "id": "b7b94022-24c8-4f64-b0fb-d6246ea00b5d",
+        "kind": "work",
+        "status": "completed"
+      },
+      {
+        "id": "4d3e45d8-a77e-486e-a034-cfcd0ae4460f",
+        "kind": "review",
+        "status": "completed"
+      },
+      {
+        "id": "493fef72-8da9-46cd-b9cd-4dfc0e981ca7",
+        "kind": "repair",
+        "status": "completed"
+      },
+      {
+        "id": "cbde05ec-3817-44ba-ad0e-4cff68b81443",
+        "kind": "review",
+        "status": "cancelled"
+      },
+      {
+        "id": "a91212a9-9bf4-493f-904a-98138eda3f13",
+        "kind": "review",
+        "status": "cancelled"
+      }
+    ]
+  },
+  "fixes_committed": [
+    {
+      "gap": "GAP-P3",
+      "commit": "d1ec7f8dd",
+      "desc": "Closure Package SHA-256 digest + review_required + terminal/coverage"
+    },
+    {
+      "gap": "GAP-P4",
+      "commit": "6241aa8ee",
+      "desc": "review-cell revise_requested re-entry no longer preempts repair + regression test"
+    }
+  ],
+  "tests_green": [
+    "go build ./...",
+    "go test ./internal/service/ ./internal/handler/ (all pass)",
+    "TestReviewCell_ReviseRequestedReentryDoesNotPreemptRepair (buggy FAIL / fixed PASS)"
+  ]
+}

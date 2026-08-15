@@ -27,6 +27,7 @@ import {
 import { Button } from "@multica/ui/components/ui/button";
 import { Loader2 } from "lucide-react";
 import { setLoggedInCookie } from "@/features/auth/auth-cookie";
+import { canonicalLoopbackLoginUrl } from "@/features/auth/canonical-loopback-login";
 import Link from "next/link";
 import { LoginPage, validateCliCallback } from "@multica/views/auth";
 import { useT } from "@multica/views/i18n";
@@ -106,6 +107,12 @@ function LoginPageContent() {
   // bearer token before reloading into the server-issued cookie session.
   useEffect(() => {
     if (!canStartLocalSession || localSessionAttemptedRef.current) return;
+    const apiBaseUrl = typeof api.getBaseUrl === "function" ? api.getBaseUrl() : "";
+    const canonicalUrl = canonicalLoopbackLoginUrl(window.location.href, apiBaseUrl);
+    if (canonicalUrl) {
+      window.location.replace(canonicalUrl);
+      return;
+    }
     localSessionAttemptedRef.current = true;
     api.setToken(null);
     try {

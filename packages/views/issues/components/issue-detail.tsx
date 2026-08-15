@@ -67,6 +67,7 @@ import { ResolvedThreadBar } from "./resolved-thread-bar";
 import { ThreadMinimap, type ThreadMinimapThread } from "./thread-minimap";
 import { collectThreadReplies, deriveThreadResolution } from "./thread-utils";
 import { IssueAgentHeaderChip } from "./issue-agent-header-chip";
+import { IssueDispatchControls } from "./issue-dispatch-controls";
 import { ExecutionLogSection } from "./execution-log-section";
 import { PullRequestList } from "./pull-request-list";
 import { useGitHubSettings } from "@multica/core/github";
@@ -1789,6 +1790,11 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
               onUpdate={handleUpdateField}
             />
           </PropRow>
+
+          {/* Owner issue control plane (Lane A dispatch view) */}
+          <div className="pl-2">
+            <IssueDispatchControls issueId={issue.id} issueStatus={issue.status} workspaceId={wsId} />
+          </div>
 
           {/* Optional props — rendered only when set on the issue OR added
               via "+ Add property" in this session. Row order follows the

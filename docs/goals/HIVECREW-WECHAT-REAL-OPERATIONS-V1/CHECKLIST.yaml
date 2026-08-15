@@ -1,0 +1,351 @@
+schema_version: hivecosm.goal-graph/v2
+meta:
+  goal_id: HIVECREW-WECHAT-REAL-OPERATIONS-V1
+  goal_version: 1
+  title: 微信公众号真实内容生产与正式成果纵切面
+  owner: William
+  parent_goal: HIVECREW-OPERATIONS-WORKFLOW-OUTCOME-FABRIC-V2
+  state: activated
+  activation_requires: owner_explicit_activation_and_current_truth_reconciliation
+  activation_audit:
+    activated_by: WO-00-ACTIVATION-AND-TRUTH
+    activated_at: "2026-08-15T07:04:06Z"
+    activation_revision: 62e6cf517f9c45123d0c792e20710184da994dcb
+    source_dir: docs/goals/HIVECREW-WECHAT-REAL-OPERATIONS-V1-DRAFT
+    note: activation audit written by the accountable executor (not Coco/Codex); coordinator retains integration and acceptance.
+  correction_audit:
+    corrected_by: WO-00-CORRECTION-AND-ACCEPTANCE-PACKAGE
+    corrected_at: "2026-08-15T07:26:48Z"
+    correction_revision: 62e6cf517f9c45123d0c792e20710184da994dcb
+    correction_scope: [GOAL.md, CHECKLIST.yaml, CURRENT-TRUTH.md, AUTHORITY-AND-MUTEX-FREEZE.md, WO-00-HANDOFF.md, WO-00-CORRECTION.md]
+    note: formal GOAL.md created from DRAFT; false-pass EV-GOAL removed; fake write scope fixed; four P0 gates frozen; WO-10 blocked until coordinator review.
+  acceptance_audit:
+    accepted_by: coordinator
+    accepted_at: "2026-08-15T07:39:23Z"
+    acceptance_revision: 62e6cf517f9c45123d0c792e20710184da994dcb
+    verdict: accepted_with_scope_corrections
+    scope: WO-00-audit-package-only
+    note: Coordinator accepted the WO-00 truth-audit correction package only, with write-scope corrections (WO-10 contract-only, WO-30 workflow handler/files only, WO-40 exact artifact files only). No P0 gate operational proof and no business implementation is accepted.
+truth_contract:
+  progress_truth: docs/goals/HIVECREW-WECHAT-REAL-OPERATIONS-V1/CHECKLIST.yaml
+  projections_are_non_authoritative: true
+  code_truth:
+    repository: /Volumes/HiveData/hivecosm/HQ-50-代码仓库/01-源码下载/multica
+    candidate_worktree: /Users/jiawei/hivecosm-worktrees/hivecrew-operations-workflow-v2
+    branch: work/hivecrew-operations-workflow-v2
+    revision_at_draft: 62e6cf517f9c45123d0c792e20710184da994dcb
+    reconciled_revision: 62e6cf517f9c45123d0c792e20710184da994dcb
+    activation_rule: fresh_git_listener_api_db_browser_reconciliation_required
+boundaries:
+  candidate_only: true
+  forbidden:
+    - main_merge
+    - production_deploy
+    - production_database_migration
+    - real_platform_publish
+    - real_platform_credentials_or_account_change
+    - nas_or_cloud_object_write
+    - destructive_storage_action
+  permanent:
+    - existing_project_task_run_employee_artifact_outcome_authorities_only
+    - no_second_workflow_dispatcher_or_outcome_center
+    - running_instance_version_is_immutable
+    - completed_is_not_published_or_owner_accepted
+outcome:
+  id: OUTCOME-01
+  status: planned
+  statement: A real WeChat content request produces reviewed content artifacts and a formal Outcome Center result in the candidate environment.
+victory_conditions:
+  - {id: VC-01, required: true, status: planned, statement: Design controls and operational controls are separate and a run pins one published version., verifier: browser_and_component_tests}
+  - {id: VC-02, required: true, status: planned, statement: A valid request dispatches an existing Task/Run and produces non-empty actual content; missing binding fails closed; proof is a server-side Task/Run receipt, not client-supplied ids., verifier: api_task_run_and_output_readback_server_side}
+  - {id: VC-03, required: true, status: planned, statement: Research pack, draft, review report, and publish package each have their own artifact lineage and are reachable from the runtime view., verifier: artifact_contract_and_browser_readback}
+  - {id: VC-04, required: true, status: planned, statement: Approval gates promotion and the approved publish package is observed in the existing Outcome Center; candidate store vs formal authority isolation is proven., verifier: approval_event_and_outcome_cross_readback}
+  - {id: VC-05, required: true, status: planned, statement: Candidate canary has fresh five-layer evidence and no external publishing or storage write., verifier: integration_canary_evidence_index}
+p0_gates:
+  - id: P0-GATE-01
+    name: server_verified_task_run_receipt
+    status: frozen
+    statement: >
+      A node is proven executed only by a server-side completed agent_task_queue row plus a
+      completed execution_receipt. MaterializeCompletedTask reads GetExecutionReceipt(task.ID)
+      and requires Terminal.Status == "completed" (server/internal/service/companyops_artifact_outcome.go,
+      server/pkg/db/queries/companyops.sql). Client-supplied task_id/run_id/initial_task_id/current_task_id
+      in a request or UI receipt are NOT server proof of execution.
+    verifier: api_task_run_and_output_readback_server_side
+    evidence_refs: [EV-WO00-CORRECTION]
+  - id: P0-GATE-02
+    name: companyops_authority_resolution
+    status: frozen
+    statement: >
+      Real CompanyOps assignment requires an existing work_order_source_ref
+      (hive://hivecosm/delivery/project/{project}/work-order/{work-order}), Employee, an active
+      IdentityBinding (Employee->Agent edge), an exact Agent, a runtime Session
+      (agent_task_queue.chat_session_id/session_id/runtime_id), and a HandoffNote. Authority chain
+      ValidateAndFreezeExecutionTarget (server/internal/companyops/execution_target.go) resolves
+      WorkOrder -> Employee -> active IdentityBinding -> exact Agent via
+      HiveCosmAuthorityClient.ResolveOwnerWorkContext (server/internal/companyops/hivecosm_authority_client.go).
+      workflow.AgentBinding (server/internal/workflow/types.go) is graph metadata only and is never
+      resolved to a second employee registry here (graph_execution.go).
+    verifier: companyops_authority_resolution
+    evidence_refs: [EV-WO00-CORRECTION]
+  - id: P0-GATE-03
+    name: per_node_durable_lineage
+    status: frozen
+    statement: >
+      One Task materializes at most one ArtifactCandidate (MaterializeCompletedTask, idempotency key
+      completed-run:{task.ID}). WorkflowRepository (server/internal/workflow/repository.go) only persists
+      Definition/Instance/Event, never node execution lineage. The four content nodes (research pack,
+      draft, review report, publish package) each require their own Issue/Assignment/Task/Run/Candidate/Outcome
+      lineage; a single Task-to-one-Candidate does NOT establish four node artifacts. Per-node durable
+      execution lineage/readback must be frozen over the existing Task/Run + CompanyOps Artifact authority.
+    verifier: per_node_lineage_contract
+    evidence_refs: [EV-WO00-CORRECTION]
+  - id: P0-GATE-04
+    name: isolated_candidate_store_formal_authority_proof
+    status: proven
+    statement: >
+      Candidate store vs formal HiveCosm Artifact/Outcome authority isolation is UNKNOWN in WO-00. The
+      candidate DB artifact_replica_location ledger and artifact_candidate rows must be proven isolated
+      from formal authority before any promotion claim. Marked READ_ONLY / contract-decision required;
+      WO-00 authorizes no promotion and no formal authority write.
+      WO-15 resolution: PROVEN_ISOLATED over current code paths and observed candidate config (single
+      DATABASE_URL entry main.go:216, only two pools dbstats.go:83,222; candidate .env.worktree binds
+      multica_hivecrew_operations_workflow_v2_512 and defines no HIVECOSM_* variable so promotion is
+      fail-closed 503; the only formal-authority write is one POST to HIVECOSM_AUTHORITY_BASE_URL which
+      is constructor-configurable to a loopback fake). Canary-time assertions 2/3/4/6/8 are deferred to
+      WO-50; open risks (default-DSN fallback, no code guard on authority URL, shared-instance
+      isolation, engine-3104 inference, CWD-sensitive object store) are recorded and must be handled in
+      the WO-50 runbook.
+    verifier: candidate_formal_authority_isolation_proof
+    evidence_refs: [EV-WO00-CORRECTION, EV-ISOLATION]
+mutex_and_reservation:
+  exact_file_dir_mutex_only: true
+  uncertain_surfaces: READ_ONLY_or_contract_decision_required
+  integrator_reserved:
+    - server/cmd/server/router.go
+    - packages/core/api/client.ts
+    - "apps/web/app/[workspaceSlug]/(dashboard)/workflow/page.tsx"
+    - all migrations touching companyops/workflow surfaces (all migrations remain integrator reserved; no work order owns migrations)
+  no_new: [queue, table, registry, outcome_center]
+phases:
+  - {id: PHASE-0, name: authority and executable-path audit, status: completed, stage: completed, exit_condition_refs: [VC-01], review_ref: REVIEW-P0, journal_ref: JOURNAL-P0}
+  - {id: PHASE-1, name: content-node contract repair and freeze (WO-10R), status: completed, stage: candidate_verified, exit_condition_refs: [VC-01], review_ref: REVIEW-P1, journal_ref: JOURNAL-P1, note: "phase exit per goal txt is WO-10R candidate_verified, achieved 2026-08-15T09:30:00Z via EV-CONTRACT and REVIEW-WO10R; GPTPro phase review REVIEW-P1 remains scheduled and is required before final victory, phase progression proceeded on the independent read-only review"}
+  - {id: PHASE-2, name: isolation proof, operations UI, Task/Run execution bridge, and artifact/outcome candidate bridge (WO-15/20/30/40A parallel, exits at JOIN-1 unified verification), status: completed, stage: candidate_verified, exit_condition_refs: [VC-02, VC-03, VC-04], review_ref: REVIEW-P2, journal_ref: JOURNAL-P2, note: "JOIN-1 PASS 2026-08-15T14:20:00Z at 3bb308efe — all goal-owned suites green; 8 baseline failures/errors across core/views/service/handler each attributed to pre-existing files or commits outside the goal chain (see JOIN-1-UNIFIED-VERIFICATION.md); GPTPro phase review REVIEW-P2 remains scheduled and is required before final victory"}
+  - {id: PHASE-3, name: candidate canary and independent closure, status: planned, stage: planned, exit_condition_refs: [VC-05], review_ref: REVIEW-P3, journal_ref: JOURNAL-P3}
+work_orders:
+  - id: WO-00
+    phase_ref: PHASE-0
+    status: completed
+    stage: completed
+    required: true
+    worker_role: integrator
+    read_scope: [docs/goals/HIVECREW-OPERATIONS-WORKFLOW-OUTCOME-FABRIC-V2, server/internal/handler/workflow.go, server/internal/workflow, server/internal/companyops, server/internal/service, server/cmd/server/router.go, packages/core/api]
+    write_scope: [docs/goals/HIVECREW-WECHAT-REAL-OPERATIONS-V1]
+    mutex_keys: [goal-control, current-truth]
+    deliverables: [current-truth-handoff, authoritative-task-run-artifact-outcome-map, formal-goal, correction-package]
+    acceptance: [no_stale_goal_claim_promoted_to_live_truth, exact_existing_writer_paths_recorded, no_false_validation_pass, no_fake_write_scope]
+    verification: [git_listener_api_database_browser_readback, code_path_verification]
+    evidence_refs: [EV-WO00-AUDIT, EV-WO00-CORRECTION, EV-WO00-ACCEPTANCE]
+    wo00_result:
+      head_revision: 62e6cf517f9c45123d0c792e20710184da994dcb
+      dirtiness: [apps/web/next-env.d.ts, packages/views/workflow/workflow-designer.tsx, packages/views/workflow/workflow-designer.test.tsx, docs/goals/HIVECREW-WECHAT-REAL-OPERATIONS-V1-DRAFT]
+      locks: none
+      runtime: {frontend_13512: http_200, backend_18592_health: ok, backend_18592_readyz: db_ok_migrations_ok}
+      authority_map: docs/goals/HIVECREW-WECHAT-REAL-OPERATIONS-V1/AUTHORITY-AND-MUTEX-FREEZE.md
+      correction_package: docs/goals/HIVECREW-WECHAT-REAL-OPERATIONS-V1/WO-00-CORRECTION.md
+  - id: WO-10
+    phase_ref: PHASE-1
+    status: completed
+    stage: candidate_verified
+    required: true
+    worker_role: backend_architect
+    read_scope: [packages/core/workflow, packages/core/api/workflow.ts, server/internal/workflow]
+    write_scope:
+      - packages/core/workflow/**
+      - packages/core/api/workflow.ts
+      - server/internal/workflow (exact contract type/validation files only, if needed)
+    write_scope_note: contract-only; no migrations, router, client, CompanyOps service, or formal authority write; all migrations remain integrator reserved.
+    mutex_keys: [workflow-contract]
+    depends_on: [WO-00]
+    deliverables: [input_output_binding_approval_artifact_contract]
+    acceptance: [strict_dto_validation, immutable_version_contract, fail_closed_missing_binding]
+    verification: [core_and_go_contract_tests]
+    evidence_refs: [EV-CONTRACT]
+    wo10r_result:
+      repair_cycle: WO-10 candidate was NEEDS_REPAIR at takeover; WO-10R repaired handoff_note/input_digest, source_refs minimum, recursive forged-proof rejection, nested unknown-field fail-closed, frozen lineage authority constants, Go nullable required_upstream, three-layer RFC3339 offset parity, Go strict JSON decoder, and the persistent Go contract test suite.
+      independent_review: two rounds by an independent read-only reviewer; round 1 NEEDS_REPAIR (Go deadline numeric-offset range gap broke three-layer parity), repaired, round 2 regression PASS.
+      verdict: candidate_verified
+      verified_at: "2026-08-15T09:30:00Z"
+      note: contract freeze only; this is NOT business-slice completion.
+  - id: WO-15
+    phase_ref: PHASE-2
+    status: completed
+    stage: proof_recorded
+    required: true
+    worker_role: integrator
+    read_scope: [server/internal/companyops/hivecosm_formal_artifact_client.go, server/internal/companyops/artifact_lifecycle.go, server/internal/companyops/artifact_materializer.go, server/internal/companyops/artifact_persistence.go, server/internal/companyops/artifact_runtime_repository.go, server/internal/companyops/artifact_storage.go, server/internal/service/companyops_artifact_outcome.go, server/internal/service/companyops_outcome_center.go, server/pkg/db/queries/companyops_artifact.sql, loopback candidate config and effective endpoints]
+    write_scope: [docs/goals/HIVECREW-WECHAT-REAL-OPERATIONS-V1]
+    write_scope_note: proof document only; read-only over code and config; never reads or prints secret values.
+    mutex_keys: [candidate-isolation-proof]
+    depends_on: [WO-10]
+    deliverables: [candidate_store_vs_formal_authority_isolation_proof]
+    acceptance: [executable_assertions_over_current_code_paths, no_promotion_until_proven]
+    verification: [candidate_formal_authority_isolation_proof]
+    p0_gate_ref: P0-GATE-04
+    evidence_refs: [EV-ISOLATION]
+  - id: WO-20
+    phase_ref: PHASE-2
+    status: completed
+    stage: candidate_verified
+    required: true
+    worker_role: luna_frontend
+    read_scope: [packages/views/workflow, "apps/web/app/[workspaceSlug]/(dashboard)/workflow"]
+    write_scope: [packages/views/workflow, packages/views/workflow/tests]
+    mutex_keys: [workflow-ui]
+    depends_on: [WO-10]
+    deliverables: [production_request_and_runtime_control_surface]
+    acceptance: [design_operations_split, accessible_preview_and_approval_controls]
+    verification: [views_tests_browser_journey]
+    evidence_refs: [EV-UI-COMPONENT]
+    wo20_result:
+      revision: c386c016a
+      verdict: candidate_verified_component_level
+      verified_at: "2026-08-15T13:27:34Z"
+      note: pure-view WechatProductionPanel on the L4 plan section; fail-closed start form with the same frozen contract validator, stable idempotency key, four-node reconciled status with read-only lineage, gate-only approve/reject controls, terminal awaiting-publication honesty, no phantom pause/resume/retry/publish controls, VC-01 design/ops separation. 43/43 workflow view tests pass; tsc clean in WO-20 files (6 pre-existing errors confined to the protected dirty designer files; 2 unrelated failing baseline test files recorded). Integrator API/page wiring and the live browser journey are WO-50 (EV-UI stays pending until then).
+  - id: WO-30
+    phase_ref: PHASE-2
+    status: completed
+    stage: candidate_verified
+    required: true
+    worker_role: luna_backend
+    read_scope: [server/internal/handler/workflow.go, server/internal/workflow, server/internal/service/companyops_assignment.go, server/internal/service/companyops_assignment_backend.go, server/internal/companyops/execution_target.go]
+    write_scope: [server/internal/handler/workflow.go, server/internal/workflow]
+    write_scope_note: workflow handler and workflow files only; no task queue/table write and no server/internal/service directory write.
+    mutex_keys: [workflow-task-run-bridge]
+    depends_on: [WO-10]
+    deliverables: [real_task_run_dispatch_and_node_output_readback]
+    acceptance: [no_simulated_pass, blocked_or_failed_without_real_execution, server_side_task_run_receipt_proof]
+    verification: [go_integration_task_run_readback]
+    evidence_refs: [EV-EXECUTION]
+    wo30_result:
+      revision: bacdc389b05b9e0a50d6a1c1640dafc4bc6812d0
+      verdict: candidate_verified_state_machine_level
+      verified_at: "2026-08-15T13:07:28Z"
+      note: poll-driven WechatProductionOrchestrator in server/internal/workflow/wechat_execution.go over two narrow seams; 28 go tests pin derivation, definition pin, idempotent replay/conflict, fail-closed completion (receipt+candidate), approval gate, changes_requested block, terminal awaiting_publication (never published), transient-vs-authority errors, anti-steering, and handoff-note lineage. handler/workflow.go untouched (concrete CompanyOps executor wiring is WO-50); live server-side Task/Run receipt proof is WO-50 canary scope.
+  - id: WO-40
+    phase_ref: PHASE-2
+    status: in_progress
+    stage: candidate_verified
+    required: true
+    worker_role: luna_outcome
+    read_scope: [server/internal/companyops, server/internal/service, existing_outcome_and_artifact_handlers]
+    write_scope:
+      - server/internal/companyops/artifact_lifecycle.go
+      - server/internal/companyops/artifact_persistence.go
+      - server/internal/service/companyops_artifact_outcome.go
+      - server/internal/service/companyops_execution_lifecycle.go
+    write_scope_note: exact existing artifact files only; CompanyOps assignment files stay READ_ONLY unless a later separate work order owns them; never use entire server/internal/service.
+    mutex_keys: [companyops-artifact-outcome]
+    depends_on: [WO-10]
+    deliverables: [artifact_lineage_and_outcome_promotion_bridge]
+    acceptance: [existing_outcome_authority_only, project_outcome_cross_readback]
+    verification: [companyops_lifecycle_tests]
+    evidence_refs: [EV-OUTCOME-CANDIDATE]
+    wo40_split_note: WO-40A candidate code and tests only; WO-40B (promotion and Outcome Center readback evidence) stays held until P0-GATE-04 is proven by WO-15 and JOIN-1 passes.
+    wo40a_result:
+      revision: ce06b5557
+      verdict: candidate_verified_no_production_gap
+      verified_at: "2026-08-15T14:05:00Z"
+      note: "gap determination found the approval-gated promotion, rejection block, per-issue lineage isolation, and dispatch-pinned authority already enforced by existing production code, so WO-40A changed no production file (minimal-change conclusion); deliverable is slice-level verification tests — TestArtifactLifecycleChangesRequestedBlocksSameRevisionProgression (in-memory), TestCompanyOpsArtifactOutcome_ChangesRequestedBlocksPromotionAndQueuesRework and TestCompanyOpsArtifactOutcome_SliceNodeLineageIsolation (isolated candidate DB 55432, migrations 1-370 applied). All pass; companyops package green; 1 pre-existing baseline failure (TestCompanyOpsOutcomeListCountAndCursorRejectCrossWorkspaceJoins, agent.runtime_id not-null vs stale test insert) reproduced at HEAD and recorded for JOIN-1 attribution. Slice limits — pairwise lineage proof, rework-Run/orchestrator seam, feedback-free replay payload, live promotion + Outcome Center readback all deferred to WO-40B/WO-50 (EV-OUTCOME stays pending)."
+  - id: WO-50
+    phase_ref: PHASE-3
+    status: pending
+    stage: planned
+    required: true
+    worker_role: integrator
+    read_scope: [all_candidate_changes]
+    write_scope: ["apps/web/app/[workspaceSlug]/(dashboard)/workflow/page.tsx", packages/core/api/client.ts, server/cmd/server/router.go]
+    mutex_keys: [shared-router-client-page, integration]
+    depends_on: [WO-20, WO-30, WO-40]
+    deliverables: [real_wechat_candidate_canary, evidence_index]
+    acceptance: [request_to_outcome_closure, no_external_publication]
+    verification: [api_database_task_run_outcome_browser_failure_paths]
+  - id: WO-60
+    phase_ref: PHASE-3
+    status: pending
+    stage: planned
+    required: true
+    worker_role: independent_reviewer_and_integrator
+    read_scope: [checklist, evidence_index, candidate_runtime]
+    write_scope: [checklist, journals, projections]
+    mutex_keys: [candidate-closure]
+    depends_on: [WO-50]
+    deliverables: [review_verdict, resume_package, candidate_handoff]
+    acceptance: [all_required_victory_conditions_evidenced]
+    verification: [gptpro_capability_proof_or_unverified_marker, journal_readback]
+artifacts:
+  - {id: ART-GOAL, type: goal, path: docs/goals/HIVECREW-WECHAT-REAL-OPERATIONS-V1/GOAL.md, producer_ref: WO-00, verifier_ref: EV-GOAL, owner: integrator, status: produced}
+  - {id: ART-CONTRACT, type: contract, path: packages/core/workflow, producer_ref: WO-10, verifier_ref: EV-CONTRACT, owner: backend_architect, status: planned}
+  - {id: ART-UI, type: code, path: packages/views/workflow, producer_ref: WO-20, verifier_ref: EV-UI-COMPONENT, owner: luna_frontend, status: produced}
+  - {id: ART-EXECUTION, type: code, path: server/internal/workflow/wechat_execution.go, producer_ref: WO-30, verifier_ref: EV-EXECUTION, owner: luna_backend, status: produced}
+  - {id: ART-OUTCOME, type: code, path: server/internal/companyops, producer_ref: WO-40, verifier_ref: EV-OUTCOME-CANDIDATE, owner: luna_outcome, status: produced}
+evidence:
+  - {id: EV-GOAL, kind: validation, source: scripts/validate_goal.py, source_absent: true, method: goal_and_checklist_validation, observed_at: "2026-08-15T07:26:48Z", revision: 62e6cf517f9c45123d0c792e20710184da994dcb, result: unverified, path: docs/goals/HIVECREW-WECHAT-REAL-OPERATIONS-V1/CHECKLIST.yaml, note: scripts/validate_goal.py does not exist; prior passed result was a false pass and is removed}
+  - {id: EV-WO00-AUDIT, kind: readback, source: wo00_current_truth_audit, method: git_worktree_locks_runtime_authority_trace, observed_at: "2026-08-15T07:04:06Z", revision: 62e6cf517f9c45123d0c792e20710184da994dcb, result: passed, path: docs/goals/HIVECREW-WECHAT-REAL-OPERATIONS-V1/CURRENT-TRUTH.md}
+  - {id: EV-WO00-CORRECTION, kind: readback, source: wo00_correction_code_path_verification, method: exact_source_function_and_unknown_verification, observed_at: "2026-08-15T07:26:48Z", revision: 62e6cf517f9c45123d0c792e20710184da994dcb, result: recorded, path: docs/goals/HIVECREW-WECHAT-REAL-OPERATIONS-V1/WO-00-CORRECTION.md}
+  - {id: EV-WO00-ACCEPTANCE, kind: readback, source: coordinator_independent_acceptance_verification, method: formal_goal_present_yaml_parse_all_p0_text_git_diff_v2_untouched_diary_marker, observed_at: "2026-08-15T07:39:23Z", revision: 62e6cf517f9c45123d0c792e20710184da994dcb, result: passed, path: docs/goals/HIVECREW-WECHAT-REAL-OPERATIONS-V1/WO-00-COORDINATOR-ACCEPTANCE.md}
+  - {id: EV-CONTRACT, kind: test, source: core_and_go_tests, method: strict_contract_and_failure_tests_plus_independent_readonly_review, observed_at: "2026-08-15T09:30:00Z", revision: 62e6cf517f9c45123d0c792e20710184da994dcb, result: passed, path: docs/goals/HIVECREW-WECHAT-REAL-OPERATIONS-V1/evidence/WO-10R-CONTRACT-EVIDENCE.md, note: vitest 44/44, tsc clean, gofmt clean, go vet clean, go test ok; independent review round 1 NEEDS_REPAIR (Go offset range), repaired, round 2 PASS}
+  - {id: EV-ISOLATION, kind: readback, source: wo15_candidate_isolation_proof, method: readonly_code_path_research_plus_executable_assertions, observed_at: "2026-08-15T10:05:00Z", revision: 62e6cf517f9c45123d0c792e20710184da994dcb, result: passed, path: docs/goals/HIVECREW-WECHAT-REAL-OPERATIONS-V1/evidence/WO-15-CANDIDATE-ISOLATION-PROOF.md, note: "verdict PROVEN_ISOLATED; assertions 1/5/7 executed and passed (single DSN entry, authority client tests, nil-authority fail-closed); assertions 2/3/4/6/8 deferred to WO-50 canary; open risks recorded (default-DSN fallback, authority URL config discipline, shared-instance isolation, engine-3104 inference, CWD-sensitive object store)"}
+  - {id: EV-UI, kind: browser, source: candidate_browser, method: owner_operating_journey, observed_at: null, revision: null, result: pending, path: null}
+  - {id: EV-UI-COMPONENT, kind: test, source: views_vitest, method: component_tests_and_typecheck, observed_at: "2026-08-15T13:27:34Z", revision: c386c016a, result: passed, path: docs/goals/HIVECREW-WECHAT-REAL-OPERATIONS-V1/evidence/WO-20-OPERATIONS-SURFACE-EVIDENCE.md, note: "43/43 workflow view tests pass (11 new panel tests + 2 new page tests); tsc clean in WO-20 files; 6 pre-existing tsc errors confined to the protected dirty designer files; 2 unrelated baseline test failures (layout/tab-presentation, agents/agent-activity-hover-content) recorded for JOIN-1 attribution"}
+  - {id: EV-EXECUTION, kind: test, source: go_workflow_package_tests, method: orchestrator_state_machine_tests_over_in_memory_seams, observed_at: "2026-08-15T13:07:28Z", revision: bacdc389b05b9e0a50d6a1c1640dafc4bc6812d0, result: passed, path: docs/goals/HIVECREW-WECHAT-REAL-OPERATIONS-V1/evidence/WO-30-EXECUTION-BRIDGE-EVIDENCE.md, note: "go test ./internal/workflow ok (28 WO-30 tests), go vet/gofmt clean; unit/state-machine level only — live Task/Run readback against the candidate runtime is deferred to WO-50 canary"}
+  - {id: EV-OUTCOME, kind: readback, source: existing_outcome_center, method: artifact_lineage_and_formal_outcome_cross_readback, observed_at: null, revision: null, result: pending, path: null}
+  - {id: EV-OUTCOME-CANDIDATE, kind: test, source: go_companyops_and_service_tests, method: rejection_gate_and_slice_lineage_isolation_tests_on_isolated_candidate_db, observed_at: "2026-08-15T14:05:00Z", revision: ce06b5557, result: passed, path: docs/goals/HIVECREW-WECHAT-REAL-OPERATIONS-V1/evidence/WO-40A-ARTIFACT-OUTCOME-EVIDENCE.md, note: "no production code change (existing gates verified sufficient); 3 new tests pass; companyops package green; 1 pre-existing baseline failure (cross-workspace cursor test, agent.runtime_id not-null) reproduced at HEAD for JOIN-1 attribution; live promotion and Outcome Center readback deferred to WO-40B/WO-50"}
+  - {id: EV-JOIN1, kind: test, source: join1_unified_verification, method: full_goal_suite_matrix_with_baseline_attribution, observed_at: "2026-08-15T14:20:00Z", revision: 3bb308efe, result: passed, path: docs/goals/HIVECREW-WECHAT-REAL-OPERATIONS-V1/evidence/JOIN-1-UNIFIED-VERIFICATION.md, note: "goal-owned suites zero-regression; 8 pre-existing baseline failures/errors itemized and attributed (3 core route-coverage tests, 2 views test files, 6 views tsc errors in protected dirty files, 1 service stale-schema test, 1 handler test from Aria 866e83d6a predating the chain); independent readonly subagent cross-check skipped per harness constraint, controller executed suites directly"}
+reviews:
+  - {id: REVIEW-P0, scope_ref: PHASE-0, reviewer: coordinator, status: completed, verdict: accepted_with_scope_corrections, capability_proof_ref: null, critical_corrections: [], evidence_refs: [EV-WO00-AUDIT, EV-WO00-CORRECTION, EV-WO00-ACCEPTANCE]}
+  - {id: REVIEW-WO10R, scope_ref: WO-10, reviewer: independent_readonly_reviewer, status: completed, verdict: pass, capability_proof_ref: null, critical_corrections: [{finding: go_deadline_numeric_offset_range_gap_broke_three_layer_parity, round: 1, verdict: needs_repair, repaired: true, regression: pass}], evidence_refs: [EV-CONTRACT]}
+  - {id: REVIEW-P1, scope_ref: PHASE-1, reviewer: gptpro_verified, status: scheduled, verdict: null, capability_proof_ref: null, critical_corrections: [], evidence_refs: []}
+  - {id: REVIEW-P2, scope_ref: PHASE-2, reviewer: gptpro_verified, status: scheduled, verdict: null, capability_proof_ref: null, critical_corrections: [], evidence_refs: []}
+  - {id: REVIEW-P3, scope_ref: PHASE-3, reviewer: gptpro_verified, status: scheduled, verdict: null, capability_proof_ref: null, critical_corrections: [], evidence_refs: []}
+journals:
+  - {id: JOURNAL-P0, work_order_id: WO-00, milestone_id: correction-review, marker: "<!-- hivecosm-diary:WO-00:correction-review -->", appended_at: "2026-08-15T07:31:16Z", reread: true, verified: true, evidence_ref: "日记/00-日记/2026-08-15 星期六 深圳 Coco工作日记.md"}
+  - {id: JOURNAL-P0-ACCEPTANCE, work_order_id: WO-00, milestone_id: coordinator-acceptance, marker: "<!-- hivecosm-diary:WO-00:coordinator-acceptance -->", appended_at: "2026-08-15T07:39:23Z", reread: true, verified: true, evidence_ref: "日记/00-日记/2026-08-15 星期六 深圳 Coco工作日记.md"}
+  - {id: JOURNAL-P1, work_order_id: WO-10, milestone_id: phase-close, marker: "<!-- hivecosm-diary:WO-10:phase-close -->", appended_at: "2026-08-15T09:44:37Z", reread: true, verified: true, evidence_ref: "日记/00-日记/2026-08-15 星期六 深圳 Coco工作日记.md"}
+  - {id: JOURNAL-P2, work_order_id: WO-40, milestone_id: phase-close, marker: "<!-- hivecosm-diary:WO-40:phase-close -->", appended_at: null, reread: false, verified: false, evidence_ref: null}
+  - {id: JOURNAL-P3, work_order_id: WO-60, milestone_id: phase-close, marker: "<!-- hivecosm-diary:WO-60:phase-close -->", appended_at: null, reread: false, verified: false, evidence_ref: null}
+projections:
+  - {id: PROJ-OVERVIEW, type: mermaid, path: docs/goals/HIVECREW-WECHAT-REAL-OPERATIONS-V1-DRAFT/projections/overview.mmd, source_ref: docs/goals/HIVECREW-WECHAT-REAL-OPERATIONS-V1-DRAFT/GOAL.md, source_hash: "1f53fdbffb61d792de75feab8d492601f04e4b7885c0b5c434a0f87f1750fb16", generated_at: "2026-08-15T06:27:01Z"}
+edges:
+  - {from: OUTCOME-01, type: decomposes_to, to: PHASE-0}
+  - {from: PHASE-0, type: decomposes_to, to: WO-00}
+  - {from: WO-00, type: unlocks, to: WO-10}
+  - {from: WO-00, type: corrects, to: WO-10}
+  - {from: WO-10, type: unlocks, to: WO-15}
+  - {from: WO-10, type: unlocks, to: WO-20}
+  - {from: WO-10, type: unlocks, to: WO-30}
+  - {from: WO-10, type: unlocks, to: WO-40}
+  - {from: WO-20, type: depends_on, to: WO-50}
+  - {from: WO-30, type: depends_on, to: WO-50}
+  - {from: WO-40, type: depends_on, to: WO-50}
+  - {from: WO-50, type: unlocks, to: WO-60}
+runtime:
+  current_phase_ref: PHASE-3
+  current_wave_id: WO-50-CANARY
+  frontier: {ready: [WO-50], running: [], waiting: [], blocked: [], join_ref: null}
+  critical_path: [WO-00, WO-10, WO-30, WO-40, WO-50, WO-60]
+  refreshed_at: "2026-08-15T14:20:00Z"
+  graph_hash: join1_passed_wo50_next
+resume_package:
+  goal_version: 1
+  current_controller: executor
+  current_phase: PHASE-3
+  ready_nodes: [WO-50]
+  running_nodes: []
+  blocked_nodes: []
+  waiting_nodes: []
+  evidence_index: [EV-WO00-AUDIT, EV-WO00-CORRECTION, EV-WO00-ACCEPTANCE, EV-CONTRACT, EV-ISOLATION, EV-EXECUTION, EV-UI-COMPONENT, EV-OUTCOME-CANDIDATE, EV-JOIN1]
+  latest_review_ref: REVIEW-WO10R
+  latest_journal_ref: JOURNAL-P1
+  dirty_boundaries: [apps/web/next-env.d.ts, packages/views/workflow/workflow-designer.tsx, packages/views/workflow/workflow-designer.test.tsx, docs/goals/HIVECREW-WECHAT-REAL-OPERATIONS-V1]
+  next_action: Run WO-50 candidate canary (integrator narrow wiring of router.go / packages/core/api/client.ts / apps/web workflow page.tsx, handler adapter implementing the WO-30 WechatNodeExecutor over EnsureWorkOrderIssue/Dispatch/GetIssueOutcome/MaterializeCompletedTask/ReviewArtifact/PromoteArtifact, loopback candidate server + loopback fake authority, deferred isolation assertions 2/3/4/6/8, five-layer failure-path evidence, WO-40B promotion + Outcome Center readback). JOIN-1 passed at 3bb308efe (EV-JOIN1); candidate DB multica_hivecrew_operations_workflow_v2_512 on 127.0.0.1:55432 is migrated 1-370 and reusable.

@@ -266,6 +266,14 @@ type ProjectResourceData struct {
 	Label        string          `json:"label,omitempty"`
 }
 
+// EmployeeMemoryData is one promoted memory carried on a claim response so
+// the daemon can inject it into the agent's runtime brief. Kind is
+// episodic | experience; Content is the memory text (≤8KB by validator).
+type EmployeeMemoryData struct {
+	Kind    string `json:"kind"`
+	Content string `json:"content"`
+}
+
 // ConnectedAppData keeps the daemon-claim wire field local to handler types
 // while sharing the canonical JSON shape with the runtime app metadata package.
 type ConnectedAppData = runtimeapps.ConnectedApp
@@ -282,6 +290,12 @@ type AgentTaskResponse struct {
 	// regardless of issue / chat / autopilot / quick-create — sees the same
 	// shared context. Empty when the workspace owner hasn't set it.
 	WorkspaceContext   string                `json:"workspace_context,omitempty"`
+	// EmployeeMemories are this agent's PROMOTED memories (memory_candidate
+	// rows that cleared validation + independent-reviewer promotion). The
+	// daemon renders them into the runtime brief as `## Employee Memories`
+	// so past lessons directly shape future runs. Empty for agents with no
+	// promoted memories.
+	EmployeeMemories   []EmployeeMemoryData  `json:"employee_memories,omitempty"`
 	ThreadName         string                `json:"thread_name,omitempty"` // semantic title for provider-native session/thread history
 	Status             string                `json:"status"`
 	Priority           int32                 `json:"priority"`

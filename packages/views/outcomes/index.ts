@@ -18,4 +18,5 @@ export {
   outcomeKeys,
   outcomesListOptions,
   outcomeDetailOptions,
+  outcomeArtifactLocationsOptions,
 } from "./outcome-queries";

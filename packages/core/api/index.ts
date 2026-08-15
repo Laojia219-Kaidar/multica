@@ -9,6 +9,8 @@ export type {
   ApiClientOptions,
   ClientRuntimeSnapshot,
   ClientUsageRequest,
+  CockpitProjection,
+  CockpitProjectionSection,
 } from "./client";
 export { parseWithFallback, setSchemaLogger } from "./schema";
 export type { ParseOptions } from "./schema";

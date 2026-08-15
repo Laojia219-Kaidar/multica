@@ -268,6 +268,90 @@ func (q *Queries) GetArtifactPromotionClaim(ctx context.Context, arg GetArtifact
 	return i, err
 }
 
+const getArtifactReplicaLocation = `-- name: GetArtifactReplicaLocation :one
+SELECT id, workspace_id, outcome_id, candidate_id, candidate_revision, location_class, location_id, storage_id, object_ref, state, digest, metadata_digest, size_bytes, retention_hint, metadata, created_at, updated_at FROM artifact_replica_location
+WHERE workspace_id = $1
+  AND id = $2
+`
+
+type GetArtifactReplicaLocationParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	ID          pgtype.UUID `json:"id"`
+}
+
+func (q *Queries) GetArtifactReplicaLocation(ctx context.Context, arg GetArtifactReplicaLocationParams) (ArtifactReplicaLocation, error) {
+	row := q.db.QueryRow(ctx, getArtifactReplicaLocation, arg.WorkspaceID, arg.ID)
+	var i ArtifactReplicaLocation
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.OutcomeID,
+		&i.CandidateID,
+		&i.CandidateRevision,
+		&i.LocationClass,
+		&i.LocationID,
+		&i.StorageID,
+		&i.ObjectRef,
+		&i.State,
+		&i.Digest,
+		&i.MetadataDigest,
+		&i.SizeBytes,
+		&i.RetentionHint,
+		&i.Metadata,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getArtifactReplicaLocationByIdentity = `-- name: GetArtifactReplicaLocationByIdentity :one
+SELECT id, workspace_id, outcome_id, candidate_id, candidate_revision, location_class, location_id, storage_id, object_ref, state, digest, metadata_digest, size_bytes, retention_hint, metadata, created_at, updated_at FROM artifact_replica_location
+WHERE workspace_id = $1
+  AND outcome_id = $2
+  AND candidate_id = $3
+  AND location_class = $4
+  AND location_id = $5
+`
+
+type GetArtifactReplicaLocationByIdentityParams struct {
+	WorkspaceID   pgtype.UUID `json:"workspace_id"`
+	OutcomeID     pgtype.UUID `json:"outcome_id"`
+	CandidateID   pgtype.UUID `json:"candidate_id"`
+	LocationClass string      `json:"location_class"`
+	LocationID    string      `json:"location_id"`
+}
+
+func (q *Queries) GetArtifactReplicaLocationByIdentity(ctx context.Context, arg GetArtifactReplicaLocationByIdentityParams) (ArtifactReplicaLocation, error) {
+	row := q.db.QueryRow(ctx, getArtifactReplicaLocationByIdentity,
+		arg.WorkspaceID,
+		arg.OutcomeID,
+		arg.CandidateID,
+		arg.LocationClass,
+		arg.LocationID,
+	)
+	var i ArtifactReplicaLocation
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.OutcomeID,
+		&i.CandidateID,
+		&i.CandidateRevision,
+		&i.LocationClass,
+		&i.LocationID,
+		&i.StorageID,
+		&i.ObjectRef,
+		&i.State,
+		&i.Digest,
+		&i.MetadataDigest,
+		&i.SizeBytes,
+		&i.RetentionHint,
+		&i.Metadata,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const insertArtifactCandidate = `-- name: InsertArtifactCandidate :one
 INSERT INTO artifact_candidate (
     id, workspace_id, lineage_id, revision, supersedes_id,
@@ -467,6 +551,83 @@ func (q *Queries) InsertArtifactMaterializationIntent(ctx context.Context, arg I
 	return i, err
 }
 
+const insertArtifactReplicaLocation = `-- name: InsertArtifactReplicaLocation :one
+INSERT INTO artifact_replica_location (
+    id, workspace_id, outcome_id, candidate_id, candidate_revision,
+    location_class, location_id, storage_id, object_ref, state,
+    digest, metadata_digest, size_bytes, retention_hint, metadata
+) VALUES (
+    $1, $2, $3, $4, $5,
+    $6, $7, $8, $9, $10,
+    $11, $12, $13, $14, $15
+)
+ON CONFLICT (workspace_id, outcome_id, candidate_id, location_class, location_id)
+DO NOTHING
+RETURNING id, workspace_id, outcome_id, candidate_id, candidate_revision, location_class, location_id, storage_id, object_ref, state, digest, metadata_digest, size_bytes, retention_hint, metadata, created_at, updated_at
+`
+
+type InsertArtifactReplicaLocationParams struct {
+	ID                pgtype.UUID `json:"id"`
+	WorkspaceID       pgtype.UUID `json:"workspace_id"`
+	OutcomeID         pgtype.UUID `json:"outcome_id"`
+	CandidateID       pgtype.UUID `json:"candidate_id"`
+	CandidateRevision int32       `json:"candidate_revision"`
+	LocationClass     string      `json:"location_class"`
+	LocationID        string      `json:"location_id"`
+	StorageID         string      `json:"storage_id"`
+	ObjectRef         string      `json:"object_ref"`
+	State             string      `json:"state"`
+	Digest            string      `json:"digest"`
+	MetadataDigest    string      `json:"metadata_digest"`
+	SizeBytes         int64       `json:"size_bytes"`
+	RetentionHint     string      `json:"retention_hint"`
+	Metadata          []byte      `json:"metadata"`
+}
+
+// Storage-location rows are a replica placement ledger, not Artifact lifecycle
+// events. Every read is explicitly workspace-scoped and can be addressed by
+// the formal Outcome identity (outcome_id) or a candidate revision.
+func (q *Queries) InsertArtifactReplicaLocation(ctx context.Context, arg InsertArtifactReplicaLocationParams) (ArtifactReplicaLocation, error) {
+	row := q.db.QueryRow(ctx, insertArtifactReplicaLocation,
+		arg.ID,
+		arg.WorkspaceID,
+		arg.OutcomeID,
+		arg.CandidateID,
+		arg.CandidateRevision,
+		arg.LocationClass,
+		arg.LocationID,
+		arg.StorageID,
+		arg.ObjectRef,
+		arg.State,
+		arg.Digest,
+		arg.MetadataDigest,
+		arg.SizeBytes,
+		arg.RetentionHint,
+		arg.Metadata,
+	)
+	var i ArtifactReplicaLocation
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.OutcomeID,
+		&i.CandidateID,
+		&i.CandidateRevision,
+		&i.LocationClass,
+		&i.LocationID,
+		&i.StorageID,
+		&i.ObjectRef,
+		&i.State,
+		&i.Digest,
+		&i.MetadataDigest,
+		&i.SizeBytes,
+		&i.RetentionHint,
+		&i.Metadata,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const isArtifactMaterializationExactlyReferenced = `-- name: IsArtifactMaterializationExactlyReferenced :one
 SELECT EXISTS (
     SELECT 1
@@ -594,6 +755,106 @@ func (q *Queries) ListArtifactEventsByLineage(ctx context.Context, arg ListArtif
 	return items, nil
 }
 
+const listArtifactReplicaLocationsByCandidate = `-- name: ListArtifactReplicaLocationsByCandidate :many
+SELECT id, workspace_id, outcome_id, candidate_id, candidate_revision, location_class, location_id, storage_id, object_ref, state, digest, metadata_digest, size_bytes, retention_hint, metadata, created_at, updated_at FROM artifact_replica_location
+WHERE workspace_id = $1
+  AND candidate_id = $2
+ORDER BY created_at ASC, id ASC
+`
+
+type ListArtifactReplicaLocationsByCandidateParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	CandidateID pgtype.UUID `json:"candidate_id"`
+}
+
+func (q *Queries) ListArtifactReplicaLocationsByCandidate(ctx context.Context, arg ListArtifactReplicaLocationsByCandidateParams) ([]ArtifactReplicaLocation, error) {
+	rows, err := q.db.Query(ctx, listArtifactReplicaLocationsByCandidate, arg.WorkspaceID, arg.CandidateID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ArtifactReplicaLocation{}
+	for rows.Next() {
+		var i ArtifactReplicaLocation
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.OutcomeID,
+			&i.CandidateID,
+			&i.CandidateRevision,
+			&i.LocationClass,
+			&i.LocationID,
+			&i.StorageID,
+			&i.ObjectRef,
+			&i.State,
+			&i.Digest,
+			&i.MetadataDigest,
+			&i.SizeBytes,
+			&i.RetentionHint,
+			&i.Metadata,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listArtifactReplicaLocationsByOutcome = `-- name: ListArtifactReplicaLocationsByOutcome :many
+SELECT id, workspace_id, outcome_id, candidate_id, candidate_revision, location_class, location_id, storage_id, object_ref, state, digest, metadata_digest, size_bytes, retention_hint, metadata, created_at, updated_at FROM artifact_replica_location
+WHERE workspace_id = $1
+  AND outcome_id = $2
+ORDER BY created_at ASC, id ASC
+`
+
+type ListArtifactReplicaLocationsByOutcomeParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	OutcomeID   pgtype.UUID `json:"outcome_id"`
+}
+
+func (q *Queries) ListArtifactReplicaLocationsByOutcome(ctx context.Context, arg ListArtifactReplicaLocationsByOutcomeParams) ([]ArtifactReplicaLocation, error) {
+	rows, err := q.db.Query(ctx, listArtifactReplicaLocationsByOutcome, arg.WorkspaceID, arg.OutcomeID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ArtifactReplicaLocation{}
+	for rows.Next() {
+		var i ArtifactReplicaLocation
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.OutcomeID,
+			&i.CandidateID,
+			&i.CandidateRevision,
+			&i.LocationClass,
+			&i.LocationID,
+			&i.StorageID,
+			&i.ObjectRef,
+			&i.State,
+			&i.Digest,
+			&i.MetadataDigest,
+			&i.SizeBytes,
+			&i.RetentionHint,
+			&i.Metadata,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const lockArtifactLineage = `-- name: LockArtifactLineage :exec
 SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))
 `
@@ -710,6 +971,59 @@ func (q *Queries) TombstoneArtifactMaterializationIntent(ctx context.Context, ar
 		&i.IdempotencyKey,
 		&i.State,
 		&i.LastError,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const updateArtifactReplicaLocationState = `-- name: UpdateArtifactReplicaLocationState :one
+UPDATE artifact_replica_location
+SET state = $1,
+    digest = $2,
+    metadata_digest = $3,
+    size_bytes = $4,
+    updated_at = now()
+WHERE workspace_id = $5
+  AND id = $6
+RETURNING id, workspace_id, outcome_id, candidate_id, candidate_revision, location_class, location_id, storage_id, object_ref, state, digest, metadata_digest, size_bytes, retention_hint, metadata, created_at, updated_at
+`
+
+type UpdateArtifactReplicaLocationStateParams struct {
+	State          string      `json:"state"`
+	Digest         string      `json:"digest"`
+	MetadataDigest string      `json:"metadata_digest"`
+	SizeBytes      int64       `json:"size_bytes"`
+	WorkspaceID    pgtype.UUID `json:"workspace_id"`
+	ID             pgtype.UUID `json:"id"`
+}
+
+func (q *Queries) UpdateArtifactReplicaLocationState(ctx context.Context, arg UpdateArtifactReplicaLocationStateParams) (ArtifactReplicaLocation, error) {
+	row := q.db.QueryRow(ctx, updateArtifactReplicaLocationState,
+		arg.State,
+		arg.Digest,
+		arg.MetadataDigest,
+		arg.SizeBytes,
+		arg.WorkspaceID,
+		arg.ID,
+	)
+	var i ArtifactReplicaLocation
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.OutcomeID,
+		&i.CandidateID,
+		&i.CandidateRevision,
+		&i.LocationClass,
+		&i.LocationID,
+		&i.StorageID,
+		&i.ObjectRef,
+		&i.State,
+		&i.Digest,
+		&i.MetadataDigest,
+		&i.SizeBytes,
+		&i.RetentionHint,
+		&i.Metadata,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)

@@ -21,6 +21,7 @@ import { useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
   projectListOptions,
+  projectLifecycleListOptions,
   useUpdateProject,
   useDeleteProject,
   useProjectViewStore,
@@ -38,6 +39,14 @@ import { useWorkspaceId } from "@multica/core/hooks";
 import { useWorkspacePaths } from "@multica/core/paths";
 import { useAuthStore } from "@multica/core/auth";
 import { useActorName } from "@multica/core/workspace/hooks";
+import {
+  workInboxOptions,
+  useAttachWorkInbox,
+  useIgnoreWorkInbox,
+} from "@multica/core/work-entry";
+import { ProjectHealthBadge, HealthBucketSummary } from "./project-health";
+import type { ProjectLifecycleSnapshot, WorkInboxItem } from "@multica/core/types";
+
 import { memberListOptions } from "@multica/core/workspace/queries";
 import { useModalStore } from "@multica/core/modals";
 import { AppLink, useRowLink } from "../../navigation";
@@ -108,6 +117,7 @@ import { matchesPinyin } from "../../editor/extensions/pinyin-match";
 import { useFormatRelativeDate } from "./labels";
 import { ProjectStatusBadge, ProjectPriorityBadge } from "./project-badge";
 import { ProjectLeadPicker } from "./project-lead-picker";
+import { ProjectUnclaimedInbox } from "./project-unclaimed-inbox";
 
 // Sort order maps for the enum columns (header sort needs a total order).
 const PRIORITY_ORDER: Record<ProjectPriority, number> = {
@@ -345,6 +355,7 @@ function CheckboxCell({
 
 function ProjectTableRow({
   project,
+  snapshot,
   pinned,
   canDelete,
   isColVisible,
@@ -354,6 +365,7 @@ function ProjectTableRow({
   rowLink,
 }: {
   project: Project;
+  snapshot: ProjectLifecycleSnapshot | undefined;
   pinned: boolean;
   canDelete: boolean;
   isColVisible: (key: ProjectColumnKey) => boolean;
@@ -384,7 +396,10 @@ function ProjectTableRow({
 
       {/* status — core column, always visible */}
       <ListGridCell onClick={stopRowNavigation} onAuxClick={stopRowNavigation}>
-        <ProjectStatusBadge project={project} handleUpdate={handleUpdate} align="start" />
+        <div className="flex items-center gap-1.5">
+          <ProjectStatusBadge project={project} handleUpdate={handleUpdate} align="start" />
+          {snapshot && <ProjectHealthBadge snapshot={snapshot} />}
+        </div>
       </ListGridCell>
 
       {isColVisible("priority") ? (
@@ -559,14 +574,17 @@ function ProjectTableHeader({
 
 function ProjectCard({
   project,
+  snapshot,
   pinned,
   canDelete,
 }: {
   project: Project;
+  snapshot: ProjectLifecycleSnapshot | undefined;
   pinned: boolean;
   canDelete: boolean;
 }) {
   const { t } = useT("projects");
+  const { getActorName } = useActorName();
   const wsPaths = useWorkspacePaths();
   const formatRelativeDate = useFormatRelativeDate();
   const updateProject = useUpdateProject();
@@ -592,6 +610,7 @@ function ProjectCard({
           </AppLink>
           <ProjectRowActions project={project} pinned={pinned} canDelete={canDelete} />
           <ProjectStatusBadge project={project} handleUpdate={handleUpdate} triggerClassName="shrink-0" />
+          {snapshot && <ProjectHealthBadge snapshot={snapshot} />}
         </div>
 
         {project.issue_count > 0 ? (
@@ -647,6 +666,31 @@ function ProjectCard({
           </span>
         </div>
       </div>
+
+      {snapshot && (
+        <div className="space-y-1 border-t px-3 py-2">
+          {(() => {
+            const f = snapshot.frontier_tasks[0];
+            return f ? (
+              <p className="truncate text-[10px] text-muted-foreground" title={f.issue_title}>
+                前沿: #{f.issue_number} {f.issue_title}
+                {f.agent_id ? (
+                  <span className="text-muted-foreground/70"> · {getActorName("agent", f.agent_id)}</span>
+                ) : null}
+              </p>
+            ) : (
+              <p className="truncate text-[10px] text-muted-foreground">前沿: 无 live task</p>
+            );
+          })()}
+          <p className="text-[10px] tabular-nums text-muted-foreground">
+            {snapshot.last_progress_at ? `最近进展: ${formatRelativeDate(snapshot.last_progress_at)}` : "最近进展: 无"}
+            {" · "}{t(($) => $.health.terminal_issues)}: {snapshot.terminal_issue_count}
+          </p>
+          <p className="truncate text-[10px] text-muted-foreground" title={snapshot.next_action}>
+            {snapshot.next_action}
+          </p>
+        </div>
+      )}
     </div>
   );
 }
@@ -799,11 +843,45 @@ export function ProjectsPage() {
   const isColVisible = (key: ProjectColumnKey) => !hiddenColumns.includes(key);
 
   const { data: projects = [], isLoading } = useQuery(projectListOptions(wsId));
+  const { data: lifecycle = [] } = useQuery(projectLifecycleListOptions(wsId));
+  const { data: unclaimedInbox = [], isLoading: inboxLoading } = useQuery(
+    workInboxOptions(wsId),
+  );
+  const attachWorkInbox = useAttachWorkInbox();
+  const ignoreWorkInbox = useIgnoreWorkInbox();
+  const lifecycleById = useMemo(() => {
+    const m = new Map<string, ProjectLifecycleSnapshot>();
+    for (const s of lifecycle) m.set(s.project_id, s);
+    return m;
+  }, [lifecycle]);
   const { data: members = [] } = useQuery(memberListOptions(wsId));
   const { data: pins = [] } = useQuery({
     ...pinListOptions(wsId, currentUser?.id ?? ""),
     enabled: !!wsId && !!currentUser?.id,
   });
+  const inboxBusy = attachWorkInbox.isPending && attachWorkInbox.variables
+    ? ({ id: attachWorkInbox.variables.inbox_id, kind: "attach" } as const)
+    : ignoreWorkInbox.isPending && ignoreWorkInbox.variables
+      ? ({ id: ignoreWorkInbox.variables.inbox_id, kind: "ignore" } as const)
+      : null;
+  const handleAttachInbox = (item: WorkInboxItem, projectId: string) => {
+    attachWorkInbox.mutate(
+      { inbox_id: item.ID, project_id: projectId },
+      {
+        onError: (err) =>
+          toast.error(err instanceof Error ? err.message : String(err)),
+      },
+    );
+  };
+  const handleIgnoreInbox = (item: WorkInboxItem) => {
+    ignoreWorkInbox.mutate(
+      { inbox_id: item.ID },
+      {
+        onError: (err) =>
+          toast.error(err instanceof Error ? err.message : String(err)),
+      },
+    );
+  };
   const openCreateProject = () => useModalStore.getState().open("create-project");
 
   const isWorkspaceAdmin = useMemo(() => {
@@ -1205,6 +1283,17 @@ export function ProjectsPage() {
             </div>
           </div>
 
+          <HealthBucketSummary items={lifecycle} />
+
+          <ProjectUnclaimedInbox
+            items={unclaimedInbox}
+            projects={projects}
+            isLoading={inboxLoading}
+            busy={inboxBusy}
+            onAttach={handleAttachInbox}
+            onIgnore={handleIgnoreInbox}
+          />
+
           {/* Body */}
           {isLoading ? (
             <LoadingState isCompact={isCompact} />
@@ -1235,6 +1324,7 @@ export function ProjectsPage() {
                   <ProjectTableRow
                     key={project.id}
                     project={project}
+                    snapshot={lifecycleById.get(project.id)}
                     pinned={pinnedProjectIds.has(project.id)}
                     canDelete={isWorkspaceAdmin}
                     isColVisible={isColVisible}
@@ -1256,6 +1346,7 @@ export function ProjectsPage() {
                   <ProjectCard
                     key={project.id}
                     project={project}
+                    snapshot={lifecycleById.get(project.id)}
                     pinned={pinnedProjectIds.has(project.id)}
                     canDelete={isWorkspaceAdmin}
                   />

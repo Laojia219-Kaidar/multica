@@ -770,6 +770,10 @@ func writeCompanyOpsServiceError(w http.ResponseWriter, err error) {
 		writeCompanyOpsError(w, http.StatusNotFound, "artifact_not_found", err.Error())
 	case errors.Is(err, service.ErrCompanyOpsArtifactUnavailable):
 		writeCompanyOpsError(w, http.StatusServiceUnavailable, "writer_unavailable", err.Error())
+	case errors.Is(err, service.ErrCompanyOpsCapacityReject):
+		writeCompanyOpsError(w, http.StatusConflict, "capacity_reject", err.Error())
+	case errors.Is(err, service.ErrCompanyOpsCapacityDefer):
+		writeCompanyOpsError(w, http.StatusServiceUnavailable, "capacity_defer", err.Error())
 	default:
 		writeCompanyOpsError(w, http.StatusServiceUnavailable, "writer_unavailable", err.Error())
 	}

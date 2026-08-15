@@ -37,6 +37,19 @@ const (
 )
 
 func TestMain(m *testing.M) {
+	// HIVECREW_DB_FREE_FRONTIER=1 selects a named, process-scoped hermetic
+	// mode: no DATABASE_URL read, no pgxpool, no Ping, no socket, no migration,
+	// no env/credential enumeration, no running service. Only the ready-frontier
+	// handler-response fixtures opt into this mode — their evidence arrives via
+	// an in-context snapshot, so GetIssueFrontier touches no Handler DB field
+	// and a zero-value receiver is sufficient and provably DB-free. Every
+	// DB-dependent test still skips itself on a nil testPool, and a focused
+	// -run regex selects only the fixtures, so the canonical DB path is unused.
+	if os.Getenv("HIVECREW_DB_FREE_FRONTIER") == "1" {
+		testHandler = newDBFreeFrontierHandler()
+		os.Exit(m.Run())
+	}
+
 	ctx := context.Background()
 	dbURL := os.Getenv("DATABASE_URL")
 	if dbURL == "" {
@@ -88,6 +101,15 @@ func TestMain(m *testing.M) {
 	}
 	pool.Close()
 	os.Exit(code)
+}
+
+// newDBFreeFrontierHandler returns a Handler for the HIVECREW_DB_FREE_FRONTIER
+// hermetic mode. The ready-frontier fixture path classifies an in-context
+// evidence snapshot and never dereferences any Handler field, so a zero-value
+// receiver is sufficient and provably free of DB, pool, env/credential
+// enumeration (no DATABASE_URL, no SMTP/RESEND read), and running services.
+func newDBFreeFrontierHandler() *Handler {
+	return &Handler{}
 }
 
 func setupHandlerTestFixture(ctx context.Context, pool *pgxpool.Pool) (string, string, error) {

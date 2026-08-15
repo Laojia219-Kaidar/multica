@@ -405,3 +405,98 @@ UPDATE issue
 SET first_executed_at = now()
 WHERE id = $1 AND first_executed_at IS NULL
 RETURNING id, workspace_id, creator_type, creator_id, first_executed_at;
+
+
+-- name: GetIssueForUpdate :one
+-- Row lock used by review-cell transitions so concurrent EventIssueUpdated
+-- deliveries serialize on the issue row and the branch decision (create vs
+-- supersede vs no-op) is made against the committed state.
+SELECT * FROM issue
+WHERE id = $1
+FOR UPDATE;
+
+-- name: SetIssueReviewState :one
+-- Single guarded review-axis transition: only moves when the row currently
+-- holds @expected_state (NULL is a valid expected state, matched with
+-- IS NOT DISTINCT FROM). Duplicate/retry events that arrive after the first
+-- transition commit match zero rows and become no-ops.
+UPDATE issue
+SET review_state = @new_state,
+    review_state_reason = sqlc.narg(new_reason),
+    updated_at = now()
+WHERE id = @id AND review_state IS NOT DISTINCT FROM sqlc.narg(expected_state)
+RETURNING *;
+
+-- name: SetIssueReviewStateFromOpen :one
+-- Guarded transition valid from any open review state (queued / triaging /
+-- evidence_review / revise_requested) to a target state. Used by the verdict
+-- write path (open -> revise_requested | accepted) and by supersede when a
+-- newer candidate re-enters the queue.
+UPDATE issue
+SET review_state = @new_state,
+    review_state_reason = sqlc.narg(new_reason),
+    updated_at = now()
+WHERE id = @id
+  AND review_state IN ('queued', 'triaging', 'evidence_review', 'revise_requested')
+RETURNING *;
+
+-- name: ClearIssueReviewState :one
+-- Resets the acceptance axis when the issue leaves in_review (repair rework,
+-- rollback, or the accepted -> done handoff). Invariant C1:
+-- review_state IS NOT NULL => status = 'in_review'.
+UPDATE issue
+SET review_state = NULL,
+    review_state_reason = NULL,
+    updated_at = now()
+WHERE id = $1 AND review_state IS NOT NULL
+RETURNING *;
+
+-- name: ListReviewQueue :many
+-- Review Queue projection: open review states only, joined with the current
+-- open review task (reviewer + candidate) when one exists. Terminal states
+-- (accepted / superseded / archived_history) and the NULL default are
+-- excluded — the in_review status column no longer doubles as the review queue.
+SELECT
+    i.id AS issue_id,
+    i.workspace_id AS issue_workspace_id,
+    i.number AS issue_number,
+    i.title AS issue_title,
+    i.review_state,
+    i.review_state_reason,
+    i.updated_at AS issue_updated_at,
+    t.id AS review_task_id,
+    t.agent_id AS reviewer_agent_id,
+    t.review_target_task_id,
+    t.created_at AS review_task_created_at,
+    COALESCE(t.status, '') AS review_task_status,
+    a.name AS reviewer_name
+FROM issue i
+LEFT JOIN LATERAL (
+    SELECT id, agent_id, review_target_task_id, status, created_at
+    FROM agent_task_queue
+    WHERE issue_id = i.id
+      AND task_kind = 'review'
+      AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory')
+    ORDER BY created_at DESC
+    LIMIT 1
+) t ON true
+LEFT JOIN agent a ON a.id = t.agent_id
+WHERE i.workspace_id = $1
+  AND i.status = 'in_review'
+  AND i.review_state IN ('queued', 'triaging', 'evidence_review', 'owner_decision')
+ORDER BY i.updated_at DESC;
+
+
+-- name: ListInReviewIssueIDs :many
+-- Legacy in_review queue for the batch drain job. Ordered oldest-first so the
+-- drain is deterministic and resumable; the caller slices batches.
+SELECT id FROM issue
+WHERE workspace_id = $1 AND status = 'in_review'
+ORDER BY created_at ASC, id ASC;
+
+
+-- name: ListWorkspacesWithInReviewIssues :many
+-- Scope source for the review drain job: every workspace that currently has at
+-- least one in_review issue. The job ticks each scope and drains a bounded
+-- batch, so the legacy queue is never fanned out all at once.
+SELECT DISTINCT workspace_id FROM issue WHERE status = 'in_review';

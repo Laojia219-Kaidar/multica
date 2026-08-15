@@ -14,6 +14,8 @@ const mocks = vi.hoisted(() => ({
   pins: [] as Array<{ item_type: string; item_id: string }>,
   updateProject: vi.fn(),
   deleteProject: vi.fn(),
+  attachWorkInbox: vi.fn(),
+  ignoreWorkInbox: vi.fn(),
   createPin: vi.fn(),
   deletePin: vi.fn(),
   openModal: vi.fn(),
@@ -48,12 +50,16 @@ vi.mock("@tanstack/react-query", () => ({
     if (key === "pins") {
       return { data: mocks.pins, isLoading: false };
     }
+    if (key === "projects-lifecycle") {
+      return { data: [], isLoading: false };
+    }
     return { data: [], isLoading: false };
   },
 }));
 
 vi.mock("@multica/core/projects", () => ({
   projectListOptions: () => ({ queryKey: ["projects"] }),
+  projectLifecycleListOptions: () => ({ queryKey: ["projects-lifecycle"] }),
   useUpdateProject: () => ({ mutate: mocks.updateProject }),
   useDeleteProject: () => ({ mutate: mocks.deleteProject }),
   useProjectViewStore: (selector: (state: unknown) => unknown) =>
@@ -64,6 +70,20 @@ vi.mock("@multica/core/pins", () => ({
   pinListOptions: () => ({ queryKey: ["pins"] }),
   useCreatePin: () => ({ mutate: mocks.createPin }),
   useDeletePin: () => ({ mutate: mocks.deletePin }),
+}));
+
+vi.mock("@multica/core/work-entry", () => ({
+  workInboxOptions: () => ({ queryKey: ["work-inbox"] }),
+  useAttachWorkInbox: () => ({
+    mutate: mocks.attachWorkInbox,
+    isPending: false,
+    variables: null,
+  }),
+  useIgnoreWorkInbox: () => ({
+    mutate: mocks.ignoreWorkInbox,
+    isPending: false,
+    variables: null,
+  }),
 }));
 
 vi.mock("@multica/core/hooks", () => ({

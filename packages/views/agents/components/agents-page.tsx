@@ -19,9 +19,11 @@ import {
   agentRunCounts30dOptions,
   effectiveAccessScope,
   useWorkspaceActivityMap,
+  useWorkspaceEmployeeStateMap,
   useWorkspacePresenceMap,
   VISIBILITY_TOOLTIP,
   type AgentPresenceDetail,
+  type EmployeeStateExplanation,
 } from "@multica/core/agents";
 import {
   type AgentListFilters,
@@ -70,6 +72,7 @@ import {
 import { availabilityConfig } from "../presence";
 import { AgentRowActions } from "./agent-row-actions";
 import { AgentCardDirectory } from "./agent-card-directory";
+import { EmployeeStatusExplainer } from "./employee-status-explainer";
 import {
   AgentListToolbar,
   countActiveFilterDimensions,
@@ -143,6 +146,11 @@ export interface AgentListRow {
   agent: Agent;
   runtime: AgentRuntime | null;
   presence: AgentPresenceDetail | null;
+  // Four-state status explanation (working/idle/waiting/unavailable +
+  // reason + next action), derived from the same server facts as presence.
+  // Drives the second line of the Status cell. Optional so the pure
+  // row factories in filter/toolbar tests stay valid without one.
+  stateExplanation?: EmployeeStateExplanation | null;
   activity: AgentActivity | null;
   runCount: number;
   /** Days since the last bucket with runs; null = nothing in the window. */
@@ -417,6 +425,9 @@ function NameCell({ row }: { row: AgentListRow }) {
 
 // Availability dot + label, with the workload folded in as a suffix
 // ("Online · 2 tasks") — a 0-2 integer doesn't earn its own column.
+// The second line carries the four-state status explanation
+// (working/idle/waiting/unavailable + exact reason) so every employee row
+// answers "what is it doing and why" without opening the detail page.
 function StatusCell({ row }: { row: AgentListRow }) {
   const { t } = useT("agents");
   const { agent, presence } = row;
@@ -439,17 +450,22 @@ function StatusCell({ row }: { row: AgentListRow }) {
   const visual = availabilityConfig[presence.availability];
   const active = presence.runningCount + presence.queuedCount;
   return (
-    <ListGridCell className="gap-1.5">
-      <span className={`size-1.5 shrink-0 rounded-full ${visual.dotClass}`} />
-      <span className={`truncate text-xs ${visual.textClass}`}>
-        {t(($) => $.availability[presence.availability])}
-        {active > 0 && (
-          <span className="text-muted-foreground">
-            {" · "}
-            {t(($) => $.row.task_count, { count: active })}
-          </span>
-        )}
+    <ListGridCell className="flex-col items-start justify-center gap-0.5">
+      <span className="flex min-w-0 items-center gap-1.5">
+        <span className={`size-1.5 shrink-0 rounded-full ${visual.dotClass}`} />
+        <span className={`truncate text-xs ${visual.textClass}`}>
+          {t(($) => $.availability[presence.availability])}
+          {active > 0 && (
+            <span className="text-muted-foreground">
+              {" · "}
+              {t(($) => $.row.task_count, { count: active })}
+            </span>
+          )}
+        </span>
       </span>
+      {row.stateExplanation && (
+        <EmployeeStatusExplainer explanation={row.stateExplanation} compact />
+      )}
     </ListGridCell>
   );
 }
@@ -762,6 +778,7 @@ export function AgentsPage(_props: AgentsPageProps = {}) {
   );
   const { byAgent: presenceMap, loading: presenceLoading } =
     useWorkspacePresenceMap(wsId);
+  const { byAgent: employeeStateMap } = useWorkspaceEmployeeStateMap(wsId);
   const { byAgent: activityMap, loading: activityLoading } =
     useWorkspaceActivityMap(wsId);
 
@@ -870,6 +887,7 @@ export function AgentsPage(_props: AgentsPageProps = {}) {
         agent,
         runtime: runtimesById.get(agent.runtime_id) ?? null,
         presence: presenceMap.get(agent.id) ?? null,
+        stateExplanation: employeeStateMap.get(agent.id) ?? null,
         activity,
         runCount: runCountsById.get(agent.id) ?? 0,
         lastActiveDays: lastActiveDaysAgo(activity),
@@ -885,6 +903,7 @@ export function AgentsPage(_props: AgentsPageProps = {}) {
     runtimesById,
     membersById,
     presenceMap,
+    employeeStateMap,
     activityMap,
     runCountsById,
     isWorkspaceAdmin,

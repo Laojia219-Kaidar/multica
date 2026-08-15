@@ -135,6 +135,7 @@ func init() {
 	daemonCmd.AddCommand(daemonProbeRuntimesCmd)
 	daemonCmd.AddCommand(daemonLogsCmd)
 	daemonCmd.AddCommand(daemonDiskUsageCmd)
+	daemonCmd.AddCommand(daemonWIPTruthCmd)
 }
 
 type daemonRuntimeProbe struct {

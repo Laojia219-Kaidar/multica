@@ -54,6 +54,52 @@
     "queued": "대기 중",
     "idle": "유휴"
   },
+  "status_explanation": {
+    "title": "상태",
+    "status": {
+      "working": "작업 중",
+      "idle": "유휴",
+      "waiting": "대기 중",
+      "unavailable": "사용 불가"
+    },
+    "reason": {
+      "agent_archived": "보관됨——근무에서 제외되었습니다",
+      "runtime_missing": "등록된 런타임이 없습니다",
+      "runtime_recently_lost": "런타임이 방금 연결 끊김——자동 복구될 수 있습니다",
+      "runtime_offline": "런타임 오프라인",
+      "runtime_about_to_gc": "런타임이 며칠째 오프라인——회수될 위험이 있습니다",
+      "running_tasks_other": "태스크 {{count}}개 실행 중",
+      "waiting_local_directory": "작업 디렉터리가 비워지기를 기다리는 중",
+      "dispatched_awaiting_start": "디스패치됨——데몬이 실행을 시작하기를 기다리는 중",
+      "awaiting_dispatch": "큐에 대기 중——디스패치 대기",
+      "idle_ready": "현재 맡은 작업이 없습니다",
+      "idle_backlog_waiting_other": "여유 있음——워크스페이스 큐에 {{count}}개 작업 대기 중"
+    },
+    "current_task": "현재 실행",
+    "capacity": "용량",
+    "capacity_value": "실행 {{running}} / {{capacity}}",
+    "capacity_unknown": "쿼터 알 수 없음",
+    "runtime_health": "런타임 상태",
+    "health": {
+      "online": "온라인",
+      "recently_lost": "방금 연결 끊김",
+      "offline": "오프라인",
+      "about_to_gc": "장기 오프라인",
+      "missing": "런타임 없음"
+    },
+    "last_seen": "마지막 확인 {{ago}} 전",
+    "next_action": "다음 조치",
+    "action": {
+      "none": "없음——상태가 정상입니다",
+      "unarchive": "보관 해제로 근무 복귀",
+      "restore_runtime": "런타임 데몬을 확인하거나 재시작하세요",
+      "monitor_runtime": "관찰——보통 몇 분 내 복구됩니다",
+      "await_path_lock": "점유 중인 실행이 끝나면 해소됩니다",
+      "await_daemon_start": "조치 불필요——데몬이 실행을 시작합니다",
+      "await_dispatch": "조치 불필요——디스패처가 가져갑니다",
+      "assign_work": "이 직원에게 백로그 작업을 할당하세요"
+    }
+  },
   "archived": {
     "active_link": "활성 에이전트",
     "title": "보관된 에이전트"

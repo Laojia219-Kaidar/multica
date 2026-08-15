@@ -1,0 +1,48 @@
+{"ts": "2026-08-13T12:56:24.782369+00:00", "controller": "Prime", "event": "worktree_created", "branch": "work/hivecrew-project-lifecycle-closure", "head": "f7667c8d"}
+{"ts": "2026-08-13T12:56:24.782813+00:00", "controller": "Prime", "event": "bundle_initialized", "files": ["GOAL.md", "CHECKLIST.yaml", "HANDOFF.md", "EVIDENCE.md", "graphs/overview.mmd"]}
+{"ts": "2026-08-13T12:56:24.783093+00:00", "controller": "Prime", "event": "truth_calibrated", "ports": {"3000": "frontend", "8080": "backend"}, "projects": 11, "live_tasks": 1}
+{"ts": "2026-08-13T12:56:24.783252+00:00", "controller": "Prime", "event": "contract_frozen", "issue": "HIV-553", "file": "reports/hiv-553-project-lifecycle-contract.md"}
+{"ts": "2026-08-13T12:56:24.783361+00:00", "controller": "Prime", "event": "subagents_spawned", "roster": {"arch-code-data-contract": "sub-791302b3", "arch-project-owner-journey": "sub-52d2440d", "arch-test-concurrency-matrix": "sub-5de06c62"}}
+{"ts": "2026-08-13T13:03:44.983404+00:00", "controller": "Prime", "event": "subagent_reported", "agent": "arch-project-owner-journey", "output": "reports/W0-project-owner-journey.md", "size": 27536}
+{"ts": "2026-08-13T13:04:40.506425+00:00", "controller": "Prime", "event": "subagent_reported", "agent": "arch-code-data-contract", "output": "reports/W0-code-data-contract-archaeology.md", "size": 37904}
+{"ts": "2026-08-13T13:06:00.806147+00:00", "controller": "Prime", "event": "subagent_reported", "agent": "arch-test-concurrency-matrix", "output": "reports/W0-test-concurrency-migration-matrix.md", "size": 30030}
+{"ts": "2026-08-13T13:06:00.806447+00:00", "controller": "Prime", "event": "w0_archaeology_integrated", "reports": ["W0-code-data-contract-archaeology.md", "W0-project-owner-journey.md", "W0-test-concurrency-migration-matrix.md"]}
+{"ts": "2026-08-13T13:06:00.806504+00:00", "controller": "Prime", "event": "slice1_started"}
+{"ts": "2026-08-13T13:25:48.423316+00:00", "controller": "Prime", "event": "slice1_backend_committed", "commit": "0eeb7a05b"}
+{"ts": "2026-08-13T13:25:48.423316+00:00", "controller": "Prime", "event": "slice1_frontend_committed", "commit": "74bb1fe31"}
+{"ts": "2026-08-13T13:25:48.423316+00:00", "controller": "Prime", "event": "slice1_tests_green", "go_classifier": 10, "go_handler": 2, "ts_bucket": 6, "ts_page": 25}
+{"ts": "2026-08-13T13:25:48.423316+00:00", "controller": "Prime", "event": "slice1_candidate_api_acceptance", "result": "pass", "portfolio_total": 11, "health_distribution": {"review_or_repair_blocked": 8, "duplicate_or_superseded": 1, "source_gap": 2}, "owner_decision_required": 2, "active": 0}
+{"ts": "2026-08-13T13:27:47.487214+00:00", "controller": "Prime", "event": "slice1_acceptance_dispatched", "issues": {"HIV-554": {"id": "6c263eac-7e34-48d4-97be-c6e2d119627e", "assignee": "Gauss", "role": "test/API/concurrency"}, "HIV-555": {"id": "e3741103-9e97-442c-88fa-b6e33d727858", "assignee": "Quinn", "role": "quality/state-machine/invariants"}, "HIV-556": {"id": "770a9e87-bad1-4837-a6a0-2aee00c00ec5", "assignee": "Pixel", "role": "frontend/browser"}}, "tasks_running": true}
+{"ts": "2026-08-13T13:38:05.318091+00:00", "controller": "Prime", "event": "candidate_published_to_dgx", "branch": "work/hivecrew-project-lifecycle-closure", "tip": "ec555a961", "repo": "dgx-hive-dev:/srv/hivecosm/12-development-workspaces/users/williamdev/repos/hivecrew.git"}
+{"ts": "2026-08-13T13:38:05.318091+00:00", "controller": "Prime", "event": "acceptance_retriggered", "reason": "sandbox cannot see local worktree; candidate now on project repo resource", "rerun": true}
+{"ts": "2026-08-13T13:53:34.419781+00:00", "controller": "Prime", "event": "slice1_review_quinn", "verdict": "REVISE", "findings": ["F1", "F2", "F3", "O1", "O2", "O3", "O4"], "invariants_pass": 5}
+{"ts": "2026-08-13T13:53:34.419781+00:00", "controller": "Prime", "event": "slice1_repair1", "commit": "b954e7e5c", "pushed_to_dgx": true}
+{"ts": "2026-08-13T14:23:22.809231+00:00", "controller": "Prime", "event": "slice1_review_gauss", "verdict": "REVISE", "findings": ["F1(phase_critical, already fixed in b954e7e5c)", "F2", "F3", "F6", "F4", "F5"], "pass_items": 4, "env_limited": 1}
+{"ts": "2026-08-13T14:23:22.809231+00:00", "controller": "Prime", "event": "slice1_repair2", "commit": "90d7b50af", "pushed_to_dgx": true}
+{"ts": "2026-08-13T14:23:22.809231+00:00", "controller": "Prime", "event": "gauss_rereview_dispatched", "tip": "90d7b50af"}
+{"ts": "2026-08-13T14:31:35.341506+00:00", "controller": "Prime", "event": "slice1_review_gauss_rereview", "verdict": "REVISE", "residual": "F2 outcome_confirmed hardcoded 0 in wire struct", "passed": ["F1", "F3", "F6"]}
+{"ts": "2026-08-13T14:31:35.341506+00:00", "controller": "Prime", "event": "slice1_repair3", "note": "OutcomeConfirmed <- confirmedByProject"}
+{"ts": "2026-08-13T14:44:55.207836+00:00", "controller": "Prime", "event": "slice1_three_party_pass", "gauss": "PASS", "quinn": "PASS", "pixel": "PASS", "final_revision": "726bcca4a"}
+{"ts": "2026-08-13T14:44:55.207836+00:00", "controller": "Prime", "event": "slice1_frozen", "diff_hash_full": "d41e1f1239e5e0fae551393446dd2dc3c2f74473fef6aaf6fe7304fa3be3dd4c", "diff_hash_src": "2ca633401085bdd006ec4b8c9a83316609a1a313545d9bc76f69467e9103d80b"}
+{"ts": "2026-08-13T14:52:56.719667+00:00", "controller": "Prime", "event": "fallback_task_slice2_preprocessing", "deliverables": ["contracts/SLICE-2-CONTROL-CONTRACT.md", "contracts/SLICE-2-RED-TEST-MATRIX.md", "reports/W2-portfolio-disposition-preprocessing.md"], "source_impl": "BLOCKED_ON_W3_LANE"}
+{"ts": "2026-08-13T14:52:56.719667+00:00", "controller": "Prime", "event": "w3_receiver_wake_condition", "receiver": "W3 lifecycle/integration lane", "wake": "W3 releases project_lifecycle* + router.go shared paths or delegates Slice 2 source writes to Prime"}
+{"ts": "2026-08-13T15:03:09.500597+00:00", "controller": "Prime", "event": "slice2_committed", "commit": "977e3e8b5"}
+{"ts": "2026-08-13T15:03:09.500597+00:00", "controller": "Prime", "event": "slice2_acceptance_dispatched", "issues": {"HIV-557": "Gauss", "HIV-558": "Quinn", "HIV-559": "Pixel"}}
+{"ts": "2026-08-13T15:17:19.215128+00:00", "controller": "Prime", "event": "slice2_review", "gauss": "REVISE", "quinn": "REVISE", "pixel": "PASS"}
+{"ts": "2026-08-13T15:17:19.215128+00:00", "controller": "Prime", "event": "slice2_repair1", "commit": "df0fdf7ab", "fixes": ["dispatch_gate", "pause_resume_preview", "terminal_gate", "lead_scope", "resume_error_surface"]}
+{"ts": "2026-08-13T15:17:19.215128+00:00", "controller": "Prime", "event": "slice2_rereview_dispatched", "tip": "df0fdf7ab", "reviewers": ["Gauss", "Quinn"]}
+{"ts": "2026-08-13T16:03:49.772430+00:00", "controller": "Prime", "event": "slice2_gauss_pass", "tip": "b852af8a5"}
+{"ts": "2026-08-13T16:03:49.772430+00:00", "controller": "Prime", "event": "slice2_quinn_final_redispatched", "tip": "b852af8a5"}
+{"ts": "2026-08-13T16:03:49.772430+00:00", "controller": "Prime", "event": "w3_coordination_received", "note": "Slices 3/4/5 already in W3 integration @5aa447c65 (review cell/outcomes/pagination); consume not rebuild"}
+{"ts": "2026-08-13T16:08:39.359221+00:00", "controller": "Prime", "event": "slice2_three_party_pass", "gauss": "PASS", "quinn": "PASS", "pixel": "PASS", "final_revision": "b852af8a5"}
+{"ts": "2026-08-13T16:09:35.418095+00:00", "controller": "Prime", "event": "w3_join12_observed", "note": "W3 product-integration-mainline @11e7387c5 already integrated Slice 2 (JOIN-12, candidate pre-freeze); Slice 1 at JOIN-5"}
+{"ts": "2026-08-13T16:10:24.797449+00:00", "controller": "Prime", "event": "w3_slice345_verified", "gap": "Closure Package + close gate (VC-07)", "remaining": ["WAVE-4 deploy/runtime", "WAVE-5 reconciler/disposition"]}
+{"ts": "2026-08-13T16:17:37.003801+00:00", "controller": "Prime", "event": "slice4_committed", "commit": "528020fde"}
+{"ts": "2026-08-13T16:17:37.003801+00:00", "controller": "Prime", "event": "slice4_acceptance_dispatched", "issues": {"HIV-560": "Gauss", "HIV-561": "Quinn", "HIV-562": "Pixel"}}
+{"ts": "2026-08-13T16:32:46.100791+00:00", "controller": "Prime", "event": "slice4_three_party_pass", "gauss": "PASS", "quinn": "PASS", "pixel": "PASS", "final_revision": "ca6a50f2b"}
+{"ts": "2026-08-13T16:32:46.100791+00:00", "controller": "Prime", "event": "wave5_reconciler_committed", "commit": "23615f2e4", "findings_live": 15}
+{"ts": "2026-08-13T16:33:35.560302+00:00", "controller": "Prime", "event": "wave4_candidate_api_verified", "endpoints": ["lifecycle", "reconciler", "closure-package", "control-action"], "auth_401": true}
+{"ts": "2026-08-13T16:33:35.560302+00:00", "controller": "Prime", "event": "candidate_server_stopped"}
+{"ts": "2026-08-13T16:34:16.143478+00:00", "controller": "Prime", "event": "wave5_reconciler_acceptance_dispatched", "issue": "8bb13c30-c8ac-4bfe-8958-6c2e6ede4cef", "assignee": "Gauss"}
+{"ts": "2026-08-13T23:03:45.442174+00:00", "controller": "Prime", "event": "gap_repair_batch", "fixes": ["durable receipt + 409 idempotency (migration 342)", "stop-current action", "VC-02 card frontier/worker/last_progress", "handler error mapping (404/409/500)", "test helpers moved out of production", "closure-package review record (migration 343, reviewer!=lead)", "reconciler dispatch -> traceable issue", "-race test green", "frontend production build green"]}
+{"ts": "2026-08-13T23:03:45.442174+00:00", "controller": "Prime", "event": "frontend_build_verified", "cmd": "pnpm --filter @multica/web build", "result": "ok"}

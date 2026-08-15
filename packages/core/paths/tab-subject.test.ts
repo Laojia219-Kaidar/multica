@@ -11,6 +11,7 @@ describe("parseTabSubject", () => {
     ["/acme/issues", { kind: "page", page: "issues" }],
     ["/acme/my-issues", { kind: "page", page: "myIssues" }],
     ["/acme/projects", { kind: "page", page: "projects" }],
+    ["/acme/workflow", { kind: "page", page: "workflow" }],
     ["/acme/outcomes", { kind: "page", page: "outcomes" }],
     ["/acme/organization", { kind: "page", page: "organization" }],
     ["/acme/organization?tab=roster", { kind: "page", page: "organization" }],

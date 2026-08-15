@@ -23,6 +23,26 @@ func (q *Queries) CountIssuesByProject(ctx context.Context, projectID pgtype.UUI
 	return count, err
 }
 
+const countProjects = `-- name: CountProjects :one
+SELECT count(*) FROM project
+WHERE workspace_id = $1
+  AND ($2::text IS NULL OR status = $2)
+  AND ($3::text IS NULL OR priority = $3)
+`
+
+type CountProjectsParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	Status      pgtype.Text `json:"status"`
+	Priority    pgtype.Text `json:"priority"`
+}
+
+func (q *Queries) CountProjects(ctx context.Context, arg CountProjectsParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countProjects, arg.WorkspaceID, arg.Status, arg.Priority)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countIssuesByProjectAndStatus = `-- name: CountIssuesByProjectAndStatus :one
 SELECT count(*) FROM issue
 WHERE project_id = $1
@@ -207,17 +227,26 @@ SELECT id, workspace_id, title, description, icon, status, lead_type, lead_id, c
 WHERE workspace_id = $1
   AND ($2::text IS NULL OR status = $2)
   AND ($3::text IS NULL OR priority = $3)
-ORDER BY created_at DESC
+ORDER BY created_at DESC, id DESC
+LIMIT $5 OFFSET $4
 `
 
 type ListProjectsParams struct {
 	WorkspaceID pgtype.UUID `json:"workspace_id"`
 	Status      pgtype.Text `json:"status"`
 	Priority    pgtype.Text `json:"priority"`
+	Offset      pgtype.Int4 `json:"offset"`
+	Limit       pgtype.Int4 `json:"limit"`
 }
 
 func (q *Queries) ListProjects(ctx context.Context, arg ListProjectsParams) ([]Project, error) {
-	rows, err := q.db.Query(ctx, listProjects, arg.WorkspaceID, arg.Status, arg.Priority)
+	rows, err := q.db.Query(ctx, listProjects,
+		arg.WorkspaceID,
+		arg.Status,
+		arg.Priority,
+		arg.Offset,
+		arg.Limit,
+	)
 	if err != nil {
 		return nil, err
 	}

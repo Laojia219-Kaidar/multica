@@ -1,0 +1,59 @@
+{
+  "schema_version": "hivecrew.memory.v1",
+  "valid_candidate": {
+    "id": "c1",
+    "employee_id": "EMP-01",
+    "position_id": "SWE",
+    "kind": "episodic",
+    "content": "postgres queries tuned via index",
+    "evidence": [
+      {
+        "type": "run",
+        "id": "r1"
+      }
+    ],
+    "source_refs": [
+      "run://r1"
+    ],
+    "author_id": "EMP-01",
+    "created_at": "2026-08-13T12:00:00Z",
+    "status": "validated"
+  },
+  "invalid_candidate_secret": {
+    "id": "c2",
+    "employee_id": "EMP-01",
+    "kind": "episodic",
+    "content": "api_key=abc123 leaked",
+    "evidence": [
+      {
+        "type": "task",
+        "id": "t1"
+      }
+    ],
+    "source_refs": [
+      "task://t1"
+    ],
+    "author_id": "EMP-01",
+    "created_at": "2026-08-13T12:00:00Z",
+    "status": "pending"
+  },
+  "invalid_candidate_no_evidence": {
+    "id": "c3",
+    "employee_id": "EMP-01",
+    "kind": "episodic",
+    "content": "no evidence",
+    "evidence": [],
+    "source_refs": [],
+    "author_id": "EMP-01",
+    "created_at": "2026-08-13T12:00:00Z",
+    "status": "pending"
+  },
+  "promotion_receipt": {
+    "candidate_id": "c1",
+    "target": "skill",
+    "reviewer_id": "REV-01",
+    "approved": true,
+    "reason": "verified",
+    "promoted_at": "2026-08-13T12:05:00Z"
+  }
+}

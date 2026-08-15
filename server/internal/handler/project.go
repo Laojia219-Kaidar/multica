@@ -128,10 +128,26 @@ func (h *Handler) ListProjects(w http.ResponseWriter, r *http.Request) {
 	if p := r.URL.Query().Get("priority"); p != "" {
 		priorityFilter = pgtype.Text{String: p, Valid: true}
 	}
+	limit, offset, limitErr := parseLimitOffset(r)
+	if limitErr != nil {
+		writeError(w, http.StatusBadRequest, limitErr.Error())
+		return
+	}
+	total, err := h.Queries.CountProjects(r.Context(), db.CountProjectsParams{
+		WorkspaceID: wsUUID,
+		Status:      statusFilter,
+		Priority:    priorityFilter,
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to count projects")
+		return
+	}
 	projects, err := h.Queries.ListProjects(r.Context(), db.ListProjectsParams{
 		WorkspaceID: wsUUID,
 		Status:      statusFilter,
 		Priority:    priorityFilter,
+		Limit:       pgtype.Int4{Int32: int32(limit), Valid: true},
+		Offset:      pgtype.Int4{Int32: int32(offset), Valid: true},
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list projects")
@@ -169,8 +185,16 @@ func (h *Handler) ListProjects(w http.ResponseWriter, r *http.Request) {
 		}
 		resp[i].ResourceCount = resourceCountMap[resp[i].ID]
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"projects": resp, "total": len(resp)})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"projects": resp,
+		"total":    total,
+		"limit":    limit,
+		"offset":   offset,
+		"has_more": offset+len(resp) < int(total),
+	})
 }
+
+// parseLimitOffset lives in pagination.go (canonical contract, VC-09).
 
 func (h *Handler) GetProject(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
@@ -611,6 +635,13 @@ func (h *Handler) DeleteProject(w http.ResponseWriter, r *http.Request) {
 		WorkspaceID: project.WorkspaceID,
 	}); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to clear project chat context")
+		return
+	}
+	if err := qtx.DeleteWorkflowOperatingProgramProjectsByProject(r.Context(), db.DeleteWorkflowOperatingProgramProjectsByProjectParams{
+		WorkspaceID: project.WorkspaceID,
+		ProjectID:   project.ID,
+	}); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to clear workflow operating program mapping")
 		return
 	}
 	if err := qtx.DeleteProject(r.Context(), db.DeleteProjectParams{
