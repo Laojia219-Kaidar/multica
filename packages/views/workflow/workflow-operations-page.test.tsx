@@ -1,17 +1,20 @@
 import { describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { WorkflowOperationsPage } from "./workflow-operations-page";
 
-vi.mock("@multica/core/workflow", () => ({
+vi.mock("@multica/core/workflow", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@multica/core/workflow")>()),
   validateWorkflowGraph: () => [],
 }));
 
 vi.mock("@xyflow/react", () => ({
   Background: () => <div data-testid="flow-background" />,
   Controls: () => <div data-testid="flow-controls" />,
+  Position: { Left: "left", Right: "right" },
   ReactFlow: ({ nodes, onNodeClick }: { nodes: Array<{ id: string; data: { label: string } }>; onNodeClick?: (_event: unknown, node: { id: string }) => void }) => <div data-testid="react-flow">{nodes.map((node) => <button type="button" key={node.id} onClick={(event) => onNodeClick?.(event, node)}>{node.data.label}</button>)}</div>,
   applyEdgeChanges: (_changes: unknown[], edges: unknown[]) => edges,
   applyNodeChanges: (_changes: unknown[], nodes: unknown[]) => nodes,
+  Handle: () => null,
 }));
 
 const props = {
@@ -100,8 +103,7 @@ describe("WorkflowOperationsPage", () => {
     expect(screen.queryByText(/当前项目没有被 Outcome Center 观察到成果/)).toBeNull();
   });
 
-  it("lets an L3 settings view classify an unassigned formal project through callbacks", () => {
-    const onAssignProject = vi.fn();
+  it("lets an L3 settings view classify an unassigned formal project through callbacks", () => {    const onAssignProject = vi.fn();
     render(<WorkflowOperationsPage
       {...props}
       projects={[...props.projects, { id: "novel", programId: "", programClassification: "unassigned" as const, formalProjectId: "PRJ-NOVEL", name: "微信读书小说", platform: "微信读书" }]}
@@ -131,5 +133,41 @@ describe("WorkflowOperationsPage", () => {
     expect(button).toBeDisabled();
     expect(screen.getAllByRole("alert")).toHaveLength(2);
     expect(screen.getAllByRole("alert")[0]).toHaveTextContent("权限不足");
+  });
+
+  it("renders the WeChat production surface on the L4 plan section only when wired (WO-20)", () => {
+    const wechatProduction = {
+      authority: {
+        work_order_source_ref: "hive://hivecosm/delivery/project/PRJ-WECHAT/work-order/WO-1",
+        employee_id: "EMP-001",
+        identity_binding_id: "IB-001",
+        agent_id: "11111111-1111-4111-8111-111111111111",
+        session_id: "22222222-2222-4222-8222-222222222222",
+      },
+      publishedPins: [{ definition_id: "content.wechat-production-package", version: 1, digest: `sha256:${"a".repeat(64)}` }],
+      productions: [],
+      onStart: vi.fn(),
+    };
+    render(<WorkflowOperationsPage {...props} selection={{ kind: "project", id: "wechat" }} section="plan" wechatProduction={wechatProduction} />);
+    expect(screen.getByTestId("wechat-production-panel")).toBeDefined();
+    expect(screen.getByText("发起公众号内容生产")).toBeDefined();
+
+    cleanup();
+    // Without the integrator seam the plan section stays an honest placeholder.
+    render(<WorkflowOperationsPage {...props} selection={{ kind: "project", id: "wechat" }} section="plan" />);
+    expect(screen.queryByTestId("wechat-production-panel")).toBeNull();
+    expect(screen.getByText(/该视图将由正式 API 数据驱动/)).toBeDefined();
+  });
+
+  it("keeps operational launch controls off the design surface (VC-01)", () => {
+    const wechatProduction = {
+      authority: null,
+      publishedPins: [],
+      productions: [],
+    };
+    render(<WorkflowOperationsPage {...props} selection={{ kind: "project", id: "wechat" }} section="workflow" wechatProduction={wechatProduction} />);
+    expect(screen.getByTestId("workflow-designer")).toBeDefined();
+    expect(screen.queryByTestId("wechat-production-panel")).toBeNull();
+    expect(screen.queryByRole("button", { name: /发起生产/ })).toBeNull();
   });
 });

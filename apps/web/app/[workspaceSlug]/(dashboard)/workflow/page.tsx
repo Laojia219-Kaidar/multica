@@ -1,14 +1,17 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@multica/core/api";
-import type {
-  PublishedWorkflowDefinitionVersion,
-  PublishedWorkflowGraph,
-  WorkflowDefinition,
+import {
+  WechatContentAuthorityContextSchema,
+  type PublishedWorkflowDefinitionVersion,
+  type PublishedWorkflowGraph,
+  type WechatContentProductionRequest,
+  type WorkflowDefinition,
 } from "@multica/core/api/workflow";
+import type { WechatProductionView } from "@multica/core/api/client";
 import { useCurrentWorkspace, useWorkspacePaths } from "@multica/core/paths";
 import { projectListOptions } from "@multica/core/projects/queries";
 import {
@@ -28,6 +31,7 @@ import type {
 import type { Project } from "@multica/core/types";
 import {
   WorkflowOperationsPage,
+  type WechatProductionReviewDecision,
   type WorkflowContextSelection,
   type WorkflowOperationsSection,
 } from "@multica/views/workflow";
@@ -192,6 +196,24 @@ function candidateDraftForProject(project: OperatingProject, id: string): Workfl
 
 function newIdempotencyKey() {
   return globalThis.crypto?.randomUUID?.() ?? `workflow-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+/**
+ * WO-50 candidate-slice authority injection: the five authority refs (work
+ * order / employee / identity binding / agent / session) belong to the
+ * candidate environment's seeded binding, so the integrator supplies them as
+ * build-time env JSON. Absent or malformed input yields null and the panel
+ * fails closed with "authority unresolved" — the page never fabricates a
+ * context.
+ */
+function readWechatAuthorityContext() {
+  const raw = process.env.NEXT_PUBLIC_HIVECREW_WECHAT_AUTHORITY;
+  if (!raw) return null;
+  try {
+    return WechatContentAuthorityContextSchema.parse(JSON.parse(raw));
+  } catch {
+    return null;
+  }
 }
 
 export default function Page() {
@@ -369,6 +391,70 @@ export default function Page() {
     onError: (error) => setPublishError(error instanceof Error ? error.message : "候选版本未被服务端接受"),
   });
 
+  // --- WO-50: WeChat content production (candidate slice) ------------------
+  // Productions are tracked per instance with the exact start request kept
+  // alongside: reconcile poll-drives a running production and must resend the
+  // same request DTO because the brief is not ledger-persisted. A page reload
+  // drops the in-memory request (documented slice limit), so a reloaded page
+  // shows no productions rather than simulating one.
+  const wechatAuthority = useMemo(() => readWechatAuthorityContext(), []);
+  const [wechatProductions, setWechatProductions] = useState<Record<string, { request: WechatContentProductionRequest; view: WechatProductionView }>>({});
+  const [wechatProductionsError, setWechatProductionsError] = useState<string | null>(null);
+  const [wechatStartReceipt, setWechatStartReceipt] = useState<{ instance_id: string; idempotency_key: string } | null>(null);
+
+  const wechatStartMutation = useMutation({
+    mutationFn: async (request: WechatContentProductionRequest) => api.startWechatProduction(request),
+    onSuccess: (response, request) => {
+      setWechatStartReceipt({ instance_id: response.instance_id, idempotency_key: response.idempotency_key });
+      setWechatProductions((current) => ({ ...current, [response.instance_id]: { request, view: response.production } }));
+    },
+  });
+  const wechatReviewMutation = useMutation({
+    mutationFn: async (input: { instanceId: string; decision: WechatProductionReviewDecision; reviewId: string }) =>
+      api.reviewWechatProduction(input.instanceId, { decision: input.decision, review_id: input.reviewId }),
+    onSuccess: (response, input) => {
+      setWechatProductions((current) => {
+        const existing = current[input.instanceId];
+        return existing ? { ...current, [input.instanceId]: { ...existing, view: response.production } } : current;
+      });
+    },
+  });
+
+  const refreshWechatProductions = async () => {
+    const entries = Object.entries(wechatProductions);
+    if (entries.length === 0) return;
+    try {
+      const updates: Array<[string, WechatProductionView]> = [];
+      for (const [instanceId, entry] of entries) {
+        const response = entry.view.status === "running"
+          ? await api.reconcileWechatProduction(instanceId, entry.request)
+          : await api.getWechatProduction(instanceId);
+        updates.push([instanceId, response.production]);
+      }
+      setWechatProductionsError(null);
+      setWechatProductions((current) => {
+        const next = { ...current };
+        for (const [instanceId, view] of updates) {
+          const existing = next[instanceId];
+          if (existing) next[instanceId] = { ...existing, view };
+        }
+        return next;
+      });
+    } catch (error) {
+      setWechatProductionsError(error instanceof Error ? error.message : "生产状态回读失败");
+    }
+  };
+  const wechatRefreshRef = useRef(refreshWechatProductions);
+  wechatRefreshRef.current = refreshWechatProductions;
+  const wechatHasRunning = Object.values(wechatProductions).some((entry) => entry.view.status === "running");
+  useEffect(() => {
+    if (!wechatHasRunning) return;
+    const timer = setInterval(() => {
+      void wechatRefreshRef.current();
+    }, 4000);
+    return () => clearInterval(timer);
+  }, [wechatHasRunning]);
+
   const updateSearch = (updates: Record<string, string | null>) => {
     const next = new URLSearchParams(searchParams.toString());
     for (const [key, value] of Object.entries(updates)) {
@@ -493,6 +579,28 @@ export default function Page() {
         instanceCreationState: startPublishedGraphMutation.isPending ? "loading" : startPublishedGraphMutation.isError ? "error" : selectedProject ? "ready" : "unavailable",
         instanceCreationError: startPublishedGraphMutation.error instanceof Error ? startPublishedGraphMutation.error.message : undefined,
       }}
+      wechatProduction={selectedProject ? {
+        authority: wechatAuthority,
+        publishedPins: scopedOperations.definitions
+          .filter((definition) => definition.project_id === selectedProject.formalProjectId)
+          .map((definition) => ({ definition_id: definition.definition_id, version: definition.version, digest: definition.digest })),
+        productions: Object.values(wechatProductions)
+          .map((entry) => entry.view)
+          .filter((view) => view.project_id === selectedProject.formalProjectId),
+        productionsState: wechatProductionsError ? "error" : "ready",
+        productionsError: wechatProductionsError ?? undefined,
+        onRefreshProductions: () => {
+          void wechatRefreshRef.current();
+        },
+        onStart: (request) => wechatStartMutation.mutate(request),
+        startState: wechatStartMutation.isPending ? "submitting" : wechatStartMutation.isError ? "error" : "idle",
+        startError: wechatStartMutation.error instanceof Error ? wechatStartMutation.error.message : undefined,
+        startReceipt: wechatStartReceipt,
+        onReview: (input) => wechatReviewMutation.mutate(input),
+        reviewState: wechatReviewMutation.isPending ? "submitting" : wechatReviewMutation.isError ? "error" : "idle",
+        reviewError: wechatReviewMutation.error instanceof Error ? wechatReviewMutation.error.message : undefined,
+        outcomeHref: () => workspacePaths.outcomes(),
+      } : null}
     />
   );
 }
