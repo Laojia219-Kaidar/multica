@@ -168,6 +168,9 @@ func readRequestJSON(cmd *cobra.Command, dst any) error {
 	if !ok {
 		return fmt.Errorf("provide --request '<json>', --request-stdin, or --request-file <path>")
 	}
+	if err := workentry.RejectForbiddenProofFields([]byte(body)); err != nil {
+		return fmt.Errorf("reject forbidden proof field: %w", err)
+	}
 	if err := json.Unmarshal([]byte(body), dst); err != nil {
 		return fmt.Errorf("parse request JSON: %w", err)
 	}
