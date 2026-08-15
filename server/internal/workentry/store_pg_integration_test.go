@@ -108,3 +108,79 @@ func TestPGStoreRegisterIdempotency(t *testing.T) {
 
 	t.Logf("PG store idempotency PASS: work_ref=%s created=%v replayed=%v", r1.WorkRef, r1.Created, r2.Replay.Replayed)
 }
+
+// TestPGStoreCampaignAndInventory proves Phase-4 G-series campaign resolution
+// and the duplicate/orphan inventory snapshot against real PostgreSQL.
+func TestPGStoreCampaignAndInventory(t *testing.T) {
+	url := os.Getenv("DATABASE_URL")
+	if url == "" {
+		t.Skip("DATABASE_URL not set")
+	}
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, url)
+	if err != nil {
+		t.Fatalf("pgxpool: %v", err)
+	}
+	defer pool.Close()
+
+	var wsID string
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO workspace (name, slug) VALUES ('workentry-p4', $1) RETURNING id`,
+		fmt.Sprintf("workentry-p4-%d", time.Now().UnixNano())).Scan(&wsID); err != nil {
+		t.Fatalf("create workspace: %v", err)
+	}
+
+	store := NewPGStore(db.New(pool), pool)
+	svc := NewService(store)
+
+	// Seed a project + campaign link, then resolve by campaign ref (VC-06/11).
+	var projectID string
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO project (workspace_id, title, status, priority) VALUES ($1, 'G61 project', 'planned', 'none') RETURNING id`,
+		wsID).Scan(&projectID); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	if err := store.PutCampaignLink(ctx, CampaignMatch{WorkspaceID: wsID, ProjectID: projectID, CampaignRef: "G61"}); err != nil {
+		t.Fatalf("put campaign link: %v", err)
+	}
+
+	actor := WorkActorIdentityV1{
+		ActorType: ActorExternalAgent, ActorID: "EXT-p4-1", CarrierID: "prime",
+		SessionID: "p4-s1", WorkspaceID: wsID, ObservedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	intent := WorkIntentV1{
+		OwnerIntent: "p4 canary", GoalRef: "GOAL-P4", Objective: "campaign resolve",
+		ExpectedHumanResult: "continued", Repo: "/tmp/p4", BaselineRevision: "rev",
+		BranchOrWorktree: "main", ReadScope: []string{"/tmp/p4"}, WriteScope: []string{"/tmp/p4"},
+		ExpectedOutcomes: []string{"artifact"}, CandidateFormalBoundary: BoundaryCandidate,
+		ExternalCampaignRef: "g61",
+	}
+
+	res, err := svc.ResolvePreview(ctx, ResolveRequest{Actor: actor, Intent: intent})
+	if err != nil {
+		t.Fatalf("resolve campaign: %v", err)
+	}
+	if res.ResolutionDecision != DecisionContinued || len(res.Matches) != 1 || res.Matches[0].Kind != MatchExternalCampaign {
+		t.Fatalf("campaign resolve should continue via campaign match, got %+v", res)
+	}
+	if res.Matches[0].ProjectID != projectID {
+		t.Fatalf("campaign project = %s, want %s", res.Matches[0].ProjectID, projectID)
+	}
+
+	// Inventory snapshot returns the seeded project.
+	snap, err := store.InventorySnapshot(ctx, wsID)
+	if err != nil {
+		t.Fatalf("inventory snapshot: %v", err)
+	}
+	found := false
+	for _, p := range snap.Projects {
+		if p.ID == projectID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("inventory snapshot missing seeded project, got %+v", snap.Projects)
+	}
+
+	t.Logf("PG campaign+inventory PASS: campaign %q -> project %s", intent.ExternalCampaignRef, projectID)
+}
