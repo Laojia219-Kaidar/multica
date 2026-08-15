@@ -1125,6 +1125,29 @@ export interface ClientRuntimeSnapshot {
   offline_count?: number;
 }
 
+// Cockpit federation — one section per aggregated 1421 read-only snapshot.
+// summary payloads stay raw (cockpit-owned schema, versioned upstream).
+export interface CockpitProjectionSection {
+  ok: boolean;
+  generated_at?: string;
+  version?: string;
+  project_id?: string;
+  summary?: Record<string, unknown>;
+  error?: string;
+}
+
+export interface CockpitProjection {
+  fetched_at: string;
+  cockpit_url: string;
+  ok: boolean;
+  sections: {
+    health_surface?: CockpitProjectionSection;
+    runtime_topology?: CockpitProjectionSection;
+    agent_universe?: CockpitProjectionSection;
+    world_entry_snapshot?: CockpitProjectionSection;
+  };
+}
+
 export interface ClientUsageRequest {
   install_id: string;
   runtime?: ClientRuntimeSnapshot;
@@ -2018,6 +2041,11 @@ export class ApiClient {
 
   getCompanyBases(): Promise<{ id: string; code: string; name: string; device: string; machine_title: string; agents: number }[]> {
     return this.fetch("/api/bases/company");
+  }
+
+  // Cockpit federation — read-only projection of the DGX 1421 owner cockpit.
+  getCockpitProjection(): Promise<CockpitProjection> {
+    return this.fetch("/api/bases/cockpit-projection");
   }
 
   listBases(): Promise<

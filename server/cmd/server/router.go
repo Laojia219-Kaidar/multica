@@ -1520,6 +1520,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			r.Get("/api/bases", h.ListBases)
 			r.Get("/api/bases/company", h.GetCompanyBases)
 			r.Post("/api/bases/operational-mode", h.SetBaseOperationalMode)
+			// Cockpit federation — read-only projection of the DGX 1421 owner cockpit
+			r.Get("/api/bases/cockpit-projection", h.GetCockpitProjection)
 			r.Get("/api/work-wall/snapshot", h.GetWorkWallSnapshot)
 			r.Get("/api/work-wall/stream", h.GetWorkWallStream)
 			// Terminal presence (read-only projection of live host panes)

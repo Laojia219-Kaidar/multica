@@ -6,6 +6,7 @@ import { ChevronRight, Database, Monitor, Network, Server, Wrench } from "lucide
 import { toast } from "sonner";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { api } from "@multica/core/api";
+import type { CockpitProjection } from "@multica/core/api";
 import { runtimeListOptions } from "@multica/core/runtimes/queries";
 import { agentListOptions } from "@multica/core/workspace/queries";
 import type { Agent } from "@multica/core/types";
@@ -37,6 +38,68 @@ function secureProfile(name: string): string | null {
   return base.slice(SECURE_PREFIX.length);
 }
 
+/** 驾驶舱投影行：一段 1421 只读快照的要点摘要。 */
+function CockpitSectionRow({
+  label,
+  section,
+  picks,
+}: {
+  label: string;
+  section: CockpitProjection["sections"]["health_surface"] | undefined;
+  picks: string[];
+}) {
+  const healthy = section?.ok;
+  return (
+    <div className="flex items-start gap-2 text-xs">
+      <span className={"mt-0.5 inline-block size-1.5 shrink-0 rounded-full " + (healthy ? "bg-emerald-500" : "bg-red-400")} />
+      <div className="min-w-0 flex-1">
+        <span className="text-muted-foreground">{label}</span>
+        {section?.summary ? (
+          <span className="ml-1 font-medium">
+            {picks
+              .filter((k) => section.summary?.[k] !== undefined && section.summary?.[k] !== null)
+              .map((k) => `${k === "total_agents" ? "agents" : k.replace(/_/g, " ")}: ${String(section.summary?.[k])}`)
+              .join(" · ")}
+          </span>
+        ) : section?.error ? (
+          <span className="ml-1 text-red-400" title={section.error}>不可达</span>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+/** 底座基地卡片专属：1421 驾驶舱只读投影区块。 */
+function CockpitProjectionBlock({ cockpit }: { cockpit?: CockpitProjection }) {
+  const s = cockpit?.sections;
+  const universe = s?.agent_universe?.summary as Record<string, unknown> | undefined;
+  return (
+    <div className="mt-2 rounded-md border bg-surface-muted/50 p-2.5">
+      <div className="mb-1.5 flex items-center justify-between">
+        <span className="text-xs font-semibold">1421 驾驶舱投影（只读）</span>
+        <span className="text-[10px] text-muted-foreground">
+          {cockpit?.fetched_at ? new Date(cockpit.fetched_at).toLocaleTimeString("zh-CN", { hour12: false }) : "—"}
+        </span>
+      </div>
+      <div className="space-y-1">
+        <CockpitSectionRow label="健康面" section={s?.health_surface} picks={[]} />
+        <CockpitSectionRow label="运行拓扑" section={s?.runtime_topology} picks={["services", "exposed_routes", "session_stores"]} />
+        <CockpitSectionRow
+          label="员工宇宙"
+          section={s?.agent_universe}
+          picks={["total_agents", "dispatch_enabled", "hermes_port_ready"]}
+        />
+        <CockpitSectionRow label="世界入口" section={s?.world_entry_snapshot} picks={["current_truth_nodes", "runtime_routes", "issues"]} />
+      </div>
+      {universe && (universe.virtual_worker_ready !== undefined || universe.holdout !== undefined) ? (
+        <p className="mt-1.5 text-[10px] text-muted-foreground">
+          virtual worker ready: {String(universe.virtual_worker_ready ?? 0)} · holdout: {String(universe.holdout ?? 0)}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
 export function BasesPage() {
   const wsId = useWorkspaceId();
   const { t } = useT("bases");
@@ -44,6 +107,15 @@ export function BasesPage() {
   const { data: runtimes = [], isLoading } = useQuery(runtimeListOptions(wsId));
   const { data: agents = [] } = useQuery(agentListOptions(wsId));
   const [expanded, setExpanded] = useState<string | null>(null);
+
+  // 驾驶舱联邦（只读投影）：底座基地卡片展开时拉取 DGX 1421 owner cockpit
+  // 聚合快照；后端 30s 缓存，这里 60s 轮询 + 窗口聚焦刷新已足够。
+  const { data: cockpit } = useQuery<CockpitProjection>({
+    queryKey: ["bases", "cockpit-projection"],
+    queryFn: () => api.getCockpitProjection(),
+    refetchInterval: 60_000,
+    retry: 1,
+  });
 
   const migrateMutation = useMutation({
     mutationFn: ({ agentId, runtimeId }: { agentId: string; runtimeId: string }) =>
@@ -248,6 +320,7 @@ export function BasesPage() {
                         ))}
                       </ul>
                     )}
+                    {baseName === "底座基地" ? <CockpitProjectionBlock cockpit={cockpit} /> : null}
                   </div>
                 ) : null}
               </div>
