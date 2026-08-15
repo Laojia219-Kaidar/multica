@@ -280,7 +280,7 @@ reviews:
 journals:
   - {id: JOURNAL-P0, work_order_id: WO-00, milestone_id: correction-review, marker: "<!-- hivecosm-diary:WO-00:correction-review -->", appended_at: "2026-08-15T07:31:16Z", reread: true, verified: true, evidence_ref: "日记/00-日记/2026-08-15 星期六 深圳 Coco工作日记.md"}
   - {id: JOURNAL-P0-ACCEPTANCE, work_order_id: WO-00, milestone_id: coordinator-acceptance, marker: "<!-- hivecosm-diary:WO-00:coordinator-acceptance -->", appended_at: "2026-08-15T07:39:23Z", reread: true, verified: true, evidence_ref: "日记/00-日记/2026-08-15 星期六 深圳 Coco工作日记.md"}
-  - {id: JOURNAL-P1, work_order_id: WO-10, milestone_id: phase-close, marker: "<!-- hivecosm-diary:WO-10:phase-close -->", appended_at: null, reread: false, verified: false, evidence_ref: null}
+  - {id: JOURNAL-P1, work_order_id: WO-10, milestone_id: phase-close, marker: "<!-- hivecosm-diary:WO-10:phase-close -->", appended_at: "2026-08-15T09:44:37Z", reread: true, verified: true, evidence_ref: "日记/00-日记/2026-08-15 星期六 深圳 Coco工作日记.md"}
   - {id: JOURNAL-P2, work_order_id: WO-40, milestone_id: phase-close, marker: "<!-- hivecosm-diary:WO-40:phase-close -->", appended_at: null, reread: false, verified: false, evidence_ref: null}
   - {id: JOURNAL-P3, work_order_id: WO-60, milestone_id: phase-close, marker: "<!-- hivecosm-diary:WO-60:phase-close -->", appended_at: null, reread: false, verified: false, evidence_ref: null}
 projections:
@@ -315,6 +315,6 @@ resume_package:
   waiting_nodes: []
   evidence_index: [EV-WO00-AUDIT, EV-WO00-CORRECTION, EV-WO00-ACCEPTANCE, EV-CONTRACT]
   latest_review_ref: REVIEW-WO10R
-  latest_journal_ref: JOURNAL-P0-ACCEPTANCE
+  latest_journal_ref: JOURNAL-P1
   dirty_boundaries: [apps/web/next-env.d.ts, packages/views/workflow/workflow-designer.tsx, packages/views/workflow/workflow-designer.test.tsx, packages/core/workflow/content-node-contract.ts, packages/core/workflow/content-node-contract.test.ts, packages/core/workflow/index.ts, packages/core/api/workflow.ts, server/internal/workflow/types.go, server/internal/workflow/wechat_content_contract_decode.go, server/internal/workflow/wechat_content_contract_test.go, docs/goals/HIVECREW-WECHAT-REAL-OPERATIONS-V1]
   next_action: Run WO-15 (candidate storage isolation proof, read-only), WO-20 (operations UI), WO-30 (Task/Run execution bridge), and WO-40A (artifact/outcome candidate code, promotion held) in parallel. WO-40B and WO-50 stay held until P0-GATE-04 is proven by WO-15. JOIN-1 unified verification follows; then WO-50 canary and WO-60 closure.
