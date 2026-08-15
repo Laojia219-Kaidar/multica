@@ -19,10 +19,22 @@ type ProjectLead struct {
 	LeadID    string `json:"lead_id,omitempty"`
 }
 
-// StewardSnapshot extends InventorySnapshot with project lead ownership.
+// HeartbeatRef is one terminal/presence heartbeat observation. Stale is
+// computed by the store (now - last_heartbeat_at > StaleHeartbeatAfter) so the
+// pure ComputeSteward stays deterministic.
+type HeartbeatRef struct {
+	Host            string `json:"host"`
+	SessionName     string `json:"session_name"`
+	LastHeartbeatAt string `json:"last_heartbeat_at"`
+	Stale           bool   `json:"stale"`
+}
+
+// StewardSnapshot extends InventorySnapshot with project lead ownership and
+// presence heartbeats.
 type StewardSnapshot struct {
 	InventorySnapshot
 	ProjectLeads []ProjectLead `json:"project_leads"`
+	Heartbeats   []HeartbeatRef `json:"heartbeats"`
 }
 
 // StewardDiagnosticKind is the closed set of portfolio/steward findings.
@@ -131,6 +143,18 @@ func ComputeSteward(workspaceID string, snap *StewardSnapshot) []StewardDiagnost
 			out = append(out, StewardDiagnostic{
 				WorkspaceID: workspaceID, Kind: StewardOrphan, RefKind: "project",
 				RefID: p.ID, Title: p.Title, Detail: "project has no active Goal/work-order ownership link",
+			})
+		}
+	}
+
+	// Stale presence: a session whose last heartbeat is older than the
+	// threshold (VC-10 "心跳过期").
+	for _, h := range snap.Heartbeats {
+		if h.Stale {
+			out = append(out, StewardDiagnostic{
+				WorkspaceID: workspaceID, Kind: StewardStale, RefKind: "session",
+				RefID: h.Host + ":" + h.SessionName, Title: h.SessionName,
+				Detail: "presence heartbeat stale (last " + h.LastHeartbeatAt + ")",
 			})
 		}
 	}

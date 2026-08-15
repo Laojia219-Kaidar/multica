@@ -63,3 +63,30 @@ func TestStewardUnavailableWithoutSource(t *testing.T) {
 type storeWithoutSteward struct{ MemoryStore }
 
 func (s *storeWithoutSteward) StewardSnapshot(context.Context, string) (*StewardSnapshot, error) { return nil, ErrUnavailable }
+
+func TestStewardStaleHeartbeat(t *testing.T) {
+	store := NewMemoryStore()
+	svc := NewService(store)
+	ctx := context.Background()
+	const ws = "ws-1"
+
+	store.SeedHeartbeat(HeartbeatRef{Host: "mac-mini", SessionName: "tmux-s1", LastHeartbeatAt: "2026-08-15T00:00:00Z", Stale: true})
+	store.SeedHeartbeat(HeartbeatRef{Host: "dgx", SessionName: "tmux-s2", LastHeartbeatAt: "2026-08-16T00:00:00Z", Stale: false})
+
+	res, err := svc.StewardDiagnostics(ctx, ws)
+	if err != nil {
+		t.Fatalf("steward: %v", err)
+	}
+	stale := 0
+	for _, d := range res {
+		if d.Kind == StewardStale {
+			stale++
+			if d.RefID != "mac-mini:tmux-s1" {
+				t.Fatalf("expected stale for mac-mini:tmux-s1, got %s", d.RefID)
+			}
+		}
+	}
+	if stale != 1 {
+		t.Fatalf("expected exactly 1 stale diagnostic, got %d (%+v)", stale, res)
+	}
+}
