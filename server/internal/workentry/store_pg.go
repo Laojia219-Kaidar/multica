@@ -602,6 +602,52 @@ type inboxUpserter interface {
 	UpsertInboxItem(ctx context.Context, workspaceID string, item InboxUpsert) error
 }
 
+// RecordArtifactEvent persists a review verdict into the artifact_event ledger,
+// looking up the candidate by lineage and computing the next sequence.
+func (p *PGStore) RecordArtifactEvent(ctx context.Context, in ArtifactEventInput) error {
+	ws, err := p.uuid(in.WorkspaceID)
+	if err != nil {
+		return ErrInvalidRequest
+	}
+	lineage, err := p.uuid(in.LineageID)
+	if err != nil {
+		return ErrInvalidRequest
+	}
+	// Look up the candidate by lineage to bind the verdict to its digest/ref.
+	cands, err := p.queries.ListArtifactCandidatesByLineage(ctx, db.ListArtifactCandidatesByLineageParams{
+		WorkspaceID: ws, LineageID: lineage,
+	})
+	if err != nil {
+		return fmt.Errorf("lookup artifact candidate: %w", err)
+	}
+	if len(cands) == 0 {
+		return ErrNotFound
+	}
+	cand := cands[0]
+	var seq int32
+	if err := p.exec.QueryRow(ctx,
+		"SELECT COALESCE(MAX(sequence), 0) + 1 FROM artifact_event WHERE workspace_id = $1 AND lineage_id = $2",
+		ws, lineage).Scan(&seq); err != nil {
+		return fmt.Errorf("compute artifact event sequence: %w", err)
+	}
+	_, err = p.queries.InsertArtifactEvent(ctx, db.InsertArtifactEventParams{
+		ID:                 pgtype.UUID{Bytes: uuid.New(), Valid: true},
+		WorkspaceID:        ws,
+		LineageID:          lineage,
+		Sequence:           seq,
+		EventType:          in.EventType,
+		CandidateID:        cand.ID,
+		CandidateRevision:  1,
+		CandidateDigest:    cand.Digest,
+		CandidateObjectRef: cand.DurableObjectRef,
+		IdempotencyKey:     in.IdempotencyKey,
+	})
+	if err != nil {
+		return fmt.Errorf("insert artifact event: %w", err)
+	}
+	return nil
+}
+
 // UpsertInboxItem persists one unregistered work entry idempotently by
 // (workspace_id, path).
 func (p *PGStore) UpsertInboxItem(ctx context.Context, workspaceID string, item InboxUpsert) error {

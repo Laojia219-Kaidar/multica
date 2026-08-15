@@ -321,6 +321,30 @@ func (h *Handler) WorkEntrySync(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, res)
 }
 
+// WorkEntryReview handles POST /api/work/review (independent verdict, PASS→approved,
+// REVISE→changes_requested artifact_event). Reviewer must differ from implementer.
+func (h *Handler) WorkEntryReview(w http.ResponseWriter, r *http.Request) {
+	if !h.requireWorkEntry(w) {
+		return
+	}
+	var req workentry.ReviewRequest
+	if !decodeWorkRequest(w, r, &req) {
+		return
+	}
+	if !h.scopeWorkspace(w, r, &req.WorkspaceID) {
+		return
+	}
+	if !h.requireWorkRefTenant(w, r, req.WorkRef) {
+		return
+	}
+	res, err := h.WorkEntry.Review(r.Context(), req)
+	if err != nil {
+		writeWorkEntryError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
 // WorkEntryReconcile handles GET /api/work/reconcile (read-only diagnostic).
 func (h *Handler) WorkEntryReconcile(w http.ResponseWriter, r *http.Request) {
 	if !h.requireWorkEntry(w) {

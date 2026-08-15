@@ -1256,6 +1256,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			r.Post("/event", h.WorkEntryEvent)
 			r.Post("/handoff", h.WorkEntryHandoff)
 			r.Post("/finish", h.WorkEntryFinish)
+			r.Post("/review", h.WorkEntryReview)
 			r.Post("/sync", h.WorkEntrySync)
 			r.Get("/reconcile", h.WorkEntryReconcile)
 			r.Post("/attach", h.WorkEntryAttach)

@@ -369,3 +369,69 @@ func TestPGStoreReconcilePopulatesInbox(t *testing.T) {
 	}
 	t.Logf("reconcile populated inbox with %d unregistered worktrees (idempotent)", len(items))
 }
+
+// TestPGStoreReviewRecordsVerdict proves the full candidate->review chain:
+// register -> finish (artifact_candidate) -> review PASS (artifact_event approved).
+func TestPGStoreReviewRecordsVerdict(t *testing.T) {
+	url := os.Getenv("DATABASE_URL")
+	if url == "" {
+		t.Skip("DATABASE_URL not set")
+	}
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, url)
+	if err != nil {
+		t.Fatalf("pgxpool: %v", err)
+	}
+	defer pool.Close()
+
+	var wsID string
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO workspace (name, slug) VALUES ('workentry-review', $1) RETURNING id`,
+		fmt.Sprintf("workentry-review-%d", time.Now().UnixNano())).Scan(&wsID); err != nil {
+		t.Fatalf("create workspace: %v", err)
+	}
+	store := NewPGStore(db.New(pool), pool)
+	svc := NewService(store)
+
+	actor := WorkActorIdentityV1{ActorType: ActorExternalAgent, ActorID: "EXT-rev-1", CarrierID: "prime",
+		SessionID: "rev-s1", WorkspaceID: wsID, ObservedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	intent := WorkIntentV1{OwnerIntent: "review", GoalRef: "GOAL-REV", Objective: "review chain",
+		ExpectedHumanResult: "verdict", Repo: "/tmp/rev", BaselineRevision: "rev", BranchOrWorktree: "main",
+		ReadScope: []string{"/tmp"}, WriteScope: []string{"/tmp"}, ExpectedOutcomes: []string{"a"},
+		CandidateFormalBoundary: BoundaryCandidate}
+
+	r1, err := svc.Register(ctx, RegisterRequest{ResolveRequest: ResolveRequest{Actor: actor, Intent: intent}, ConfirmCreate: true})
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	if _, err := svc.Finish(ctx, WorkCompletionV1{
+		WorkRef: r1.WorkRef,
+		CompletionCandidate: CompletionCandidate{ArtifactRef: "artifact://c/1", Digest: "sha256:abcd", Revision: "rev"},
+		Review:              CompletionReview{ReviewerActorID: "REV-1"},
+		ProjectLifecycleConsequence: LifecycleContinue,
+	}); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+
+	// Independent review: reviewer != implementer actor.
+	res, err := svc.Review(ctx, ReviewRequest{
+		WorkRef: r1.WorkRef, WorkspaceID: wsID,
+		ReviewerActorID: "REV-1", Decision: ReviewPass,
+	})
+	if err != nil {
+		t.Fatalf("review: %v", err)
+	}
+	if !res.Passed {
+		t.Fatalf("PASS review should set Passed=true, got %+v", res)
+	}
+
+	var eventType string
+	if err := pool.QueryRow(ctx,
+		`SELECT event_type FROM artifact_event WHERE workspace_id=$1 ORDER BY sequence DESC LIMIT 1`, wsID).Scan(&eventType); err != nil {
+		t.Fatalf("read artifact event: %v", err)
+	}
+	if eventType != "approved" {
+		t.Fatalf("PASS review should record 'approved' artifact_event, got %q", eventType)
+	}
+	t.Logf("review chain PASS: register -> finish -> review PASS -> artifact_event approved")
+}
