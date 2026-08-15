@@ -54,4 +54,4 @@
 
 ## Commit
 
-见本文件提交后 `git log -1`（WO-10R 原子 commit，stage 仅上述命名文件 + CHECKLIST.yaml + 本证据文件）。
+WO-10R 原子 commit：`eb65d94c6`（`feat(workflow): freeze WeChat content node contract (WO-10R)`，stage 仅上述命名文件 + CHECKLIST.yaml + 本证据文件；三个接班保护文件与 DRAFT 目录未 stage）。
