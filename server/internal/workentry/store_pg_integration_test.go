@@ -325,3 +325,47 @@ func TestPGStoreFinishCreatesArtifactCandidate(t *testing.T) {
 	}
 	t.Logf("finish -> artifact_candidate bridge PASS (1 candidate)")
 }
+
+// TestPGStoreReconcilePopulatesInbox proves the discovery source persists
+// unregistered worktrees into the inbox (VC-05 discovery -> persistence).
+func TestPGStoreReconcilePopulatesInbox(t *testing.T) {
+	url := os.Getenv("DATABASE_URL")
+	if url == "" {
+		t.Skip("DATABASE_URL not set")
+	}
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, url)
+	if err != nil {
+		t.Fatalf("pgxpool: %v", err)
+	}
+	defer pool.Close()
+
+	var wsID string
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO workspace (name, slug) VALUES ('workentry-inbox', $1) RETURNING id`,
+		fmt.Sprintf("workentry-inbox-%d", time.Now().UnixNano())).Scan(&wsID); err != nil {
+		t.Fatalf("create workspace: %v", err)
+	}
+	store := NewPGStore(db.New(pool), pool)
+	svc := NewService(store)
+
+	items, err := svc.Reconcile(ctx, wsID)
+	if err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	// The canonical repo has many worktrees; the scan + persist + list must
+	// produce a non-trivial inbox (idempotent by path).
+	if len(items) == 0 {
+		t.Fatalf("reconcile should populate the inbox with unregistered worktrees")
+	}
+
+	// idempotency: a second reconcile must not duplicate rows.
+	items2, err := svc.Reconcile(ctx, wsID)
+	if err != nil {
+		t.Fatalf("reconcile 2: %v", err)
+	}
+	if len(items2) != len(items) {
+		t.Fatalf("reconcile must be idempotent: %d -> %d", len(items), len(items2))
+	}
+	t.Logf("reconcile populated inbox with %d unregistered worktrees (idempotent)", len(items))
+}

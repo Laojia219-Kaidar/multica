@@ -6,6 +6,10 @@ import (
 	"strings"
 )
 
+// DefaultReconcileRepoPath is the canonical HiveCrew repository whose
+// worktrees the reconcile source scans by default.
+const DefaultReconcileRepoPath = "/Volumes/HiveData/hivecosm/HQ-50-代码仓库/01-源码下载/multica"
+
 // ObservedWorktree is one worktree discovered by the reconcile source. It is
 // the raw filesystem/git observation — the "unregistered work" signal the
 // Portfolio Reconciler turns into inbox items (VC-05).

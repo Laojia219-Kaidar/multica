@@ -350,6 +350,17 @@ func (m *MemoryStore) SeedWorkOrderLink(l ExternalWorkOrderLink) {
 	m.links[memKey(l.WorkspaceID, l.WorkOrderRef)] = &cp
 }
 
+func (m *MemoryStore) UpsertInboxItem(_ context.Context, workspaceID string, item InboxUpsert) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	k := memKey(workspaceID, "inbox-path", item.Path)
+	if _, ok := m.inbox[k]; ok {
+		return nil
+	}
+	m.inbox[k] = InboxItem{ID: newID(), WorkspaceID: workspaceID, WorkRef: item.WorkRef}
+	return nil
+}
+
 func (m *MemoryStore) SeedInbox(it InboxItem) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

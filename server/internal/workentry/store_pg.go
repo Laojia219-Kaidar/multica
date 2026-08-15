@@ -585,6 +585,39 @@ func (p *PGStore) saveDocument(ctx context.Context, workspaceID, workRef, kind s
 	return nil
 }
 
+// InboxUpsert is one discovered-but-unregistered work entry to persist into
+// the inbox (VC-05 discovery source). WorkRef is a synthetic identifier
+// ("unregistered:<path>") until the entry is attached to a real project/issue.
+type InboxUpsert struct {
+	WorkRef string
+	Path    string
+	Branch  string
+	Head    string
+	Reason  string
+}
+
+// inboxUpserter is the optional capability the reconcile path uses to persist
+// discovered unregistered work into the inbox.
+type inboxUpserter interface {
+	UpsertInboxItem(ctx context.Context, workspaceID string, item InboxUpsert) error
+}
+
+// UpsertInboxItem persists one unregistered work entry idempotently by
+// (workspace_id, path).
+func (p *PGStore) UpsertInboxItem(ctx context.Context, workspaceID string, item InboxUpsert) error {
+	ws, err := p.uuid(workspaceID)
+	if err != nil {
+		return ErrInvalidRequest
+	}
+	_, err = p.exec.Exec(ctx,
+		"INSERT INTO work_inbox (workspace_id, work_ref, path, branch, head, reason) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (workspace_id, path) DO NOTHING",
+		ws, item.WorkRef, nullString(item.Path), nullString(item.Branch), nullString(item.Head), nullString(item.Reason))
+	if err != nil {
+		return fmt.Errorf("upsert work inbox: %w", err)
+	}
+	return nil
+}
+
 func (p *PGStore) ListInbox(ctx context.Context, workspaceID string) ([]InboxItem, error) {
 	ws, err := p.uuid(workspaceID)
 	if err != nil {

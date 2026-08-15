@@ -156,13 +156,13 @@ func TestCallMCPTool(t *testing.T) {
 		t.Fatalf("empty sync should be 0 synced")
 	}
 
-	// doctor -> empty inbox
+	// doctor -> reconcile discovers + persists real unregistered worktrees.
 	res, err = svc.CallMCPTool(ctx, "work.doctor", map[string]any{"workspace_id": "ws-canary"})
 	if err != nil {
 		t.Fatalf("doctor: %v", err)
 	}
-	if len(res.([]InboxItem)) != 0 {
-		t.Fatalf("doctor inbox should be empty")
+	if len(res.([]InboxItem)) == 0 {
+		t.Fatalf("doctor should discover unregistered worktrees")
 	}
 
 	// status -> found

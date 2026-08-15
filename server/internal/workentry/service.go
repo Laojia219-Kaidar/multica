@@ -523,6 +523,22 @@ func (s *Service) Reconcile(ctx context.Context, workspaceID string) ([]InboxIte
 	if s == nil || s.store == nil {
 		return nil, ErrUnavailable
 	}
+	// Discovery source: scan the canonical repo worktrees and persist the
+	// unregistered ones into the inbox (idempotent by path). The scan is
+	// best-effort — a missing repo or git failure must not break the read.
+	if observed, err := ScanGitWorktrees(DefaultReconcileRepoPath); err == nil {
+		if up, ok := s.store.(inboxUpserter); ok {
+			for _, w := range ReconcileUnregistered(observed, nil) {
+				_ = up.UpsertInboxItem(ctx, workspaceID, InboxUpsert{
+					WorkRef: "unregistered:" + w.Path,
+					Path:    w.Path,
+					Branch:  w.Branch,
+					Head:    w.HEAD,
+					Reason:  w.Reason,
+				})
+			}
+		}
+	}
 	return s.store.ListInbox(ctx, workspaceID)
 }
 
