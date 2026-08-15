@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ChevronRight, Monitor, Network, Server, Wrench } from "lucide-react";
+import { ChevronRight, Database, Monitor, Network, Server, Wrench } from "lucide-react";
 import { toast } from "sonner";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { api } from "@multica/core/api";
@@ -24,6 +24,8 @@ const KNOWN_BASES: { prefix: string; name: string; role: string; icon: typeof Mo
   { prefix: "HiveCrew MBP M4", name: "产品基地", role: "产品 / UIUX / 前端 / 客户端 / 消息批处理", icon: Monitor },
   { prefix: "HiveCrew MBA M4", name: "质量基地", role: "测试 / 独立审查 / 风险 / 返修集成", icon: Wrench },
   { prefix: "HiveCrew MB M2", name: "研究基地", role: "调研 / 知识工程 / 研究分析", icon: Monitor },
+  { prefix: "HiveCosm DGX Spark", name: "底座基地", role: "开发母库 / 本地 27B 推理 / 敏感业务（合同·财务）", icon: Database },
+  { prefix: "HiveCosm NAS HiveData", name: "存储基地", role: "归档 / 备份 / 数据集 / 冷存储", icon: Database },
 ];
 
 const SECURE_PREFIX = "HiveCosm Secure ";
