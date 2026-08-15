@@ -546,6 +546,24 @@ func (h *Handler) WorkEntryParticipants(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, res)
 }
 
+// WorkEntrySteward handles GET /api/work/steward (VC-10 Project Steward
+// read-only diagnostics: no_owner / no_next_action / orphan / duplicate /
+// stale / orphan_candidate / missing_review).
+func (h *Handler) WorkEntrySteward(w http.ResponseWriter, r *http.Request) {
+	if !h.requireWorkEntry(w) {
+		return
+	}
+	res, err := h.WorkEntry.StewardDiagnostics(r.Context(), h.resolveWorkspaceID(r))
+	if err != nil {
+		writeWorkEntryError(w, err)
+		return
+	}
+	if res == nil {
+		res = []workentry.StewardDiagnostic{}
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
 // WorkEntryAttach handles POST /api/work/attach.
 func (h *Handler) WorkEntryAttach(w http.ResponseWriter, r *http.Request) {
 	if !h.requireWorkEntry(w) {

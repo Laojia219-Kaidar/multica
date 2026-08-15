@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -178,4 +179,104 @@ func jsonStringField(raw []byte, key string) string {
 	}
 	s, _ := m[key].(string)
 	return s
+}
+
+
+// StewardSnapshot implements stewardSource (read-only) over the existing
+// project / issue / external_work_order_link / project_resource tables (via
+// InventorySnapshot) plus project.lead_* ownership, terminal_presence
+// heartbeats, and artifact_candidate + artifact_event lifecycle. Zero
+// migration; never writes.
+func (p *PGStore) StewardSnapshot(ctx context.Context, workspaceID string) (*StewardSnapshot, error) {
+	inv, err := p.InventorySnapshot(ctx, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	ws, err := p.uuid(workspaceID)
+	if err != nil {
+		return nil, ErrInvalidRequest
+	}
+	snap := &StewardSnapshot{
+		InventorySnapshot: *inv,
+		ProjectLeads:     []ProjectLead{},
+		Heartbeats:       []HeartbeatRef{},
+		Candidates:       []CandidateRef{},
+	}
+
+	lrows, err := p.exec.Query(ctx,
+		"SELECT id, COALESCE(lead_type, ''), COALESCE(lead_id::text, '') FROM project WHERE workspace_id = $1 AND lead_id IS NOT NULL",
+		ws)
+	if err != nil {
+		return nil, fmt.Errorf("list project leads: %w", err)
+	}
+	defer lrows.Close()
+	for lrows.Next() {
+		var id pgtype.UUID
+		var leadType, leadID string
+		if err := lrows.Scan(&id, &leadType, &leadID); err != nil {
+			return nil, err
+		}
+		snap.ProjectLeads = append(snap.ProjectLeads, ProjectLead{
+			ProjectID: util.UUIDToString(id), LeadType: leadType, LeadID: leadID,
+		})
+	}
+	if lrows.Err() != nil {
+		return nil, lrows.Err()
+	}
+
+	hrows, err := p.exec.Query(ctx,
+		"SELECT host, session_name, heartbeat_at FROM terminal_presence WHERE workspace_id = $1 ORDER BY heartbeat_at DESC",
+		ws)
+	if err != nil {
+		return nil, fmt.Errorf("list presence heartbeats: %w", err)
+	}
+	defer hrows.Close()
+	for hrows.Next() {
+		var host, session string
+		var at time.Time
+		if err := hrows.Scan(&host, &session, &at); err != nil {
+			return nil, err
+		}
+		snap.Heartbeats = append(snap.Heartbeats, HeartbeatRef{
+			Host:            host,
+			SessionName:     session,
+			LastHeartbeatAt: at.UTC().Format(time.RFC3339),
+			Stale:           time.Since(at) > StaleHeartbeatAfter,
+		})
+	}
+	if hrows.Err() != nil {
+		return nil, hrows.Err()
+	}
+
+	crows, err := p.exec.Query(ctx,
+		"SELECT c.id, c.lineage_id, COALESCE(e.event_type, '') FROM artifact_candidate c LEFT JOIN artifact_event e ON e.candidate_id = c.id WHERE c.workspace_id = $1 ORDER BY c.created_at, e.sequence",
+		ws)
+	if err != nil {
+		return nil, fmt.Errorf("list artifact candidates: %w", err)
+	}
+	defer crows.Close()
+	candIdx := map[string]int{}
+	for crows.Next() {
+		var cid, lid pgtype.UUID
+		var evt string
+		if err := crows.Scan(&cid, &lid, &evt); err != nil {
+			return nil, err
+		}
+		cidStr := util.UUIDToString(cid)
+		idx, ok := candIdx[cidStr]
+		if !ok {
+			snap.Candidates = append(snap.Candidates, CandidateRef{
+				CandidateID: cidStr, LineageID: util.UUIDToString(lid), Events: []string{},
+			})
+			idx = len(snap.Candidates) - 1
+			candIdx[cidStr] = idx
+		}
+		if evt != "" {
+			snap.Candidates[idx].Events = append(snap.Candidates[idx].Events, evt)
+		}
+	}
+	if crows.Err() != nil {
+		return nil, crows.Err()
+	}
+	return snap, nil
 }

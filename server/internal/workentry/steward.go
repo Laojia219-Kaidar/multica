@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Project Steward read-only diagnostics (VC-10): no-owner / no-next-action /
@@ -35,6 +36,12 @@ type CandidateRef struct {
 	LineageID   string   `json:"lineage_id"`
 	Events      []string `json:"events"`
 }
+
+// StaleHeartbeatAfter is the diagnostic staleness threshold for presence
+// heartbeats: a session whose last heartbeat is older than this is reported as
+// stale (VC-10 "心跳过期"). The store computes Stale so ComputeSteward stays
+// deterministic over a snapshot.
+const StaleHeartbeatAfter = 24 * time.Hour
 
 // StewardSnapshot extends InventorySnapshot with project lead ownership,
 // presence heartbeats, and artifact candidates.
