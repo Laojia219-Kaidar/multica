@@ -8,7 +8,11 @@
 package workflow
 
 import (
+	"errors"
 	"fmt"
+	"regexp"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -315,4 +319,395 @@ type AdvanceEvidence struct {
 	RuntimeID       string
 	DecisionOutcome string // required for a graph decision stage
 	Notes           []string
+}
+
+// ---------------------------------------------------------------------------
+// WeChat content production node contract (HIVECREW-WECHAT-REAL-OPERATIONS-V1
+// / WO-10R, contract-freeze). Pure, side-effect-free mirror of the TypeScript
+// contract (packages/core/workflow/content-node-contract.ts and
+// packages/core/api/workflow.ts). It creates NO Task/Run/Artifact/Outcome
+// authority: the existing Task/Run + CompanyOps Artifact/Outcome authorities
+// remain the only execution and promotion path. Caller-supplied execution
+// proof is never accepted as authority here.
+// ---------------------------------------------------------------------------
+
+const (
+	// WechatContentContractSchemaVersion is the frozen node-contract version.
+	WechatContentContractSchemaVersion = "hivecrew.wechat-content-node-contract.v1"
+	// WechatContentProductionRequestSchemaVersion is the frozen request DTO version.
+	WechatContentProductionRequestSchemaVersion = "hivecrew.wechat-content-production-request.v1"
+	// WechatContentChannel is the single channel this template owns.
+	WechatContentChannel = "wechat"
+	// WechatContentHandoffNoteMaxBytes mirrors the existing CompanyOps
+	// assignment handler cap (32 << 10 bytes of UTF-8).
+	WechatContentHandoffNoteMaxBytes = 32 << 10
+)
+
+// WechatContentNodeKey is one of the four immutable content-production nodes.
+type WechatContentNodeKey string
+
+const (
+	WechatContentNodeResearchMaterialPackage  WechatContentNodeKey = "research-material-package"
+	WechatContentNodeArticleDraft             WechatContentNodeKey = "article-draft"
+	WechatContentNodeEditorialReviewReport    WechatContentNodeKey = "editorial-review-report"
+	WechatContentNodeWechatPublicationPackage WechatContentNodeKey = "wechat-publication-package"
+)
+
+// wechatContentNodeOrder is the frozen prerequisite order.
+var wechatContentNodeOrder = []WechatContentNodeKey{
+	WechatContentNodeResearchMaterialPackage,
+	WechatContentNodeArticleDraft,
+	WechatContentNodeEditorialReviewReport,
+	WechatContentNodeWechatPublicationPackage,
+}
+
+// Frozen lineage authority metadata. Each lineage member's authority is a
+// contract constant, never a caller-chosen string: it names the EXISTING
+// authority that owns that lineage member.
+const (
+	WechatContentLineageAuthorityIssue      = "existing Issue authority (issue table / server/migrations/001_init.up.sql)"
+	WechatContentLineageAuthorityAssignment = "CompanyOps assignment (Dispatch -> agent_task_queue)"
+	WechatContentLineageAuthorityTask       = "agent_task_queue canonical Task"
+	WechatContentLineageAuthorityRun        = "agent_runtime canonical Run"
+	WechatContentLineageAuthorityCandidate  = "CompanyOps ArtifactCandidate (MaterializeCompletedTask)"
+	WechatContentLineageAuthorityOutcome    = "CompanyOps Outcome (promotion + readback)"
+)
+
+var (
+	wechatWorkOrderSourceRefPattern = regexp.MustCompile(
+		`^hive://hivecosm/delivery/project/([A-Za-z0-9][A-Za-z0-9@._:-]{0,191})/work-order/[A-Za-z0-9][A-Za-z0-9@._:-]{0,191}$`,
+	)
+	wechatUUIDPattern         = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+	wechatSHA256DigestPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+	// wechatRFC3339Pattern mirrors the TS ISO_DATETIME_PATTERN exactly so all
+	// three layers accept and reject the same deadline strings.
+	wechatRFC3339Pattern = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?(Z|[+-]\d{2}:\d{2})$`)
+	// wechatRFC3339OffsetPattern captures the numeric offset so its range can
+	// be validated explicitly: time.Parse(RFC3339Nano) checks the shape but
+	// does NOT range-check the offset hour/minute, so without this Go would
+	// accept +24:00 / +08:60 while the TS and Zod layers reject them.
+	wechatRFC3339OffsetPattern = regexp.MustCompile(`[+-](\d{2}):(\d{2})$`)
+)
+
+// WechatContentAuthorityContext is the existing CompanyOps authority-context
+// reference set. It identifies; it does not authorize (P0-GATE-02).
+type WechatContentAuthorityContext struct {
+	WorkOrderSourceRef string `json:"work_order_source_ref"`
+	EmployeeID         string `json:"employee_id"`
+	IdentityBindingID  string `json:"identity_binding_id"`
+	AgentID            string `json:"agent_id"`
+	SessionID          string `json:"session_id"`
+}
+
+// WechatContentDefinitionBinding binds the request to one immutable published
+// workflow definition version.
+type WechatContentDefinitionBinding struct {
+	DefinitionID string `json:"definition_id"`
+	Version      int    `json:"version"`
+	Digest       string `json:"digest"`
+}
+
+// WechatContentBrief is the content production brief. HandoffNote is the
+// exact work description delivered to the executing Agent; it matches the
+// existing CompanyOps assignment Handoff semantics (trimmed non-empty, max
+// 32 KiB UTF-8). The server computes input_digest from it; callers never
+// supply or choose an authority digest.
+type WechatContentBrief struct {
+	Subject        string   `json:"subject"`
+	Objective      string   `json:"objective"`
+	Audience       string   `json:"audience"`
+	SourceRefs     []string `json:"source_refs"`
+	Tone           string   `json:"tone"`
+	Deadline       string   `json:"deadline"`
+	ApprovalPolicy string   `json:"approval_policy"`
+	HandoffNote    string   `json:"handoff_note"`
+}
+
+// WechatContentProductionRequest references project/work-order sources, one
+// frozen published definition version, and a content brief. It carries no
+// execution or artifact proof.
+type WechatContentProductionRequest struct {
+	SchemaVersion  string                         `json:"schema_version"`
+	Channel        string                         `json:"channel"`
+	ProjectID      string                         `json:"project_id"`
+	Authority      WechatContentAuthorityContext  `json:"authority"`
+	Definition     WechatContentDefinitionBinding `json:"definition"`
+	Brief          WechatContentBrief             `json:"brief"`
+	IdempotencyKey string                         `json:"idempotency_key"`
+}
+
+// WechatContentLineageMember is one member of a node's durable lineage.
+type WechatContentLineageMember struct {
+	Required  bool   `json:"required"`
+	Authority string `json:"authority"`
+}
+
+// WechatContentNodeLineage is the six-member Issue/Assignment/Task/Run/
+// Candidate/Outcome lineage shape every content node owns.
+type WechatContentNodeLineage struct {
+	Issue      WechatContentLineageMember `json:"issue"`
+	Assignment WechatContentLineageMember `json:"assignment"`
+	Task       WechatContentLineageMember `json:"task"`
+	Run        WechatContentLineageMember `json:"run"`
+	Candidate  WechatContentLineageMember `json:"candidate"`
+	Outcome    WechatContentLineageMember `json:"outcome"`
+}
+
+// frozenWechatContentNodeLineage returns the frozen six-member lineage with
+// the contract-constant authorities.
+func frozenWechatContentNodeLineage() WechatContentNodeLineage {
+	return WechatContentNodeLineage{
+		Issue:      WechatContentLineageMember{Required: true, Authority: WechatContentLineageAuthorityIssue},
+		Assignment: WechatContentLineageMember{Required: true, Authority: WechatContentLineageAuthorityAssignment},
+		Task:       WechatContentLineageMember{Required: true, Authority: WechatContentLineageAuthorityTask},
+		Run:        WechatContentLineageMember{Required: true, Authority: WechatContentLineageAuthorityRun},
+		Candidate:  WechatContentLineageMember{Required: true, Authority: WechatContentLineageAuthorityCandidate},
+		Outcome:    WechatContentLineageMember{Required: true, Authority: WechatContentLineageAuthorityOutcome},
+	}
+}
+
+// WechatContentNodeContract is one frozen, immutable node contract.
+// RequiredUpstream is a pointer so the first node's wire value is JSON null
+// (nil), never an empty string masquerading as wire parity with the TS
+// `required_upstream: null`. Lineage is optional on a caller-submitted plan
+// entry, but when present it must equal the frozen contract constants.
+type WechatContentNodeContract struct {
+	Key              WechatContentNodeKey      `json:"key"`
+	Order            int                       `json:"order"`
+	RequiredUpstream *WechatContentNodeKey     `json:"required_upstream"`
+	ArtifactKind     string                    `json:"artifact_kind"`
+	ReviewRule       string                    `json:"review_rule"`
+	Lineage          *WechatContentNodeLineage `json:"lineage,omitempty"`
+}
+
+func wechatContentNodeKeyPtr(k WechatContentNodeKey) *WechatContentNodeKey {
+	return &k
+}
+
+func wechatContentNodeKeyEqual(a, b *WechatContentNodeKey) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
+}
+
+// WechatContentNodeContracts returns the frozen four-node sequence.
+func WechatContentNodeContracts() []WechatContentNodeContract {
+	lineage := frozenWechatContentNodeLineage()
+	return []WechatContentNodeContract{
+		{Key: WechatContentNodeResearchMaterialPackage, Order: 1, RequiredUpstream: nil, ArtifactKind: "wechat.research-material-package.v1", ReviewRule: "auto_accept", Lineage: &lineage},
+		{Key: WechatContentNodeArticleDraft, Order: 2, RequiredUpstream: wechatContentNodeKeyPtr(WechatContentNodeResearchMaterialPackage), ArtifactKind: "wechat.article-draft.v1", ReviewRule: "editorial_review", Lineage: &lineage},
+		{Key: WechatContentNodeEditorialReviewReport, Order: 3, RequiredUpstream: wechatContentNodeKeyPtr(WechatContentNodeArticleDraft), ArtifactKind: "wechat.editorial-review-report.v1", ReviewRule: "approval_gate", Lineage: &lineage},
+		{Key: WechatContentNodeWechatPublicationPackage, Order: 4, RequiredUpstream: wechatContentNodeKeyPtr(WechatContentNodeEditorialReviewReport), ArtifactKind: "wechat.wechat-publication-package.v1", ReviewRule: "owner_approval", Lineage: &lineage},
+	}
+}
+
+func isWechatContentNodeKey(k WechatContentNodeKey) bool {
+	switch k {
+	case WechatContentNodeResearchMaterialPackage, WechatContentNodeArticleDraft,
+		WechatContentNodeEditorialReviewReport, WechatContentNodeWechatPublicationPackage:
+		return true
+	default:
+		return false
+	}
+}
+
+func frozenWechatContentNode(k WechatContentNodeKey) (WechatContentNodeContract, bool) {
+	for _, n := range WechatContentNodeContracts() {
+		if n.Key == k {
+			return n, true
+		}
+	}
+	return WechatContentNodeContract{}, false
+}
+
+func formatWechatNodeKeyPtr(k *WechatContentNodeKey) string {
+	if k == nil {
+		return "null"
+	}
+	return fmt.Sprintf("%q", string(*k))
+}
+
+// ValidateWechatContentProductionRequest is the pure, fail-closed validator
+// for a WeChat content production request. A nil return means the request is
+// contract-valid; any non-nil error fails closed. It never mutates state.
+func ValidateWechatContentProductionRequest(req WechatContentProductionRequest) error {
+	var errs []error
+	if req.SchemaVersion != WechatContentProductionRequestSchemaVersion {
+		errs = append(errs, fmt.Errorf("unsupported schema_version %q", req.SchemaVersion))
+	}
+	if req.Channel != WechatContentChannel {
+		errs = append(errs, fmt.Errorf("unsupported channel %q", req.Channel))
+	}
+	if strings.TrimSpace(req.ProjectID) == "" {
+		errs = append(errs, fmt.Errorf("project_id is required"))
+	}
+	errs = append(errs, validateWechatContentAuthority(req.Authority, req.ProjectID))
+	errs = append(errs, validateWechatContentDefinition(req.Definition))
+	errs = append(errs, validateWechatContentBrief(req.Brief))
+	if strings.TrimSpace(req.IdempotencyKey) == "" {
+		errs = append(errs, fmt.Errorf("idempotency_key is required"))
+	}
+	return errors.Join(errs...)
+}
+
+func validateWechatContentAuthority(a WechatContentAuthorityContext, projectID string) error {
+	var errs []error
+	match := wechatWorkOrderSourceRefPattern.FindStringSubmatch(a.WorkOrderSourceRef)
+	if match == nil {
+		errs = append(errs, fmt.Errorf("work_order_source_ref must be hive://hivecosm/delivery/project/{project}/work-order/{work-order}"))
+	} else if match[1] != projectID {
+		errs = append(errs, fmt.Errorf("cross-project authority mismatch: work_order_source_ref project %q != project_id %q", match[1], projectID))
+	}
+	if strings.TrimSpace(a.EmployeeID) == "" {
+		errs = append(errs, fmt.Errorf("employee_id is required"))
+	}
+	if strings.TrimSpace(a.IdentityBindingID) == "" {
+		errs = append(errs, fmt.Errorf("identity_binding_id is required"))
+	}
+	if !wechatUUIDPattern.MatchString(a.AgentID) {
+		errs = append(errs, fmt.Errorf("agent_id must be a UUID"))
+	}
+	if !wechatUUIDPattern.MatchString(a.SessionID) {
+		errs = append(errs, fmt.Errorf("session_id must be a UUID"))
+	}
+	return errors.Join(errs...)
+}
+
+func validateWechatContentDefinition(d WechatContentDefinitionBinding) error {
+	var errs []error
+	if strings.TrimSpace(d.DefinitionID) == "" {
+		errs = append(errs, fmt.Errorf("definition_id is required"))
+	}
+	if d.Version < 1 {
+		errs = append(errs, fmt.Errorf("version must be a positive integer"))
+	}
+	if !wechatSHA256DigestPattern.MatchString(d.Digest) {
+		errs = append(errs, fmt.Errorf("digest must be sha256:{64 hex}"))
+	}
+	return errors.Join(errs...)
+}
+
+func validateWechatContentBrief(b WechatContentBrief) error {
+	var errs []error
+	for name, value := range map[string]string{
+		"subject": b.Subject, "objective": b.Objective,
+		"audience": b.Audience, "tone": b.Tone,
+	} {
+		if strings.TrimSpace(value) == "" {
+			errs = append(errs, fmt.Errorf("%s is required", name))
+		}
+	}
+	if len(b.SourceRefs) == 0 {
+		errs = append(errs, fmt.Errorf("source_refs must contain at least one non-empty string"))
+	} else {
+		for _, ref := range b.SourceRefs {
+			if strings.TrimSpace(ref) == "" {
+				errs = append(errs, fmt.Errorf("source_refs entries must be non-empty"))
+				break
+			}
+		}
+	}
+	if err := validateWechatContentDeadline(b.Deadline); err != nil {
+		errs = append(errs, err)
+	}
+	if b.ApprovalPolicy != "owner_approval" && b.ApprovalPolicy != "editorial_review" {
+		errs = append(errs, fmt.Errorf("approval_policy must be owner_approval or editorial_review"))
+	}
+	if strings.TrimSpace(b.HandoffNote) == "" {
+		errs = append(errs, fmt.Errorf("handoff_note is required and must describe the work to dispatch"))
+	} else if len(b.HandoffNote) > WechatContentHandoffNoteMaxBytes {
+		errs = append(errs, fmt.Errorf("handoff_note must be at most %d UTF-8 bytes", WechatContentHandoffNoteMaxBytes))
+	}
+	return errors.Join(errs...)
+}
+
+// validateWechatContentDeadline enforces the same shape + real-calendar
+// semantics as the TS isValidRfc3339Datetime: RFC3339 with a mandatory
+// timezone (Z or numeric offset), no leap seconds, real calendar components,
+// and a numeric offset within 00:00-23:59.
+func validateWechatContentDeadline(value string) error {
+	if !wechatRFC3339Pattern.MatchString(value) {
+		return fmt.Errorf("deadline must be an RFC3339 datetime with timezone (Z or numeric offset)")
+	}
+	if match := wechatRFC3339OffsetPattern.FindStringSubmatch(value); match != nil {
+		offsetHour, _ := strconv.Atoi(match[1])
+		offsetMinute, _ := strconv.Atoi(match[2])
+		if offsetHour > 23 || offsetMinute > 59 {
+			return fmt.Errorf("deadline numeric offset must be within 00:00-23:59")
+		}
+	}
+	if _, err := time.Parse(time.RFC3339Nano, value); err != nil {
+		return fmt.Errorf("deadline must be a valid RFC3339 datetime")
+	}
+	return nil
+}
+
+// ValidateWechatContentNodePlan is the pure, fail-closed validator for a node
+// plan against the frozen four-node contract. It rejects duplicate, unknown,
+// missing, and altered nodes, broken prerequisites, and non-frozen lineage.
+// It never mutates state.
+func ValidateWechatContentNodePlan(nodes []WechatContentNodeContract) error {
+	if len(nodes) == 0 {
+		return fmt.Errorf("node plan must contain the four frozen nodes")
+	}
+	var errs []error
+	seen := make(map[WechatContentNodeKey]int, len(wechatContentNodeOrder))
+	submitted := make([]WechatContentNodeKey, 0, len(wechatContentNodeOrder))
+	for i, n := range nodes {
+		if !isWechatContentNodeKey(n.Key) {
+			errs = append(errs, fmt.Errorf("unknown node key %q", n.Key))
+			continue
+		}
+		if prev, ok := seen[n.Key]; ok {
+			errs = append(errs, fmt.Errorf("duplicate node %q (first at index %d)", n.Key, prev))
+			continue
+		}
+		seen[n.Key] = i
+		submitted = append(submitted, n.Key)
+
+		frozen, ok := frozenWechatContentNode(n.Key)
+		if !ok {
+			continue
+		}
+		if n.ArtifactKind != frozen.ArtifactKind {
+			errs = append(errs, fmt.Errorf("node %q artifact_kind altered from %q", n.Key, frozen.ArtifactKind))
+		}
+		if !wechatContentNodeKeyEqual(n.RequiredUpstream, frozen.RequiredUpstream) {
+			errs = append(errs, fmt.Errorf("node %q required_upstream altered from %s", n.Key, formatWechatNodeKeyPtr(frozen.RequiredUpstream)))
+		}
+		if n.ReviewRule != frozen.ReviewRule {
+			errs = append(errs, fmt.Errorf("node %q review_rule altered from %q", n.Key, frozen.ReviewRule))
+		}
+		if n.Order != frozen.Order {
+			errs = append(errs, fmt.Errorf("node %q order altered from %d", n.Key, frozen.Order))
+		}
+		if n.Lineage != nil && frozen.Lineage != nil && *n.Lineage != *frozen.Lineage {
+			errs = append(errs, fmt.Errorf("node %q lineage altered from the frozen contract constants", n.Key))
+		}
+	}
+	for _, k := range wechatContentNodeOrder {
+		if _, ok := seen[k]; !ok {
+			errs = append(errs, fmt.Errorf("missing frozen node %q", k))
+		}
+	}
+	for i, k := range submitted {
+		frozen, ok := frozenWechatContentNode(k)
+		if !ok || frozen.RequiredUpstream == nil {
+			continue
+		}
+		upIdx := -1
+		for j, s := range submitted {
+			if s == *frozen.RequiredUpstream {
+				upIdx = j
+				break
+			}
+		}
+		if upIdx == -1 {
+			errs = append(errs, fmt.Errorf("node %q is missing its upstream %q", k, *frozen.RequiredUpstream))
+		} else if upIdx >= i {
+			errs = append(errs, fmt.Errorf("node %q precedes its upstream %q", k, *frozen.RequiredUpstream))
+		}
+	}
+	return errors.Join(errs...)
 }
