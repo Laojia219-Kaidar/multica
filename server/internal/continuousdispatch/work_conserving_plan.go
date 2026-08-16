@@ -72,6 +72,7 @@ type WorkConservingIssue struct {
 	WIP                 WIPTruthEvidence           `json:"wip"`
 	Lease               LeaseEvidence              `json:"lease"`
 	ReviewAuthorKnown   bool                       `json:"review_author_known"`
+	ReviewAuthorAgentID string                     `json:"review_author_agent_id,omitempty"`
 	ProvenanceKnown     bool                       `json:"provenance_known"`
 	AuthorityKnown      bool                       `json:"authority_known"`
 	WritePath           WorkConservingWritePath    `json:"write_path"`
@@ -314,6 +315,15 @@ func (p *Planner) bestWorkCandidate(issue WorkConservingIssue, all []WorkConserv
 	pathBlocked := false
 	var candidateBlock Reason
 	for _, employee := range all {
+		// Reviewer independence is Issue-scoped evidence. Never mutate the
+		// shared employee slice: a reviewer may be the author for one Issue and
+		// an independent candidate for the next Issue in the same global plan.
+		issueEmployee := employee
+		if issue.Requirement.NeedsReview && issue.ReviewAuthorAgentID != "" {
+			issueEmployee.Candidate.Route.IsAuthor =
+				issueEmployee.Candidate.Route.IsAuthor ||
+					issueEmployee.Candidate.Route.AgentID.String() == issue.ReviewAuthorAgentID
+		}
 		if _, ok := used[employee.Candidate.EmployeeID]; ok {
 			continue
 		}
@@ -334,21 +344,21 @@ func (p *Planner) bestWorkCandidate(issue WorkConservingIssue, all []WorkConserv
 				continue
 			}
 		}
-		decision := workEmployeeDecision(employee, issue)
+		decision := workEmployeeDecision(issueEmployee, issue)
 		if !decision.Eligible {
 			candidateBlock = stableWorkBlockReason(candidateBlock, firstWorkDecisionReason(decision))
 			continue
 		}
 		// Reuse the canonical route scorer for quota/runtime/role and
 		// independence gates after local evidence gates have passed.
-		scored := p.scorer.Score(employee.Candidate.Route, issue.Requirement)
+		scored := p.scorer.Score(issueEmployee.Candidate.Route, issue.Requirement)
 		decision.Score = scored.TotalScore
 		if scored.FailClosed {
 			candidateBlock = stableWorkBlockReason(candidateBlock, Reason(scored.FailReason))
 			continue
 		}
 		eligible++
-		candidate := &workCandidateResult{employee: employee, decision: decision}
+		candidate := &workCandidateResult{employee: issueEmployee, decision: decision}
 		if best == nil || betterWorkCandidate(candidate, best, issue.PreferredEmployeeID) {
 			best = candidate
 		}

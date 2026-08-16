@@ -106,6 +106,48 @@ func TestPlanWorkConservingIsOneToOneAndDeterministic(t *testing.T) {
 	}
 }
 
+func TestPlanWorkConservingBindsReviewAuthorIndependentlyPerIssue(t *testing.T) {
+	const (
+		agentA = "00000000-0000-0000-0000-0000000000a1"
+		agentB = "00000000-0000-0000-0000-0000000000b2"
+	)
+	issueA := workIssue("issue-review-a")
+	issueA.WritePath.Key = ""
+	issueA.Requirement = routescore.TaskRequirement{RequiredRoles: []string{"code_review", "independent_test_review"}, NeedsReview: true}
+	issueA.ReviewAuthorAgentID = agentA
+	issueB := workIssue("issue-review-b")
+	issueB.WritePath.Key = ""
+	issueB.Requirement = issueA.Requirement
+	issueB.ReviewAuthorAgentID = agentB
+
+	employeeA := workEmployee("reviewer-a", agentA, true, true)
+	employeeA.Candidate.Route.Roles = []string{"code_review", "independent_test_review"}
+	employeeB := workEmployee("reviewer-b", agentB, true, true)
+	employeeB.Candidate.Route.Roles = []string{"code_review", "independent_test_review"}
+
+	got := planner().PlanWorkConserving(WorkConservingInput{
+		GoalID:    workGoal,
+		Issues:    []WorkConservingIssue{issueB, issueA},
+		Employees: []WorkConservingEmployee{employeeA, employeeB},
+	})
+	if len(got.Suggestions) != 2 || len(got.BlockedBacklog) != 0 {
+		t.Fatalf("plan = %+v, want two independent review suggestions", got)
+	}
+	byIssue := make(map[string]WorkConservingSuggestion, len(got.Suggestions))
+	for _, suggestion := range got.Suggestions {
+		byIssue[suggestion.IssueID] = suggestion
+	}
+	if byIssue[issueA.ID].AgentID != agentB {
+		t.Fatalf("issue A reviewer = %+v, want agent B rather than its author A", byIssue[issueA.ID])
+	}
+	if byIssue[issueB.ID].AgentID != agentA {
+		t.Fatalf("issue B reviewer = %+v, want agent A rather than its author B", byIssue[issueB.ID])
+	}
+	if employeeA.Candidate.Route.IsAuthor || employeeB.Candidate.Route.IsAuthor {
+		t.Fatal("planner must not mutate the shared employee snapshot")
+	}
+}
+
 func TestPlanWorkConservingAllBlockedDoesNotInventAvailability(t *testing.T) {
 	missingAuthority := workIssue("issue-a")
 	missingAuthority.WritePath.Key = ""

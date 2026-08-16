@@ -29,17 +29,10 @@ const (
 
 // WorkConservingGoalSource is the explicit Goal/CHECKLIST binding consumed by
 // the projection. It is a read-only execution-status source, not a HiveCrew
-// company-object authority. The nested binding is required in production;
-// top-level fields are accepted only to keep the parser useful for fixtures.
+// company-object authority. The nested binding is mandatory; top-level Goal
+// metadata must never silently become a production routing authority.
 type WorkConservingGoalSource struct {
-	SchemaVersion string `yaml:"schema_version"`
-	GoalID        string `yaml:"goal_id"`
-	WorkspaceID   string `yaml:"workspace_id"`
-	ProjectID     string `yaml:"project_id"`
-	SourceRef     string `yaml:"source_ref"`
-	Meta          struct {
-		GoalID string `yaml:"goal_id"`
-	} `yaml:"meta"`
+	SchemaVersion           string                           `yaml:"schema_version"`
 	WorkConservingAuthority *WorkConservingGoalSourceBinding `yaml:"work_conserving_authority"`
 }
 
@@ -195,16 +188,12 @@ func (p *FileWorkConservingProjectionProvider) ProjectWorkConserving(ctx context
 			}
 			lineage = resolveReviewSourceLineage(issue, tasks, comments, identity)
 		}
-		for i := range workEmployees {
-			if requirement.NeedsReview {
-				workEmployees[i].Candidate.Route.IsAuthor = lineage.AuthorID != "" && workEmployees[i].Candidate.Route.AgentID.String() == lineage.AuthorID
-			}
-		}
 		workIssues = append(workIssues, continuousdispatch.WorkConservingIssue{
 			ID: shadowUUIDString(issue.ID), GoalID: snapshot.Binding.GoalID, PreferredEmployeeID: preferred,
 			Frontier: frontier, Requirement: requirement, RequiredBaseID: metadata.RequiredBaseID,
 			Generation: generation, WIP: wip, Lease: lease, ReviewAuthorKnown: !requirement.NeedsReview || lineage.Proven,
-			ProvenanceKnown: identity.Complete(), AuthorityKnown: issue.WorkspaceID == req.WorkspaceID && issue.ProjectID == req.ProjectID,
+			ReviewAuthorAgentID: lineage.AuthorID,
+			ProvenanceKnown:     identity.Complete(), AuthorityKnown: issue.WorkspaceID == req.WorkspaceID && issue.ProjectID == req.ProjectID,
 			WritePath: continuousdispatch.WorkConservingWritePath{Known: metadata.WriteMutexKey != "", Key: metadata.WriteMutexKey},
 		})
 	}
@@ -235,19 +224,19 @@ func readWorkConservingGoalSource(path string) (workConservingGoalSnapshot, erro
 	if err := yaml.Unmarshal(raw, &document); err != nil {
 		return workConservingGoalSnapshot{}, fmt.Errorf("%w: parse Goal source: %v", ErrWorkConservingProjectionSourceGap, err)
 	}
-	binding := WorkConservingGoalSourceBinding{SchemaVersion: document.SchemaVersion, GoalID: document.GoalID, WorkspaceID: document.WorkspaceID, ProjectID: document.ProjectID, SourceRef: document.SourceRef}
-	if document.WorkConservingAuthority != nil {
-		binding = *document.WorkConservingAuthority
+	if document.WorkConservingAuthority == nil {
+		return workConservingGoalSnapshot{}, fmt.Errorf("%w: Goal source work_conserving_authority is missing", ErrWorkConservingProjectionSourceGap)
 	}
-	if binding.GoalID == "" {
-		binding.GoalID = document.Meta.GoalID
+	if strings.TrimSpace(document.SchemaVersion) == "" {
+		return workConservingGoalSnapshot{}, fmt.Errorf("%w: Goal source schema_version is missing", ErrWorkConservingProjectionSourceGap)
 	}
+	binding := *document.WorkConservingAuthority
 	for name, value := range map[string]string{"schema_version": binding.SchemaVersion, "goal_id": binding.GoalID, "workspace_id": binding.WorkspaceID, "project_id": binding.ProjectID, "source_ref": binding.SourceRef} {
 		if strings.TrimSpace(value) == "" {
 			return workConservingGoalSnapshot{}, fmt.Errorf("%w: Goal source %s is missing", ErrWorkConservingProjectionSourceGap, name)
 		}
 	}
-	if binding.SchemaVersion != document.SchemaVersion && document.SchemaVersion != "" {
+	if binding.SchemaVersion != document.SchemaVersion {
 		return workConservingGoalSnapshot{}, fmt.Errorf("%w: Goal source schema mismatch", ErrWorkConservingProjectionSourceGap)
 	}
 	digest := sha256.Sum256(raw)

@@ -16,7 +16,7 @@ import (
 
 func TestReadWorkConservingGoalSourceRequiresExplicitBindingAndUsesContentDigest(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "CHECKLIST.yaml")
-	content := "schema_version: hivecosm.goal-graph/v2\nwork_conserving_authority:\n  schema_version: hivecosm.goal-graph/v2\n  goal_id: goal-1\n  workspace_id: 00000000-0000-0000-0000-000000000001\n  project_id: 00000000-0000-0000-0000-000000000002\n  source_ref: /goal/CHECKLIST.yaml\n"
+	const content = "schema_version: hivecosm.goal-graph/v2\nwork_conserving_authority:\n  schema_version: hivecosm.goal-graph/v2\n  goal_id: goal-1\n  workspace_id: 00000000-0000-0000-0000-000000000001\n  project_id: 00000000-0000-0000-0000-000000000002\n  source_ref: /goal/CHECKLIST.yaml\n"
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -30,20 +30,52 @@ func TestReadWorkConservingGoalSourceRequiresExplicitBindingAndUsesContentDigest
 	if _, err := readWorkConservingGoalSource(filepath.Join(t.TempDir(), "missing.yaml")); err == nil || !strings.Contains(err.Error(), "source gap") {
 		t.Fatal("missing source must fail closed")
 	}
-	if err := os.WriteFile(path, []byte("schema_version: hivecosm.goal-graph/v2\nmeta:\n  goal_id: goal-1\n"), 0o600); err != nil {
-		t.Fatal(err)
+	tests := []struct {
+		name    string
+		content string
+		want    string
+	}{
+		{
+			name:    "top-level fixture fallback is forbidden",
+			content: "schema_version: hivecosm.goal-graph/v2\ngoal_id: goal-1\nworkspace_id: 00000000-0000-0000-0000-000000000001\nproject_id: 00000000-0000-0000-0000-000000000002\nsource_ref: /goal/CHECKLIST.yaml\n",
+			want:    "work_conserving_authority",
+		},
+		{
+			name:    "nested workspace scope is missing",
+			content: "schema_version: hivecosm.goal-graph/v2\nwork_conserving_authority:\n  schema_version: hivecosm.goal-graph/v2\n  goal_id: goal-1\n  project_id: 00000000-0000-0000-0000-000000000002\n  source_ref: /goal/CHECKLIST.yaml\n",
+			want:    "workspace_id",
+		},
+		{
+			name:    "root schema is missing",
+			content: "work_conserving_authority:\n  schema_version: hivecosm.goal-graph/v2\n  goal_id: goal-1\n  workspace_id: 00000000-0000-0000-0000-000000000001\n  project_id: 00000000-0000-0000-0000-000000000002\n  source_ref: /goal/CHECKLIST.yaml\n",
+			want:    "schema_version",
+		},
+		{
+			name:    "nested schema drifts from document",
+			content: "schema_version: hivecosm.goal-graph/v2\nwork_conserving_authority:\n  schema_version: hivecosm.goal-graph/v3\n  goal_id: goal-1\n  workspace_id: 00000000-0000-0000-0000-000000000001\n  project_id: 00000000-0000-0000-0000-000000000002\n  source_ref: /goal/CHECKLIST.yaml\n",
+			want:    "schema mismatch",
+		},
 	}
-	if _, err := readWorkConservingGoalSource(path); err == nil || !strings.Contains(err.Error(), "workspace_id") {
-		t.Fatal("missing workspace scope must fail closed")
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := os.WriteFile(path, []byte(tc.content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := readWorkConservingGoalSource(path); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %v, want fail-closed reason containing %q", err, tc.want)
+			}
+		})
 	}
 }
 
 type providerPaginationStore struct {
 	shadowStoreFixture
-	pages [][]db.ListIssuesRow
+	pages   [][]db.ListIssuesRow
+	offsets []int32
 }
 
-func (s providerPaginationStore) ListIssues(_ context.Context, params db.ListIssuesParams) ([]db.ListIssuesRow, error) {
+func (s *providerPaginationStore) ListIssues(_ context.Context, params db.ListIssuesParams) ([]db.ListIssuesRow, error) {
+	s.offsets = append(s.offsets, params.Offset)
 	index := int(params.Offset) / workConservingPageSize
 	if index >= len(s.pages) {
 		return []db.ListIssuesRow{}, nil
@@ -51,26 +83,61 @@ func (s providerPaginationStore) ListIssues(_ context.Context, params db.ListIss
 	return append([]db.ListIssuesRow(nil), s.pages[index]...), nil
 }
 
+func providerIssue(workspaceID, projectID pgtype.UUID) db.ListIssuesRow {
+	id := uuid.New()
+	return db.ListIssuesRow{ID: pgtype.UUID{Bytes: [16]byte(id), Valid: true}, WorkspaceID: workspaceID, ProjectID: projectID}
+}
+
 func TestWorkConservingProviderReadsAllPagesAndRejectsDuplicatePageIdentity(t *testing.T) {
 	workspaceID := pgtype.UUID{Bytes: [16]byte{1}, Valid: true}
 	projectID := pgtype.UUID{Bytes: [16]byte{2}, Valid: true}
-	issueA := db.ListIssuesRow{ID: pgtype.UUID{Bytes: [16]byte{3}, Valid: true}, WorkspaceID: workspaceID, ProjectID: projectID}
-	issueB := db.ListIssuesRow{ID: pgtype.UUID{Bytes: [16]byte{4}, Valid: true}, WorkspaceID: workspaceID, ProjectID: projectID}
+	firstPage := make([]db.ListIssuesRow, workConservingPageSize)
+	for i := range firstPage {
+		firstPage[i] = providerIssue(workspaceID, projectID)
+	}
+	secondPage := []db.ListIssuesRow{providerIssue(workspaceID, projectID)}
+	store := &providerPaginationStore{pages: [][]db.ListIssuesRow{firstPage, secondPage}}
+	shadow := NewContinuousDispatchShadowService(store, shadowDirectoryFixture{}, nil, nil)
+	provider := NewFileWorkConservingProjectionProvider(shadow, "unused-by-readAllIssues")
+	issues, err := provider.readAllIssues(context.Background(), workspaceID, projectID)
+	if err != nil || len(issues) != workConservingPageSize+1 {
+		t.Fatalf("issues = %v, err=%v; want complete 200+1 pagination", len(issues), err)
+	}
+	if len(store.offsets) != 2 || store.offsets[0] != 0 || store.offsets[1] != workConservingPageSize {
+		t.Fatalf("offsets = %v, want [0 200]", store.offsets)
+	}
+
+	exactStore := &providerPaginationStore{pages: [][]db.ListIssuesRow{firstPage, {}}}
+	provider = NewFileWorkConservingProjectionProvider(NewContinuousDispatchShadowService(exactStore, shadowDirectoryFixture{}, nil, nil), "unused-by-readAllIssues")
+	issues, err = provider.readAllIssues(context.Background(), workspaceID, projectID)
+	if err != nil || len(issues) != workConservingPageSize || len(exactStore.offsets) != 2 {
+		t.Fatalf("exact-boundary issues/offsets = %d/%v, err=%v; want 200 rows plus empty boundary read", len(issues), exactStore.offsets, err)
+	}
+
+	duplicateStore := &providerPaginationStore{pages: [][]db.ListIssuesRow{firstPage, {firstPage[0]}}}
+	duplicate := NewContinuousDispatchShadowService(duplicateStore, shadowDirectoryFixture{}, nil, nil)
+	provider = NewFileWorkConservingProjectionProvider(duplicate, "unused-by-readAllIssues")
+	if _, err := provider.readAllIssues(context.Background(), workspaceID, projectID); err == nil || !strings.Contains(err.Error(), "duplicated identity") {
+		t.Fatal("duplicate page identity must fail closed")
+	}
+}
+
+func TestWorkConservingProviderRejectsGoalSourceScopeDriftBeforeReadingProject(t *testing.T) {
+	workspaceID := pgtype.UUID{Bytes: [16]byte{1}, Valid: true}
+	projectID := pgtype.UUID{Bytes: [16]byte{2}, Valid: true}
+	foreignProjectID := pgtype.UUID{Bytes: [16]byte{3}, Valid: true}
 	path := filepath.Join(t.TempDir(), "CHECKLIST.yaml")
-	content := "schema_version: test\nwork_conserving_authority:\n  schema_version: test\n  goal_id: goal-1\n  workspace_id: " + uuid.UUID(workspaceID.Bytes).String() + "\n  project_id: " + uuid.UUID(projectID.Bytes).String() + "\n  source_ref: /goal/checklist\n"
+	content := "schema_version: test\nwork_conserving_authority:\n  schema_version: test\n  goal_id: goal-1\n  workspace_id: " + uuid.UUID(workspaceID.Bytes).String() + "\n  project_id: " + uuid.UUID(foreignProjectID.Bytes).String() + "\n  source_ref: /goal/checklist\n"
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	shadow := NewContinuousDispatchShadowService(&providerPaginationStore{pages: [][]db.ListIssuesRow{{issueA}, {issueB}}}, shadowDirectoryFixture{}, nil, nil)
-	provider := NewFileWorkConservingProjectionProvider(shadow, path)
-	issues, err := provider.readAllIssues(context.Background(), workspaceID, projectID)
-	if err != nil || len(issues) != 2 {
-		t.Fatalf("issues = %v, err=%v; want two pages", len(issues), err)
-	}
-	duplicate := NewContinuousDispatchShadowService(&providerPaginationStore{pages: [][]db.ListIssuesRow{{issueA}, {issueA}}}, shadowDirectoryFixture{}, nil, nil)
-	provider = NewFileWorkConservingProjectionProvider(duplicate, path)
-	if _, err := provider.readAllIssues(context.Background(), workspaceID, projectID); err == nil || !strings.Contains(err.Error(), "duplicated identity") {
-		t.Fatal("duplicate page identity must fail closed")
+	provider := NewFileWorkConservingProjectionProvider(
+		NewContinuousDispatchShadowService(&providerPaginationStore{}, shadowDirectoryFixture{}, nil, nil),
+		path,
+	)
+	_, err := provider.ProjectWorkConserving(context.Background(), WorkConservingProjectionRequest{WorkspaceID: workspaceID, ProjectID: projectID, Limit: 50})
+	if err == nil || !strings.Contains(err.Error(), "scope does not match request") {
+		t.Fatalf("error = %v, want source scope drift to fail before project reads", err)
 	}
 }
 
