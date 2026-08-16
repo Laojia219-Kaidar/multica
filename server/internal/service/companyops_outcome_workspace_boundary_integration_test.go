@@ -45,9 +45,18 @@ func TestCompanyOpsOutcomeListCountAndCursorRejectCrossWorkspaceJoins(t *testing
 		_, _ = pool.Exec(cleanupCtx, `DELETE FROM workspace WHERE id IN ($1, $2)`, workspaceA, workspaceB)
 	})
 
+	runtimeB := "0d0d0d0d-0d0d-4d0d-8d0d-0d0d0d0d0d0d"
 	if _, err := pool.Exec(ctx, `
-		INSERT INTO agent (id, workspace_id, name, runtime_mode, status)
-		VALUES ($1, $2, 'foreign-agent-only', 'local', 'offline')`, agentB, workspaceB); err != nil {
+		INSERT INTO agent_runtime (id, workspace_id, name, runtime_mode, provider, status)
+		VALUES ($1, $2, 'foreign-runtime-only', 'local', 'test', 'offline')`, runtimeB, workspaceB); err != nil {
+		t.Fatalf("insert foreign runtime: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM agent_runtime WHERE id = $1`, runtimeB)
+	})
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO agent (id, workspace_id, name, runtime_mode, status, runtime_id)
+		VALUES ($1, $2, 'foreign-agent-only', 'local', 'offline', $3)`, agentB, workspaceB, runtimeB); err != nil {
 		t.Fatalf("insert foreign agent: %v", err)
 	}
 	if _, err := pool.Exec(ctx, `
