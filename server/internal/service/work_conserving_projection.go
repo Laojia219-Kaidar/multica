@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -27,7 +28,10 @@ const (
 	WorkConservingProjectionSourceGap WorkConservingProjectionState = "source_gap"
 )
 
-var ErrWorkConservingProjectionSourceGap = errors.New("work-conserving projection source gap")
+var (
+	ErrWorkConservingProjectionSourceGap = errors.New("work-conserving projection source gap")
+	workConservingAuthorityRevisionV1    = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
+)
 
 // WorkConservingAuthoritySnapshot binds the plan to the exact company
 // authority read that produced it. It is a read receipt, not a second
@@ -131,7 +135,7 @@ func ValidateWorkConservingProjectionAt(p WorkConservingProjection, req WorkCons
 		return fmt.Errorf("%w: goal identity is missing", ErrWorkConservingProjectionSourceGap)
 	}
 	if p.Authority.WorkspaceID != uuid.UUID(req.WorkspaceID.Bytes).String() || p.Authority.ProjectID != uuid.UUID(req.ProjectID.Bytes).String() ||
-		strings.TrimSpace(p.Authority.SourceRef) == "" || strings.TrimSpace(p.Authority.Revision) == "" {
+		strings.TrimSpace(p.Authority.SourceRef) == "" || !workConservingAuthorityRevisionV1.MatchString(p.Authority.Revision) {
 		return fmt.Errorf("%w: authority snapshot binding is incomplete or out of scope", ErrWorkConservingProjectionSourceGap)
 	}
 	observedAt, err := time.Parse(time.RFC3339, p.Authority.ObservedAt)

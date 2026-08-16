@@ -25,6 +25,7 @@ const (
 	workConservingProjectionTTL      = 15 * time.Minute
 	workConservingPageSize           = 200
 	workConservingEmployeePageSize   = 500
+	workConservingGoalSchemaV2       = "hivecosm.goal-graph/v2"
 )
 
 // WorkConservingGoalSource is the explicit Goal/CHECKLIST binding consumed by
@@ -229,6 +230,9 @@ func readWorkConservingGoalSource(path string) (workConservingGoalSnapshot, erro
 	}
 	if strings.TrimSpace(document.SchemaVersion) == "" {
 		return workConservingGoalSnapshot{}, fmt.Errorf("%w: Goal source schema_version is missing", ErrWorkConservingProjectionSourceGap)
+	}
+	if document.SchemaVersion != workConservingGoalSchemaV2 {
+		return workConservingGoalSnapshot{}, fmt.Errorf("%w: Goal source schema_version is unsupported", ErrWorkConservingProjectionSourceGap)
 	}
 	binding := *document.WorkConservingAuthority
 	for name, value := range map[string]string{"schema_version": binding.SchemaVersion, "goal_id": binding.GoalID, "workspace_id": binding.WorkspaceID, "project_id": binding.ProjectID, "source_ref": binding.SourceRef} {

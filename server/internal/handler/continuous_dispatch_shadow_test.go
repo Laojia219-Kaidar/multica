@@ -45,7 +45,7 @@ func validWorkConservingAuthoritySnapshot() service.WorkConservingAuthoritySnaps
 		WorkspaceID: testWorkspaceID,
 		ProjectID:   "00000000-0000-0000-0000-000000000201",
 		SourceRef:   "hivecosm://company-ops/goal/goal-global-1",
-		Revision:    "authority-rev-1",
+		Revision:    "sha256:" + strings.Repeat("a", 64),
 		ObservedAt:  now.Add(-time.Minute).Format(time.RFC3339),
 		ExpiresAt:   now.Add(14 * time.Minute).Format(time.RFC3339),
 	}
@@ -233,6 +233,7 @@ func TestGetProjectNextActionsWorkConservingAuthorityAndPlanContractFailsClosed(
 		},
 		"empty_source_ref":    func(p *service.WorkConservingProjection) { p.Authority.SourceRef = "" },
 		"empty_revision":      func(p *service.WorkConservingProjection) { p.Authority.Revision = "" },
+		"malformed_revision":  func(p *service.WorkConservingProjection) { p.Authority.Revision = "sha256:" + strings.Repeat("A", 64) },
 		"invalid_observed_at": func(p *service.WorkConservingProjection) { p.Authority.ObservedAt = "not-a-time" },
 		"invalid_expires_at":  func(p *service.WorkConservingProjection) { p.Authority.ExpiresAt = "not-a-time" },
 		"expired": func(p *service.WorkConservingProjection) {

@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -54,6 +55,11 @@ func TestReadWorkConservingGoalSourceRequiresExplicitBindingAndUsesContentDigest
 			name:    "nested schema drifts from document",
 			content: "schema_version: hivecosm.goal-graph/v2\nwork_conserving_authority:\n  schema_version: hivecosm.goal-graph/v3\n  goal_id: goal-1\n  workspace_id: 00000000-0000-0000-0000-000000000001\n  project_id: 00000000-0000-0000-0000-000000000002\n  source_ref: /goal/CHECKLIST.yaml\n",
 			want:    "schema mismatch",
+		},
+		{
+			name:    "equal but unsupported schema",
+			content: "schema_version: hivecosm.goal-graph/v3\nwork_conserving_authority:\n  schema_version: hivecosm.goal-graph/v3\n  goal_id: goal-1\n  workspace_id: 00000000-0000-0000-0000-000000000001\n  project_id: 00000000-0000-0000-0000-000000000002\n  source_ref: /goal/CHECKLIST.yaml\n",
+			want:    "unsupported",
 		},
 	}
 	for _, tc := range tests {
@@ -127,7 +133,7 @@ func TestWorkConservingProviderRejectsGoalSourceScopeDriftBeforeReadingProject(t
 	projectID := pgtype.UUID{Bytes: [16]byte{2}, Valid: true}
 	foreignProjectID := pgtype.UUID{Bytes: [16]byte{3}, Valid: true}
 	path := filepath.Join(t.TempDir(), "CHECKLIST.yaml")
-	content := "schema_version: test\nwork_conserving_authority:\n  schema_version: test\n  goal_id: goal-1\n  workspace_id: " + uuid.UUID(workspaceID.Bytes).String() + "\n  project_id: " + uuid.UUID(foreignProjectID.Bytes).String() + "\n  source_ref: /goal/checklist\n"
+	content := "schema_version: " + workConservingGoalSchemaV2 + "\nwork_conserving_authority:\n  schema_version: " + workConservingGoalSchemaV2 + "\n  goal_id: goal-1\n  workspace_id: " + uuid.UUID(workspaceID.Bytes).String() + "\n  project_id: " + uuid.UUID(foreignProjectID.Bytes).String() + "\n  source_ref: /goal/checklist\n"
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -148,6 +154,18 @@ func TestWorkConservingProjectionValidationRejectsExpiredSourceAndAcceptsBlocked
 	p := WorkConservingProjection{SchemaVersion: WorkConservingProjectionSchemaV1, State: WorkConservingProjectionBlocked, GoalID: "goal-1", Authority: WorkConservingAuthoritySnapshot{WorkspaceID: uuid.UUID(workspaceID.Bytes).String(), ProjectID: uuid.UUID(projectID.Bytes).String(), SourceRef: "/goal/checklist", Revision: "sha256:" + strings.Repeat("a", 64), ObservedAt: now.Add(-time.Minute).Format(time.RFC3339), ExpiresAt: now.Add(10 * time.Minute).Format(time.RFC3339)}, BlockedBacklog: []continuousdispatch.WorkConservingBlockedIssue{{IssueID: "issue-1", GoalID: "goal-1", Reasons: []continuousdispatch.Reason{"source_gap"}, Receiver: "dispatch-coordinator", WakeCondition: "source repaired"}}, Mismatch: continuousdispatch.WorkConservingMismatch{OpenIssues: 1, BlockedBacklog: 1}, Total: 1, Limit: 50, Offset: 0}
 	if err := ValidateWorkConservingProjectionAt(p, WorkConservingProjectionRequest{WorkspaceID: workspaceID, ProjectID: projectID, Limit: 50}, now); err != nil {
 		t.Fatalf("blocked plan should validate: %v", err)
+	}
+	for _, malformed := range []string{
+		"sha256:" + strings.Repeat("a", 63),
+		"sha256:" + strings.Repeat("A", 64),
+		"sha256:" + strings.Repeat("g", 64),
+		strings.Repeat("a", 64),
+	} {
+		candidate := p
+		candidate.Authority.Revision = malformed
+		if err := ValidateWorkConservingProjectionAt(candidate, WorkConservingProjectionRequest{WorkspaceID: workspaceID, ProjectID: projectID, Limit: 50}, now); err == nil || !errors.Is(err, ErrWorkConservingProjectionSourceGap) {
+			t.Fatalf("revision %q error = %v, want source_gap", malformed, err)
+		}
 	}
 	p.Authority.ExpiresAt = now.Add(-time.Second).Format(time.RFC3339)
 	if err := ValidateWorkConservingProjectionAt(p, WorkConservingProjectionRequest{WorkspaceID: workspaceID, ProjectID: projectID, Limit: 50}, now); err == nil {
