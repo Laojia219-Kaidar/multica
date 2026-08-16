@@ -173,4 +173,19 @@ describe("route coverage stays in step with paths.ts", () => {
       "/:slug/organization/employees/:id",
     );
   });
+
+  it("templates every parameterless workspace page route", () => {
+    const routes = [
+      ["/acme/workflow", "/:slug/workflow"],
+      ["/acme/workrooms", "/:slug/workrooms"],
+      ["/acme/employees", "/:slug/employees"],
+      ["/acme/datasets", "/:slug/datasets"],
+      ["/acme/runtimes/bases", "/:slug/runtimes/bases"],
+      ["/acme/work-wall", "/:slug/work-wall"],
+    ] as const;
+
+    for (const [path, expected] of routes) {
+      expect(bucketDiagnosticPath(path)).toBe(expected);
+    }
+  });
 });
