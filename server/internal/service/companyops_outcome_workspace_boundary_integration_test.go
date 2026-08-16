@@ -65,8 +65,8 @@ func TestCompanyOpsOutcomeListCountAndCursorRejectCrossWorkspaceJoins(t *testing
 		t.Fatalf("insert foreign issue: %v", err)
 	}
 	if _, err := pool.Exec(ctx, `
-		INSERT INTO agent_task_queue (id, agent_id, issue_id, status)
-		VALUES ($1, $2, $3, 'completed')`, taskB, agentB, issueB); err != nil {
+		INSERT INTO agent_task_queue (id, agent_id, issue_id, status, runtime_id)
+		VALUES ($1, $2, $3, 'completed', $4)`, taskB, agentB, issueB, runtimeB); err != nil {
 		t.Fatalf("insert foreign task: %v", err)
 	}
 	if _, err := pool.Exec(ctx, `
