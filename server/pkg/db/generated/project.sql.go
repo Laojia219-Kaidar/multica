@@ -23,6 +23,24 @@ func (q *Queries) CountIssuesByProject(ctx context.Context, projectID pgtype.UUI
 	return count, err
 }
 
+const countIssuesByProjectAndStatus = `-- name: CountIssuesByProjectAndStatus :one
+SELECT count(*) FROM issue
+WHERE project_id = $1
+  AND status = $2
+`
+
+type CountIssuesByProjectAndStatusParams struct {
+	ProjectID pgtype.UUID `json:"project_id"`
+	Status    string      `json:"status"`
+}
+
+func (q *Queries) CountIssuesByProjectAndStatus(ctx context.Context, arg CountIssuesByProjectAndStatusParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countIssuesByProjectAndStatus, arg.ProjectID, arg.Status)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countProjects = `-- name: CountProjects :one
 SELECT count(*) FROM project
 WHERE workspace_id = $1
@@ -38,24 +56,6 @@ type CountProjectsParams struct {
 
 func (q *Queries) CountProjects(ctx context.Context, arg CountProjectsParams) (int64, error) {
 	row := q.db.QueryRow(ctx, countProjects, arg.WorkspaceID, arg.Status, arg.Priority)
-	var count int64
-	err := row.Scan(&count)
-	return count, err
-}
-
-const countIssuesByProjectAndStatus = `-- name: CountIssuesByProjectAndStatus :one
-SELECT count(*) FROM issue
-WHERE project_id = $1
-  AND status = $2
-`
-
-type CountIssuesByProjectAndStatusParams struct {
-	ProjectID pgtype.UUID `json:"project_id"`
-	Status    string      `json:"status"`
-}
-
-func (q *Queries) CountIssuesByProjectAndStatus(ctx context.Context, arg CountIssuesByProjectAndStatusParams) (int64, error) {
-	row := q.db.QueryRow(ctx, countIssuesByProjectAndStatus, arg.ProjectID, arg.Status)
 	var count int64
 	err := row.Scan(&count)
 	return count, err

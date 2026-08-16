@@ -1477,6 +1477,63 @@ type WebhookDelivery struct {
 	DispatchAttempts       int32              `json:"dispatch_attempts"`
 }
 
+type WorkDocument struct {
+	ID             pgtype.UUID        `json:"id"`
+	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
+	WorkRef        string             `json:"work_ref"`
+	Kind           string             `json:"kind"`
+	Package        []byte             `json:"package"`
+	RoutedToReview bool               `json:"routed_to_review"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+}
+
+type WorkEvent struct {
+	ID             pgtype.UUID        `json:"id"`
+	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
+	WorkRef        string             `json:"work_ref"`
+	SessionID      pgtype.Text        `json:"session_id"`
+	RunID          pgtype.Text        `json:"run_id"`
+	EventType      string             `json:"event_type"`
+	EventPayload   []byte             `json:"event_payload"`
+	BlockerReason  pgtype.Text        `json:"blocker_reason"`
+	Receiver       pgtype.Text        `json:"receiver"`
+	IdempotencyKey string             `json:"idempotency_key"`
+	OccurredAt     pgtype.Timestamptz `json:"occurred_at"`
+	ObservedAt     pgtype.Timestamptz `json:"observed_at"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+}
+
+type WorkInbox struct {
+	ID          pgtype.UUID        `json:"id"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	WorkRef     pgtype.Text        `json:"work_ref"`
+	Path        pgtype.Text        `json:"path"`
+	Branch      pgtype.Text        `json:"branch"`
+	Head        pgtype.Text        `json:"head"`
+	Reason      pgtype.Text        `json:"reason"`
+	State       string             `json:"state"`
+	ProjectID   pgtype.UUID        `json:"project_id"`
+	IssueID     pgtype.UUID        `json:"issue_id"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+}
+
+type WorkRegistrationReceipt struct {
+	ID            pgtype.UUID        `json:"id"`
+	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
+	WorkRef       string             `json:"work_ref"`
+	DedupeKey     string             `json:"dedupe_key"`
+	PayloadDigest string             `json:"payload_digest"`
+	ProjectID     pgtype.UUID        `json:"project_id"`
+	IssueID       pgtype.UUID        `json:"issue_id"`
+	TaskID        pgtype.UUID        `json:"task_id"`
+	Decision      string             `json:"decision"`
+	Actor         []byte             `json:"actor"`
+	Intent        []byte             `json:"intent"`
+	Applied       bool               `json:"applied"`
+	Replayed      bool               `json:"replayed"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+}
+
 type WorkflowDefinition struct {
 	ID          string             `json:"id"`
 	Version     int32              `json:"version"`

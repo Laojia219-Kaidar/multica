@@ -6,7 +6,7 @@
 # （回滚目标：multica-backend:dev / multica-web:dev，即 8/14 收敛镜像）
 services:
   backend:
-    image: multica-backend:uiconv20260816
+    image: multica-backend:uiconv20260816b
     environment:
       # loopback owner session（免登录，owner 决策 2026-08-15）：
       # APP_ENV 放开到 local 是 local_operator_session_config 的白名单要求；
@@ -14,5 +14,13 @@ services:
       APP_ENV: local
       HIVECREW_LOCAL_OPERATOR_SESSION_ENABLED: "true"
       HIVECREW_LOCAL_OPERATOR_USER_ID: c93bda04-9b39-4c94-b961-3f2792ae4b82
+      # 交付管道 NAS 冷归档：accepted candidate 字节镜像 + digest 验证 +
+      # artifact_replica_location verified 行。挂载点见下方 volumes。
+      HIVECREW_ARTIFACT_ARCHIVE_ROOT: /nas-archive
+      HIVECREW_ARTIFACT_ARCHIVE_STORAGE_ID: hive-nas-hivedata
+      HIVECREW_ARTIFACT_ARCHIVE_LOCATION_ID: nas-archive-01
+    volumes:
+      # NAS 冷归档（只追加，键位镜像 uploads 布局，object_ref=nas-archive://…）
+      - /Volumes/HiveData/hivecosm/artifact-archive:/nas-archive
   frontend:
     image: multica-web:uiconv20260816

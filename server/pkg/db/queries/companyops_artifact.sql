@@ -188,3 +188,31 @@ SELECT * FROM artifact_replica_location
 WHERE workspace_id = @workspace_id
   AND candidate_id = @candidate_id
 ORDER BY created_at ASC, id ASC;
+
+-- name: ListArchivePendingArtifactCandidates :many
+-- Candidates that have an approved-or-later lifecycle event (the archive
+-- mirrors accepted work only) and no verified nas-primary replica row yet.
+-- The NOT EXISTS anti-join keeps candidates without any ledger row in scope;
+-- LIMIT bounds the reconciler's byte traffic per cycle.
+SELECT c.*
+FROM artifact_candidate c
+WHERE c.workspace_id = @workspace_id
+  AND EXISTS (
+    SELECT 1
+    FROM artifact_event e
+    WHERE e.workspace_id = c.workspace_id
+      AND e.candidate_id = c.id
+      AND e.event_type IN ('approved', 'promotion_requested', 'promotion_succeeded', 'authority_readback_confirmed')
+  )
+  AND NOT EXISTS (
+    SELECT 1
+    FROM artifact_replica_location l
+    WHERE l.workspace_id = c.workspace_id
+      AND l.candidate_id = c.id
+      AND l.location_class = 'nas-primary'
+      AND l.state = 'verified'
+      AND l.digest = c.digest
+  )
+ORDER BY c.created_at ASC
+LIMIT @limit_rows;
+

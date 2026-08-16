@@ -156,7 +156,7 @@ func (q *Queries) LockContinuousDispatchIdentity(ctx context.Context, arg LockCo
 }
 
 const lockContinuousDispatchIssue = `-- name: LockContinuousDispatchIssue :one
-SELECT id, workspace_id, title, description, status, priority, assignee_type, assignee_id, creator_type, creator_id, parent_issue_id, acceptance_criteria, context_refs, position, due_date, created_at, updated_at, number, project_id, origin_type, origin_id, first_executed_at, start_date, metadata, stage, properties FROM issue
+SELECT id, workspace_id, title, description, status, priority, assignee_type, assignee_id, creator_type, creator_id, parent_issue_id, acceptance_criteria, context_refs, position, due_date, created_at, updated_at, number, project_id, origin_type, origin_id, first_executed_at, start_date, metadata, stage, properties, review_state, review_state_reason FROM issue
 WHERE id = $1 AND workspace_id = $2
 FOR SHARE
 `
@@ -199,6 +199,8 @@ func (q *Queries) LockContinuousDispatchIssue(ctx context.Context, arg LockConti
 		&i.Metadata,
 		&i.Stage,
 		&i.Properties,
+		&i.ReviewState,
+		&i.ReviewStateReason,
 	)
 	return i, err
 }
@@ -305,7 +307,7 @@ WHERE task.id = $10
   AND issue.id = task.issue_id
   AND issue.workspace_id = $1
   AND NOT (COALESCE(task.context, '{}'::jsonb) ? 'continuous_dispatch')
-RETURNING task.id, task.agent_id, task.issue_id, task.status, task.priority, task.dispatched_at, task.started_at, task.completed_at, task.result, task.error, task.created_at, task.context, task.runtime_id, task.session_id, task.work_dir, task.trigger_comment_id, task.chat_session_id, task.autopilot_run_id, task.attempt, task.max_attempts, task.parent_task_id, task.failure_reason, task.trigger_summary, task.force_fresh_session, task.is_leader_task, task.wait_reason, task.initiator_user_id, task.handoff_note, task.prepare_lease_expires_at, task.squad_id, task.runtime_mcp_overlay, task.escalation_for_task_id, task.fire_at, task.originator_user_id, task.runtime_connected_apps, task.coalesced_comment_ids, task.delivered_comment_ids, task.chat_input_task_id, task.chat_finalize_deferred_at, task.originator_source, task.delegated_from_task_id, task.retry_of_task_id, task.rerun_of_task_id, task.rule_version_id, task.trigger_evidence_kind, task.trigger_evidence_ref_id, task.accountable_user_id, task.session_rollout_missing, task.retired_session_id
+RETURNING task.id, task.agent_id, task.issue_id, task.status, task.priority, task.dispatched_at, task.started_at, task.completed_at, task.result, task.error, task.created_at, task.context, task.runtime_id, task.session_id, task.work_dir, task.trigger_comment_id, task.chat_session_id, task.autopilot_run_id, task.attempt, task.max_attempts, task.parent_task_id, task.failure_reason, task.trigger_summary, task.force_fresh_session, task.is_leader_task, task.wait_reason, task.initiator_user_id, task.handoff_note, task.prepare_lease_expires_at, task.squad_id, task.runtime_mcp_overlay, task.escalation_for_task_id, task.fire_at, task.originator_user_id, task.runtime_connected_apps, task.coalesced_comment_ids, task.delivered_comment_ids, task.chat_input_task_id, task.chat_finalize_deferred_at, task.originator_source, task.delegated_from_task_id, task.retry_of_task_id, task.rerun_of_task_id, task.rule_version_id, task.trigger_evidence_kind, task.trigger_evidence_ref_id, task.accountable_user_id, task.session_rollout_missing, task.retired_session_id, task.task_kind, task.review_target_task_id
 `
 
 type StampContinuousDispatchTaskIdentityParams struct {
@@ -385,6 +387,8 @@ func (q *Queries) StampContinuousDispatchTaskIdentity(ctx context.Context, arg S
 		&i.AccountableUserID,
 		&i.SessionRolloutMissing,
 		&i.RetiredSessionID,
+		&i.TaskKind,
+		&i.ReviewTargetTaskID,
 	)
 	return i, err
 }

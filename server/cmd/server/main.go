@@ -13,6 +13,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/multica-ai/multica/server/internal/analytics"
+	"github.com/multica-ai/multica/server/internal/companyops"
 	"github.com/multica-ai/multica/server/internal/daemonws"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/handler"
@@ -515,6 +516,18 @@ func main() {
 	if h.IssueService != nil {
 		if err := schedulerMgr.Register(scheduler.ProjectLifecycleReconcilerJob(pool, queries, h.IssueService)); err != nil {
 			slog.Warn("scheduler: failed to register project_lifecycle_reconciler job", "error", err)
+		}
+	}
+	// HIVECREW-DELIVERY-PIPELINE: accepted (approved-or-later) candidates are
+	// mirrored into the NAS cold archive with digest verification and a
+	// verified artifact_replica_location ledger row. Registered only when
+	// HIVECREW_ARTIFACT_ARCHIVE_ROOT names the mounted archive directory.
+	if archiveStore := companyops.NewNASArtifactArchiveStoreFromEnv(); archiveStore != nil && h.Storage != nil {
+		if err := schedulerMgr.Register(scheduler.ArtifactArchiveReconcilerJob(pool, queries, archiveStore, h.Storage)); err != nil {
+			slog.Warn("scheduler: failed to register artifact_archive_reconciler job", "error", err)
+		} else {
+			slog.Info("scheduler: artifact_archive_reconciler registered",
+				"archive_root", archiveStore.Root, "storage_id", archiveStore.StorageID())
 		}
 	}
 	go func() {

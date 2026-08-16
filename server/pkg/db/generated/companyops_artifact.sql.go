@@ -664,6 +664,75 @@ func (q *Queries) IsArtifactMaterializationExactlyReferenced(ctx context.Context
 	return exactly_referenced, err
 }
 
+const listArchivePendingArtifactCandidates = `-- name: ListArchivePendingArtifactCandidates :many
+SELECT c.id, c.workspace_id, c.lineage_id, c.revision, c.supersedes_id, c.storage_key, c.durable_object_ref, c.digest, c.filename, c.content_type, c.size_bytes, c.source_attachment_id, c.source_comment_id, c.idempotency_key, c.created_at
+FROM artifact_candidate c
+WHERE c.workspace_id = $1
+  AND EXISTS (
+    SELECT 1
+    FROM artifact_event e
+    WHERE e.workspace_id = c.workspace_id
+      AND e.candidate_id = c.id
+      AND e.event_type IN ('approved', 'promotion_requested', 'promotion_succeeded', 'authority_readback_confirmed')
+  )
+  AND NOT EXISTS (
+    SELECT 1
+    FROM artifact_replica_location l
+    WHERE l.workspace_id = c.workspace_id
+      AND l.candidate_id = c.id
+      AND l.location_class = 'nas-primary'
+      AND l.state = 'verified'
+      AND l.digest = c.digest
+  )
+ORDER BY c.created_at ASC
+LIMIT $2
+`
+
+type ListArchivePendingArtifactCandidatesParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	LimitRows   int32       `json:"limit_rows"`
+}
+
+// Candidates that have an approved-or-later lifecycle event (the archive
+// mirrors accepted work only) and no verified nas-primary replica row yet.
+// The NOT EXISTS anti-join keeps candidates without any ledger row in scope;
+// LIMIT bounds the reconciler's byte traffic per cycle.
+func (q *Queries) ListArchivePendingArtifactCandidates(ctx context.Context, arg ListArchivePendingArtifactCandidatesParams) ([]ArtifactCandidate, error) {
+	rows, err := q.db.Query(ctx, listArchivePendingArtifactCandidates, arg.WorkspaceID, arg.LimitRows)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ArtifactCandidate{}
+	for rows.Next() {
+		var i ArtifactCandidate
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.LineageID,
+			&i.Revision,
+			&i.SupersedesID,
+			&i.StorageKey,
+			&i.DurableObjectRef,
+			&i.Digest,
+			&i.Filename,
+			&i.ContentType,
+			&i.SizeBytes,
+			&i.SourceAttachmentID,
+			&i.SourceCommentID,
+			&i.IdempotencyKey,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listArtifactCandidatesByLineage = `-- name: ListArtifactCandidatesByLineage :many
 SELECT id, workspace_id, lineage_id, revision, supersedes_id, storage_key, durable_object_ref, digest, filename, content_type, size_bytes, source_attachment_id, source_comment_id, idempotency_key, created_at FROM artifact_candidate
 WHERE workspace_id = $1 AND lineage_id = $2
