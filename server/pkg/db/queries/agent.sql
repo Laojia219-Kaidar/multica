@@ -1614,11 +1614,11 @@ RETURNING *;
 -- be bypassed by NULL semantics.
 INSERT INTO agent_task_queue (
     agent_id, runtime_id, issue_id, status, priority, task_kind, review_target_task_id,
-    trigger_summary, context, originator_source, trigger_evidence_kind, trigger_evidence_ref_id
+    trigger_summary, context, handoff_note, originator_source, trigger_evidence_kind, trigger_evidence_ref_id
 )
 SELECT
     @agent_id, @runtime_id, @issue_id, 'queued', @priority, 'review', @review_target_task_id,
-    sqlc.narg(trigger_summary), @context, 'unattributed'::text, 'issue_delivery'::text, @review_target_task_id
+    sqlc.narg(trigger_summary), @context, sqlc.narg(handoff_note), 'unattributed'::text, 'issue_delivery'::text, @review_target_task_id
 WHERE NOT EXISTS (
     SELECT 1
     FROM issue review_issue
@@ -1635,16 +1635,45 @@ RETURNING *;
 -- A completed review is still a durable verdict for this exact candidate
 -- lineage. The issue row is locked by the review-cell transaction before this
 -- read, so checking the historical task closes the gap left by the open-only
--- unique index without requiring a migration. Cancelled tasks are excluded:
--- a cancelled round may be retried when the same candidate is explicitly
--- re-entered after cancellation.
+-- unique index without requiring a migration. A completed task only closes the
+-- lineage when it carries a structured verdict receipt. Free-form/malformed
+-- completions may therefore be requeued instead of becoming permanent orphans.
+-- Cancelled tasks are excluded: a cancelled round may be retried when the same
+-- candidate is explicitly re-entered after cancellation.
 SELECT * FROM agent_task_queue
 WHERE issue_id = $1
   AND task_kind = 'review'
   AND review_target_task_id = $2
-  AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'completed')
+  AND (
+      status IN ('queued', 'dispatched', 'running', 'waiting_local_directory')
+      OR (
+          status = 'completed'
+          AND COALESCE(result, '{}'::jsonb) ->> 'verdict_contract' = 'HIVECREW_REVIEW_VERDICT_V1'
+          AND COALESCE(result, '{}'::jsonb) ->> 'verdict' IN ('pass', 'revise')
+      )
+  )
 ORDER BY created_at DESC
 LIMIT 1;
+
+-- name: GetReviewTaskForUpdate :one
+-- Verdict reconciliation locks the issue first, then this exact review task,
+-- matching the ordinary WriteVerdict lock order and avoiding a task/issue
+-- deadlock during completion-event replay.
+SELECT * FROM agent_task_queue
+WHERE id = $1 AND task_kind = 'review'
+FOR UPDATE;
+
+-- name: StampCompletedReviewTaskVerdict :one
+-- The runtime has already completed the review Task. Preserve its raw output
+-- and atomically add the structured verdict receipt exactly once; surrounding
+-- issue/comment/repair writes share the same transaction and roll back with it.
+UPDATE agent_task_queue
+SET result = @result::jsonb
+WHERE id = @id
+  AND task_kind = 'review'
+  AND status = 'completed'
+  AND NOT (COALESCE(result, '{}'::jsonb) ? 'verdict_contract')
+RETURNING *;
 
 -- name: GetOpenReviewTaskForIssue :one
 -- The current open review task for an issue (the task whose agent_id is the

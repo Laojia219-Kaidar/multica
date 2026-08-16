@@ -2409,11 +2409,11 @@ func (q *Queries) CreateRetryTask(ctx context.Context, arg CreateRetryTaskParams
 const createReviewTask = `-- name: CreateReviewTask :one
 INSERT INTO agent_task_queue (
     agent_id, runtime_id, issue_id, status, priority, task_kind, review_target_task_id,
-    trigger_summary, context, originator_source, trigger_evidence_kind, trigger_evidence_ref_id
+    trigger_summary, context, handoff_note, originator_source, trigger_evidence_kind, trigger_evidence_ref_id
 )
 SELECT
     $1, $2, $3, 'queued', $4, 'review', $5,
-    $6, $7, 'unattributed'::text, 'issue_delivery'::text, $5
+    $6, $7, $8, 'unattributed'::text, 'issue_delivery'::text, $5
 WHERE NOT EXISTS (
     SELECT 1
     FROM issue review_issue
@@ -2435,6 +2435,7 @@ type CreateReviewTaskParams struct {
 	ReviewTargetTaskID pgtype.UUID `json:"review_target_task_id"`
 	TriggerSummary     pgtype.Text `json:"trigger_summary"`
 	Context            []byte      `json:"context"`
+	HandoffNote        pgtype.Text `json:"handoff_note"`
 }
 
 // Creates the idempotent review task for a delivered candidate. The ON CONFLICT
@@ -2455,6 +2456,7 @@ func (q *Queries) CreateReviewTask(ctx context.Context, arg CreateReviewTaskPara
 		arg.ReviewTargetTaskID,
 		arg.TriggerSummary,
 		arg.Context,
+		arg.HandoffNote,
 	)
 	var i AgentTaskQueue
 	err := row.Scan(
@@ -3752,7 +3754,14 @@ SELECT id, agent_id, issue_id, status, priority, dispatched_at, started_at, comp
 WHERE issue_id = $1
   AND task_kind = 'review'
   AND review_target_task_id = $2
-  AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'completed')
+  AND (
+      status IN ('queued', 'dispatched', 'running', 'waiting_local_directory')
+      OR (
+          status = 'completed'
+          AND COALESCE(result, '{}'::jsonb) ->> 'verdict_contract' = 'HIVECREW_REVIEW_VERDICT_V1'
+          AND COALESCE(result, '{}'::jsonb) ->> 'verdict' IN ('pass', 'revise')
+      )
+  )
 ORDER BY created_at DESC
 LIMIT 1
 `
@@ -3765,11 +3774,81 @@ type GetReviewTaskForCandidateParams struct {
 // A completed review is still a durable verdict for this exact candidate
 // lineage. The issue row is locked by the review-cell transaction before this
 // read, so checking the historical task closes the gap left by the open-only
-// unique index without requiring a migration. Cancelled tasks are excluded:
-// a cancelled round may be retried when the same candidate is explicitly
-// re-entered after cancellation.
+// unique index without requiring a migration. A completed task only closes the
+// lineage when it carries a structured verdict receipt. Free-form/malformed
+// completions may therefore be requeued instead of becoming permanent orphans.
+// Cancelled tasks are excluded: a cancelled round may be retried when the same
+// candidate is explicitly re-entered after cancellation.
 func (q *Queries) GetReviewTaskForCandidate(ctx context.Context, arg GetReviewTaskForCandidateParams) (AgentTaskQueue, error) {
 	row := q.db.QueryRow(ctx, getReviewTaskForCandidate, arg.IssueID, arg.ReviewTargetTaskID)
+	var i AgentTaskQueue
+	err := row.Scan(
+		&i.ID,
+		&i.AgentID,
+		&i.IssueID,
+		&i.Status,
+		&i.Priority,
+		&i.DispatchedAt,
+		&i.StartedAt,
+		&i.CompletedAt,
+		&i.Result,
+		&i.Error,
+		&i.CreatedAt,
+		&i.Context,
+		&i.RuntimeID,
+		&i.SessionID,
+		&i.WorkDir,
+		&i.TriggerCommentID,
+		&i.ChatSessionID,
+		&i.AutopilotRunID,
+		&i.Attempt,
+		&i.MaxAttempts,
+		&i.ParentTaskID,
+		&i.FailureReason,
+		&i.TriggerSummary,
+		&i.ForceFreshSession,
+		&i.IsLeaderTask,
+		&i.WaitReason,
+		&i.InitiatorUserID,
+		&i.HandoffNote,
+		&i.PrepareLeaseExpiresAt,
+		&i.SquadID,
+		&i.RuntimeMcpOverlay,
+		&i.EscalationForTaskID,
+		&i.FireAt,
+		&i.OriginatorUserID,
+		&i.RuntimeConnectedApps,
+		&i.CoalescedCommentIds,
+		&i.DeliveredCommentIds,
+		&i.ChatInputTaskID,
+		&i.ChatFinalizeDeferredAt,
+		&i.OriginatorSource,
+		&i.DelegatedFromTaskID,
+		&i.RetryOfTaskID,
+		&i.RerunOfTaskID,
+		&i.RuleVersionID,
+		&i.TriggerEvidenceKind,
+		&i.TriggerEvidenceRefID,
+		&i.AccountableUserID,
+		&i.SessionRolloutMissing,
+		&i.RetiredSessionID,
+		&i.TaskKind,
+		&i.ReviewTargetTaskID,
+	)
+	return i, err
+}
+
+const getReviewTaskForUpdate = `-- name: GetReviewTaskForUpdate :one
+SELECT id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, task_kind, review_target_task_id FROM agent_task_queue
+WHERE id = $1 AND task_kind = 'review'
+FOR UPDATE
+`
+
+// Verdict reconciliation locks the issue first, then this exact review task,
+// matching the ordinary WriteVerdict lock order and avoiding a task/issue
+// deadlock during completion-event replay.
+func (q *Queries) GetReviewTaskForUpdate(ctx context.Context, id pgtype.UUID) (AgentTaskQueue, error) {
+	row := q.db.QueryRow(ctx, getReviewTaskForUpdate, id)
 	var i AgentTaskQueue
 	err := row.Scan(
 		&i.ID,
@@ -6453,6 +6532,83 @@ func (q *Queries) SetTaskDeliveredCommentIDs(ctx context.Context, arg SetTaskDel
 	var delivered_comment_ids []pgtype.UUID
 	err := row.Scan(&delivered_comment_ids)
 	return delivered_comment_ids, err
+}
+
+const stampCompletedReviewTaskVerdict = `-- name: StampCompletedReviewTaskVerdict :one
+UPDATE agent_task_queue
+SET result = $1::jsonb
+WHERE id = $2
+  AND task_kind = 'review'
+  AND status = 'completed'
+  AND NOT (COALESCE(result, '{}'::jsonb) ? 'verdict_contract')
+RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, task_kind, review_target_task_id
+`
+
+type StampCompletedReviewTaskVerdictParams struct {
+	Result []byte      `json:"result"`
+	ID     pgtype.UUID `json:"id"`
+}
+
+// The runtime has already completed the review Task. Preserve its raw output
+// and atomically add the structured verdict receipt exactly once; surrounding
+// issue/comment/repair writes share the same transaction and roll back with it.
+func (q *Queries) StampCompletedReviewTaskVerdict(ctx context.Context, arg StampCompletedReviewTaskVerdictParams) (AgentTaskQueue, error) {
+	row := q.db.QueryRow(ctx, stampCompletedReviewTaskVerdict, arg.Result, arg.ID)
+	var i AgentTaskQueue
+	err := row.Scan(
+		&i.ID,
+		&i.AgentID,
+		&i.IssueID,
+		&i.Status,
+		&i.Priority,
+		&i.DispatchedAt,
+		&i.StartedAt,
+		&i.CompletedAt,
+		&i.Result,
+		&i.Error,
+		&i.CreatedAt,
+		&i.Context,
+		&i.RuntimeID,
+		&i.SessionID,
+		&i.WorkDir,
+		&i.TriggerCommentID,
+		&i.ChatSessionID,
+		&i.AutopilotRunID,
+		&i.Attempt,
+		&i.MaxAttempts,
+		&i.ParentTaskID,
+		&i.FailureReason,
+		&i.TriggerSummary,
+		&i.ForceFreshSession,
+		&i.IsLeaderTask,
+		&i.WaitReason,
+		&i.InitiatorUserID,
+		&i.HandoffNote,
+		&i.PrepareLeaseExpiresAt,
+		&i.SquadID,
+		&i.RuntimeMcpOverlay,
+		&i.EscalationForTaskID,
+		&i.FireAt,
+		&i.OriginatorUserID,
+		&i.RuntimeConnectedApps,
+		&i.CoalescedCommentIds,
+		&i.DeliveredCommentIds,
+		&i.ChatInputTaskID,
+		&i.ChatFinalizeDeferredAt,
+		&i.OriginatorSource,
+		&i.DelegatedFromTaskID,
+		&i.RetryOfTaskID,
+		&i.RerunOfTaskID,
+		&i.RuleVersionID,
+		&i.TriggerEvidenceKind,
+		&i.TriggerEvidenceRefID,
+		&i.AccountableUserID,
+		&i.SessionRolloutMissing,
+		&i.RetiredSessionID,
+		&i.TaskKind,
+		&i.ReviewTargetTaskID,
+	)
+	return i, err
 }
 
 const startAgentTask = `-- name: StartAgentTask :one

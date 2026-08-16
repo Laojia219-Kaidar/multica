@@ -83,11 +83,46 @@ SET context = COALESCE(task.context, '{}'::jsonb) || jsonb_build_object(
             'initiator_source', sqlc.narg('review_initiator_source')::text
         )
     )
-END
+END,
+    task_kind = CASE
+        WHEN sqlc.narg('review_source_task_id')::uuid IS NULL THEN task.task_kind
+        ELSE 'review'
+    END,
+    review_target_task_id = CASE
+        WHEN sqlc.narg('review_source_task_id')::uuid IS NULL THEN task.review_target_task_id
+        ELSE sqlc.narg('review_source_task_id')::uuid
+    END
 FROM issue
 WHERE task.id = @task_id
   AND task.issue_id = @issue_id
   AND issue.id = task.issue_id
   AND issue.workspace_id = @workspace_id
   AND NOT (COALESCE(task.context, '{}'::jsonb) ? 'continuous_dispatch')
+  AND (
+      sqlc.narg('review_source_task_id')::uuid IS NULL
+      OR (
+          task.task_kind = 'work'
+          AND task.review_target_task_id IS NULL
+          AND issue.status = 'in_review'
+      )
+  )
 RETURNING task.*;
+
+-- name: QueueIssueForContinuousReview :one
+-- The controlled review Task and the canonical acceptance-axis state are
+-- committed in the same outer transaction. NULL/owner_decision may enter a
+-- fresh queued round; an already-open round may be refreshed idempotently.
+-- revise_requested and terminal states deliberately match no rows so a new
+-- review can never pre-empt an outstanding repair or accepted history.
+UPDATE issue
+SET review_state = 'queued',
+    review_state_reason = NULL,
+    updated_at = now()
+WHERE id = @issue_id
+  AND workspace_id = @workspace_id
+  AND status = 'in_review'
+  AND (
+      review_state IS NULL
+      OR review_state IN ('queued', 'triaging', 'evidence_review', 'owner_decision')
+  )
+RETURNING *;

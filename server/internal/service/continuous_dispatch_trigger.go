@@ -230,7 +230,14 @@ func (s *ContinuousDispatchTriggerService) dispatchReviewIssue(
 				SourceTaskID:    item.SourceTaskID,
 				InitiatorSource: continuousDispatchReviewInitiatorSourceV1,
 			}
-			note := fmt.Sprintf("review_dispatch source_ref=%s source_issue_id=%s source_task_id=%s initiator_source=%s", item.SourceRef, item.IssueID, item.SourceTaskID, provenance.InitiatorSource)
+			note := fmt.Sprintf(
+				"review_dispatch source_ref=%s source_issue_id=%s source_task_id=%s initiator_source=%s\n\n%s",
+				item.SourceRef,
+				item.IssueID,
+				item.SourceTaskID,
+				provenance.InitiatorSource,
+				completedReviewVerdictHandoffNote(item.SourceTaskID),
+			)
 			return s.dispatchReviewShadowItem(ctx, workspaceID, projectID, item, actorUserID, note, provenance)
 		}
 		if len(page.Items) == 0 || offset+len(page.Items) >= page.Total {

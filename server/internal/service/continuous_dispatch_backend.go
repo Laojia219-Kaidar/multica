@@ -247,7 +247,24 @@ func (tx *productionContinuousDispatchTx) StampTaskIdentity(
 	if errors.Is(err, pgx.ErrNoRows) {
 		return db.AgentTaskQueue{}, ErrContinuousDispatchConflict
 	}
-	return stamped, err
+	if err != nil {
+		return db.AgentTaskQueue{}, err
+	}
+	if reviewProvenance == nil {
+		return stamped, nil
+	}
+	if stamped.TaskKind != TaskKindReview || stamped.ReviewTargetTaskID != params.ReviewSourceTaskID {
+		return db.AgentTaskQueue{}, ErrContinuousDispatchConflict
+	}
+	if _, err := tx.queries.QueueIssueForContinuousReview(ctx, db.QueueIssueForContinuousReviewParams{
+		IssueID:     parseDispatchUUID(identity.IssueID),
+		WorkspaceID: parseDispatchUUID(identity.WorkspaceID),
+	}); errors.Is(err, pgx.ErrNoRows) {
+		return db.AgentTaskQueue{}, ErrContinuousDispatchIssueDrift
+	} else if err != nil {
+		return db.AgentTaskQueue{}, fmt.Errorf("queue issue for continuous review: %w", err)
+	}
+	return stamped, nil
 }
 
 func (tx *productionContinuousDispatchTx) AppendReceipt(

@@ -49,7 +49,8 @@ const (
 // review_state_reason column stores "reason/sub_reason" so the review queue can
 // render a reason badge without reading issue.metadata.
 const (
-	ReviewEscalationReasonMissingLineage = "missing_candidate_lineage"
+	ReviewEscalationReasonMissingLineage  = "missing_candidate_lineage"
+	ReviewEscalationReasonVerdictContract = "review_verdict_contract"
 
 	LineageFailureNoSourceTaskID        = "no_source_task_id"
 	LineageFailureTaskNotFound          = "task_not_found"
@@ -59,6 +60,10 @@ const (
 	LineageFailureReviewerIsImplementer = "reviewer_is_implementer"
 	LineageFailureReviewerUnconfigured  = "reviewer_unconfigured"
 	LineageFailureReviewerUnavailable   = "reviewer_unavailable"
+	ReviewVerdictFailureMissingMarker   = "missing_marker"
+	ReviewVerdictFailureMalformedMarker = "malformed_marker"
+	ReviewVerdictFailureInvalidTarget   = "invalid_review_target"
+	ReviewVerdictFailurePassCoordinator = "pass_requires_coordinator"
 )
 
 var (
@@ -425,7 +430,8 @@ func (s *ReviewCellService) createReviewTask(ctx context.Context, qtx *db.Querie
 			String: fmt.Sprintf("Review delivered candidate for issue %q", issue.Title),
 			Valid:  true,
 		},
-		Context: payload,
+		Context:     payload,
+		HandoffNote: pgtype.Text{String: completedReviewVerdictHandoffNote(util.UUIDToString(candidate.ID)), Valid: true},
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil, nil
@@ -595,6 +601,183 @@ func (s *ReviewCellService) WriteVerdict(ctx context.Context, issueID pgtype.UUI
 	return result, err
 }
 
+// OnReviewTaskCompleted reconciles a runtime-completed review Task into the
+// canonical review-cell state machine. It accepts only the versioned final-line
+// verdict contract; arbitrary prose is never interpreted as PASS or REVISE.
+// The issue transition, structured Task result, Task-linked verdict comment,
+// and optional repair Task share one transaction and are idempotent on replay.
+func (s *ReviewCellService) OnReviewTaskCompleted(ctx context.Context, taskID pgtype.UUID) error {
+	var (
+		result              VerdictResult
+		input               VerdictInput
+		actor               ReviewActor
+		applied             bool
+		escalatedIssue      db.Issue
+		escalationSubReason string
+	)
+	err := s.runInTx(ctx, func(qtx *db.Queries) error {
+		initial, err := qtx.GetAgentTask(ctx, taskID)
+		if err != nil {
+			return fmt.Errorf("review cell: load completed review task: %w", err)
+		}
+		if initial.TaskKind != TaskKindReview || initial.Status != "completed" {
+			return nil
+		}
+		issue, err := qtx.GetIssueForUpdate(ctx, initial.IssueID)
+		if err != nil {
+			return fmt.Errorf("review cell: lock completed review issue: %w", err)
+		}
+		task, err := qtx.GetReviewTaskForUpdate(ctx, taskID)
+		if err != nil {
+			return fmt.Errorf("review cell: lock completed review task: %w", err)
+		}
+		if task.Status != "completed" || completedReviewResultHasVerdict(task.Result) {
+			return nil
+		}
+		if issue.Status != "in_review" {
+			return nil
+		}
+
+		candidate, err := qtx.GetAgentTask(ctx, task.ReviewTargetTaskID)
+		if err != nil || !candidate.IssueID.Valid || candidate.IssueID != issue.ID ||
+			candidate.Status != "completed" || (candidate.TaskKind != TaskKindWork && candidate.TaskKind != TaskKindRepair) ||
+			candidate.AgentID == task.AgentID {
+			escalatedIssue = issue
+			escalationSubReason = ReviewVerdictFailureInvalidTarget
+			return s.moveCompletedReviewToOwnerDecision(ctx, qtx, issue, escalationSubReason)
+		}
+
+		input, err = parseCompletedReviewVerdict(task.Result)
+		if err != nil {
+			escalatedIssue = issue
+			if errors.Is(err, ErrCompletedReviewVerdictMissing) {
+				escalationSubReason = ReviewVerdictFailureMissingMarker
+			} else {
+				escalationSubReason = ReviewVerdictFailureMalformedMarker
+			}
+			return s.moveCompletedReviewToOwnerDecision(ctx, qtx, issue, escalationSubReason)
+		}
+		actor = ReviewActor{ActorType: "agent", ActorID: task.AgentID}
+		if input.Verdict == "pass" && (!s.Config.CoordinatorAgentSet || task.AgentID != s.Config.CoordinatorAgentID) {
+			escalatedIssue = issue
+			escalationSubReason = ReviewVerdictFailurePassCoordinator
+			return s.moveCompletedReviewToOwnerDecision(ctx, qtx, issue, escalationSubReason)
+		}
+		if !issue.ReviewState.Valid || !isOpenReviewState(issue.ReviewState.String) || issue.ReviewState.String == ReviewStateOwnerDecision {
+			return ErrReviewStateClosed
+		}
+
+		target := ReviewStateReviseRequested
+		if input.Verdict == "pass" {
+			target = ReviewStateAccepted
+		}
+		if _, err := qtx.SetIssueReviewStateFromOpen(ctx, db.SetIssueReviewStateFromOpenParams{
+			ID:        issue.ID,
+			NewState:  pgtype.Text{String: target, Valid: true},
+			NewReason: pgtype.Text{},
+		}); err != nil {
+			return fmt.Errorf("review cell: completed verdict state transition: %w", err)
+		}
+
+		receipt := verdictReceipt{
+			Verdict:            input.Verdict,
+			ReviewState:        target,
+			ReviewerAgentID:    util.UUIDToString(task.AgentID),
+			CandidateTaskID:    util.UUIDToString(candidate.ID),
+			Notes:              input.Notes,
+			RepairRequirements: input.RepairRequirements,
+		}
+		merged, err := mergeCompletedReviewVerdictResult(task.Result, receipt)
+		if err != nil {
+			return fmt.Errorf("review cell: merge completed verdict result: %w", err)
+		}
+		if _, err := qtx.StampCompletedReviewTaskVerdict(ctx, db.StampCompletedReviewTaskVerdictParams{
+			ID: task.ID, Result: merged,
+		}); err != nil {
+			return fmt.Errorf("review cell: stamp completed verdict: %w", err)
+		}
+		if _, err := qtx.CreateComment(ctx, db.CreateCommentParams{
+			IssueID:      issue.ID,
+			WorkspaceID:  issue.WorkspaceID,
+			AuthorType:   actor.ActorType,
+			AuthorID:     actor.ActorID,
+			Content:      verdictCommentContent(input, task, candidate, actor),
+			Type:         "comment",
+			ParentID:     pgtype.UUID{},
+			SourceTaskID: task.ID,
+		}); err != nil {
+			return fmt.Errorf("review cell: persist completed verdict comment: %w", err)
+		}
+
+		result = VerdictResult{
+			IssueID: issue.ID, WorkspaceID: issue.WorkspaceID,
+			ReviewState: target, ReviewTaskID: task.ID,
+		}
+		if input.Verdict == "pass" {
+			if _, err := qtx.UpdateIssueStatus(ctx, db.UpdateIssueStatusParams{
+				ID: issue.ID, Status: "done", WorkspaceID: issue.WorkspaceID,
+			}); err != nil {
+				return fmt.Errorf("review cell: complete accepted issue: %w", err)
+			}
+			if _, err := qtx.ClearIssueReviewState(ctx, issue.ID); err != nil {
+				return fmt.Errorf("review cell: clear accepted review state: %w", err)
+			}
+		} else {
+			repairTask, err := s.createRepairTask(ctx, qtx, issue, candidate, task, input)
+			if err != nil {
+				return err
+			}
+			result.RepairTaskID = repairTask.ID
+		}
+		applied = true
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	if escalationSubReason != "" {
+		s.publishEscalated(ctx, escalatedIssue, ReviewEscalationReasonVerdictContract, escalationSubReason)
+	} else if applied {
+		s.publishVerdict(ctx, result, actor, input)
+	}
+	return nil
+}
+
+func (s *ReviewCellService) moveCompletedReviewToOwnerDecision(
+	ctx context.Context,
+	qtx *db.Queries,
+	issue db.Issue,
+	subReason string,
+) error {
+	reason := ReviewEscalationReasonVerdictContract + "/" + subReason
+	if issue.ReviewState.Valid && issue.ReviewState.String == ReviewStateOwnerDecision {
+		return nil
+	}
+	if !issue.ReviewState.Valid {
+		_, err := qtx.SetIssueReviewState(ctx, db.SetIssueReviewStateParams{
+			ID:            issue.ID,
+			ExpectedState: pgtype.Text{},
+			NewState:      pgtype.Text{String: ReviewStateOwnerDecision, Valid: true},
+			NewReason:     pgtype.Text{String: reason, Valid: true},
+		})
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		return err
+	}
+	if !isOpenReviewState(issue.ReviewState.String) {
+		return ErrReviewStateClosed
+	}
+	_, err := qtx.SetIssueReviewStateFromOpen(ctx, db.SetIssueReviewStateFromOpenParams{
+		ID: issue.ID, NewState: pgtype.Text{String: ReviewStateOwnerDecision, Valid: true},
+		NewReason: pgtype.Text{String: reason, Valid: true},
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	return err
+}
+
 func (s *ReviewCellService) createRepairTask(ctx context.Context, qtx *db.Queries, issue db.Issue, candidate db.AgentTaskQueue, reviewTask db.AgentTaskQueue, in VerdictInput) (*db.AgentTaskQueue, error) {
 	existing, err := qtx.GetRepairTaskByEvidence(ctx, db.GetRepairTaskByEvidenceParams{
 		IssueID:              issue.ID,
@@ -746,10 +929,11 @@ func (s *ReviewCellService) Requeue(ctx context.Context, issueID pgtype.UUID, ac
 		if err != nil {
 			return s.failClosedFromOpen(ctx, qtx, issue, lineageFailureForErr(err))
 		}
-		if _, err := qtx.SetIssueReviewStateFromOpen(ctx, db.SetIssueReviewStateFromOpenParams{
-			ID:        issue.ID,
-			NewState:  pgtype.Text{String: ReviewStateQueued, Valid: true},
-			NewReason: pgtype.Text{},
+		if _, err := qtx.SetIssueReviewState(ctx, db.SetIssueReviewStateParams{
+			ID:            issue.ID,
+			ExpectedState: pgtype.Text{String: ReviewStateOwnerDecision, Valid: true},
+			NewState:      pgtype.Text{String: ReviewStateQueued, Valid: true},
+			NewReason:     pgtype.Text{},
 		}); err != nil {
 			return fmt.Errorf("review cell: requeue transition: %w", err)
 		}

@@ -105,6 +105,10 @@ func (tx *fakeContinuousDispatchTx) StampTaskIdentity(
 		return db.AgentTaskQueue{}, err
 	}
 	task.Context = contextValue
+	if reviewProvenance != nil {
+		task.TaskKind = TaskKindReview
+		task.ReviewTargetTaskID = parseDispatchUUID(reviewProvenance.SourceTaskID)
+	}
 	tx.stampedTask = task
 	return task, nil
 }
@@ -268,6 +272,14 @@ func TestContinuousDispatchReviewPersistsStructuredProvenanceInReceiptAndTaskCon
 	}
 	if !continuousDispatchReviewProvenanceEqual(contextValue.ReviewDispatch, req.reviewProvenance) {
 		t.Fatalf("task context review provenance = %+v, want %+v", contextValue.ReviewDispatch, req.reviewProvenance)
+	}
+	if backend.stampedTask.TaskKind != TaskKindReview ||
+		backend.stampedTask.ReviewTargetTaskID != parseDispatchUUID(req.reviewProvenance.SourceTaskID) {
+		t.Fatalf("review task kind/target = %q/%s, want review/%s",
+			backend.stampedTask.TaskKind,
+			shadowUUIDString(backend.stampedTask.ReviewTargetTaskID),
+			req.reviewProvenance.SourceTaskID,
+		)
 	}
 	replayed, err := NewContinuousDispatchService(backend).Dispatch(context.Background(), req)
 	if err != nil {

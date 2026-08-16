@@ -139,6 +139,10 @@ func (s *ContinuousDispatchService) Dispatch(
 				if loadErr != nil {
 					return ErrContinuousDispatchConflict
 				}
+				sourceTaskID := parseDispatchUUID(req.reviewProvenance.SourceTaskID)
+				if storedTask.TaskKind != TaskKindReview || storedTask.ReviewTargetTaskID != sourceTaskID {
+					return ErrContinuousDispatchConflict
+				}
 				storedProvenance, provenanceErr := continuousDispatchReviewProvenanceFromTaskContext(storedTask.Context, req.Identity)
 				if provenanceErr != nil {
 					return ErrContinuousDispatchConflict
@@ -177,6 +181,12 @@ func (s *ContinuousDispatchService) Dispatch(
 		task, err = tx.StampTaskIdentity(ctx, task, req.Identity, req.reviewProvenance)
 		if err != nil {
 			return fmt.Errorf("stamp continuous dispatch task identity: %w", err)
+		}
+		if req.reviewProvenance != nil {
+			sourceTaskID := parseDispatchUUID(req.reviewProvenance.SourceTaskID)
+			if task.TaskKind != TaskKindReview || task.ReviewTargetTaskID != sourceTaskID {
+				return ErrContinuousDispatchRouteDrift
+			}
 		}
 
 		receipt = ContinuousDispatchReceipt{

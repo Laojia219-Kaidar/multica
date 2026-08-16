@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/url"
 	"os"
@@ -425,13 +426,20 @@ func TestReviewCell_CompletedCandidateConcurrentReentry(t *testing.T) {
 		}
 	}
 
-	var count int64
+	var count, openCount int64
 	if err := f.pool.QueryRow(ctx,
 		`SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND task_kind = 'review'`, f.issueID).Scan(&count); err != nil {
 		t.Fatalf("count review tasks: %v", err)
 	}
-	if count != 1 {
-		t.Fatalf("review task count after concurrent reentry = %d, want one historical task", count)
+	if err := f.pool.QueryRow(ctx,
+		`SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND task_kind = 'review' AND status IN ('queued','dispatched','running','waiting_local_directory')`, f.issueID).Scan(&openCount); err != nil {
+		t.Fatalf("count open review tasks: %v", err)
+	}
+	// A completed review without a canonical verdict is invalid and may be
+	// retried. All concurrent re-entry calls must collapse into exactly one
+	// fresh open task alongside the single historical malformed completion.
+	if count != 2 || openCount != 1 {
+		t.Fatalf("review tasks after concurrent malformed reentry = total %d open %d, want 2/1", count, openCount)
 	}
 }
 
@@ -478,6 +486,164 @@ func TestReviewCell_AutoSelectReviewer(t *testing.T) {
 	}
 	if !task.ReviewTargetTaskID.Valid {
 		t.Fatalf("review target task missing")
+	}
+}
+
+func completeRuntimeReviewTask(t *testing.T, ctx context.Context, f reviewCellFixture, taskID pgtype.UUID, output string) {
+	t.Helper()
+	result := completedReviewResult(t, output)
+	if _, err := f.pool.Exec(ctx,
+		`UPDATE agent_task_queue SET status = 'completed', completed_at = now(), result = $2::jsonb WHERE id = $1`,
+		taskID, result); err != nil {
+		t.Fatalf("complete runtime review task: %v", err)
+	}
+}
+
+func TestReviewCell_CompletedReviewReviseRepairReReview(t *testing.T) {
+	f := newReviewCellFixture(t, true)
+	ctx := context.Background()
+	svc := newReviewCellServiceForFixture(f, cfgWithReviewerAndCoordinator(f))
+
+	if err := svc.OnIssueEnteredReview(ctx, f.issueID); err != nil {
+		t.Fatalf("OnIssueEnteredReview: %v", err)
+	}
+	reviewTask := mustOpenReviewTask(t, ctx, f)
+	if !reviewTask.HandoffNote.Valid || !strings.Contains(reviewTask.HandoffNote.String, completedReviewVerdictMarkerV1) {
+		t.Fatalf("review handoff note does not carry strict verdict contract: %#v", reviewTask.HandoffNote)
+	}
+	output := "review evidence\n" + completedReviewVerdictMarkerV1 + ` {"verdict":"revise","notes":"missing regression coverage","repair_requirements":["add the regression test"]}`
+	completeRuntimeReviewTask(t, ctx, f, reviewTask.ID, output)
+
+	if err := svc.OnReviewTaskCompleted(ctx, reviewTask.ID); err != nil {
+		t.Fatalf("OnReviewTaskCompleted: %v", err)
+	}
+	if err := svc.OnReviewTaskCompleted(ctx, reviewTask.ID); err != nil {
+		t.Fatalf("OnReviewTaskCompleted replay: %v", err)
+	}
+	issue := mustGetIssue(t, ctx, f)
+	if !issue.ReviewState.Valid || issue.ReviewState.String != ReviewStateReviseRequested {
+		t.Fatalf("review_state = %#v, want revise_requested", issue.ReviewState)
+	}
+
+	completedReview, err := f.queries.GetAgentTask(ctx, reviewTask.ID)
+	if err != nil {
+		t.Fatalf("load completed review: %v", err)
+	}
+	var result map[string]any
+	if err := json.Unmarshal(completedReview.Result, &result); err != nil {
+		t.Fatalf("decode completed review result: %v", err)
+	}
+	if result["output"] != output || result["verdict"] != "revise" || result["verdict_contract"] != completedReviewVerdictMarkerV1 {
+		t.Fatalf("completed review result is not a structured, output-preserving verdict: %#v", result)
+	}
+
+	var verdictComments, repairTasks int
+	if err := f.pool.QueryRow(ctx, `SELECT count(*) FROM comment WHERE issue_id = $1 AND source_task_id = $2`, f.issueID, reviewTask.ID).Scan(&verdictComments); err != nil {
+		t.Fatalf("count verdict comments: %v", err)
+	}
+	if verdictComments != 1 {
+		t.Fatalf("verdict comments = %d, want 1", verdictComments)
+	}
+	if err := f.pool.QueryRow(ctx, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND task_kind = 'repair' AND trigger_evidence_ref_id = $2`, f.issueID, reviewTask.ID).Scan(&repairTasks); err != nil {
+		t.Fatalf("count repair tasks: %v", err)
+	}
+	if repairTasks != 1 {
+		t.Fatalf("repair tasks = %d, want 1", repairTasks)
+	}
+	repairTask, err := f.queries.GetRepairTaskByEvidence(ctx, db.GetRepairTaskByEvidenceParams{IssueID: f.issueID, TriggerEvidenceRefID: reviewTask.ID})
+	if err != nil {
+		t.Fatalf("load repair task: %v", err)
+	}
+	if _, err := f.pool.Exec(ctx, `UPDATE agent_task_queue SET status = 'completed', completed_at = now(), result = '{"output":"repaired"}'::jsonb WHERE id = $1`, repairTask.ID); err != nil {
+		t.Fatalf("complete repair task: %v", err)
+	}
+	if err := svc.OnRepairTaskCompleted(ctx, repairTask.ID); err != nil {
+		t.Fatalf("OnRepairTaskCompleted: %v", err)
+	}
+	if err := svc.OnRepairTaskCompleted(ctx, repairTask.ID); err != nil {
+		t.Fatalf("OnRepairTaskCompleted replay: %v", err)
+	}
+	reReviewTask := mustOpenReviewTask(t, ctx, f)
+	if uuidEqual(reReviewTask.ID, reviewTask.ID) || !uuidEqual(reReviewTask.ReviewTargetTaskID, repairTask.ID) {
+		t.Fatalf("fresh re-review lineage = task %s target %s, want new task targeting repair %s",
+			uuidString(reReviewTask.ID), uuidString(reReviewTask.ReviewTargetTaskID), uuidString(repairTask.ID))
+	}
+	if !reReviewTask.HandoffNote.Valid || !strings.Contains(reReviewTask.HandoffNote.String, uuidString(repairTask.ID)) {
+		t.Fatalf("re-review handoff note does not identify repaired candidate: %#v", reReviewTask.HandoffNote)
+	}
+}
+
+func TestReviewCell_CompletedReviewMalformedFailsClosedAndCanRequeue(t *testing.T) {
+	f := newReviewCellFixture(t, true)
+	ctx := context.Background()
+	svc := newReviewCellServiceForFixture(f, cfgWithReviewerAndCoordinator(f))
+	if err := svc.OnIssueEnteredReview(ctx, f.issueID); err != nil {
+		t.Fatalf("OnIssueEnteredReview: %v", err)
+	}
+	reviewTask := mustOpenReviewTask(t, ctx, f)
+	completeRuntimeReviewTask(t, ctx, f, reviewTask.ID, "REVISE in unstructured prose")
+	if err := svc.OnReviewTaskCompleted(ctx, reviewTask.ID); err != nil {
+		t.Fatalf("OnReviewTaskCompleted malformed: %v", err)
+	}
+	issue := mustGetIssue(t, ctx, f)
+	if issue.ReviewState.String != ReviewStateOwnerDecision || !strings.Contains(issue.ReviewStateReason.String, ReviewVerdictFailureMissingMarker) {
+		t.Fatalf("malformed review did not fail closed: state=%#v reason=%#v", issue.ReviewState, issue.ReviewStateReason)
+	}
+	var repairTasks int
+	if err := f.pool.QueryRow(ctx, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND task_kind = 'repair'`, f.issueID).Scan(&repairTasks); err != nil {
+		t.Fatalf("count repair tasks: %v", err)
+	}
+	if repairTasks != 0 {
+		t.Fatalf("malformed review created %d repair tasks, want 0", repairTasks)
+	}
+
+	res, err := svc.Requeue(ctx, f.issueID, ReviewActor{ActorType: "agent", ActorID: f.coordinator})
+	if err != nil {
+		t.Fatalf("Requeue malformed review: %v", err)
+	}
+	if !res.ReviewTaskCreated || res.ReviewState != ReviewStateQueued {
+		t.Fatalf("requeue result = %#v, want fresh queued review", res)
+	}
+	newReview := mustOpenReviewTask(t, ctx, f)
+	if uuidEqual(newReview.ID, reviewTask.ID) || !uuidEqual(newReview.ReviewTargetTaskID, f.candidate.ID) {
+		t.Fatalf("requeue did not create a fresh review for the same exact candidate")
+	}
+}
+
+func TestReviewCell_CompletedReviewPassRequiresCoordinator(t *testing.T) {
+	f := newReviewCellFixture(t, true)
+	ctx := context.Background()
+	cfg := cfgWithReviewerAndCoordinator(f)
+	cfg.ReviewerAgentID = f.coordinator
+	svc := newReviewCellServiceForFixture(f, cfg)
+	if err := svc.OnIssueEnteredReview(ctx, f.issueID); err != nil {
+		t.Fatalf("OnIssueEnteredReview: %v", err)
+	}
+	reviewTask := mustOpenReviewTask(t, ctx, f)
+	if !uuidEqual(reviewTask.AgentID, f.coordinator) {
+		t.Fatalf("review task agent = %s, want coordinator", uuidString(reviewTask.AgentID))
+	}
+	output := completedReviewVerdictMarkerV1 + ` {"verdict":"pass","notes":"all checks passed","repair_requirements":[]}`
+	completeRuntimeReviewTask(t, ctx, f, reviewTask.ID, output)
+	if err := svc.OnReviewTaskCompleted(ctx, reviewTask.ID); err != nil {
+		t.Fatalf("OnReviewTaskCompleted pass: %v", err)
+	}
+	if err := svc.OnReviewTaskCompleted(ctx, reviewTask.ID); err != nil {
+		t.Fatalf("OnReviewTaskCompleted pass replay: %v", err)
+	}
+	issue := mustGetIssue(t, ctx, f)
+	if issue.Status != "done" || issue.ReviewState.Valid {
+		t.Fatalf("accepted issue = status %q review_state %#v, want done with cleared state", issue.Status, issue.ReviewState)
+	}
+	var verdictComments, repairTasks int
+	if err := f.pool.QueryRow(ctx, `SELECT count(*) FROM comment WHERE issue_id = $1 AND source_task_id = $2`, f.issueID, reviewTask.ID).Scan(&verdictComments); err != nil {
+		t.Fatalf("count verdict comments: %v", err)
+	}
+	if err := f.pool.QueryRow(ctx, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND task_kind = 'repair'`, f.issueID).Scan(&repairTasks); err != nil {
+		t.Fatalf("count repair tasks: %v", err)
+	}
+	if verdictComments != 1 || repairTasks != 0 {
+		t.Fatalf("pass replay side effects: comments=%d repairs=%d, want 1/0", verdictComments, repairTasks)
 	}
 }
 

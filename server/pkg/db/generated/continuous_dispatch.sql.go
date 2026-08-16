@@ -278,6 +278,67 @@ func (q *Queries) LockReviewSourceTaskForContinuousDispatch(ctx context.Context,
 	return i, err
 }
 
+const queueIssueForContinuousReview = `-- name: QueueIssueForContinuousReview :one
+UPDATE issue
+SET review_state = 'queued',
+    review_state_reason = NULL,
+    updated_at = now()
+WHERE id = $1
+  AND workspace_id = $2
+  AND status = 'in_review'
+  AND (
+      review_state IS NULL
+      OR review_state IN ('queued', 'triaging', 'evidence_review', 'owner_decision')
+  )
+RETURNING id, workspace_id, title, description, status, priority, assignee_type, assignee_id, creator_type, creator_id, parent_issue_id, acceptance_criteria, context_refs, position, due_date, created_at, updated_at, number, project_id, origin_type, origin_id, first_executed_at, start_date, metadata, stage, properties, review_state, review_state_reason
+`
+
+type QueueIssueForContinuousReviewParams struct {
+	IssueID     pgtype.UUID `json:"issue_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+// The controlled review Task and the canonical acceptance-axis state are
+// committed in the same outer transaction. NULL/owner_decision may enter a
+// fresh queued round; an already-open round may be refreshed idempotently.
+// revise_requested and terminal states deliberately match no rows so a new
+// review can never pre-empt an outstanding repair or accepted history.
+func (q *Queries) QueueIssueForContinuousReview(ctx context.Context, arg QueueIssueForContinuousReviewParams) (Issue, error) {
+	row := q.db.QueryRow(ctx, queueIssueForContinuousReview, arg.IssueID, arg.WorkspaceID)
+	var i Issue
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.Title,
+		&i.Description,
+		&i.Status,
+		&i.Priority,
+		&i.AssigneeType,
+		&i.AssigneeID,
+		&i.CreatorType,
+		&i.CreatorID,
+		&i.ParentIssueID,
+		&i.AcceptanceCriteria,
+		&i.ContextRefs,
+		&i.Position,
+		&i.DueDate,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Number,
+		&i.ProjectID,
+		&i.OriginType,
+		&i.OriginID,
+		&i.FirstExecutedAt,
+		&i.StartDate,
+		&i.Metadata,
+		&i.Stage,
+		&i.Properties,
+		&i.ReviewState,
+		&i.ReviewStateReason,
+	)
+	return i, err
+}
+
 const stampContinuousDispatchTaskIdentity = `-- name: StampContinuousDispatchTaskIdentity :one
 UPDATE agent_task_queue AS task
 SET context = COALESCE(task.context, '{}'::jsonb) || jsonb_build_object(
@@ -300,13 +361,29 @@ SET context = COALESCE(task.context, '{}'::jsonb) || jsonb_build_object(
             'initiator_source', $9::text
         )
     )
-END
+END,
+    task_kind = CASE
+        WHEN $6::uuid IS NULL THEN task.task_kind
+        ELSE 'review'
+    END,
+    review_target_task_id = CASE
+        WHEN $6::uuid IS NULL THEN task.review_target_task_id
+        ELSE $6::uuid
+    END
 FROM issue
 WHERE task.id = $10
   AND task.issue_id = $2
   AND issue.id = task.issue_id
   AND issue.workspace_id = $1
   AND NOT (COALESCE(task.context, '{}'::jsonb) ? 'continuous_dispatch')
+  AND (
+      $6::uuid IS NULL
+      OR (
+          task.task_kind = 'work'
+          AND task.review_target_task_id IS NULL
+          AND issue.status = 'in_review'
+      )
+  )
 RETURNING task.id, task.agent_id, task.issue_id, task.status, task.priority, task.dispatched_at, task.started_at, task.completed_at, task.result, task.error, task.created_at, task.context, task.runtime_id, task.session_id, task.work_dir, task.trigger_comment_id, task.chat_session_id, task.autopilot_run_id, task.attempt, task.max_attempts, task.parent_task_id, task.failure_reason, task.trigger_summary, task.force_fresh_session, task.is_leader_task, task.wait_reason, task.initiator_user_id, task.handoff_note, task.prepare_lease_expires_at, task.squad_id, task.runtime_mcp_overlay, task.escalation_for_task_id, task.fire_at, task.originator_user_id, task.runtime_connected_apps, task.coalesced_comment_ids, task.delivered_comment_ids, task.chat_input_task_id, task.chat_finalize_deferred_at, task.originator_source, task.delegated_from_task_id, task.retry_of_task_id, task.rerun_of_task_id, task.rule_version_id, task.trigger_evidence_kind, task.trigger_evidence_ref_id, task.accountable_user_id, task.session_rollout_missing, task.retired_session_id, task.task_kind, task.review_target_task_id
 `
 

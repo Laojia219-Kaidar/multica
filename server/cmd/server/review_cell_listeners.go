@@ -21,6 +21,7 @@ import (
 //   - issue re-enters in_review with a pending/revise round -> supersede the old
 //     candidate's open review task and start a fresh round;
 //   - issue leaves in_review -> cancel open review tasks and reset review_state;
+//   - a review task completes -> strict PASS/REVISE reconciliation;
 //   - a repair task completes -> independent re-review (fresh review task).
 //
 // Every transition is idempotent (guarded state transitions + the partial
@@ -72,6 +73,10 @@ func registerReviewCellListeners(bus *events.Bus, svc *service.ReviewCellService
 		id, err := util.ParseUUID(taskID)
 		if err != nil {
 			return
+		}
+		if err := svc.OnReviewTaskCompleted(ctx, id); err != nil {
+			slog.Error("review cell listener: review task completed",
+				"task_id", taskID, "error", err)
 		}
 		if err := svc.OnRepairTaskCompleted(ctx, id); err != nil {
 			slog.Error("review cell listener: repair task completed",

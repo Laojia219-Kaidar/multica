@@ -283,8 +283,22 @@ func TestProductionContinuousDispatchReviewSourceLineageAndDrift(t *testing.T) {
 		if storedTask.AgentID != reviewerID {
 			t.Fatalf("stored review task agent = %s, want selected independent reviewer %s", util.UUIDToString(storedTask.AgentID), util.UUIDToString(reviewerID))
 		}
+		if storedTask.TaskKind != TaskKindReview || storedTask.ReviewTargetTaskID != sourceTaskID {
+			t.Fatalf("stored review task kind/target = %q/%s, want review/%s",
+				storedTask.TaskKind,
+				util.UUIDToString(storedTask.ReviewTargetTaskID),
+				util.UUIDToString(sourceTaskID),
+			)
+		}
 		if !continuousDispatchReviewProvenanceEqual(contextValue.ReviewDispatch, req.reviewProvenance) {
 			t.Fatalf("stored review provenance = %+v, want %+v", contextValue.ReviewDispatch, req.reviewProvenance)
+		}
+		storedIssue, issueErr := queries.GetIssue(ctx, fixture.issueID)
+		if issueErr != nil {
+			t.Fatalf("read queued review issue: %v", issueErr)
+		}
+		if !storedIssue.ReviewState.Valid || storedIssue.ReviewState.String != ReviewStateQueued || storedIssue.ReviewStateReason.Valid {
+			t.Fatalf("stored review state/reason = %+v/%+v, want queued/NULL", storedIssue.ReviewState, storedIssue.ReviewStateReason)
 		}
 		replayed, replayErr := dispatcher.Dispatch(ctx, req)
 		if replayErr != nil {
