@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -20,12 +21,17 @@ import (
 // project/issue/task truth. Every write is preview-first, fail-closed on
 // missing lead or duplicate authority, and idempotent.
 type ProjectLifecycleControlService struct {
-	Queries *db.Queries
-	Tasks   *TaskService
+	Queries   *db.Queries
+	Tasks     *TaskService
+	TxStarter TxStarter
 }
 
 func NewProjectLifecycleControlService(q *db.Queries, tasks *TaskService) *ProjectLifecycleControlService {
-	return &ProjectLifecycleControlService{Queries: q, Tasks: tasks}
+	var txStarter TxStarter
+	if tasks != nil {
+		txStarter = tasks.TxStarter
+	}
+	return &ProjectLifecycleControlService{Queries: q, Tasks: tasks, TxStarter: txStarter}
 }
 
 // ControlAction is the closed set of Slice 2 project control operations.
@@ -63,6 +69,7 @@ var (
 	ErrProjectLifecycleLeadRequired        = errors.New("accountable lead required")
 	ErrProjectLifecycleNoFrontier          = errors.New("no ready frontier issue")
 	ErrProjectLifecycleIdempotencyRequired = errors.New("idempotency key required")
+	ErrProjectLifecycleTransactionRequired = errors.New("project lifecycle transaction starter required")
 )
 
 // validateProjectControl checks the fail-closed gates shared by every action.
@@ -443,25 +450,40 @@ func (s *ProjectLifecycleControlService) RepairTerminalProjection(ctx context.Co
 	if strings.TrimSpace(idempotencyKey) == "" {
 		return TerminalProjectionRepairReceipt{}, ErrProjectLifecycleIdempotencyRequired
 	}
-	proj, err := s.Queries.GetProjectInWorkspace(ctx, db.GetProjectInWorkspaceParams{ID: projectID, WorkspaceID: workspaceID})
-	if err != nil {
-		return TerminalProjectionRepairReceipt{}, ErrProjectLifecycleNotFound
+	if s.TxStarter == nil {
+		return TerminalProjectionRepairReceipt{}, ErrProjectLifecycleTransactionRequired
 	}
-	if prior, err := s.receiptGuard(ctx, workspaceID, projectID, ActionRepairTerminalProjection, idempotencyKey); err != nil {
+	tx, err := s.TxStarter.Begin(ctx)
+	if err != nil {
+		return TerminalProjectionRepairReceipt{}, err
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+
+	queries := s.Queries.WithTx(tx)
+	proj, err := queries.GetProjectInWorkspaceForUpdate(ctx, db.GetProjectInWorkspaceForUpdateParams{
+		ID: projectID, WorkspaceID: workspaceID,
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return TerminalProjectionRepairReceipt{}, ErrProjectLifecycleNotFound
+		}
+		return TerminalProjectionRepairReceipt{}, err
+	}
+	if prior, err := receiptGuardWithQueries(ctx, queries, workspaceID, projectID, ActionRepairTerminalProjection, idempotencyKey); err != nil {
 		return TerminalProjectionRepairReceipt{}, err
 	} else if prior != nil {
-		result := terminalProjectionRepairReceipt(receiptToControl(*prior, true))
-		if prior.BeforeStatus == "cancelled" {
-			result.Finding = string(TerminalProjectionCancelledWithActive)
-			result.NextAction = "stop active tasks or record disposition; cancelled projects are never reopened"
-		} else if prior.BeforeStatus == "completed" && prior.AfterStatus == "in_progress" {
-			result.Finding = string(TerminalProjectionCompletedWithOpenWork)
-			result.NextAction = "repaired stale completed projection; continue normal lifecycle reconciliation"
+		result := replayTerminalProjectionRepair(*prior)
+		if err := tx.Commit(ctx); err != nil {
+			return TerminalProjectionRepairReceipt{}, err
 		}
 		return result, nil
 	}
 
-	projector := NewProjectLifecycleProjector(s.Queries)
+	// Re-read the issue/task projection through the same transaction that owns
+	// the locked project row. The status change and receipt below therefore
+	// cannot be observed independently, and a competing repair of this project
+	// waits until this decision is committed or rolled back.
+	projector := NewProjectLifecycleProjector(queries)
 	snap, err := projector.GetSnapshot(ctx, workspaceID, projectID)
 	if err != nil {
 		return TerminalProjectionRepairReceipt{}, err
@@ -481,7 +503,7 @@ func (s *ProjectLifecycleControlService) RepairTerminalProjection(ctx context.Co
 		receipt.Blockers = []string{"TERMINAL_PROJECTION_NOT_INCONSISTENT"}
 		result.Blockers = receipt.Blockers
 		result.NextAction = "no repair: require a completed project with nonterminal issue(s) or active task(s)"
-	} else if err := s.setProjectStatus(ctx, proj, "in_progress"); err != nil {
+	} else if err := setProjectStatusWithQueries(ctx, queries, proj, "in_progress"); err != nil {
 		return TerminalProjectionRepairReceipt{}, err
 	} else {
 		receipt.Applied = true
@@ -490,12 +512,38 @@ func (s *ProjectLifecycleControlService) RepairTerminalProjection(ctx context.Co
 		result.Finding = string(TerminalProjectionCompletedWithOpenWork)
 		result.NextAction = "repaired stale completed projection; continue normal lifecycle reconciliation"
 	}
-	stored, err := s.finish(ctx, workspaceID, receipt)
+	stored, err := finishWithQueries(ctx, queries, workspaceID, receipt)
 	if err != nil {
 		return TerminalProjectionRepairReceipt{}, err
 	}
 	result.ControlReceipt = stored
+	if err := tx.Commit(ctx); err != nil {
+		return TerminalProjectionRepairReceipt{}, err
+	}
 	return result, nil
+}
+
+func replayTerminalProjectionRepair(prior db.ProjectLifecycleReceipt) TerminalProjectionRepairReceipt {
+	result := terminalProjectionRepairReceipt(receiptToControl(prior, true))
+	if prior.BeforeStatus == "cancelled" && hasLifecycleBlocker(result.Blockers, "CANCELLED_NEVER_REOPEN") {
+		result.Finding = string(TerminalProjectionCancelledWithActive)
+		result.NextAction = "stop active tasks or record disposition; cancelled projects are never reopened"
+	} else if prior.BeforeStatus == "completed" && prior.AfterStatus == "in_progress" {
+		result.Finding = string(TerminalProjectionCompletedWithOpenWork)
+		result.NextAction = "repaired stale completed projection; continue normal lifecycle reconciliation"
+	} else {
+		result.NextAction = "no repair: require a completed project with nonterminal issue(s) or active task(s)"
+	}
+	return result
+}
+
+func hasLifecycleBlocker(blockers []string, want string) bool {
+	for _, blocker := range blockers {
+		if blocker == want {
+			return true
+		}
+	}
+	return false
 }
 
 func terminalProjectionRepairReceipt(r ControlReceipt) TerminalProjectionRepairReceipt {
@@ -573,7 +621,11 @@ func (s *ProjectLifecycleControlService) PreviewResume(ctx context.Context, work
 
 // setProjectStatus writes a new project status, preserving all other fields.
 func (s *ProjectLifecycleControlService) setProjectStatus(ctx context.Context, proj db.Project, status string) error {
-	_, err := s.Queries.UpdateProject(ctx, db.UpdateProjectParams{
+	return setProjectStatusWithQueries(ctx, s.Queries, proj, status)
+}
+
+func setProjectStatusWithQueries(ctx context.Context, queries *db.Queries, proj db.Project, status string) error {
+	_, err := queries.UpdateProject(ctx, db.UpdateProjectParams{
 		ID:          proj.ID,
 		Title:       textValue(proj.Title),
 		Description: proj.Description,
@@ -821,11 +873,15 @@ func payloadDigest(action ControlAction, projectID pgtype.UUID) string {
 // (replay) when the same key + digest was already applied, an error on conflict
 // (same key, different digest), or (nil, nil) to proceed.
 func (s *ProjectLifecycleControlService) receiptGuard(ctx context.Context, workspaceID, projectID pgtype.UUID, action ControlAction, idempotencyKey string) (*db.ProjectLifecycleReceipt, error) {
+	return receiptGuardWithQueries(ctx, s.Queries, workspaceID, projectID, action, idempotencyKey)
+}
+
+func receiptGuardWithQueries(ctx context.Context, queries *db.Queries, workspaceID, projectID pgtype.UUID, action ControlAction, idempotencyKey string) (*db.ProjectLifecycleReceipt, error) {
 	if idempotencyKey == "" {
 		return nil, nil
 	}
 	digest := payloadDigest(action, projectID)
-	existing, err := s.Queries.GetProjectLifecycleReceipt(ctx, db.GetProjectLifecycleReceiptParams{
+	existing, err := queries.GetProjectLifecycleReceipt(ctx, db.GetProjectLifecycleReceiptParams{
 		WorkspaceID: workspaceID, IdempotencyKey: idempotencyKey,
 	})
 	if err == nil {
@@ -842,6 +898,10 @@ func (s *ProjectLifecycleControlService) receiptGuard(ctx context.Context, works
 
 // storeReceipt persists the append-only operation receipt.
 func (s *ProjectLifecycleControlService) storeReceipt(ctx context.Context, workspaceID pgtype.UUID, r ControlReceipt) error {
+	return storeReceiptWithQueries(ctx, s.Queries, workspaceID, r)
+}
+
+func storeReceiptWithQueries(ctx context.Context, queries *db.Queries, workspaceID pgtype.UUID, r ControlReceipt) error {
 	if r.IdempotencyKey == "" {
 		return nil
 	}
@@ -854,7 +914,7 @@ func (s *ProjectLifecycleControlService) storeReceipt(ctx context.Context, works
 		issueID = util.MustParseUUID(*r.IssueID)
 	}
 	blockersJSON, _ := json.Marshal(r.Blockers)
-	_, err := s.Queries.InsertProjectLifecycleReceipt(ctx, db.InsertProjectLifecycleReceiptParams{
+	_, err := queries.InsertProjectLifecycleReceipt(ctx, db.InsertProjectLifecycleReceiptParams{
 		WorkspaceID:    workspaceID,
 		ProjectID:      projID,
 		Action:         r.Action,
@@ -868,6 +928,10 @@ func (s *ProjectLifecycleControlService) storeReceipt(ctx context.Context, works
 		Applied:        r.Applied,
 		Replayed:       r.Replayed,
 	})
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "project_lifecycle_receipt_idem_uidx" {
+		return ErrProjectLifecycleConflict
+	}
 	return err
 }
 
@@ -879,6 +943,10 @@ func receiptToControl(r db.ProjectLifecycleReceipt, replayed bool) ControlReceip
 	if replayed {
 		applied = false
 	}
+	var blockers []string
+	if len(r.Blockers) > 0 {
+		_ = json.Unmarshal(r.Blockers, &blockers)
+	}
 	return ControlReceipt{
 		Action:         r.Action,
 		ProjectID:      util.UUIDToString(r.ProjectID),
@@ -889,12 +957,17 @@ func receiptToControl(r db.ProjectLifecycleReceipt, replayed bool) ControlReceip
 		AfterStatus:    r.AfterStatus,
 		TaskID:         uuidOrNil(r.TaskID),
 		IssueID:        uuidOrNil(r.IssueID),
+		Blockers:       blockers,
 	}
 }
 
 // finish stores the receipt and returns it (append-only idempotency).
 func (s *ProjectLifecycleControlService) finish(ctx context.Context, workspaceID pgtype.UUID, r ControlReceipt) (ControlReceipt, error) {
-	if err := s.storeReceipt(ctx, workspaceID, r); err != nil {
+	return finishWithQueries(ctx, s.Queries, workspaceID, r)
+}
+
+func finishWithQueries(ctx context.Context, queries *db.Queries, workspaceID pgtype.UUID, r ControlReceipt) (ControlReceipt, error) {
+	if err := storeReceiptWithQueries(ctx, queries, workspaceID, r); err != nil {
 		return ControlReceipt{}, err
 	}
 	return r, nil

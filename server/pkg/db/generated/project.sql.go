@@ -187,6 +187,41 @@ func (q *Queries) GetProjectInWorkspace(ctx context.Context, arg GetProjectInWor
 	return i, err
 }
 
+const getProjectInWorkspaceForUpdate = `-- name: GetProjectInWorkspaceForUpdate :one
+SELECT id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date FROM project
+WHERE id = $1 AND workspace_id = $2
+FOR UPDATE
+`
+
+type GetProjectInWorkspaceForUpdateParams struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+// Serializes a terminal-projection repair with every competing repair on the
+// same project. The caller must hold the surrounding transaction through the
+// status update and lifecycle-receipt insert.
+func (q *Queries) GetProjectInWorkspaceForUpdate(ctx context.Context, arg GetProjectInWorkspaceForUpdateParams) (Project, error) {
+	row := q.db.QueryRow(ctx, getProjectInWorkspaceForUpdate, arg.ID, arg.WorkspaceID)
+	var i Project
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.Title,
+		&i.Description,
+		&i.Icon,
+		&i.Status,
+		&i.LeadType,
+		&i.LeadID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Priority,
+		&i.StartDate,
+		&i.DueDate,
+	)
+	return i, err
+}
+
 const getProjectIssueStats = `-- name: GetProjectIssueStats :many
 SELECT project_id,
        count(*)::bigint AS total_count,

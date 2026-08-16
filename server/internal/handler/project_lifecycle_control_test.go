@@ -7,7 +7,20 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/multica-ai/multica/server/internal/service"
 )
+
+func TestWriteControlErrorMapsIdempotencyConflictTo409(t *testing.T) {
+	w := httptest.NewRecorder()
+	writeControlError(w, service.ErrProjectLifecycleConflict)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "idempotency key conflict") {
+		t.Fatalf("body = %s, want idempotency conflict", w.Body.String())
+	}
+}
 
 func seedControlProject(t *testing.T, status, leadType, leadID string) ProjectResponse {
 	t.Helper()

@@ -20,6 +20,14 @@ WHERE id = $1;
 SELECT * FROM project
 WHERE id = $1 AND workspace_id = $2;
 
+-- name: GetProjectInWorkspaceForUpdate :one
+-- Serializes a terminal-projection repair with every competing repair on the
+-- same project. The caller must hold the surrounding transaction through the
+-- status update and lifecycle-receipt insert.
+SELECT * FROM project
+WHERE id = $1 AND workspace_id = $2
+FOR UPDATE;
+
 -- name: LockProjectForChatSessionCreate :one
 -- Conflicts with project deletion so a chat session cannot commit a soft
 -- project reference after the delete transaction has swept existing sessions.

@@ -3,14 +3,46 @@ package service
 import (
 	"context"
 	"errors"
+	"strings"
+	"sync"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
+
+type receiptFailureTxStarter struct {
+	pool *pgxpool.Pool
+}
+
+func (s *receiptFailureTxStarter) Begin(ctx context.Context) (pgx.Tx, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &receiptFailureTx{Tx: tx}, nil
+}
+
+type receiptFailureTx struct {
+	pgx.Tx
+}
+
+func (t *receiptFailureTx) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
+	if strings.Contains(sql, "INSERT INTO project_lifecycle_receipt") {
+		return receiptFailureRow{err: errors.New("injected lifecycle receipt failure")}
+	}
+	return t.Tx.QueryRow(ctx, sql, args...)
+}
+
+type receiptFailureRow struct {
+	err error
+}
+
+func (r receiptFailureRow) Scan(...any) error { return r.err }
 
 // seedPausedProjectFixture seeds workspace/user/runtime/agent/issue and a
 // project whose status is togglable for the control-service DB tests.
@@ -304,6 +336,163 @@ func TestProjectLifecycleReceiptConflict(t *testing.T) {
 	if !r.Replayed || r.Applied {
 		t.Fatalf("replay receipt = %+v, want Replayed=true Applied=false (from stored receipt)", r)
 	}
+}
+
+// A project-row lock plus the receipt's workspace/key uniqueness must make
+// concurrent retries one atomic operation: one caller applies the repair and
+// the other replays exactly the same durable receipt.
+func TestRepairTerminalProjectionConcurrentSameKeyIsSingleCommit(t *testing.T) {
+	pool, workspaceID, projectID, _ := seedPausedProjectFixture(t, "completed")
+	q := db.New(pool)
+	svc := &TaskService{Queries: q, TxStarter: pool, Bus: events.New()}
+	ctrl := NewProjectLifecycleControlService(q, svc)
+	ctx := context.Background()
+	wsUUID, pidUUID := util.MustParseUUID(workspaceID), util.MustParseUUID(projectID)
+
+	type callResult struct {
+		receipt TerminalProjectionRepairReceipt
+		err     error
+	}
+	start := make(chan struct{})
+	results := make(chan callResult, 2)
+	var wg sync.WaitGroup
+	for range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			r, err := ctrl.RepairTerminalProjection(ctx, wsUUID, pidUUID, "repair-concurrent-key")
+			results <- callResult{receipt: r, err: err}
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(results)
+
+	var applied, replayed int
+	for result := range results {
+		if result.err != nil {
+			t.Fatalf("concurrent repair: %v", result.err)
+		}
+		if result.receipt.Applied {
+			applied++
+		}
+		if result.receipt.Replayed {
+			replayed++
+		}
+	}
+	if applied != 1 || replayed != 1 {
+		t.Fatalf("concurrent receipts applied=%d replayed=%d, want 1/1", applied, replayed)
+	}
+	assertProjectStatus(t, pool, projectID, "in_progress")
+	if got := lifecycleReceiptCount(t, pool, workspaceID, "repair-concurrent-key"); got != 1 {
+		t.Fatalf("receipt count = %d, want 1", got)
+	}
+}
+
+// The project update and lifecycle receipt share one transaction. If receipt
+// persistence fails after the status write, the deferred rollback must leave
+// both the project and append-only ledger unchanged.
+func TestRepairTerminalProjectionReceiptFailureRollsBackStatus(t *testing.T) {
+	pool, workspaceID, projectID, _ := seedPausedProjectFixture(t, "completed")
+	q := db.New(pool)
+	svc := &TaskService{Queries: q, TxStarter: pool, Bus: events.New()}
+	ctrl := NewProjectLifecycleControlService(q, svc)
+	ctrl.TxStarter = &receiptFailureTxStarter{pool: pool}
+
+	_, err := ctrl.RepairTerminalProjection(
+		context.Background(), util.MustParseUUID(workspaceID), util.MustParseUUID(projectID), "repair-failing-receipt",
+	)
+	if err == nil || !strings.Contains(err.Error(), "injected lifecycle receipt failure") {
+		t.Fatalf("repair err = %v, want injected receipt failure", err)
+	}
+	assertProjectStatus(t, pool, projectID, "completed")
+	if got := lifecycleReceiptCount(t, pool, workspaceID, "repair-failing-receipt"); got != 0 {
+		t.Fatalf("receipt count = %d, want 0 after rollback", got)
+	}
+}
+
+// Cancelled is a deliberate disposition, not a stale completed projection.
+// Even an active task yields only a stop/disposition receipt and never a
+// project reopen.
+func TestRepairTerminalProjectionCancelledNeverReopens(t *testing.T) {
+	pool, workspaceID, projectID, issueID := seedPausedProjectFixture(t, "cancelled")
+	q := db.New(pool)
+	svc := &TaskService{Queries: q, TxStarter: pool, Bus: events.New()}
+	ctrl := NewProjectLifecycleControlService(q, svc)
+	if _, err := svc.EnqueueTaskForIssue(context.Background(), loadIssue(t, pool, issueID)); err != nil {
+		t.Fatalf("seed active task: %v", err)
+	}
+
+	r, err := ctrl.RepairTerminalProjection(
+		context.Background(), util.MustParseUUID(workspaceID), util.MustParseUUID(projectID), "repair-cancelled-key",
+	)
+	if err != nil {
+		t.Fatalf("repair cancelled: %v", err)
+	}
+	if r.Applied || r.AfterStatus != "cancelled" || !containsStr(r.Blockers, "CANCELLED_NEVER_REOPEN") {
+		t.Fatalf("cancelled repair receipt = %+v, want blocked and unchanged", r)
+	}
+	assertProjectStatus(t, pool, projectID, "cancelled")
+	if got := lifecycleReceiptCount(t, pool, workspaceID, "repair-cancelled-key"); got != 1 {
+		t.Fatalf("receipt count = %d, want 1 disposition receipt", got)
+	}
+}
+
+// The idempotency namespace is workspace-wide. Reusing a key for a different
+// project and action must return the conflict sentinel (mapped by the handler
+// to HTTP 409) and must not mutate the second project.
+func TestRepairTerminalProjectionSameKeyDifferentProjectAndActionConflicts(t *testing.T) {
+	pool, workspaceID, firstProjectID, _ := seedPausedProjectFixture(t, "in_progress")
+	ctx := context.Background()
+	var secondProjectID string
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO project (workspace_id, title, status)
+		VALUES ($1, 'second control project', 'completed')
+		RETURNING id`, workspaceID).Scan(&secondProjectID); err != nil {
+		t.Fatalf("seed second project: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM project WHERE id = $1`, secondProjectID)
+	})
+
+	q := db.New(pool)
+	svc := &TaskService{Queries: q, TxStarter: pool, Bus: events.New()}
+	ctrl := NewProjectLifecycleControlService(q, svc)
+	wsUUID := util.MustParseUUID(workspaceID)
+	if _, err := ctrl.PauseDispatch(ctx, wsUUID, util.MustParseUUID(firstProjectID), "cross-project-key"); err != nil {
+		t.Fatalf("seed first receipt: %v", err)
+	}
+	_, err := ctrl.RepairTerminalProjection(ctx, wsUUID, util.MustParseUUID(secondProjectID), "cross-project-key")
+	if !errors.Is(err, ErrProjectLifecycleConflict) {
+		t.Fatalf("cross-project/action repair err = %v, want ErrProjectLifecycleConflict", err)
+	}
+	assertProjectStatus(t, pool, secondProjectID, "completed")
+	if got := lifecycleReceiptCount(t, pool, workspaceID, "cross-project-key"); got != 1 {
+		t.Fatalf("workspace/key receipt count = %d, want original receipt only", got)
+	}
+}
+
+func assertProjectStatus(t *testing.T, pool *pgxpool.Pool, projectID, want string) {
+	t.Helper()
+	var got string
+	if err := pool.QueryRow(context.Background(), `SELECT status FROM project WHERE id = $1`, projectID).Scan(&got); err != nil {
+		t.Fatalf("read project status: %v", err)
+	}
+	if got != want {
+		t.Fatalf("project status = %q, want %q", got, want)
+	}
+}
+
+func lifecycleReceiptCount(t *testing.T, pool *pgxpool.Pool, workspaceID, idempotencyKey string) int {
+	t.Helper()
+	var got int
+	if err := pool.QueryRow(context.Background(), `
+		SELECT count(*) FROM project_lifecycle_receipt
+		WHERE workspace_id = $1 AND idempotency_key = $2`, workspaceID, idempotencyKey).Scan(&got); err != nil {
+		t.Fatalf("count lifecycle receipts: %v", err)
+	}
+	return got
 }
 
 // stop-current terminates live tasks (the explicit separate action; pause only

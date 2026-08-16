@@ -92,3 +92,30 @@ func TestValidateProjectControl_PauseWithoutLeadOk(t *testing.T) {
 		t.Fatalf("pause should not require lead, blockers = %v", blockers)
 	}
 }
+
+func TestReceiptToControlReplayPreservesBlockers(t *testing.T) {
+	got := receiptToControl(db.ProjectLifecycleReceipt{
+		Applied:  true,
+		Blockers: []byte(`["CANCELLED_NEVER_REOPEN","ACTIVE_TASKS_PRESENT"]`),
+	}, true)
+	if got.Applied || !got.Replayed {
+		t.Fatalf("replay flags = applied:%v replayed:%v, want false/true", got.Applied, got.Replayed)
+	}
+	if !containsStr(got.Blockers, "CANCELLED_NEVER_REOPEN") || !containsStr(got.Blockers, "ACTIVE_TASKS_PRESENT") {
+		t.Fatalf("replay blockers = %v, want stored blockers preserved", got.Blockers)
+	}
+}
+
+func TestReplayTerminalProjectionRepairDoesNotInventCancelledActiveFinding(t *testing.T) {
+	got := replayTerminalProjectionRepair(db.ProjectLifecycleReceipt{
+		BeforeStatus: "cancelled",
+		AfterStatus:  "cancelled",
+		Blockers:     []byte(`["TERMINAL_PROJECTION_NOT_INCONSISTENT"]`),
+	})
+	if got.Finding != "" {
+		t.Fatalf("finding = %q, want empty for cancelled project without persisted active-task blocker", got.Finding)
+	}
+	if !containsStr(got.Blockers, "TERMINAL_PROJECTION_NOT_INCONSISTENT") {
+		t.Fatalf("replay blockers = %v, want original no-inconsistency blocker", got.Blockers)
+	}
+}
