@@ -908,6 +908,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			if byIssueProvider != nil {
 				evidence = newByIssueReviewAuthorityEvidenceProvider(
 					byIssueProvider,
+					h.CompanyOpsDirectory,
 					canaryReviewAuthorize(h.CompanyOpsDispatchAuthorization, os.Getenv("HIVECOSM_TENANT_ID")),
 				)
 			} else {

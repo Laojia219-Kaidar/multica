@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -18,6 +19,29 @@ import (
 
 func byIssueTestUUID(value string) pgtype.UUID {
 	return pgtype.UUID{Bytes: uuid.MustParse(value), Valid: true}
+}
+
+type byIssueDirectoryStub struct {
+	result *service.EmployeesResult
+	err    error
+}
+
+func (s byIssueDirectoryStub) GetEmployees(context.Context, pgtype.UUID, string, string, int, int) (*service.EmployeesResult, error) {
+	return s.result, s.err
+}
+
+func byIssueDirectoryEmployee(employeeID, agentID string) companyops.PublicEmployeeSummary {
+	return companyops.PublicEmployeeSummary{
+		EmployeeID: employeeID, HiveCrewAgentID: agentID,
+		BindingState: companyops.BindingStateUniqueActiveCandidate,
+		Availability: companyops.AvailabilityAvailable,
+		Binding: companyops.PublicBindingProjection{
+			State:         companyops.BindingStateUniqueActiveCandidate,
+			CandidateOnly: true, ExecutabilityVerified: true,
+			HiveCrewAgentID: &agentID,
+		},
+		LocalAgent: &companyops.PublicLocalAgent{ID: agentID},
+	}
 }
 
 func byIssueBody(now time.Time, query url.Values, projectID, employeeID, agentID, assignmentID string) string {
@@ -121,8 +145,14 @@ func TestByIssueReviewAuthorityEvidenceBindsSourceAuthorAndPlannedReviewer(t *te
 	})
 	identities := newByIssueIdentityProvider("http://authority.test", "tenant-1", transport)
 	identities.now = func() time.Time { return now }
+	directory := byIssueDirectoryStub{result: &service.EmployeesResult{
+		WorkspaceID: pgUUIDString(workspaceID),
+		Items: []companyops.PublicEmployeeSummary{
+			byIssueDirectoryEmployee("EMP-AUTHOR", authorAgent),
+		},
+	}}
 	authorizeCalls := 0
-	provider := newByIssueReviewAuthorityEvidenceProvider(identities, func(_ context.Context, identity service.AuthorityReviewDispatchIdentity) (companyops.DispatchAuthorizationResponse, error) {
+	provider := newByIssueReviewAuthorityEvidenceProvider(identities, directory, func(_ context.Context, identity service.AuthorityReviewDispatchIdentity) (companyops.DispatchAuthorizationResponse, error) {
 		authorizeCalls++
 		if identity.AgentID != reviewerAgent {
 			t.Fatalf("authorized identity = %+v, want reviewer", identity)
@@ -147,5 +177,70 @@ func TestByIssueReviewAuthorityEvidenceBindsSourceAuthorAndPlannedReviewer(t *te
 	candidate.SourceAuthorAgentID = reviewerAgent
 	if _, err := provider.ResolveReviewReconcileEvidence(context.Background(), workspaceID, projectID, candidate); err == nil {
 		t.Fatal("self-review author drift accepted")
+	}
+}
+
+func TestByIssueReviewAuthorityEvidenceFailsClosedForDirectoryAuthorAndReviewAuthorizationGaps(t *testing.T) {
+	now := time.Date(2026, 8, 16, 12, 0, 0, 0, time.UTC)
+	workspaceID := byIssueTestUUID("01972f7e-7e8d-77ef-a13d-1b0ce3e9c010")
+	projectID := byIssueTestUUID("01972f7e-7e8d-77ef-a13d-1b0ce3e9c011")
+	issueID := byIssueTestUUID("01972f7e-7e8d-77ef-a13d-1b0ce3e9c012")
+	authorAgent := "01972f7e-7e8d-77ef-a13d-1b0ce3e9c013"
+	reviewerAgent := "01972f7e-7e8d-77ef-a13d-1b0ce3e9c014"
+	transport := companyOpsRoundTripperFunc(func(request *http.Request) (*http.Response, error) {
+		body := byIssueBody(now, request.URL.Query(), pgUUIDString(projectID), "EMP-REVIEWER", reviewerAgent, "ASSIGN-REVIEWER")
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
+	})
+	identities := newByIssueIdentityProvider("http://authority.test", "tenant-1", transport)
+	identities.now = func() time.Time { return now }
+	validDirectory := byIssueDirectoryStub{result: &service.EmployeesResult{
+		WorkspaceID: pgUUIDString(workspaceID), Items: []companyops.PublicEmployeeSummary{byIssueDirectoryEmployee("EMP-AUTHOR", authorAgent)},
+	}}
+	candidate := service.ReviewReconcileCandidate{
+		WorkspaceID: pgUUIDString(workspaceID), ProjectID: pgUUIDString(projectID), IssueID: pgUUIDString(issueID),
+		SourceAuthorAgentID: authorAgent, PlannedReviewerEmployeeID: "EMP-REVIEWER", PlannedReviewerAgentID: reviewerAgent,
+	}
+	newProvider := func(directory byIssueDirectoryStub, authorize func(context.Context, service.AuthorityReviewDispatchIdentity) (companyops.DispatchAuthorizationResponse, error)) *byIssueReviewAuthorityEvidenceProvider {
+		return newByIssueReviewAuthorityEvidenceProvider(identities, directory, authorize)
+	}
+	eligible := func(context.Context, service.AuthorityReviewDispatchIdentity) (companyops.DispatchAuthorizationResponse, error) {
+		var response companyops.DispatchAuthorizationResponse
+		response.Authorization.EventReconcile.Eligible = true
+		response.Authorization.RecoveryOnly.Eligible = true
+		return response, nil
+	}
+	if _, err := newProvider(validDirectory, eligible).ResolveReviewReconcileEvidence(context.Background(), workspaceID, projectID, candidate); err != nil {
+		t.Fatalf("valid directory/review authorization: %v", err)
+	}
+	for _, test := range []struct {
+		name      string
+		directory byIssueDirectoryStub
+	}{
+		{name: "missing", directory: byIssueDirectoryStub{result: &service.EmployeesResult{WorkspaceID: pgUUIDString(workspaceID)}}},
+		{name: "duplicate", directory: byIssueDirectoryStub{result: &service.EmployeesResult{WorkspaceID: pgUUIDString(workspaceID), Items: []companyops.PublicEmployeeSummary{byIssueDirectoryEmployee("EMP-AUTHOR", authorAgent), byIssueDirectoryEmployee("EMP-OTHER", authorAgent)}}}},
+		{name: "mismatch", directory: byIssueDirectoryStub{result: &service.EmployeesResult{WorkspaceID: pgUUIDString(workspaceID), Items: []companyops.PublicEmployeeSummary{byIssueDirectoryEmployee("EMP-AUTHOR", reviewerAgent)}}}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := newProvider(test.directory, eligible).ResolveReviewReconcileEvidence(context.Background(), workspaceID, projectID, candidate); err == nil {
+				t.Fatal("directory gap resolved; want fail closed")
+			}
+		})
+	}
+	for _, test := range []struct {
+		name      string
+		authorize func(context.Context, service.AuthorityReviewDispatchIdentity) (companyops.DispatchAuthorizationResponse, error)
+	}{
+		{name: "revoked", authorize: func(context.Context, service.AuthorityReviewDispatchIdentity) (companyops.DispatchAuthorizationResponse, error) {
+			return companyops.DispatchAuthorizationResponse{}, nil
+		}},
+		{name: "absent", authorize: func(context.Context, service.AuthorityReviewDispatchIdentity) (companyops.DispatchAuthorizationResponse, error) {
+			return companyops.DispatchAuthorizationResponse{}, errors.New("absent")
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := newProvider(validDirectory, test.authorize).ResolveReviewReconcileEvidence(context.Background(), workspaceID, projectID, candidate); err == nil {
+				t.Fatal("review authorization gap resolved; want fail closed")
+			}
+		})
 	}
 }
