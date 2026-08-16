@@ -29,7 +29,7 @@ func TestValidateProjectControl_ContinueMissingLead(t *testing.T) {
 // C12: a frozen duplicate always blocks every control action.
 func TestValidateProjectControl_DuplicateBlocks(t *testing.T) {
 	p := projWithLead(true, "in_progress")
-	p.ID = mustUUID(t, "00000000-0000-0000-0000-000000000001")
+	p.ID = mustUUIDLifecycle(t, "00000000-0000-0000-0000-000000000001")
 	blockers := validateProjectControlAt(p, ActionContinue, map[string]string{"00000000-0000-0000-0000-000000000001": "x"})
 	if !containsStr(blockers, "DUPLICATE_AUTHORITY_OWNER_DECISION") {
 		t.Fatalf("blockers = %v, want DUPLICATE_AUTHORITY_OWNER_DECISION", blockers)
@@ -60,7 +60,7 @@ func TestValidateProjectControl_ContinueOk(t *testing.T) {
 	}
 }
 
-func mustUUID(t *testing.T, s string) pgtype.UUID {
+func mustUUIDLifecycle(t *testing.T, s string) pgtype.UUID {
 	u, err := util.ParseUUID(s)
 	if err != nil {
 		t.Fatalf("parse uuid: %v", err)
