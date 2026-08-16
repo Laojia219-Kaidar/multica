@@ -161,6 +161,9 @@ export interface ProjectLifecycleSnapshot {
   closure_ready: boolean;
   closure_blockers: string[];
   duplicate_of_project_id: string | null;
+  terminal_projection_inconsistent: boolean;
+  terminal_projection_finding?: string;
+  terminal_projection_next_action?: string;
 }
 
 export interface ListProjectLifecycleResponse {
@@ -170,7 +173,7 @@ export interface ListProjectLifecycleResponse {
 
 // ---- Slice 2 owner control operations (continue / pause_dispatch / resume) ----
 
-export type ProjectControlAction = "continue" | "pause_dispatch" | "resume" | "stop_current" | "close" | "supersede" | "generate_closure_package";
+export type ProjectControlAction = "continue" | "pause_dispatch" | "resume" | "stop_current" | "repair_terminal_projection" | "close" | "supersede" | "generate_closure_package";
 
 export interface ProjectControlReceipt {
   action: string;
@@ -184,6 +187,8 @@ export interface ProjectControlReceipt {
   issue_id?: string | null;
   recovery_of?: string | null;
   blockers?: string[];
+  finding?: string;
+  next_action?: string;
 }
 
 export interface ContinuePreview {

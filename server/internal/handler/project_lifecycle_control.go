@@ -149,6 +149,31 @@ func (h *Handler) ProjectLifecycleAction(w http.ResponseWriter, r *http.Request)
 		}
 		writeJSON(w, http.StatusOK, receipt)
 
+	case service.ActionRepairTerminalProjection:
+		if req.Preview {
+			preview, err := ctrl.PreviewRepairTerminalProjection(r.Context(), wsUUID, idUUID)
+			if err != nil {
+				writeControlError(w, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"preview": preview})
+			return
+		}
+		if req.IdempotencyKey == "" {
+			writeError(w, http.StatusBadRequest, "idempotency_key is required for terminal projection repair")
+			return
+		}
+		receipt, err := ctrl.RepairTerminalProjection(r.Context(), wsUUID, idUUID, req.IdempotencyKey)
+		if err != nil {
+			if errors.Is(err, service.ErrProjectLifecycleIdempotencyRequired) {
+				writeError(w, http.StatusBadRequest, "idempotency_key is required for terminal projection repair")
+				return
+			}
+			writeControlError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, receipt)
+
 	case service.ActionClose:
 		if req.Preview {
 			pkg, err := ctrl.PreviewClose(r.Context(), wsUUID, idUUID)
@@ -183,7 +208,7 @@ func (h *Handler) ProjectLifecycleAction(w http.ResponseWriter, r *http.Request)
 		writeJSON(w, http.StatusOK, receipt)
 
 	default:
-		writeError(w, http.StatusBadRequest, "unknown action; valid values: continue, pause_dispatch, resume, stop_current, close, supersede")
+		writeError(w, http.StatusBadRequest, "unknown action; valid values: continue, pause_dispatch, resume, stop_current, repair_terminal_projection, close, supersede")
 	}
 }
 

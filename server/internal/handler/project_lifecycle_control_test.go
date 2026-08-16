@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -118,6 +119,79 @@ func TestProjectLifecycleAction_PausePreviewIsReadOnly(t *testing.T) {
 	}
 	if after.Status != "in_progress" {
 		t.Fatalf("preview mutated status to %q, want in_progress", after.Status)
+	}
+}
+
+func TestProjectLifecycleAction_TerminalProjectionPreviewAndMissingKey(t *testing.T) {
+	p := seedControlProject(t, "completed", "agent", testUserID)
+
+	// Preview is available without a mutation key and fails closed because the
+	// project has no live inconsistency to repair.
+	w := httptest.NewRecorder()
+	req := newRequest("POST", "/api/projects/"+p.ID+"/lifecycle/actions/repair_terminal_projection?workspace_id="+testWorkspaceID, map[string]any{"preview": true})
+	req = withURLParams(req, "id", p.ID, "action", "repair_terminal_projection")
+	testHandler.ProjectLifecycleAction(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("preview expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var previewEnvelope struct {
+		Preview struct {
+			Blockers []string `json:"blockers"`
+		} `json:"preview"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&previewEnvelope); err != nil {
+		t.Fatalf("decode preview: %v", err)
+	}
+	if len(previewEnvelope.Preview.Blockers) == 0 || previewEnvelope.Preview.Blockers[0] != "TERMINAL_PROJECTION_NOT_INCONSISTENT" {
+		t.Fatalf("preview blockers = %v, want terminal inconsistency guard", previewEnvelope.Preview.Blockers)
+	}
+
+	// A commit without an idempotency key is rejected before any lifecycle
+	// write, because this action must always leave a durable receipt.
+	w = httptest.NewRecorder()
+	req = newRequest("POST", "/api/projects/"+p.ID+"/lifecycle/actions/repair_terminal_projection?workspace_id="+testWorkspaceID, map[string]any{})
+	req = withURLParams(req, "id", p.ID, "action", "repair_terminal_projection")
+	testHandler.ProjectLifecycleAction(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("missing key expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestProjectLifecycleAction_CompletedWithOpenIssueRepairsAndReplays(t *testing.T) {
+	p := seedControlProject(t, "completed", "agent", testUserID)
+	ctx := t.Context()
+	var issueID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO issue (workspace_id, project_id, title, status, priority, creator_type, creator_id, number, position)
+		VALUES ($1,$2,'stale open issue','todo','medium','member',$3,1,1) RETURNING id
+	`, testWorkspaceID, p.ID, testUserID).Scan(&issueID); err != nil {
+		t.Fatalf("insert open issue: %v", err)
+	}
+	t.Cleanup(func() { _, _ = testPool.Exec(ctx, `DELETE FROM issue WHERE id=$1`, issueID) })
+
+	w := httptest.NewRecorder()
+	req := newRequest("POST", "/api/projects/"+p.ID+"/lifecycle/actions/repair_terminal_projection?workspace_id="+testWorkspaceID, map[string]any{"preview": true})
+	req = withURLParams(req, "id", p.ID, "action", "repair_terminal_projection")
+	testHandler.ProjectLifecycleAction(w, req)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "completed_with_nonterminal_or_active") {
+		t.Fatalf("preview = %d %s, want completed projection finding", w.Code, w.Body.String())
+	}
+
+	const key = "terminal-projection-repair-replay"
+	w = httptest.NewRecorder()
+	req = newRequest("POST", "/api/projects/"+p.ID+"/lifecycle/actions/repair_terminal_projection?workspace_id="+testWorkspaceID, map[string]any{"idempotency_key": key})
+	req = withURLParams(req, "id", p.ID, "action", "repair_terminal_projection")
+	testHandler.ProjectLifecycleAction(w, req)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"after_status":"in_progress"`) {
+		t.Fatalf("repair = %d %s, want in_progress receipt", w.Code, w.Body.String())
+	}
+
+	w = httptest.NewRecorder()
+	req = newRequest("POST", "/api/projects/"+p.ID+"/lifecycle/actions/repair_terminal_projection?workspace_id="+testWorkspaceID, map[string]any{"idempotency_key": key})
+	req = withURLParams(req, "id", p.ID, "action", "repair_terminal_projection")
+	testHandler.ProjectLifecycleAction(w, req)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"replayed":true`) {
+		t.Fatalf("replay = %d %s, want replayed receipt", w.Code, w.Body.String())
 	}
 }
 

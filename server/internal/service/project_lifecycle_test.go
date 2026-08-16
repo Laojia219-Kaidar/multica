@@ -18,6 +18,42 @@ func TestClassifyProject_ActiveWithFrontier(t *testing.T) {
 	}
 }
 
+func TestClassifyProject_CompletedWithOpenWorkIsInconsistent(t *testing.T) {
+	c := ClassifyProject(ProjectLifecycleInput{
+		ProjectID: "p1", ProjectStatus: "completed", HasLead: true,
+		NonterminalIssueCount: 2,
+	})
+	if c.TerminalProjectionFinding != TerminalProjectionCompletedWithOpenWork {
+		t.Fatalf("finding = %q, want completed_with_nonterminal_or_active", c.TerminalProjectionFinding)
+	}
+	if !containsStr(c.Flags, "terminal_projection_inconsistent") {
+		t.Fatalf("flags = %v, want terminal_projection_inconsistent", c.Flags)
+	}
+}
+
+func TestClassifyProject_CancelledWithActiveTaskNeverReopens(t *testing.T) {
+	c := ClassifyProject(ProjectLifecycleInput{
+		ProjectID: "p1", ProjectStatus: "cancelled", HasLead: true,
+		ActiveTaskCount: 1,
+	})
+	if c.TerminalProjectionFinding != TerminalProjectionCancelledWithActive {
+		t.Fatalf("finding = %q, want cancelled_with_active", c.TerminalProjectionFinding)
+	}
+	if c.TerminalProjectionNextAction == "" {
+		t.Fatal("cancelled finding must include a stop/disposition next action")
+	}
+}
+
+func TestClassifyProject_CompletedWithoutOpenWorkIsConsistent(t *testing.T) {
+	c := ClassifyProject(ProjectLifecycleInput{
+		ProjectID: "p1", ProjectStatus: "completed", HasLead: true,
+		ConfirmedOutcomeCount: 1,
+	})
+	if c.TerminalProjectionFinding != TerminalProjectionNone {
+		t.Fatalf("finding = %q, want none", c.TerminalProjectionFinding)
+	}
+}
+
 // Contract negative #1: in_progress with no nonterminal task but open issues
 // must be stalled_no_open_task, never shown as "executing".
 func TestClassifyProject_StalledNoOpenTask(t *testing.T) {

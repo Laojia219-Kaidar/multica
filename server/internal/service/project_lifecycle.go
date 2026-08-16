@@ -41,6 +41,17 @@ const (
 	HealthSourceGap             ProjectHealth = "source_gap"
 )
 
+// TerminalProjectionFinding identifies a project status that disagrees with
+// the live issue/task projection. It is a diagnostic finding, not a lifecycle
+// status and never authorizes dispatch by itself.
+type TerminalProjectionFinding string
+
+const (
+	TerminalProjectionNone                  TerminalProjectionFinding = ""
+	TerminalProjectionCompletedWithOpenWork TerminalProjectionFinding = "completed_with_nonterminal_or_active"
+	TerminalProjectionCancelledWithActive   TerminalProjectionFinding = "cancelled_with_active"
+)
+
 // Nonterminal task states per the HIV-553 contract. 'deferred' is scheduled
 // but not yet live; it still counts as a nonterminal frontier.
 var nonterminalTaskStatuses = map[string]struct{}{
@@ -78,6 +89,7 @@ var frozenSupersessions = map[string]string{
 // without a database.
 type ProjectLifecycleInput struct {
 	ProjectID             string
+	ProjectStatus         string
 	HasLead               bool
 	DuplicateOfProjectID  string // non-empty when a frozen supersession applies
 	ActiveTaskCount       int
@@ -90,17 +102,35 @@ type ProjectLifecycleInput struct {
 
 // ProjectLifecycleClassification is the deterministic classification output.
 type ProjectLifecycleClassification struct {
-	Health                ProjectHealth
-	OwnerDecisionRequired bool
-	Flags                 []string
-	NextAction            string
-	ClosureBlockers       []string
+	Health                       ProjectHealth
+	OwnerDecisionRequired        bool
+	Flags                        []string
+	NextAction                   string
+	ClosureBlockers              []string
+	TerminalProjectionFinding    TerminalProjectionFinding
+	TerminalProjectionNextAction string
+}
+
+func classifyTerminalProjection(status string, nonterminalIssues, activeTasks int) (TerminalProjectionFinding, string) {
+	switch {
+	case status == "completed" && (nonterminalIssues > 0 || activeTasks > 0):
+		return TerminalProjectionCompletedWithOpenWork, "owner/admin may repair the stale completed projection after preview"
+	case status == "cancelled" && activeTasks > 0:
+		return TerminalProjectionCancelledWithActive, "stop active tasks or record disposition; cancelled projects are never reopened"
+	default:
+		return TerminalProjectionNone, ""
+	}
 }
 
 // ClassifyProject applies the deterministic HIV-553 health rules. It is pure:
 // no database, no I/O. The order of the rules matters and is documented inline.
 func ClassifyProject(in ProjectLifecycleInput) ProjectLifecycleClassification {
 	c := ProjectLifecycleClassification{}
+	c.TerminalProjectionFinding, c.TerminalProjectionNextAction = classifyTerminalProjection(in.ProjectStatus, in.NonterminalIssueCount, in.ActiveTaskCount)
+	if c.TerminalProjectionFinding != TerminalProjectionNone {
+		c.Flags = append(c.Flags, "terminal_projection_inconsistent")
+		c.ClosureBlockers = append(c.ClosureBlockers, "TERMINAL_PROJECTION_INCONSISTENT")
+	}
 
 	if !in.HasLead {
 		c.OwnerDecisionRequired = true
@@ -189,27 +219,30 @@ func ClassifyProject(in ProjectLifecycleInput) ProjectLifecycleClassification {
 
 // ProjectLifecycleSnapshot is the wire-facing read model for one project.
 type ProjectLifecycleSnapshot struct {
-	ProjectID             string         `json:"project_id"`
-	Status                string         `json:"status"`
-	Health                string         `json:"health"`
-	OwnerDecisionRequired bool           `json:"owner_decision_required"`
-	Flags                 []string       `json:"flags"`
-	LeadType              *string        `json:"lead_type"`
-	LeadID                *string        `json:"lead_id"`
-	FrontierIssueIDs      []string       `json:"frontier_issue_ids"`
-	FrontierTasks         []FrontierTask `json:"frontier_tasks"`
-	ActiveTaskCount       int            `json:"active_task_count"`
-	NonterminalIssueCount int            `json:"nonterminal_issue_count"`
-	BlockedIssueCount     int            `json:"blocked_issue_count"`
-	ReviewIssueCount      int            `json:"review_issue_count"`
-	TerminalIssueCount    int            `json:"terminal_issue_count"`
-	LastProgressAt        *string        `json:"last_progress_at"`
-	NextAction            string         `json:"next_action"`
-	OutcomeConfirmed      int            `json:"outcome_confirmed"`
-	OutcomeTotal          int            `json:"outcome_total"`
-	ClosureReady          bool           `json:"closure_ready"`
-	ClosureBlockers       []string       `json:"closure_blockers"`
-	DuplicateOfProjectID  *string        `json:"duplicate_of_project_id"`
+	ProjectID                      string         `json:"project_id"`
+	Status                         string         `json:"status"`
+	Health                         string         `json:"health"`
+	OwnerDecisionRequired          bool           `json:"owner_decision_required"`
+	Flags                          []string       `json:"flags"`
+	LeadType                       *string        `json:"lead_type"`
+	LeadID                         *string        `json:"lead_id"`
+	FrontierIssueIDs               []string       `json:"frontier_issue_ids"`
+	FrontierTasks                  []FrontierTask `json:"frontier_tasks"`
+	ActiveTaskCount                int            `json:"active_task_count"`
+	NonterminalIssueCount          int            `json:"nonterminal_issue_count"`
+	BlockedIssueCount              int            `json:"blocked_issue_count"`
+	ReviewIssueCount               int            `json:"review_issue_count"`
+	TerminalIssueCount             int            `json:"terminal_issue_count"`
+	LastProgressAt                 *string        `json:"last_progress_at"`
+	NextAction                     string         `json:"next_action"`
+	OutcomeConfirmed               int            `json:"outcome_confirmed"`
+	OutcomeTotal                   int            `json:"outcome_total"`
+	ClosureReady                   bool           `json:"closure_ready"`
+	ClosureBlockers                []string       `json:"closure_blockers"`
+	DuplicateOfProjectID           *string        `json:"duplicate_of_project_id"`
+	TerminalProjectionInconsistent bool           `json:"terminal_projection_inconsistent"`
+	TerminalProjectionFinding      string         `json:"terminal_projection_finding,omitempty"`
+	TerminalProjectionNextAction   string         `json:"terminal_projection_next_action,omitempty"`
 }
 
 // FrontierTask is one nonterminal task on the project frontier.
@@ -371,6 +404,7 @@ func (p *ProjectLifecycleProjector) ListPortfolio(ctx context.Context, workspace
 		dupOf := frozenSupersessions[pid]
 		class := ClassifyProject(ProjectLifecycleInput{
 			ProjectID:             pid,
+			ProjectStatus:         proj.Status,
 			HasLead:               proj.LeadID.Valid && proj.LeadType.Valid,
 			DuplicateOfProjectID:  dupOf,
 			ActiveTaskCount:       activeCountByProject[pid],
@@ -410,27 +444,30 @@ func (p *ProjectLifecycleProjector) ListPortfolio(ctx context.Context, workspace
 		}
 
 		snap := ProjectLifecycleSnapshot{
-			ProjectID:             pid,
-			Status:                proj.Status,
-			Health:                string(class.Health),
-			OwnerDecisionRequired: class.OwnerDecisionRequired,
-			Flags:                 class.Flags,
-			LeadType:              textOrNil(proj.LeadType),
-			LeadID:                uuidOrNil(proj.LeadID),
-			FrontierIssueIDs:      fissueIDs,
-			FrontierTasks:         ft,
-			ActiveTaskCount:       activeCountByProject[pid],
-			NonterminalIssueCount: nonterminalN,
-			BlockedIssueCount:     blockedN,
-			ReviewIssueCount:      reviewN,
-			TerminalIssueCount:    terminalN,
-			LastProgressAt:        lastProgress,
-			NextAction:            class.NextAction,
-			OutcomeConfirmed:      confirmedByProject[pid],
-			OutcomeTotal:          0, // expected-outcome count is a Slice 4 mapping; stays 0 until then
-			ClosureReady:          false,
-			ClosureBlockers:       class.ClosureBlockers,
-			DuplicateOfProjectID:  dupOfPtr,
+			ProjectID:                      pid,
+			Status:                         proj.Status,
+			Health:                         string(class.Health),
+			OwnerDecisionRequired:          class.OwnerDecisionRequired,
+			Flags:                          class.Flags,
+			LeadType:                       textOrNil(proj.LeadType),
+			LeadID:                         uuidOrNil(proj.LeadID),
+			FrontierIssueIDs:               fissueIDs,
+			FrontierTasks:                  ft,
+			ActiveTaskCount:                activeCountByProject[pid],
+			NonterminalIssueCount:          nonterminalN,
+			BlockedIssueCount:              blockedN,
+			ReviewIssueCount:               reviewN,
+			TerminalIssueCount:             terminalN,
+			LastProgressAt:                 lastProgress,
+			NextAction:                     class.NextAction,
+			OutcomeConfirmed:               confirmedByProject[pid],
+			OutcomeTotal:                   0, // expected-outcome count is a Slice 4 mapping; stays 0 until then
+			ClosureReady:                   false,
+			ClosureBlockers:                class.ClosureBlockers,
+			DuplicateOfProjectID:           dupOfPtr,
+			TerminalProjectionInconsistent: class.TerminalProjectionFinding != TerminalProjectionNone,
+			TerminalProjectionFinding:      string(class.TerminalProjectionFinding),
+			TerminalProjectionNextAction:   class.TerminalProjectionNextAction,
 		}
 		out = append(out, snap)
 	}

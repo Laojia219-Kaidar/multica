@@ -32,13 +32,14 @@ func NewProjectLifecycleControlService(q *db.Queries, tasks *TaskService) *Proje
 type ControlAction string
 
 const (
-	ActionContinue               ControlAction = "continue"
-	ActionPauseDispatch          ControlAction = "pause_dispatch"
-	ActionResume                 ControlAction = "resume"
-	ActionClose                  ControlAction = "close"
-	ActionStopCurrent            ControlAction = "stop_current"
-	ActionSupersede              ControlAction = "supersede"
-	ActionGenerateClosurePackage ControlAction = "generate_closure_package"
+	ActionContinue                 ControlAction = "continue"
+	ActionPauseDispatch            ControlAction = "pause_dispatch"
+	ActionResume                   ControlAction = "resume"
+	ActionClose                    ControlAction = "close"
+	ActionStopCurrent              ControlAction = "stop_current"
+	ActionSupersede                ControlAction = "supersede"
+	ActionGenerateClosurePackage   ControlAction = "generate_closure_package"
+	ActionRepairTerminalProjection ControlAction = "repair_terminal_projection"
 )
 
 // ControlReceipt is the structured, idempotent operation receipt. It records
@@ -59,8 +60,9 @@ type ControlReceipt struct {
 }
 
 var (
-	ErrProjectLifecycleLeadRequired = errors.New("accountable lead required")
-	ErrProjectLifecycleNoFrontier   = errors.New("no ready frontier issue")
+	ErrProjectLifecycleLeadRequired        = errors.New("accountable lead required")
+	ErrProjectLifecycleNoFrontier          = errors.New("no ready frontier issue")
+	ErrProjectLifecycleIdempotencyRequired = errors.New("idempotency key required")
 )
 
 // validateProjectControl checks the fail-closed gates shared by every action.
@@ -373,6 +375,131 @@ func (s *ProjectLifecycleControlService) StopCurrent(ctx context.Context, worksp
 	}
 	receipt.Applied = true
 	return finalize()
+}
+
+// TerminalProjectionRepairPreview is a bounded, preview-first diagnosis of a
+// terminal project whose live issue/task projection does not agree with its
+// stored status. It is not a general project reopen operation.
+type TerminalProjectionRepairPreview struct {
+	ProjectID             string   `json:"project_id"`
+	Status                string   `json:"status"`
+	Finding               string   `json:"finding,omitempty"`
+	NonterminalIssueCount int      `json:"nonterminal_issue_count"`
+	ActiveTaskCount       int      `json:"active_task_count"`
+	AfterStatus           string   `json:"after_status"`
+	Blockers              []string `json:"blockers,omitempty"`
+	NextAction            string   `json:"next_action,omitempty"`
+}
+
+// TerminalProjectionRepairReceipt is the narrow lifecycle receipt returned by
+// repair_terminal_projection. The durable portion is stored in the existing
+// project_lifecycle_receipt table; Finding and NextAction are derived
+// diagnostics included for the owner-facing response.
+type TerminalProjectionRepairReceipt struct {
+	ControlReceipt
+	Finding    string `json:"finding,omitempty"`
+	NextAction string `json:"next_action,omitempty"`
+}
+
+// PreviewRepairTerminalProjection reads the current project lifecycle and
+// computes the only permitted repair. It never writes project or task state.
+func (s *ProjectLifecycleControlService) PreviewRepairTerminalProjection(ctx context.Context, workspaceID, projectID pgtype.UUID) (*TerminalProjectionRepairPreview, error) {
+	proj, err := s.Queries.GetProjectInWorkspace(ctx, db.GetProjectInWorkspaceParams{ID: projectID, WorkspaceID: workspaceID})
+	if err != nil {
+		return nil, ErrProjectLifecycleNotFound
+	}
+	projector := NewProjectLifecycleProjector(s.Queries)
+	snap, err := projector.GetSnapshot(ctx, workspaceID, projectID)
+	if err != nil {
+		return nil, err
+	}
+	preview := &TerminalProjectionRepairPreview{
+		ProjectID: util.UUIDToString(proj.ID), Status: proj.Status,
+		Finding:               snap.TerminalProjectionFinding,
+		NonterminalIssueCount: snap.NonterminalIssueCount,
+		ActiveTaskCount:       snap.ActiveTaskCount,
+		AfterStatus:           proj.Status,
+		NextAction:            snap.TerminalProjectionNextAction,
+	}
+	if snap.TerminalProjectionFinding == string(TerminalProjectionCompletedWithOpenWork) {
+		preview.AfterStatus = "in_progress"
+		return preview, nil
+	}
+	if snap.TerminalProjectionFinding == string(TerminalProjectionCancelledWithActive) {
+		preview.Blockers = []string{"CANCELLED_NEVER_REOPEN", "ACTIVE_TASKS_PRESENT"}
+		preview.NextAction = "stop active tasks or record disposition; cancelled projects are never reopened"
+		return preview, nil
+	}
+	preview.Blockers = []string{"TERMINAL_PROJECTION_NOT_INCONSISTENT"}
+	preview.NextAction = "no repair: require a completed project with nonterminal issue(s) or active task(s)"
+	return preview, nil
+}
+
+// RepairTerminalProjection repairs only the stale completed projection case.
+// Cancelled projects are deliberately fail-closed and receive a stop/
+// disposition next action instead. Every call requires an idempotency key and
+// reuses the existing lifecycle receipt ledger.
+func (s *ProjectLifecycleControlService) RepairTerminalProjection(ctx context.Context, workspaceID, projectID pgtype.UUID, idempotencyKey string) (TerminalProjectionRepairReceipt, error) {
+	if strings.TrimSpace(idempotencyKey) == "" {
+		return TerminalProjectionRepairReceipt{}, ErrProjectLifecycleIdempotencyRequired
+	}
+	proj, err := s.Queries.GetProjectInWorkspace(ctx, db.GetProjectInWorkspaceParams{ID: projectID, WorkspaceID: workspaceID})
+	if err != nil {
+		return TerminalProjectionRepairReceipt{}, ErrProjectLifecycleNotFound
+	}
+	if prior, err := s.receiptGuard(ctx, workspaceID, projectID, ActionRepairTerminalProjection, idempotencyKey); err != nil {
+		return TerminalProjectionRepairReceipt{}, err
+	} else if prior != nil {
+		result := terminalProjectionRepairReceipt(receiptToControl(*prior, true))
+		if prior.BeforeStatus == "cancelled" {
+			result.Finding = string(TerminalProjectionCancelledWithActive)
+			result.NextAction = "stop active tasks or record disposition; cancelled projects are never reopened"
+		} else if prior.BeforeStatus == "completed" && prior.AfterStatus == "in_progress" {
+			result.Finding = string(TerminalProjectionCompletedWithOpenWork)
+			result.NextAction = "repaired stale completed projection; continue normal lifecycle reconciliation"
+		}
+		return result, nil
+	}
+
+	projector := NewProjectLifecycleProjector(s.Queries)
+	snap, err := projector.GetSnapshot(ctx, workspaceID, projectID)
+	if err != nil {
+		return TerminalProjectionRepairReceipt{}, err
+	}
+	receipt := ControlReceipt{
+		Action: string(ActionRepairTerminalProjection), ProjectID: util.UUIDToString(proj.ID),
+		IdempotencyKey: idempotencyKey, BeforeStatus: proj.Status, AfterStatus: proj.Status,
+	}
+	result := terminalProjectionRepairReceipt(receipt)
+	result.Finding = snap.TerminalProjectionFinding
+	result.NextAction = snap.TerminalProjectionNextAction
+	if snap.TerminalProjectionFinding == string(TerminalProjectionCancelledWithActive) {
+		receipt.Blockers = []string{"CANCELLED_NEVER_REOPEN", "ACTIVE_TASKS_PRESENT"}
+		result.Blockers = receipt.Blockers
+		result.NextAction = "stop active tasks or record disposition; cancelled projects are never reopened"
+	} else if snap.TerminalProjectionFinding != string(TerminalProjectionCompletedWithOpenWork) {
+		receipt.Blockers = []string{"TERMINAL_PROJECTION_NOT_INCONSISTENT"}
+		result.Blockers = receipt.Blockers
+		result.NextAction = "no repair: require a completed project with nonterminal issue(s) or active task(s)"
+	} else if err := s.setProjectStatus(ctx, proj, "in_progress"); err != nil {
+		return TerminalProjectionRepairReceipt{}, err
+	} else {
+		receipt.Applied = true
+		receipt.AfterStatus = "in_progress"
+		result = terminalProjectionRepairReceipt(receipt)
+		result.Finding = string(TerminalProjectionCompletedWithOpenWork)
+		result.NextAction = "repaired stale completed projection; continue normal lifecycle reconciliation"
+	}
+	stored, err := s.finish(ctx, workspaceID, receipt)
+	if err != nil {
+		return TerminalProjectionRepairReceipt{}, err
+	}
+	result.ControlReceipt = stored
+	return result, nil
+}
+
+func terminalProjectionRepairReceipt(r ControlReceipt) TerminalProjectionRepairReceipt {
+	return TerminalProjectionRepairReceipt{ControlReceipt: r}
 }
 
 // frontierIssue returns the highest-priority dispatchable nonterminal issue,

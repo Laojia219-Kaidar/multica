@@ -19,12 +19,14 @@ type ReconcileFinding struct {
 	NextAction string  `json:"next_action"`
 }
 
-// Reconcile finding kinds (the four VC-12 broken-chain detectors).
+// Reconcile finding kinds (the VC-12 broken-chain detectors plus the
+// terminal-projection consistency detector).
 const (
-	FindingStalledNoTask     = "stalled_no_task"
-	FindingReviewNoReviewer  = "review_no_reviewer"
-	FindingRepairNoRepair    = "repair_no_repair"
-	FindingTerminalNoPackage = "terminal_no_package"
+	FindingStalledNoTask                  = "stalled_no_task"
+	FindingReviewNoReviewer               = "review_no_reviewer"
+	FindingRepairNoRepair                 = "repair_no_repair"
+	FindingTerminalNoPackage              = "terminal_no_package"
+	FindingTerminalProjectionInconsistent = "terminal_projection_inconsistent"
 )
 
 // ProjectLifecycleReconciler detects the four self-operation broken chains and
@@ -58,6 +60,14 @@ func (r *ProjectLifecycleReconciler) Diagnose(ctx context.Context, workspaceID p
 
 	var findings []ReconcileFinding
 	for _, snap := range snaps {
+		if snap.TerminalProjectionInconsistent {
+			findings = append(findings, ReconcileFinding{
+				Kind:       FindingTerminalProjectionInconsistent,
+				ProjectID:  snap.ProjectID,
+				Summary:    fmt.Sprintf("project status %q disagrees with live projection (%s): %d nonterminal issue(s), %d active task(s)", snap.Status, snap.TerminalProjectionFinding, snap.NonterminalIssueCount, snap.ActiveTaskCount),
+				NextAction: snap.TerminalProjectionNextAction,
+			})
+		}
 		switch snap.Health {
 		case string(HealthStalledNoOpenTask):
 			findings = append(findings, ReconcileFinding{
