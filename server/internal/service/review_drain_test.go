@@ -232,10 +232,62 @@ func TestReviewDrain_DoesNotRedispatchCompletedCandidate(t *testing.T) {
 		issueID, candidateID).Scan(&reviewTaskID); err != nil {
 		t.Fatalf("load review task: %v", err)
 	}
+	var progressTaskID pgtype.UUID
+	if err := f.pool.QueryRow(ctx,
+		`SELECT review_task_id FROM review_drain_progress WHERE issue_id = $1`, issueID).Scan(&progressTaskID); err != nil {
+		t.Fatalf("load persisted review task id: %v", err)
+	}
+	if !uuidEqual(progressTaskID, reviewTaskID) {
+		t.Fatalf("persisted review task id = %s, want %s", uuidString(progressTaskID), uuidString(reviewTaskID))
+	}
+	// A row written by the pre-fix drain may have no task binding. Replaying
+	// that row must recover the existing task id without counting a new task.
+	if _, err := f.pool.Exec(ctx,
+		`UPDATE review_drain_progress SET review_task_id = NULL, status = 'pending', reason = '' WHERE issue_id = $1`,
+		issueID); err != nil {
+		t.Fatalf("simulate legacy unbound progress: %v", err)
+	}
+	if receipt, err := drain.DrainBatch(ctx, f.workspaceID, 1); err != nil {
+		t.Fatalf("replay unbound DrainBatch: %v", err)
+	} else if receipt.Processed != 1 || receipt.ReviewTasks != 0 || receipt.Skipped != 0 {
+		t.Fatalf("replay unbound drain receipt = %+v, want one processed replay and zero new tasks", receipt)
+	}
+	if err := f.pool.QueryRow(ctx,
+		`SELECT review_task_id FROM review_drain_progress WHERE issue_id = $1`, issueID).Scan(&progressTaskID); err != nil {
+		t.Fatalf("reload replayed review task id: %v", err)
+	}
+	if !uuidEqual(progressTaskID, reviewTaskID) {
+		t.Fatalf("replayed review task id = %s, want %s", uuidString(progressTaskID), uuidString(reviewTaskID))
+	}
 	if _, err := f.pool.Exec(ctx,
 		`UPDATE agent_task_queue SET status = 'completed', completed_at = now(), result = '{}'::jsonb WHERE id = $1`,
 		reviewTaskID); err != nil {
 		t.Fatalf("complete review task: %v", err)
+	}
+	// Review comments also carry source_task_id. They must never become the
+	// next implementation candidate and trigger a review-of-review chain.
+	if _, err := f.pool.Exec(ctx,
+		`INSERT INTO comment (issue_id, workspace_id, author_type, author_id, content, type, source_task_id)
+		 VALUES ($1, $2, 'agent', $3, 'review decision without verdict', 'comment', $4)`,
+		issueID, f.workspaceID, f.reviewer, reviewTaskID); err != nil {
+		t.Fatalf("record review comment: %v", err)
+	}
+	repairTaskID, err := insertReturningUUID(ctx, f.pool,
+		`INSERT INTO agent_task_queue (agent_id, runtime_id, issue_id, status, task_kind, originator_source)
+		 VALUES ($1, $2, $3, 'completed', 'repair', 'unattributed') RETURNING id`,
+		f.implementer, f.implRT, issueID)
+	if err != nil {
+		t.Fatalf("seed repair task: %v", err)
+	}
+	if _, err := f.pool.Exec(ctx,
+		`UPDATE agent_task_queue SET completed_at = now() + interval '2 seconds' WHERE id = $1`, repairTaskID); err != nil {
+		t.Fatalf("complete repair task: %v", err)
+	}
+	if _, err := f.pool.Exec(ctx,
+		`INSERT INTO comment (issue_id, workspace_id, author_type, author_id, content, type, source_task_id)
+		 VALUES ($1, $2, 'agent', $3, 'repair delivery comment', 'comment', $4)`,
+		issueID, f.workspaceID, f.implementer, repairTaskID); err != nil {
+		t.Fatalf("record repair comment: %v", err)
 	}
 
 	// The drain reclassifies legacy in_review rows on every tick. The completed
@@ -244,10 +296,20 @@ func TestReviewDrain_DoesNotRedispatchCompletedCandidate(t *testing.T) {
 	if _, err := drain.ClassifyInReview(ctx, f.workspaceID); err != nil {
 		t.Fatalf("second ClassifyInReview: %v", err)
 	}
+	progress, err := f.queries.GetDrainProgressForIssue(ctx, issueID)
+	if err != nil {
+		t.Fatalf("load second classification progress: %v", err)
+	}
+	if progress.Status != "skipped" || progress.Reason != DrainReasonReviewVerdictMissing {
+		t.Fatalf("second classification progress = status %q reason %q, want observable missing verdict", progress.Status, progress.Reason)
+	}
+	if !uuidEqual(progress.ReviewTaskID, reviewTaskID) {
+		t.Fatalf("second classification review task id = %s, want %s", uuidString(progress.ReviewTaskID), uuidString(reviewTaskID))
+	}
 	if receipt, err := drain.DrainBatch(ctx, f.workspaceID, 1); err != nil {
 		t.Fatalf("second DrainBatch: %v", err)
-	} else if receipt.Processed != 1 {
-		t.Fatalf("second drain receipt = %+v, want the existing candidate processed once", receipt)
+	} else if receipt.Processed != 0 || receipt.Skipped != 0 || receipt.ReviewTasks != 0 {
+		t.Fatalf("second drain receipt = %+v, want no replay after missing verdict disposition", receipt)
 	}
 
 	var count int64

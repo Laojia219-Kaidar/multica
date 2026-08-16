@@ -433,17 +433,19 @@ func (q *Queries) HasAgentRepliedInThread(ctx context.Context, arg HasAgentRepli
 }
 
 const latestLineageComment = `-- name: LatestLineageComment :one
-SELECT id, issue_id, author_type, author_id, content, type, created_at, updated_at, parent_id, workspace_id, resolved_at, resolved_by_type, resolved_by_id, source_task_id FROM comment
-WHERE issue_id = $1 AND source_task_id IS NOT NULL
-ORDER BY created_at DESC, id DESC
+SELECT c.id, c.issue_id, c.author_type, c.author_id, c.content, c.type, c.created_at, c.updated_at, c.parent_id, c.workspace_id, c.resolved_at, c.resolved_by_type, c.resolved_by_id, c.source_task_id FROM comment c
+JOIN agent_task_queue t ON t.id = c.source_task_id
+WHERE c.issue_id = $1
+  AND c.source_task_id IS NOT NULL
+  AND t.task_kind = 'work'
+ORDER BY c.created_at DESC, c.id DESC
 LIMIT 1
 `
 
-// The newest delivery comment for an issue: the most recent comment carrying a
-// machine-readable source_task_id. The review cell resolves the review
-// candidate from this exact row and independently re-validates the referenced
-// task (exists / same issue / terminal) — the pinning logic in handler/comment.go
-// is trusted as a first gate, never as the final authority.
+// The newest implementation-delivery comment for an issue. Review and repair
+// comments also carry source_task_id, but they are evidence about a prior
+// decision/repair round, never a new implementation candidate. Repair
+// re-review is created by OnRepairTaskCompleted, not by this inference query.
 func (q *Queries) LatestLineageComment(ctx context.Context, issueID pgtype.UUID) (Comment, error) {
 	row := q.db.QueryRow(ctx, latestLineageComment, issueID)
 	var i Comment

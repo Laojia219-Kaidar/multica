@@ -54,6 +54,7 @@ const (
 	LineageFailureNoSourceTaskID        = "no_source_task_id"
 	LineageFailureTaskNotFound          = "task_not_found"
 	LineageFailureCrossIssueReference   = "cross_issue_reference"
+	LineageFailureNonWorkCandidate      = "non_work_candidate"
 	LineageFailureCandidateNotTerminal  = "candidate_not_terminal"
 	LineageFailureReviewerIsImplementer = "reviewer_is_implementer"
 	LineageFailureReviewerUnconfigured  = "reviewer_unconfigured"
@@ -131,6 +132,16 @@ type RequeueResult struct {
 	Reason            string
 }
 
+// ReviewTaskEnsureResult describes the durable review-task decision for one
+// candidate lineage. Created and Replayed are mutually exclusive; a nil task
+// means the request was fail-closed (for example, a closed Project).
+type ReviewTaskEnsureResult struct {
+	Created         bool
+	Replayed        bool
+	ReviewTaskID    pgtype.UUID
+	CandidateTaskID pgtype.UUID
+}
+
 // ReviewCellService implements the P2 review cell: idempotent review-task
 // creation on issue entering in_review, fail-closed lineage resolution, the
 // review state machine, PASS/REVISE verdict writes, repair rework and
@@ -180,6 +191,9 @@ func (s *ReviewCellService) resolveLineage(ctx context.Context, qtx *db.Queries,
 	if !uuidEqual(task.IssueID, issueID) {
 		return candidateLineage{SubReason: LineageFailureCrossIssueReference}, nil
 	}
+	if task.TaskKind != TaskKindWork {
+		return candidateLineage{SubReason: LineageFailureNonWorkCandidate}, nil
+	}
 	if task.Status != "completed" {
 		return candidateLineage{SubReason: LineageFailureCandidateNotTerminal}, nil
 	}
@@ -190,14 +204,24 @@ func (s *ReviewCellService) resolveLineage(ctx context.Context, qtx *db.Queries,
 // status_changed && status=='in_review'. It is idempotent against duplicate
 // events and concurrent consumers.
 func (s *ReviewCellService) OnIssueEnteredReview(ctx context.Context, issueID pgtype.UUID) error {
-	return s.runInTx(ctx, func(qtx *db.Queries) error {
+	_, err := s.EnsureReviewTask(ctx, issueID)
+	return err
+}
+
+// EnsureReviewTask is the result-bearing review entry point used by the
+// scheduler. The legacy OnIssueEnteredReview wrapper remains the event-listener
+// API for callers that only need an error.
+func (s *ReviewCellService) EnsureReviewTask(ctx context.Context, issueID pgtype.UUID) (ReviewTaskEnsureResult, error) {
+	var result ReviewTaskEnsureResult
+	err := s.runInTx(ctx, func(qtx *db.Queries) error {
 		issue, err := qtx.GetIssueForUpdate(ctx, issueID)
 		if err != nil {
 			return fmt.Errorf("review cell: load issue: %w", err)
 		}
 		switch {
 		case !issue.ReviewState.Valid:
-			return s.handleFreshEntry(ctx, qtx, issue)
+			result, err = s.handleFreshEntry(ctx, qtx, issue)
+			return err
 		case issue.ReviewState.String == ReviewStateReviseRequested:
 			// Repair pending: keep revise_requested. OnRepairTaskCompleted
 			// creates the fresh independent review round after the repair
@@ -206,24 +230,26 @@ func (s *ReviewCellService) OnIssueEnteredReview(ctx context.Context, issueID pg
 			// the repair finishes).
 			return nil
 		case isOpenReviewState(issue.ReviewState.String):
-			return s.handleReentry(ctx, qtx, issue)
+			result, err = s.handleReentry(ctx, qtx, issue)
+			return err
 		default:
 			return nil
 		}
 	})
+	return result, err
 }
 
-func (s *ReviewCellService) handleFreshEntry(ctx context.Context, qtx *db.Queries, issue db.Issue) error {
+func (s *ReviewCellService) handleFreshEntry(ctx context.Context, qtx *db.Queries, issue db.Issue) (ReviewTaskEnsureResult, error) {
 	lineage, err := s.resolveLineage(ctx, qtx, issue.ID)
 	if err != nil {
-		return err
+		return ReviewTaskEnsureResult{}, err
 	}
 	if !lineage.Valid {
-		return s.failClosedFromNULL(ctx, qtx, issue, lineage.SubReason)
+		return ReviewTaskEnsureResult{}, s.failClosedFromNULL(ctx, qtx, issue, lineage.SubReason)
 	}
-	created, _, err := s.createReviewTask(ctx, qtx, issue, lineage.Task)
+	created, task, err := s.createReviewTask(ctx, qtx, issue, lineage.Task)
 	if err != nil {
-		return s.failClosedFromNULL(ctx, qtx, issue, lineageFailureForErr(err))
+		return ReviewTaskEnsureResult{}, s.failClosedFromNULL(ctx, qtx, issue, lineageFailureForErr(err))
 	}
 	if !created {
 		slog.Debug("review cell: open review task already exists",
@@ -236,52 +262,51 @@ func (s *ReviewCellService) handleFreshEntry(ctx context.Context, qtx *db.Querie
 		NewReason:     pgtype.Text{},
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
-		return nil
+		return reviewTaskEnsureResult(created, task, lineage.Task.ID), nil
 	}
 	if err != nil {
-		return fmt.Errorf("review cell: transition to queued: %w", err)
+		return ReviewTaskEnsureResult{}, fmt.Errorf("review cell: transition to queued: %w", err)
 	}
-	return nil
+	return reviewTaskEnsureResult(created, task, lineage.Task.ID), nil
 }
 
-func (s *ReviewCellService) handleReentry(ctx context.Context, qtx *db.Queries, issue db.Issue) error {
+func (s *ReviewCellService) handleReentry(ctx context.Context, qtx *db.Queries, issue db.Issue) (ReviewTaskEnsureResult, error) {
 	lineage, err := s.resolveLineage(ctx, qtx, issue.ID)
 	if err != nil {
-		return err
+		return ReviewTaskEnsureResult{}, err
 	}
 	if !lineage.Valid {
-		return s.failClosedFromOpen(ctx, qtx, issue, lineage.SubReason)
+		return ReviewTaskEnsureResult{}, s.failClosedFromOpen(ctx, qtx, issue, lineage.SubReason)
 	}
 
 	existing, err := qtx.GetOpenReviewTaskForIssue(ctx, issue.ID)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		return fmt.Errorf("review cell: load open review task: %w", err)
+		return ReviewTaskEnsureResult{}, fmt.Errorf("review cell: load open review task: %w", err)
 	}
 	if err == nil && uuidEqual(existing.ReviewTargetTaskID, lineage.Task.ID) {
-		return nil
+		return ReviewTaskEnsureResult{Replayed: true, ReviewTaskID: existing.ID, CandidateTaskID: lineage.Task.ID}, nil
 	}
 	if err == nil {
 		if _, err := qtx.CancelOpenReviewTasksForIssue(ctx, issue.ID); err != nil {
-			return fmt.Errorf("review cell: supersede old review task: %w", err)
+			return ReviewTaskEnsureResult{}, fmt.Errorf("review cell: supersede old review task: %w", err)
 		}
 	}
-	created, _, err := s.createReviewTask(ctx, qtx, issue, lineage.Task)
+	created, task, err := s.createReviewTask(ctx, qtx, issue, lineage.Task)
 	if err != nil {
-		return s.failClosedFromOpen(ctx, qtx, issue, lineageFailureForErr(err))
+		return ReviewTaskEnsureResult{}, s.failClosedFromOpen(ctx, qtx, issue, lineageFailureForErr(err))
 	}
-	_ = created
 	_, err = qtx.SetIssueReviewStateFromOpen(ctx, db.SetIssueReviewStateFromOpenParams{
 		ID:        issue.ID,
 		NewState:  pgtype.Text{String: ReviewStateQueued, Valid: true},
 		NewReason: pgtype.Text{},
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
-		return nil
+		return reviewTaskEnsureResult(created, task, lineage.Task.ID), nil
 	}
 	if err != nil {
-		return fmt.Errorf("review cell: requeue after supersede: %w", err)
+		return ReviewTaskEnsureResult{}, fmt.Errorf("review cell: requeue after supersede: %w", err)
 	}
-	return nil
+	return reviewTaskEnsureResult(created, task, lineage.Task.ID), nil
 }
 
 func (s *ReviewCellService) failClosedFromNULL(ctx context.Context, qtx *db.Queries, issue db.Issue, subReason string) error {
@@ -361,11 +386,11 @@ func (s *ReviewCellService) createReviewTask(ctx context.Context, qtx *db.Querie
 	// below protects open tasks, but it intentionally excludes completed rows;
 	// retain completed review history as the idempotency boundary for this exact
 	// candidate lineage so repeated drain ticks cannot re-dispatch it.
-	if _, err := qtx.GetReviewTaskForCandidate(ctx, db.GetReviewTaskForCandidateParams{
+	if existing, err := qtx.GetReviewTaskForCandidate(ctx, db.GetReviewTaskForCandidateParams{
 		IssueID:            issue.ID,
 		ReviewTargetTaskID: candidate.ID,
 	}); err == nil {
-		return false, nil, nil
+		return false, &existing, nil
 	} else if !errors.Is(err, pgx.ErrNoRows) {
 		return false, nil, fmt.Errorf("read review task replay: %w", err)
 	}
@@ -409,6 +434,15 @@ func (s *ReviewCellService) createReviewTask(ctx context.Context, qtx *db.Querie
 		return false, nil, fmt.Errorf("create review task: %w", err)
 	}
 	return true, &task, nil
+}
+
+func reviewTaskEnsureResult(created bool, task *db.AgentTaskQueue, candidateID pgtype.UUID) ReviewTaskEnsureResult {
+	result := ReviewTaskEnsureResult{Created: created, CandidateTaskID: candidateID}
+	if task != nil {
+		result.ReviewTaskID = task.ID
+		result.Replayed = !created
+	}
+	return result
 }
 
 // OnIssueLeftReview resets the acceptance axis when the issue leaves in_review:

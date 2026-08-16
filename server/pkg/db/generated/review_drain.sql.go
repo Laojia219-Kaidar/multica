@@ -32,6 +32,23 @@ func (q *Queries) GetDrainProgressForIssue(ctx context.Context, issueID pgtype.U
 	return i, err
 }
 
+const getProjectStatusForIssue = `-- name: GetProjectStatusForIssue :one
+SELECT COALESCE(p.status, '') AS project_status
+FROM issue i
+LEFT JOIN project p ON p.id = i.project_id
+WHERE i.id = $1
+`
+
+// Read-only lifecycle projection used by the drain fail-closed gate. A NULL
+// project status means this legacy issue is not linked to a project and keeps
+// the historical review behavior.
+func (q *Queries) GetProjectStatusForIssue(ctx context.Context, id pgtype.UUID) (string, error) {
+	row := q.db.QueryRow(ctx, getProjectStatusForIssue, id)
+	var project_status string
+	err := row.Scan(&project_status)
+	return project_status, err
+}
+
 const listPendingDrainProgress = `-- name: ListPendingDrainProgress :many
 SELECT issue_id, workspace_id, classification, status, reason, review_task_id, processed_at, created_at, updated_at FROM review_drain_progress
 WHERE workspace_id = $1 AND status = 'pending'

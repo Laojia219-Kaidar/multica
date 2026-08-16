@@ -29,3 +29,12 @@ LIMIT $2;
 
 -- name: GetDrainProgressForIssue :one
 SELECT * FROM review_drain_progress WHERE issue_id = $1;
+
+-- name: GetProjectStatusForIssue :one
+-- Read-only lifecycle projection used by the drain fail-closed gate. A NULL
+-- project status means this legacy issue is not linked to a project and keeps
+-- the historical review behavior.
+SELECT COALESCE(p.status, '') AS project_status
+FROM issue i
+LEFT JOIN project p ON p.id = i.project_id
+WHERE i.id = $1;

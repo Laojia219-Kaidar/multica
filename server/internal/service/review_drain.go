@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -15,11 +16,12 @@ import (
 // never instantiates a review task for anything but directly_reviewable, and it
 // never fans out more than batch_size rows per tick.
 const (
-	DrainClassNoCandidate        = "no_candidate"
-	DrainClassMissingEvidence    = "missing_evidence"
-	DrainClassDirectlyReviewable = "directly_reviewable"
-	DrainClassNeedsRepair        = "needs_repair"
-	DrainClassSuperseded         = "superseded"
+	DrainClassNoCandidate           = "no_candidate"
+	DrainClassMissingEvidence       = "missing_evidence"
+	DrainClassDirectlyReviewable    = "directly_reviewable"
+	DrainClassNeedsRepair           = "needs_repair"
+	DrainClassSuperseded            = "superseded"
+	DrainReasonReviewVerdictMissing = "review_verdict_missing"
 )
 
 // DrainClassification is one classified in_review issue.
@@ -74,12 +76,24 @@ func (s *ReviewDrainService) ClassifyInReview(ctx context.Context, workspaceID p
 	var summary DrainClassificationSummary
 	summary.Total = len(ids)
 	for _, id := range ids {
-		class, reason := s.classifyIssue(ctx, workspaceID, id)
+		class, reason, candidateID := s.classifyIssue(ctx, workspaceID, id)
 		status := "pending"
 		if class != DrainClassDirectlyReviewable {
 			status = "skipped"
 			if class == DrainClassSuperseded {
 				status = "superseded"
+			}
+		}
+		var reviewTaskID pgtype.UUID
+		if candidateID.Valid {
+			if existing, err := s.Queries.GetDrainProgressForIssue(ctx, id); err == nil {
+				if preservedStatus, preservedReason, preservedTaskID, ok := s.reconcileProgress(ctx, existing, candidateID); ok {
+					status = preservedStatus
+					reason = preservedReason
+					reviewTaskID = preservedTaskID
+				}
+			} else if !errors.Is(err, pgx.ErrNoRows) {
+				return summary, fmt.Errorf("read drain progress: %w", err)
 			}
 		}
 		now := time.Now().UTC()
@@ -89,6 +103,7 @@ func (s *ReviewDrainService) ClassifyInReview(ctx context.Context, workspaceID p
 			Classification: class,
 			Status:         status,
 			Reason:         reason,
+			ReviewTaskID:   reviewTaskID,
 			ProcessedAt:    pgtype.Timestamptz{Time: now, Valid: true},
 		})
 		if err != nil {
@@ -138,37 +153,67 @@ func (s *ReviewDrainService) DrainBatch(ctx context.Context, workspaceID pgtype.
 			receipt.Skipped++
 			continue
 		}
-		if err := s.ReviewCell.OnIssueEnteredReview(ctx, row.IssueID); err != nil {
+		ensure, err := s.ReviewCell.EnsureReviewTask(ctx, row.IssueID)
+		if err != nil {
 			s.markSkipped(ctx, row.IssueID, workspaceID, "review_cell_error:"+err.Error())
 			receipt.Skipped++
 			continue
 		}
-		s.markProcessed(ctx, row.IssueID, workspaceID)
+		if !ensure.ReviewTaskID.Valid {
+			s.markSkipped(ctx, row.IssueID, workspaceID, "review_task_not_created")
+			receipt.Skipped++
+			continue
+		}
+		task, err := s.Queries.GetAgentTask(ctx, ensure.ReviewTaskID)
+		if err != nil {
+			s.markSkipped(ctx, row.IssueID, workspaceID, "review_task_lookup_error:"+err.Error())
+			receipt.Skipped++
+			continue
+		}
+		if task.Status == "completed" && !reviewTaskHasVerdict(task.Result) {
+			s.markSkippedWithTask(ctx, row.IssueID, workspaceID, DrainReasonReviewVerdictMissing, ensure.ReviewTaskID)
+			receipt.Skipped++
+			continue
+		}
+		s.markProcessed(ctx, row.IssueID, workspaceID, ensure.ReviewTaskID)
 		receipt.Processed++
-		receipt.ReviewTasks++
+		if ensure.Created {
+			receipt.ReviewTasks++
+		}
 	}
 	return receipt, nil
 }
 
 // classifyIssue resolves the classification bucket for one in_review issue
 // without creating any review task.
-func (s *ReviewDrainService) classifyIssue(ctx context.Context, workspaceID, issueID pgtype.UUID) (string, string) {
+
+func (s *ReviewDrainService) classifyIssue(ctx context.Context, workspaceID, issueID pgtype.UUID) (string, string, pgtype.UUID) {
+	projectStatus, err := s.Queries.GetProjectStatusForIssue(ctx, issueID)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return DrainClassNoCandidate, "project status lookup failed", pgtype.UUID{}
+	}
+	if projectStatus == "completed" || projectStatus == "cancelled" {
+		return DrainClassMissingEvidence, "project_" + projectStatus, pgtype.UUID{}
+	}
 	comment, err := s.Queries.LatestLineageComment(ctx, issueID)
 	if errors.Is(err, pgx.ErrNoRows) || (err == nil && !comment.SourceTaskID.Valid) {
-		return DrainClassNoCandidate, "no delivery comment with source_task_id"
+		return DrainClassNoCandidate, "no delivery comment with source_task_id", pgtype.UUID{}
 	}
 	if err != nil {
-		return DrainClassNoCandidate, "lineage lookup failed"
+		return DrainClassNoCandidate, "lineage lookup failed", pgtype.UUID{}
 	}
 	candidate, err := s.Queries.GetAgentTask(ctx, comment.SourceTaskID)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return DrainClassNoCandidate, "candidate task not found"
+		return DrainClassNoCandidate, "candidate task not found", pgtype.UUID{}
 	}
 	if err != nil {
-		return DrainClassNoCandidate, "candidate task lookup failed"
+		return DrainClassNoCandidate, "candidate task lookup failed", pgtype.UUID{}
 	}
 	if !uuidEqual(candidate.IssueID, issueID) {
-		return DrainClassNoCandidate, "candidate belongs to another issue"
+		return DrainClassNoCandidate, "candidate belongs to another issue", pgtype.UUID{}
+	}
+	if candidate.TaskKind != TaskKindWork {
+		return DrainClassNoCandidate, "candidate task kind is not work", pgtype.UUID{}
 	}
 
 	switch candidate.Status {
@@ -176,14 +221,44 @@ func (s *ReviewDrainService) classifyIssue(ctx context.Context, workspaceID, iss
 		// A newer completed work delivery supersedes this candidate.
 		superseded, reason := s.candidateSuperseded(ctx, issueID, candidate)
 		if superseded {
-			return DrainClassSuperseded, reason
+			return DrainClassSuperseded, reason, candidate.ID
 		}
-		return DrainClassDirectlyReviewable, "candidate completed"
+		return DrainClassDirectlyReviewable, "candidate completed", candidate.ID
 	case "failed", "cancelled":
-		return DrainClassNeedsRepair, "candidate " + candidate.Status
+		return DrainClassNeedsRepair, "candidate " + candidate.Status, candidate.ID
 	default:
-		return DrainClassMissingEvidence, "candidate not terminal (" + candidate.Status + ")"
+		return DrainClassMissingEvidence, "candidate not terminal (" + candidate.Status + ")", candidate.ID
 	}
+}
+
+func (s *ReviewDrainService) reconcileProgress(ctx context.Context, progress db.ReviewDrainProgress, candidateID pgtype.UUID) (string, string, pgtype.UUID, bool) {
+	if !progress.ReviewTaskID.Valid || progress.Status == "skipped" && progress.Reason != DrainReasonReviewVerdictMissing {
+		return "", "", pgtype.UUID{}, false
+	}
+	task, err := s.Queries.GetAgentTask(ctx, progress.ReviewTaskID)
+	if err != nil || task.TaskKind != TaskKindReview || !task.ReviewTargetTaskID.Valid || !uuidEqual(task.ReviewTargetTaskID, candidateID) {
+		return "", "", pgtype.UUID{}, false
+	}
+	if task.Status == "queued" || task.Status == "dispatched" || task.Status == "running" || task.Status == "waiting_local_directory" {
+		return "processed", "review_task_exists", task.ID, true
+	}
+	if task.Status == "completed" {
+		if reviewTaskHasVerdict(task.Result) {
+			return "processed", "review_verdict_present", task.ID, true
+		}
+		return "skipped", DrainReasonReviewVerdictMissing, task.ID, true
+	}
+	return "", "", pgtype.UUID{}, false
+}
+
+func reviewTaskHasVerdict(result []byte) bool {
+	var receipt struct {
+		Verdict string `json:"verdict"`
+	}
+	if len(result) == 0 || json.Unmarshal(result, &receipt) != nil {
+		return false
+	}
+	return receipt.Verdict == "pass" || receipt.Verdict == "revise"
 }
 
 func (s *ReviewDrainService) candidateSuperseded(ctx context.Context, issueID pgtype.UUID, candidate db.AgentTaskQueue) (bool, string) {
@@ -199,7 +274,7 @@ func (s *ReviewDrainService) candidateSuperseded(ctx context.Context, issueID pg
 	return false, ""
 }
 
-func (s *ReviewDrainService) markProcessed(ctx context.Context, issueID, workspaceID pgtype.UUID) {
+func (s *ReviewDrainService) markProcessed(ctx context.Context, issueID, workspaceID, reviewTaskID pgtype.UUID) {
 	now := time.Now().UTC()
 	_, _ = s.Queries.UpsertReviewDrainProgress(ctx, db.UpsertReviewDrainProgressParams{
 		IssueID:        issueID,
@@ -207,11 +282,16 @@ func (s *ReviewDrainService) markProcessed(ctx context.Context, issueID, workspa
 		Classification: DrainClassDirectlyReviewable,
 		Status:         "processed",
 		Reason:         "",
+		ReviewTaskID:   reviewTaskID,
 		ProcessedAt:    pgtype.Timestamptz{Time: now, Valid: true},
 	})
 }
 
 func (s *ReviewDrainService) markSkipped(ctx context.Context, issueID, workspaceID pgtype.UUID, reason string) {
+	s.markSkippedWithTask(ctx, issueID, workspaceID, reason, pgtype.UUID{})
+}
+
+func (s *ReviewDrainService) markSkippedWithTask(ctx context.Context, issueID, workspaceID pgtype.UUID, reason string, reviewTaskID pgtype.UUID) {
 	now := time.Now().UTC()
 	_, _ = s.Queries.UpsertReviewDrainProgress(ctx, db.UpsertReviewDrainProgressParams{
 		IssueID:        issueID,
@@ -219,6 +299,7 @@ func (s *ReviewDrainService) markSkipped(ctx context.Context, issueID, workspace
 		Classification: DrainClassDirectlyReviewable,
 		Status:         "skipped",
 		Reason:         reason,
+		ReviewTaskID:   reviewTaskID,
 		ProcessedAt:    pgtype.Timestamptz{Time: now, Valid: true},
 	})
 }
