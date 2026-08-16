@@ -25,6 +25,7 @@ function snap(over: Partial<ProjectLifecycleSnapshot>): ProjectLifecycleSnapshot
     closure_ready: false,
     closure_blockers: [],
     duplicate_of_project_id: null,
+    terminal_projection_inconsistent: false,
     ...over,
   };
 }
