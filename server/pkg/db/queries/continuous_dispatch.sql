@@ -56,7 +56,7 @@ FOR SHARE;
 -- name: LockReviewSourceTaskForContinuousDispatch :one
 -- Lock the completed implementation Task together with the source Comment so
 -- its completion state and stamped generation cannot change mid-dispatch.
-SELECT id, agent_id, issue_id, status, context, handoff_note
+SELECT id, agent_id, issue_id, status, task_kind, context, handoff_note
 FROM agent_task_queue
 WHERE id = @source_task_id
 FOR SHARE;
@@ -124,5 +124,35 @@ WHERE id = @issue_id
   AND (
       review_state IS NULL
       OR review_state IN ('queued', 'triaging', 'evidence_review', 'owner_decision')
+  )
+RETURNING *;
+
+-- name: QueueIssueForContinuousReviewAfterRepair :one
+-- A completed repair may move revise_requested to queued only after the
+-- Authority review-dispatch transaction has stamped a new review Task. The
+-- repair Task itself is the exact source of the new implementation identity;
+-- this guard prevents an old implementation or an in-progress repair from
+-- pre-empting the pending repair state.
+UPDATE issue
+SET review_state = 'queued',
+    review_state_reason = NULL,
+    updated_at = now()
+WHERE issue.id = @issue_id
+  AND issue.workspace_id = @workspace_id
+  AND issue.status = 'in_review'
+  AND issue.review_state = 'revise_requested'
+  AND issue.metadata ->> 'stage' = 'review'
+  AND issue.metadata ->> 'candidate_revision' = @candidate_revision::text
+  AND issue.metadata ->> 'generation' = @generation::text
+  AND EXISTS (
+      SELECT 1
+      FROM agent_task_queue repair
+      WHERE repair.id = @repair_task_id
+        AND repair.issue_id = issue.id
+        AND repair.task_kind = 'repair'
+        AND repair.status = 'completed'
+        AND repair.context -> 'continuous_dispatch' ->> 'stage' = 'implementation'
+        AND repair.context -> 'continuous_dispatch' ->> 'candidate_revision' = @candidate_revision::text
+        AND repair.context -> 'continuous_dispatch' ->> 'generation' = @generation::text
   )
 RETURNING *;

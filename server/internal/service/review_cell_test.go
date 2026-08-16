@@ -15,7 +15,9 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/multica-ai/multica/server/internal/continuousdispatch"
 	"github.com/multica-ai/multica/server/internal/events"
+	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -450,12 +452,57 @@ func TestReviewCell_AuthorityDispatchOnlyKeepsReviseRequestedAfterRepairWithoutC
 	if _, err := f.pool.Exec(ctx, `UPDATE agent_task_queue SET status = 'completed', completed_at = now() WHERE id = $1`, verdict.RepairTaskID); err != nil {
 		t.Fatalf("complete repair task: %v", err)
 	}
+	baseIdentity := continuousdispatch.DispatchIdentity{
+		WorkspaceID: util.UUIDToString(f.workspaceID), IssueID: util.UUIDToString(f.issueID),
+		Stage: "implementation", CandidateRevision: "candidate-authority-base", Generation: "1",
+	}
+	baseContext, err := json.Marshal(shadowTaskContext{ContinuousDispatch: baseIdentity})
+	if err != nil {
+		t.Fatalf("encode base identity: %v", err)
+	}
+	if _, err := f.pool.Exec(ctx, `UPDATE issue SET metadata = $2::jsonb WHERE id = $1`, f.issueID,
+		`{"stage":"review","candidate_revision":"candidate-authority-base","generation":"1"}`); err != nil {
+		t.Fatalf("stamp authority base metadata: %v", err)
+	}
+	if _, err := f.pool.Exec(ctx, `UPDATE agent_task_queue SET context = $2::jsonb WHERE id = $1`, f.candidate.ID, baseContext); err != nil {
+		t.Fatalf("stamp authority base task: %v", err)
+	}
+	repairMarker := repairCandidatePayload{
+		RepairTaskID: util.UUIDToString(verdict.RepairTaskID), BaseTaskID: util.UUIDToString(f.candidate.ID),
+		BaseCandidateRevision: "candidate-authority-base", BaseGeneration: "1",
+		CandidateRevision: "candidate-authority-repaired", Generation: "2",
+	}
+	repairContext, err := json.Marshal(repairTaskPayload{
+		Kind: TaskKindRepair, CandidateTaskID: util.UUIDToString(f.candidate.ID), ReviewTaskID: util.UUIDToString(verdict.ReviewTaskID),
+	})
+	if err != nil {
+		t.Fatalf("encode repair context: %v", err)
+	}
+	repairResult, err := json.Marshal(repairCandidateRuntimeResult{Output: "repair evidence\n" + repairCandidateMarkerLine(repairMarker)})
+	if err != nil {
+		t.Fatalf("encode repair result: %v", err)
+	}
+	if _, err := f.pool.Exec(ctx, `UPDATE agent_task_queue SET context = $2::jsonb, result = $3::jsonb WHERE id = $1`, verdict.RepairTaskID, repairContext, repairResult); err != nil {
+		t.Fatalf("stamp authority repair evidence: %v", err)
+	}
+	if _, err := f.pool.Exec(ctx, `INSERT INTO comment (issue_id, workspace_id, author_type, author_id, content, type, source_task_id) VALUES ($1, $2, 'agent', $3, $4, 'comment', $5)`, f.issueID, f.workspaceID, f.implementer, repairCandidateMarkerLine(repairMarker), verdict.RepairTaskID); err != nil {
+		t.Fatalf("seed authority repair source comment: %v", err)
+	}
 
 	cfg := cfgWithReviewerAndCoordinator(f)
 	cfg.AuthorityDispatchOnly = true
 	authorityOnly := newReviewCellServiceForFixture(f, cfg)
 	if err := authorityOnly.OnRepairTaskCompleted(ctx, verdict.RepairTaskID); err != nil {
 		t.Fatalf("authority-only OnRepairTaskCompleted: %v", err)
+	}
+	stampedRepair, err := f.queries.GetAgentTask(ctx, verdict.RepairTaskID)
+	if err != nil {
+		t.Fatalf("read stamped repair task: %v", err)
+	}
+	var stampedRepairContext shadowTaskContext
+	if err := json.Unmarshal(stampedRepair.Context, &stampedRepairContext); err != nil ||
+		!repairCandidateDispatchIdentityMatchesIssue(stampedRepairContext.ContinuousDispatch, mustGetIssue(t, ctx, f), "implementation", repairMarker.CandidateRevision, repairMarker.Generation) {
+		t.Fatalf("fresh authority completion did not stamp exact repair identity: context=%s err=%v", stampedRepair.Context, err)
 	}
 	if err := authorityOnly.OnRepairTaskCompleted(ctx, verdict.RepairTaskID); err != nil {
 		t.Fatalf("authority-only OnRepairTaskCompleted replay: %v", err)

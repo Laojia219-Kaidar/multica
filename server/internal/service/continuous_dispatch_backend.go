@@ -169,7 +169,7 @@ func (tx *productionContinuousDispatchTx) VerifyReviewSource(
 	if err != nil {
 		return fmt.Errorf("lock review source task: %w", err)
 	}
-	if sourceTask.Status != "completed" || !sourceTask.IssueID.Valid || sourceTask.IssueID != issueID ||
+	if (sourceTask.TaskKind != TaskKindWork && sourceTask.TaskKind != TaskKindRepair) || sourceTask.Status != "completed" || !sourceTask.IssueID.Valid || sourceTask.IssueID != issueID ||
 		!sourceTask.AgentID.Valid || sourceTask.AgentID != comment.AuthorID ||
 		(sourceTask.HandoffNote.Valid && strings.HasPrefix(sourceTask.HandoffNote.String, "review_dispatch ")) {
 		return ErrContinuousDispatchReviewLineageDrift
@@ -238,6 +238,13 @@ func (tx *productionContinuousDispatchTx) StampTaskIdentity(
 		TaskID: task.ID,
 	}
 	if reviewProvenance != nil {
+		sourceTask, err := tx.queries.GetAgentTask(ctx, parseDispatchUUID(reviewProvenance.SourceTaskID))
+		if err != nil {
+			return db.AgentTaskQueue{}, fmt.Errorf("load review source task kind: %w", err)
+		}
+		if sourceTask.TaskKind != TaskKindWork && sourceTask.TaskKind != TaskKindRepair {
+			return db.AgentTaskQueue{}, ErrContinuousDispatchConflict
+		}
 		params.ReviewSourceRef = pgtype.Text{String: reviewProvenance.SourceRef, Valid: true}
 		params.ReviewSourceIssueID = parseDispatchUUID(reviewProvenance.SourceIssueID)
 		params.ReviewSourceTaskID = parseDispatchUUID(reviewProvenance.SourceTaskID)
@@ -256,7 +263,21 @@ func (tx *productionContinuousDispatchTx) StampTaskIdentity(
 	if stamped.TaskKind != TaskKindReview || stamped.ReviewTargetTaskID != params.ReviewSourceTaskID {
 		return db.AgentTaskQueue{}, ErrContinuousDispatchConflict
 	}
-	if _, err := tx.queries.QueueIssueForContinuousReview(ctx, db.QueueIssueForContinuousReviewParams{
+	if sourceTask, err := tx.queries.GetAgentTask(ctx, params.ReviewSourceTaskID); err != nil {
+		return db.AgentTaskQueue{}, fmt.Errorf("load review source task kind: %w", err)
+	} else if sourceTask.TaskKind == TaskKindRepair {
+		if _, err := tx.queries.QueueIssueForContinuousReviewAfterRepair(ctx, db.QueueIssueForContinuousReviewAfterRepairParams{
+			IssueID:           parseDispatchUUID(identity.IssueID),
+			WorkspaceID:       parseDispatchUUID(identity.WorkspaceID),
+			RepairTaskID:      params.ReviewSourceTaskID,
+			CandidateRevision: identity.CandidateRevision,
+			Generation:        identity.Generation,
+		}); errors.Is(err, pgx.ErrNoRows) {
+			return db.AgentTaskQueue{}, ErrContinuousDispatchIssueDrift
+		} else if err != nil {
+			return db.AgentTaskQueue{}, fmt.Errorf("queue issue for continuous review after repair: %w", err)
+		}
+	} else if _, err := tx.queries.QueueIssueForContinuousReview(ctx, db.QueueIssueForContinuousReviewParams{
 		IssueID:     parseDispatchUUID(identity.IssueID),
 		WorkspaceID: parseDispatchUUID(identity.WorkspaceID),
 	}); errors.Is(err, pgx.ErrNoRows) {

@@ -468,6 +468,65 @@ func (q *Queries) LatestLineageComment(ctx context.Context, issueID pgtype.UUID)
 	return i, err
 }
 
+const listAgentCommentsBySourceTask = `-- name: ListAgentCommentsBySourceTask :many
+SELECT id, issue_id, author_type, author_id, content, type, created_at, updated_at, parent_id, workspace_id, resolved_at, resolved_by_type, resolved_by_id, source_task_id FROM comment
+WHERE workspace_id = $1
+  AND issue_id = $2
+  AND source_task_id = $3
+  AND author_type = 'agent'
+  AND author_id = $4
+ORDER BY created_at ASC, id ASC
+`
+
+type ListAgentCommentsBySourceTaskParams struct {
+	WorkspaceID  pgtype.UUID `json:"workspace_id"`
+	IssueID      pgtype.UUID `json:"issue_id"`
+	SourceTaskID pgtype.UUID `json:"source_task_id"`
+	AuthorID     pgtype.UUID `json:"author_id"`
+}
+
+// Exact repair delivery evidence. Never fall back to the latest Issue comment:
+// review/verdict and older implementation comments share the same Issue.
+func (q *Queries) ListAgentCommentsBySourceTask(ctx context.Context, arg ListAgentCommentsBySourceTaskParams) ([]Comment, error) {
+	rows, err := q.db.Query(ctx, listAgentCommentsBySourceTask,
+		arg.WorkspaceID,
+		arg.IssueID,
+		arg.SourceTaskID,
+		arg.AuthorID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Comment{}
+	for rows.Next() {
+		var i Comment
+		if err := rows.Scan(
+			&i.ID,
+			&i.IssueID,
+			&i.AuthorType,
+			&i.AuthorID,
+			&i.Content,
+			&i.Type,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.ParentID,
+			&i.WorkspaceID,
+			&i.ResolvedAt,
+			&i.ResolvedByType,
+			&i.ResolvedByID,
+			&i.SourceTaskID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listCommentsForIssue = `-- name: ListCommentsForIssue :many
 SELECT id, issue_id, author_type, author_id, content, type, created_at, updated_at, parent_id, workspace_id, resolved_at, resolved_by_type, resolved_by_id, source_task_id FROM comment
 WHERE issue_id = $1 AND workspace_id = $2

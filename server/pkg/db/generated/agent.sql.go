@@ -2155,11 +2155,11 @@ func (q *Queries) CreateQuickCreateTask(ctx context.Context, arg CreateQuickCrea
 const createRepairTask = `-- name: CreateRepairTask :one
 INSERT INTO agent_task_queue (
     agent_id, runtime_id, issue_id, status, priority, task_kind, review_target_task_id,
-    trigger_summary, context, originator_source, trigger_evidence_kind, trigger_evidence_ref_id
+    trigger_summary, context, handoff_note, originator_source, trigger_evidence_kind, trigger_evidence_ref_id
 )
 VALUES (
     $1, $2, $3, 'queued', $4, 'repair', $5,
-    $6, $7, 'unattributed'::text, 'review_repair'::text, $8
+    $6, $7, $8, 'unattributed'::text, 'review_repair'::text, $9
 )
 RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, task_kind, review_target_task_id
 `
@@ -2172,6 +2172,7 @@ type CreateRepairTaskParams struct {
 	ReviewTargetTaskID   pgtype.UUID `json:"review_target_task_id"`
 	TriggerSummary       pgtype.Text `json:"trigger_summary"`
 	Context              []byte      `json:"context"`
+	HandoffNote          pgtype.Text `json:"handoff_note"`
 	TriggerEvidenceRefID pgtype.UUID `json:"trigger_evidence_ref_id"`
 }
 
@@ -2188,6 +2189,7 @@ func (q *Queries) CreateRepairTask(ctx context.Context, arg CreateRepairTaskPara
 		arg.ReviewTargetTaskID,
 		arg.TriggerSummary,
 		arg.Context,
+		arg.HandoffNote,
 		arg.TriggerEvidenceRefID,
 	)
 	var i AgentTaskQueue
@@ -3692,6 +3694,75 @@ type GetRepairTaskByEvidenceParams struct {
 // Resolves the exact repair task pinned to a review verdict event.
 func (q *Queries) GetRepairTaskByEvidence(ctx context.Context, arg GetRepairTaskByEvidenceParams) (AgentTaskQueue, error) {
 	row := q.db.QueryRow(ctx, getRepairTaskByEvidence, arg.IssueID, arg.TriggerEvidenceRefID)
+	var i AgentTaskQueue
+	err := row.Scan(
+		&i.ID,
+		&i.AgentID,
+		&i.IssueID,
+		&i.Status,
+		&i.Priority,
+		&i.DispatchedAt,
+		&i.StartedAt,
+		&i.CompletedAt,
+		&i.Result,
+		&i.Error,
+		&i.CreatedAt,
+		&i.Context,
+		&i.RuntimeID,
+		&i.SessionID,
+		&i.WorkDir,
+		&i.TriggerCommentID,
+		&i.ChatSessionID,
+		&i.AutopilotRunID,
+		&i.Attempt,
+		&i.MaxAttempts,
+		&i.ParentTaskID,
+		&i.FailureReason,
+		&i.TriggerSummary,
+		&i.ForceFreshSession,
+		&i.IsLeaderTask,
+		&i.WaitReason,
+		&i.InitiatorUserID,
+		&i.HandoffNote,
+		&i.PrepareLeaseExpiresAt,
+		&i.SquadID,
+		&i.RuntimeMcpOverlay,
+		&i.EscalationForTaskID,
+		&i.FireAt,
+		&i.OriginatorUserID,
+		&i.RuntimeConnectedApps,
+		&i.CoalescedCommentIds,
+		&i.DeliveredCommentIds,
+		&i.ChatInputTaskID,
+		&i.ChatFinalizeDeferredAt,
+		&i.OriginatorSource,
+		&i.DelegatedFromTaskID,
+		&i.RetryOfTaskID,
+		&i.RerunOfTaskID,
+		&i.RuleVersionID,
+		&i.TriggerEvidenceKind,
+		&i.TriggerEvidenceRefID,
+		&i.AccountableUserID,
+		&i.SessionRolloutMissing,
+		&i.RetiredSessionID,
+		&i.TaskKind,
+		&i.ReviewTargetTaskID,
+	)
+	return i, err
+}
+
+const getRepairTaskForUpdate = `-- name: GetRepairTaskForUpdate :one
+SELECT id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, task_kind, review_target_task_id FROM agent_task_queue
+WHERE id = $1
+  AND task_kind = 'repair'
+FOR UPDATE
+`
+
+// The repair completion bridge locks the Issue first, then this exact Task.
+// Keeping this lock order aligned with other review writers prevents a replay
+// or completion callback from observing a half-stamped repair candidate.
+func (q *Queries) GetRepairTaskForUpdate(ctx context.Context, id pgtype.UUID) (AgentTaskQueue, error) {
+	row := q.db.QueryRow(ctx, getRepairTaskForUpdate, id)
 	var i AgentTaskQueue
 	err := row.Scan(
 		&i.ID,

@@ -11,6 +11,81 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const advanceIssueRepairCandidateToReview = `-- name: AdvanceIssueRepairCandidateToReview :one
+UPDATE issue
+SET metadata = jsonb_set(
+        jsonb_set(
+            jsonb_set(COALESCE(metadata, '{}'::jsonb), '{stage}', to_jsonb('review'::text)),
+            '{candidate_revision}', to_jsonb($1::text)
+        ),
+        '{generation}', to_jsonb($2::text)
+    ),
+    updated_at = now()
+WHERE id = $3
+  AND workspace_id = $4
+  AND status = 'in_review'
+  AND review_state = 'revise_requested'
+  AND metadata ->> 'stage' = 'review'
+  AND metadata ->> 'candidate_revision' = $5::text
+  AND metadata ->> 'generation' = $6::text
+RETURNING id, workspace_id, title, description, status, priority, assignee_type, assignee_id, creator_type, creator_id, parent_issue_id, acceptance_criteria, context_refs, position, due_date, created_at, updated_at, number, project_id, origin_type, origin_id, first_executed_at, start_date, metadata, stage, properties, review_state, review_state_reason
+`
+
+type AdvanceIssueRepairCandidateToReviewParams struct {
+	NewCandidateRevision string      `json:"new_candidate_revision"`
+	NewGeneration        string      `json:"new_generation"`
+	IssueID              pgtype.UUID `json:"issue_id"`
+	WorkspaceID          pgtype.UUID `json:"workspace_id"`
+	OldCandidateRevision string      `json:"old_candidate_revision"`
+	OldGeneration        string      `json:"old_generation"`
+}
+
+// One CAS is required: stage, candidate_revision, and generation are one
+// candidate identity. The old identity is read from canonical Issue metadata;
+// a stale repair completion must never overwrite a newer candidate.
+func (q *Queries) AdvanceIssueRepairCandidateToReview(ctx context.Context, arg AdvanceIssueRepairCandidateToReviewParams) (Issue, error) {
+	row := q.db.QueryRow(ctx, advanceIssueRepairCandidateToReview,
+		arg.NewCandidateRevision,
+		arg.NewGeneration,
+		arg.IssueID,
+		arg.WorkspaceID,
+		arg.OldCandidateRevision,
+		arg.OldGeneration,
+	)
+	var i Issue
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.Title,
+		&i.Description,
+		&i.Status,
+		&i.Priority,
+		&i.AssigneeType,
+		&i.AssigneeID,
+		&i.CreatorType,
+		&i.CreatorID,
+		&i.ParentIssueID,
+		&i.AcceptanceCriteria,
+		&i.ContextRefs,
+		&i.Position,
+		&i.DueDate,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Number,
+		&i.ProjectID,
+		&i.OriginType,
+		&i.OriginID,
+		&i.FirstExecutedAt,
+		&i.StartDate,
+		&i.Metadata,
+		&i.Stage,
+		&i.Properties,
+		&i.ReviewState,
+		&i.ReviewStateReason,
+	)
+	return i, err
+}
+
 const assignIssueAgentExact = `-- name: AssignIssueAgentExact :one
 UPDATE issue SET
     assignee_type = 'agent',

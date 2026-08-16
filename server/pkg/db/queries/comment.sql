@@ -435,6 +435,17 @@ SELECT EXISTS (
       AND created_at >= @since
 ) AS commented;
 
+-- name: ListAgentCommentsBySourceTask :many
+-- Exact repair delivery evidence. Never fall back to the latest Issue comment:
+-- review/verdict and older implementation comments share the same Issue.
+SELECT * FROM comment
+WHERE workspace_id = @workspace_id
+  AND issue_id = @issue_id
+  AND source_task_id = @source_task_id
+  AND author_type = 'agent'
+  AND author_id = @author_id
+ORDER BY created_at ASC, id ASC;
+
 -- name: HasAgentRepliedInThread :one
 -- Returns true if the given agent has posted a reply in the thread rooted at
 -- the specified parent comment. Used to detect agent participation in a

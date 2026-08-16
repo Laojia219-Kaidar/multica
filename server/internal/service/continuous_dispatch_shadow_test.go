@@ -297,6 +297,7 @@ func TestContinuousDispatchShadowReviewRequiresStrictCommentTaskLineage(t *testi
 		Stage: "implementation", CandidateRevision: "abc123", Generation: "g-1",
 	}
 	source := shadowTask(t, issueID, authorID, "completed", "00000000-0000-0000-0000-000000000905")
+	source.TaskKind = TaskKindWork
 	sourceContext, err := json.Marshal(shadowTaskContext{ContinuousDispatch: identity})
 	if err != nil {
 		t.Fatal(err)
@@ -352,6 +353,219 @@ func TestContinuousDispatchShadowReviewRequiresStrictCommentTaskLineage(t *testi
 	if drifted.Items[0].NextAction.State != continuousdispatch.StateBlocked ||
 		drifted.Items[0].NextAction.Reasons[0] != continuousdispatch.ReasonReviewAuthorEvidenceMissing {
 		t.Fatalf("drifted lineage = %+v, want source block", drifted.Items[0])
+	}
+}
+
+func TestResolveReviewSourceLineageHistoricalRepairDoesNotMaskNewWork(t *testing.T) {
+	_, workspaceID, _, issueID, authorID, _ := validShadowFixture(t)
+	identity := continuousdispatch.DispatchIdentity{
+		WorkspaceID: uuidString(workspaceID), IssueID: uuidString(issueID), Stage: "review",
+		CandidateRevision: "candidate-new", Generation: "2",
+	}
+	workIdentity := continuousdispatch.DispatchIdentity{
+		WorkspaceID: uuidString(workspaceID), IssueID: uuidString(issueID), Stage: "implementation",
+		CandidateRevision: "candidate-new", Generation: "2",
+	}
+	oldBase := shadowTask(t, issueID, authorID, "completed", "00000000-0000-0000-0000-000000000906")
+	oldBase.TaskKind = TaskKindWork
+	oldBase.Context, _ = json.Marshal(shadowTaskContext{ContinuousDispatch: continuousdispatch.DispatchIdentity{
+		WorkspaceID: uuidString(workspaceID), IssueID: uuidString(issueID), Stage: "implementation",
+		CandidateRevision: "candidate-old", Generation: "1",
+	}})
+	oldRepair := shadowTask(t, issueID, authorID, "completed", "00000000-0000-0000-0000-000000000907")
+	oldRepair.TaskKind = TaskKindRepair
+	oldRepair.ReviewTargetTaskID = oldBase.ID
+	oldRepair.Context = []byte(`{"kind":"repair","candidate_task_id":"00000000-0000-0000-0000-000000000906","review_task_id":"00000000-0000-0000-0000-000000000909"}`)
+	work := shadowTask(t, issueID, authorID, "completed", "00000000-0000-0000-0000-000000000908")
+	work.TaskKind = TaskKindWork
+	work.Context, _ = json.Marshal(shadowTaskContext{ContinuousDispatch: workIdentity})
+	comments := []db.Comment{
+		{ID: shadowUUID(t, "00000000-0000-0000-0000-000000000910"), IssueID: issueID, WorkspaceID: workspaceID, AuthorType: "agent", AuthorID: authorID, SourceTaskID: oldRepair.ID},
+		{ID: shadowUUID(t, "00000000-0000-0000-0000-000000000911"), IssueID: issueID, WorkspaceID: workspaceID, AuthorType: "agent", AuthorID: authorID, SourceTaskID: work.ID},
+	}
+	got := resolveReviewSourceLineage(db.ListIssuesRow{ID: issueID, WorkspaceID: workspaceID}, []db.AgentTaskQueue{oldBase, oldRepair, work}, comments, identity)
+	if !got.Proven || got.TaskID != uuidString(work.ID) {
+		t.Fatalf("lineage = %+v, want current work task despite historical repair", got)
+	}
+}
+
+func TestResolveReviewSourceLineageCurrentRepairWithoutStampBlocksOldWork(t *testing.T) {
+	_, workspaceID, _, issueID, authorID, reviewerID := validShadowFixture(t)
+	identity := continuousdispatch.DispatchIdentity{
+		WorkspaceID: uuidString(workspaceID), IssueID: uuidString(issueID), Stage: "review",
+		CandidateRevision: "candidate-current", Generation: "3",
+	}
+	baseIdentity := continuousdispatch.DispatchIdentity{
+		WorkspaceID: uuidString(workspaceID), IssueID: uuidString(issueID), Stage: "implementation",
+		CandidateRevision: "candidate-current", Generation: "3",
+	}
+	work := shadowTask(t, issueID, authorID, "completed", "00000000-0000-0000-0000-000000000912")
+	work.TaskKind = TaskKindWork
+	work.Context, _ = json.Marshal(shadowTaskContext{ContinuousDispatch: baseIdentity})
+	repair := shadowTask(t, issueID, authorID, "completed", "00000000-0000-0000-0000-000000000913")
+	repair.TaskKind = TaskKindRepair
+	repair.ReviewTargetTaskID = work.ID
+	repair.Context = []byte(`{"kind":"repair","candidate_task_id":"00000000-0000-0000-0000-000000000912","review_task_id":"00000000-0000-0000-0000-000000000914"}`)
+	review := shadowTask(t, issueID, reviewerID, "completed", "00000000-0000-0000-0000-000000000914")
+	review.TaskKind = TaskKindReview
+	review.ReviewTargetTaskID = work.ID
+	review.Result, _ = json.Marshal(map[string]any{
+		"verdict": "revise", "review_state": ReviewStateReviseRequested,
+		"reviewer_agent_id": uuidString(reviewerID), "candidate_task_id": uuidString(work.ID),
+		"verdict_contract": completedReviewVerdictMarkerV1,
+	})
+	repair.TriggerEvidenceKind = pgtype.Text{String: "review_repair", Valid: true}
+	repair.TriggerEvidenceRefID = review.ID
+	comments := []db.Comment{
+		{ID: shadowUUID(t, "00000000-0000-0000-0000-000000000915"), IssueID: issueID, WorkspaceID: workspaceID, AuthorType: "agent", AuthorID: authorID, SourceTaskID: work.ID},
+		{ID: shadowUUID(t, "00000000-0000-0000-0000-000000000916"), IssueID: issueID, WorkspaceID: workspaceID, AuthorType: "agent", AuthorID: authorID, SourceTaskID: repair.ID, Content: repairCandidateMarkerV1 + " malformed"},
+	}
+	got := resolveReviewSourceLineage(db.ListIssuesRow{ID: issueID, WorkspaceID: workspaceID}, []db.AgentTaskQueue{work, repair, review}, comments, identity)
+	if got.Proven {
+		t.Fatalf("lineage = %+v, want blocked until repair is stamped and evidenced", got)
+	}
+}
+
+func TestResolveReviewSourceLineageAcceptsStampedRepairWithOldBaseIdentity(t *testing.T) {
+	_, workspaceID, _, issueID, authorID, reviewerID := validShadowFixture(t)
+	identity := continuousdispatch.DispatchIdentity{WorkspaceID: uuidString(workspaceID), IssueID: uuidString(issueID), Stage: "review", CandidateRevision: "candidate-new", Generation: "2"}
+	baseIdentity := continuousdispatch.DispatchIdentity{WorkspaceID: uuidString(workspaceID), IssueID: uuidString(issueID), Stage: "implementation", CandidateRevision: "candidate-old", Generation: "1"}
+	newIdentity := continuousdispatch.DispatchIdentity{WorkspaceID: uuidString(workspaceID), IssueID: uuidString(issueID), Stage: "implementation", CandidateRevision: "candidate-new", Generation: "2"}
+	base := shadowTask(t, issueID, authorID, "completed", "00000000-0000-0000-0000-000000000923")
+	base.TaskKind = TaskKindWork
+	base.Context, _ = json.Marshal(shadowTaskContext{ContinuousDispatch: baseIdentity})
+	review := shadowTask(t, issueID, reviewerID, "completed", "00000000-0000-0000-0000-000000000924")
+	review.TaskKind = TaskKindReview
+	review.ReviewTargetTaskID = base.ID
+	review.Result, _ = json.Marshal(map[string]any{"verdict": "revise", "review_state": ReviewStateReviseRequested, "reviewer_agent_id": uuidString(reviewerID), "candidate_task_id": uuidString(base.ID), "verdict_contract": completedReviewVerdictMarkerV1})
+	repair := shadowTask(t, issueID, authorID, "completed", "00000000-0000-0000-0000-000000000925")
+	repair.TaskKind = TaskKindRepair
+	repair.ReviewTargetTaskID = base.ID
+	repair.TriggerEvidenceKind = pgtype.Text{String: "review_repair", Valid: true}
+	repair.TriggerEvidenceRefID = review.ID
+	repair.Context, _ = json.Marshal(map[string]any{"kind": TaskKindRepair, "candidate_task_id": uuidString(base.ID), "review_task_id": uuidString(review.ID), "continuous_dispatch": newIdentity})
+	marker := repairCandidatePayload{RepairTaskID: uuidString(repair.ID), BaseTaskID: uuidString(base.ID), BaseCandidateRevision: "candidate-old", BaseGeneration: "1", CandidateRevision: "candidate-new", Generation: "2"}
+	repair.Result, _ = json.Marshal(repairCandidateRuntimeResult{Output: repairCandidateMarkerLine(marker)})
+	comment := db.Comment{ID: shadowUUID(t, "00000000-0000-0000-0000-000000000926"), IssueID: issueID, WorkspaceID: workspaceID, AuthorType: "agent", AuthorID: authorID, SourceTaskID: repair.ID, Content: repairCandidateMarkerLine(marker)}
+	got := resolveReviewSourceLineage(db.ListIssuesRow{ID: issueID, WorkspaceID: workspaceID}, []db.AgentTaskQueue{base, review, repair}, []db.Comment{comment}, identity)
+	if !got.Proven || got.TaskID != uuidString(repair.ID) {
+		t.Fatalf("lineage = %+v, want stamped repair with old base identity", got)
+	}
+}
+
+func TestShadowRepairBaseLineageRejectsRequiredEvidenceDrift(t *testing.T) {
+	_, workspaceID, _, issueID, authorID, reviewerID := validShadowFixture(t)
+	identity := continuousdispatch.DispatchIdentity{WorkspaceID: uuidString(workspaceID), IssueID: uuidString(issueID), Stage: "review", CandidateRevision: "candidate-new", Generation: "2"}
+	baseIdentity := continuousdispatch.DispatchIdentity{WorkspaceID: uuidString(workspaceID), IssueID: uuidString(issueID), Stage: "implementation", CandidateRevision: "candidate-old", Generation: "1"}
+	newIdentity := continuousdispatch.DispatchIdentity{WorkspaceID: uuidString(workspaceID), IssueID: uuidString(issueID), Stage: "implementation", CandidateRevision: "candidate-new", Generation: "2"}
+	base := shadowTask(t, issueID, authorID, "completed", "00000000-0000-0000-0000-000000000927")
+	base.TaskKind = TaskKindWork
+	base.Context, _ = json.Marshal(shadowTaskContext{ContinuousDispatch: baseIdentity})
+	review := shadowTask(t, reviewerID, reviewerID, "completed", "00000000-0000-0000-0000-000000000928")
+	review.IssueID = issueID
+	review.TaskKind = TaskKindReview
+	review.ReviewTargetTaskID = base.ID
+	review.Result, _ = json.Marshal(map[string]any{"verdict": "revise", "review_state": ReviewStateReviseRequested, "reviewer_agent_id": uuidString(reviewerID), "candidate_task_id": uuidString(base.ID), "verdict_contract": completedReviewVerdictMarkerV1})
+	repair := shadowTask(t, issueID, authorID, "completed", "00000000-0000-0000-0000-000000000929")
+	repair.TaskKind = TaskKindRepair
+	repair.ReviewTargetTaskID = base.ID
+	repair.TriggerEvidenceKind = pgtype.Text{String: "review_repair", Valid: true}
+	repair.TriggerEvidenceRefID = review.ID
+	repair.Context, _ = json.Marshal(map[string]any{"kind": TaskKindRepair, "candidate_task_id": uuidString(base.ID), "review_task_id": uuidString(review.ID), "continuous_dispatch": newIdentity})
+	marker := repairCandidatePayload{RepairTaskID: uuidString(repair.ID), BaseTaskID: uuidString(base.ID), BaseCandidateRevision: "candidate-old", BaseGeneration: "1", CandidateRevision: "candidate-new", Generation: "2"}
+	repair.Result, _ = json.Marshal(repairCandidateRuntimeResult{Output: repairCandidateMarkerLine(marker)})
+	baseTasks := map[string]db.AgentTaskQueue{uuidString(base.ID): base, uuidString(review.ID): review, uuidString(repair.ID): repair}
+	tests := map[string]func(map[string]db.AgentTaskQueue, *db.AgentTaskQueue){
+		"base context missing": func(tasks map[string]db.AgentTaskQueue, _ *db.AgentTaskQueue) {
+			task := tasks[uuidString(base.ID)]
+			task.Context = nil
+			tasks[uuidString(base.ID)] = task
+		},
+		"base identity drift": func(tasks map[string]db.AgentTaskQueue, _ *db.AgentTaskQueue) {
+			task := tasks[uuidString(base.ID)]
+			task.Context, _ = json.Marshal(shadowTaskContext{ContinuousDispatch: continuousdispatch.DispatchIdentity{WorkspaceID: uuidString(workspaceID), IssueID: uuidString(issueID), Stage: "implementation", CandidateRevision: "other", Generation: "1"}})
+			tasks[uuidString(base.ID)] = task
+		},
+		"marker base drift": func(_ map[string]db.AgentTaskQueue, task *db.AgentTaskQueue) {
+			marker.BaseCandidateRevision = "other"
+			task.Result, _ = json.Marshal(repairCandidateRuntimeResult{Output: repairCandidateMarkerLine(marker)})
+		},
+		"trigger kind drift": func(_ map[string]db.AgentTaskQueue, task *db.AgentTaskQueue) {
+			task.TriggerEvidenceKind = pgtype.Text{String: "other", Valid: true}
+		},
+	}
+	for name, mutate := range tests {
+		t.Run(name, func(t *testing.T) {
+			tasks := make(map[string]db.AgentTaskQueue, len(baseTasks))
+			for key, value := range baseTasks {
+				tasks[key] = value
+			}
+			candidate := tasks[uuidString(repair.ID)]
+			mutate(tasks, &candidate)
+			tasks[uuidString(repair.ID)] = candidate
+			if _, _, _, proven := shadowRepairBaseLineage(candidate, db.ListIssuesRow{ID: issueID, WorkspaceID: workspaceID}, identity, tasks, true); proven {
+				t.Fatalf("drifted repair lineage unexpectedly proven")
+			}
+		})
+	}
+}
+
+func TestResolveReviewSourceLineageRejectsReviewTaskAsImplementationSource(t *testing.T) {
+	_, workspaceID, _, issueID, authorID, _ := validShadowFixture(t)
+	identity := continuousdispatch.DispatchIdentity{
+		WorkspaceID: uuidString(workspaceID), IssueID: uuidString(issueID), Stage: "review",
+		CandidateRevision: "candidate-review-kind", Generation: "4",
+	}
+	task := shadowTask(t, issueID, authorID, "completed", "00000000-0000-0000-0000-000000000917")
+	task.TaskKind = TaskKindReview
+	task.Context, _ = json.Marshal(shadowTaskContext{ContinuousDispatch: continuousdispatch.DispatchIdentity{
+		WorkspaceID: uuidString(workspaceID), IssueID: uuidString(issueID), Stage: "implementation",
+		CandidateRevision: identity.CandidateRevision, Generation: identity.Generation,
+	}})
+	comment := db.Comment{
+		ID: shadowUUID(t, "00000000-0000-0000-0000-000000000918"), IssueID: issueID, WorkspaceID: workspaceID,
+		AuthorType: "agent", AuthorID: authorID, SourceTaskID: task.ID,
+	}
+	got := resolveReviewSourceLineage(db.ListIssuesRow{ID: issueID, WorkspaceID: workspaceID}, []db.AgentTaskQueue{task}, []db.Comment{comment}, identity)
+	if got.Proven {
+		t.Fatalf("lineage = %+v, want review Task rejected as implementation source", got)
+	}
+}
+
+func TestResolveReviewSourceLineageRejectsRepairBasedOnRepairTask(t *testing.T) {
+	_, workspaceID, _, issueID, authorID, _ := validShadowFixture(t)
+	identity := continuousdispatch.DispatchIdentity{
+		WorkspaceID: uuidString(workspaceID), IssueID: uuidString(issueID), Stage: "review",
+		CandidateRevision: "candidate-round-two", Generation: "2",
+	}
+	implementation := continuousdispatch.DispatchIdentity{
+		WorkspaceID: uuidString(workspaceID), IssueID: uuidString(issueID), Stage: "implementation",
+		CandidateRevision: identity.CandidateRevision, Generation: identity.Generation,
+	}
+	priorRepair := shadowTask(t, issueID, authorID, "completed", "00000000-0000-0000-0000-000000000919")
+	priorRepair.TaskKind = TaskKindRepair
+	currentRepair := shadowTask(t, issueID, authorID, "completed", "00000000-0000-0000-0000-000000000920")
+	currentRepair.TaskKind = TaskKindRepair
+	currentRepair.ReviewTargetTaskID = priorRepair.ID
+	currentRepair.Context, _ = json.Marshal(map[string]any{
+		"kind":                TaskKindRepair,
+		"candidate_task_id":   uuidString(priorRepair.ID),
+		"review_task_id":      "00000000-0000-0000-0000-000000000921",
+		"continuous_dispatch": implementation,
+	})
+	marker := repairCandidatePayload{
+		RepairTaskID: uuidString(currentRepair.ID), BaseTaskID: uuidString(priorRepair.ID),
+		BaseCandidateRevision: "candidate-round-one", BaseGeneration: "1",
+		CandidateRevision: identity.CandidateRevision, Generation: identity.Generation,
+	}
+	currentRepair.Result, _ = json.Marshal(repairCandidateRuntimeResult{Output: repairCandidateMarkerLine(marker)})
+	comment := db.Comment{
+		ID: shadowUUID(t, "00000000-0000-0000-0000-000000000922"), IssueID: issueID, WorkspaceID: workspaceID,
+		AuthorType: "agent", AuthorID: authorID, SourceTaskID: currentRepair.ID, Content: repairCandidateMarkerLine(marker),
+	}
+	got := resolveReviewSourceLineage(db.ListIssuesRow{ID: issueID, WorkspaceID: workspaceID}, []db.AgentTaskQueue{priorRepair, currentRepair}, []db.Comment{comment}, identity)
+	if got.Proven {
+		t.Fatalf("lineage = %+v, want repair-as-base rejected for single-round contract", got)
 	}
 }
 

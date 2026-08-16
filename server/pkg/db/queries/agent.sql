@@ -1721,13 +1721,22 @@ WHERE agent_id = $1
 -- evidence so the repair round is auditable and replayable.
 INSERT INTO agent_task_queue (
     agent_id, runtime_id, issue_id, status, priority, task_kind, review_target_task_id,
-    trigger_summary, context, originator_source, trigger_evidence_kind, trigger_evidence_ref_id
+    trigger_summary, context, handoff_note, originator_source, trigger_evidence_kind, trigger_evidence_ref_id
 )
 VALUES (
     @agent_id, @runtime_id, @issue_id, 'queued', @priority, 'repair', @review_target_task_id,
-    sqlc.narg(trigger_summary), @context, 'unattributed'::text, 'review_repair'::text, @trigger_evidence_ref_id
+    sqlc.narg(trigger_summary), @context, sqlc.narg(handoff_note), 'unattributed'::text, 'review_repair'::text, @trigger_evidence_ref_id
 )
 RETURNING *;
+
+-- name: GetRepairTaskForUpdate :one
+-- The repair completion bridge locks the Issue first, then this exact Task.
+-- Keeping this lock order aligned with other review writers prevents a replay
+-- or completion callback from observing a half-stamped repair candidate.
+SELECT * FROM agent_task_queue
+WHERE id = @id
+  AND task_kind = 'repair'
+FOR UPDATE;
 
 -- name: GetOpenRepairTaskForIssue :one
 -- The current open repair task for an issue, if any. Idempotency guard for

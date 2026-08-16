@@ -247,7 +247,7 @@ func (q *Queries) LockReviewSourceCommentForContinuousDispatch(ctx context.Conte
 }
 
 const lockReviewSourceTaskForContinuousDispatch = `-- name: LockReviewSourceTaskForContinuousDispatch :one
-SELECT id, agent_id, issue_id, status, context, handoff_note
+SELECT id, agent_id, issue_id, status, task_kind, context, handoff_note
 FROM agent_task_queue
 WHERE id = $1
 FOR SHARE
@@ -258,6 +258,7 @@ type LockReviewSourceTaskForContinuousDispatchRow struct {
 	AgentID     pgtype.UUID `json:"agent_id"`
 	IssueID     pgtype.UUID `json:"issue_id"`
 	Status      string      `json:"status"`
+	TaskKind    string      `json:"task_kind"`
 	Context     []byte      `json:"context"`
 	HandoffNote pgtype.Text `json:"handoff_note"`
 }
@@ -272,6 +273,7 @@ func (q *Queries) LockReviewSourceTaskForContinuousDispatch(ctx context.Context,
 		&i.AgentID,
 		&i.IssueID,
 		&i.Status,
+		&i.TaskKind,
 		&i.Context,
 		&i.HandoffNote,
 	)
@@ -305,6 +307,87 @@ type QueueIssueForContinuousReviewParams struct {
 // review can never pre-empt an outstanding repair or accepted history.
 func (q *Queries) QueueIssueForContinuousReview(ctx context.Context, arg QueueIssueForContinuousReviewParams) (Issue, error) {
 	row := q.db.QueryRow(ctx, queueIssueForContinuousReview, arg.IssueID, arg.WorkspaceID)
+	var i Issue
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.Title,
+		&i.Description,
+		&i.Status,
+		&i.Priority,
+		&i.AssigneeType,
+		&i.AssigneeID,
+		&i.CreatorType,
+		&i.CreatorID,
+		&i.ParentIssueID,
+		&i.AcceptanceCriteria,
+		&i.ContextRefs,
+		&i.Position,
+		&i.DueDate,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Number,
+		&i.ProjectID,
+		&i.OriginType,
+		&i.OriginID,
+		&i.FirstExecutedAt,
+		&i.StartDate,
+		&i.Metadata,
+		&i.Stage,
+		&i.Properties,
+		&i.ReviewState,
+		&i.ReviewStateReason,
+	)
+	return i, err
+}
+
+const queueIssueForContinuousReviewAfterRepair = `-- name: QueueIssueForContinuousReviewAfterRepair :one
+UPDATE issue
+SET review_state = 'queued',
+    review_state_reason = NULL,
+    updated_at = now()
+WHERE issue.id = $1
+  AND issue.workspace_id = $2
+  AND issue.status = 'in_review'
+  AND issue.review_state = 'revise_requested'
+  AND issue.metadata ->> 'stage' = 'review'
+  AND issue.metadata ->> 'candidate_revision' = $3::text
+  AND issue.metadata ->> 'generation' = $4::text
+  AND EXISTS (
+      SELECT 1
+      FROM agent_task_queue repair
+      WHERE repair.id = $5
+        AND repair.issue_id = issue.id
+        AND repair.task_kind = 'repair'
+        AND repair.status = 'completed'
+        AND repair.context -> 'continuous_dispatch' ->> 'stage' = 'implementation'
+        AND repair.context -> 'continuous_dispatch' ->> 'candidate_revision' = $3::text
+        AND repair.context -> 'continuous_dispatch' ->> 'generation' = $4::text
+  )
+RETURNING id, workspace_id, title, description, status, priority, assignee_type, assignee_id, creator_type, creator_id, parent_issue_id, acceptance_criteria, context_refs, position, due_date, created_at, updated_at, number, project_id, origin_type, origin_id, first_executed_at, start_date, metadata, stage, properties, review_state, review_state_reason
+`
+
+type QueueIssueForContinuousReviewAfterRepairParams struct {
+	IssueID           pgtype.UUID `json:"issue_id"`
+	WorkspaceID       pgtype.UUID `json:"workspace_id"`
+	CandidateRevision string      `json:"candidate_revision"`
+	Generation        string      `json:"generation"`
+	RepairTaskID      pgtype.UUID `json:"repair_task_id"`
+}
+
+// A completed repair may move revise_requested to queued only after the
+// Authority review-dispatch transaction has stamped a new review Task. The
+// repair Task itself is the exact source of the new implementation identity;
+// this guard prevents an old implementation or an in-progress repair from
+// pre-empting the pending repair state.
+func (q *Queries) QueueIssueForContinuousReviewAfterRepair(ctx context.Context, arg QueueIssueForContinuousReviewAfterRepairParams) (Issue, error) {
+	row := q.db.QueryRow(ctx, queueIssueForContinuousReviewAfterRepair,
+		arg.IssueID,
+		arg.WorkspaceID,
+		arg.CandidateRevision,
+		arg.Generation,
+		arg.RepairTaskID,
+	)
 	var i Issue
 	err := row.Scan(
 		&i.ID,

@@ -359,6 +359,19 @@ func resolveReviewSourceLineage(
 			tasksByID[shadowUUIDString(task.ID)] = task
 		}
 	}
+	// Only a completed repair bound to this exact candidate identity suppresses
+	// an older work comment. Historical repairs for other revisions must not
+	// hide a valid new work candidate.
+	completedRepair := false
+	for _, task := range tasks {
+		if task.TaskKind != TaskKindRepair || task.Status != "completed" || !task.IssueID.Valid || task.IssueID != issue.ID {
+			continue
+		}
+		if _, _, _, ok := shadowRepairBaseLineage(task, issue, identity, tasksByID, false); ok {
+			completedRepair = true
+			break
+		}
+	}
 	for i := len(comments) - 1; i >= 0; i-- {
 		comment := comments[i]
 		if !comment.ID.Valid || comment.AuthorType != "agent" || !comment.SourceTaskID.Valid || !comment.AuthorID.Valid ||
@@ -367,8 +380,15 @@ func resolveReviewSourceLineage(
 		}
 		task, ok := tasksByID[shadowUUIDString(comment.SourceTaskID)]
 		if !ok || task.Status != "completed" || !task.IssueID.Valid || task.IssueID != issue.ID ||
+			(task.TaskKind != TaskKindWork && task.TaskKind != TaskKindRepair) ||
 			!task.AgentID.Valid || task.AgentID != comment.AuthorID ||
 			(task.HandoffNote.Valid && strings.HasPrefix(task.HandoffNote.String, "review_dispatch ")) {
+			continue
+		}
+		// Once a repair has completed, the old implementation comment is no
+		// longer an eligible fallback. The repair bridge must first stamp the
+		// repair Task and prove its own marker-bearing source comment.
+		if completedRepair && task.TaskKind != TaskKindRepair {
 			continue
 		}
 		var contextValue shadowTaskContext
@@ -380,6 +400,25 @@ func resolveReviewSourceLineage(
 			contextValue.ContinuousDispatch.Generation != identity.Generation {
 			continue
 		}
+		if task.TaskKind == TaskKindRepair {
+			payload, _, _, proven := shadowRepairBaseLineage(task, issue, identity, tasksByID, true)
+			if !proven {
+				continue
+			}
+			marker, markerErr := parseRepairCandidateResult(task.Result)
+			if markerErr != nil || marker.RepairTaskID != shadowUUIDString(task.ID) || marker.BaseTaskID != payload.CandidateTaskID {
+				continue
+			}
+			baseTask := tasksByID[payload.CandidateTaskID]
+			baseIdentity := shadowTaskContext{}
+			if json.Unmarshal(baseTask.Context, &baseIdentity) != nil || marker.BaseCandidateRevision != baseIdentity.ContinuousDispatch.CandidateRevision || marker.BaseGeneration != baseIdentity.ContinuousDispatch.Generation {
+				continue
+			}
+			commentMarker, commentErr := parseRepairCandidateOutput(comment.Content)
+			if commentErr != nil || marker != commentMarker {
+				continue
+			}
+		}
 		return reviewSourceLineage{
 			SourceRef: continuousDispatchReviewCommentRef(comment.ID),
 			TaskID:    shadowUUIDString(task.ID),
@@ -388,6 +427,71 @@ func resolveReviewSourceLineage(
 		}
 	}
 	return reviewSourceLineage{}
+}
+
+// shadowRepairBaseLineage proves the non-comment repair chain from the same
+// read snapshot. requireStamped is false only for the suppression guard: a
+// structurally valid completed repair with a missing/invalid delivery marker
+// must still prevent fallback to an older implementation comment. The source
+// branch requires the repair's new implementation identity as well.
+func shadowRepairBaseLineage(
+	task db.AgentTaskQueue,
+	issue db.ListIssuesRow,
+	identity continuousdispatch.DispatchIdentity,
+	tasksByID map[string]db.AgentTaskQueue,
+	requireStamped bool,
+) (repairTaskPayload, db.AgentTaskQueue, db.AgentTaskQueue, bool) {
+	var payload repairTaskPayload
+	if task.TaskKind != TaskKindRepair || task.Status != "completed" || !task.IssueID.Valid || task.IssueID != issue.ID ||
+		!task.AgentID.Valid || !task.ReviewTargetTaskID.Valid || len(task.Context) == 0 || json.Unmarshal(task.Context, &payload) != nil ||
+		payload.Kind != TaskKindRepair || !canonicalUUID(payload.CandidateTaskID) || !canonicalUUID(payload.ReviewTaskID) ||
+		payload.CandidateTaskID != shadowUUIDString(task.ReviewTargetTaskID) ||
+		!task.TriggerEvidenceKind.Valid || task.TriggerEvidenceKind.String != "review_repair" || !task.TriggerEvidenceRefID.Valid {
+		return repairTaskPayload{}, db.AgentTaskQueue{}, db.AgentTaskQueue{}, false
+	}
+	marker, markerErr := parseRepairCandidateResult(task.Result)
+	var taskContext shadowTaskContext
+	if json.Unmarshal(task.Context, &taskContext) != nil {
+		return repairTaskPayload{}, db.AgentTaskQueue{}, db.AgentTaskQueue{}, false
+	}
+	baseRevision, baseGeneration := identity.CandidateRevision, identity.Generation
+	if markerErr == nil {
+		if marker.RepairTaskID != shadowUUIDString(task.ID) || marker.BaseTaskID != payload.CandidateTaskID {
+			return repairTaskPayload{}, db.AgentTaskQueue{}, db.AgentTaskQueue{}, false
+		}
+		baseRevision, baseGeneration = marker.BaseCandidateRevision, marker.BaseGeneration
+	}
+	if requireStamped {
+		if markerErr != nil || !taskContext.ContinuousDispatch.Complete() || taskContext.ContinuousDispatch.WorkspaceID != identity.WorkspaceID ||
+			taskContext.ContinuousDispatch.IssueID != identity.IssueID || taskContext.ContinuousDispatch.Stage != "implementation" ||
+			taskContext.ContinuousDispatch.CandidateRevision != marker.CandidateRevision || taskContext.ContinuousDispatch.Generation != marker.Generation ||
+			marker.CandidateRevision != identity.CandidateRevision || marker.Generation != identity.Generation {
+			return repairTaskPayload{}, db.AgentTaskQueue{}, db.AgentTaskQueue{}, false
+		}
+	}
+	baseTask, ok := tasksByID[payload.CandidateTaskID]
+	if !ok || baseTask.TaskKind != TaskKindWork || baseTask.Status != "completed" || !baseTask.IssueID.Valid || baseTask.IssueID != issue.ID ||
+		!baseTask.AgentID.Valid || baseTask.AgentID != task.AgentID || len(baseTask.Context) == 0 {
+		return repairTaskPayload{}, db.AgentTaskQueue{}, db.AgentTaskQueue{}, false
+	}
+	var baseContext shadowTaskContext
+	if json.Unmarshal(baseTask.Context, &baseContext) != nil || !baseContext.ContinuousDispatch.Complete() || baseContext.ContinuousDispatch.WorkspaceID != identity.WorkspaceID ||
+		baseContext.ContinuousDispatch.IssueID != identity.IssueID || baseContext.ContinuousDispatch.Stage != "implementation" ||
+		baseContext.ContinuousDispatch.CandidateRevision != baseRevision || baseContext.ContinuousDispatch.Generation != baseGeneration {
+		return repairTaskPayload{}, db.AgentTaskQueue{}, db.AgentTaskQueue{}, false
+	}
+	reviewTask, ok := tasksByID[payload.ReviewTaskID]
+	if !ok || reviewTask.TaskKind != TaskKindReview || reviewTask.Status != "completed" || !reviewTask.IssueID.Valid || reviewTask.IssueID != issue.ID ||
+		!reviewTask.ReviewTargetTaskID.Valid || reviewTask.ReviewTargetTaskID != baseTask.ID || !reviewTask.AgentID.Valid || reviewTask.AgentID == task.AgentID ||
+		task.TriggerEvidenceRefID != reviewTask.ID || !completedReviewResultHasVerdict(reviewTask.Result) {
+		return repairTaskPayload{}, db.AgentTaskQueue{}, db.AgentTaskQueue{}, false
+	}
+	var verdict verdictReceipt
+	if json.Unmarshal(reviewTask.Result, &verdict) != nil || verdict.Verdict != "revise" || verdict.ReviewState != ReviewStateReviseRequested ||
+		verdict.ReviewerAgentID != shadowUUIDString(reviewTask.AgentID) || verdict.CandidateTaskID != shadowUUIDString(baseTask.ID) {
+		return repairTaskPayload{}, db.AgentTaskQueue{}, db.AgentTaskQueue{}, false
+	}
+	return payload, baseTask, reviewTask, true
 }
 
 func (s *ContinuousDispatchShadowService) buildCandidates(

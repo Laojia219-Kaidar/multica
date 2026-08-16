@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/continuousdispatch"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -603,6 +604,7 @@ func (s *ReviewCellService) WriteVerdict(ctx context.Context, issueID pgtype.UUI
 
 		receipt, err := json.Marshal(verdictReceipt{
 			Verdict:            in.Verdict,
+			VerdictContract:    completedReviewVerdictMarkerV1,
 			ReviewState:        target,
 			ReviewerAgentID:    util.UUIDToString(task.AgentID),
 			CandidateTaskID:    util.UUIDToString(candidate.ID),
@@ -745,6 +747,7 @@ func (s *ReviewCellService) OnReviewTaskCompleted(ctx context.Context, taskID pg
 
 		receipt := verdictReceipt{
 			Verdict:            input.Verdict,
+			VerdictContract:    completedReviewVerdictMarkerV1,
 			ReviewState:        target,
 			ReviewerAgentID:    util.UUIDToString(task.AgentID),
 			CandidateTaskID:    util.UUIDToString(candidate.ID),
@@ -890,6 +893,10 @@ func (s *ReviewCellService) createRepairTask(ctx context.Context, qtx *db.Querie
 			String: fmt.Sprintf("Repair rework for issue %q after review REVISE", issue.Title),
 			Valid:  true,
 		},
+		HandoffNote: pgtype.Text{
+			String: repairCandidateHandoffNote(util.UUIDToString(candidate.ID)),
+			Valid:  true,
+		},
 		Context:              payload,
 		TriggerEvidenceRefID: reviewTask.ID,
 	})
@@ -929,12 +936,7 @@ func (s *ReviewCellService) OnRepairTaskCompleted(ctx context.Context, taskID pg
 			return nil
 		}
 		if s.Config.AuthorityDispatchOnly {
-			// The production recovery reader is not wired into this listener yet.
-			// Keep revise_requested until the Authority review-dispatch path can
-			// prove the repaired candidate and create its review Task.
-			slog.Warn("review cell: authority repair awaits recovery review dispatch",
-				"issue_id", util.UUIDToString(issue.ID), "repair_task_id", util.UUIDToString(task.ID))
-			return nil
+			return s.completeAuthorityRepairCandidate(ctx, qtx, issue, task)
 		}
 		// Cancel any open review round (defensive: should not exist) and
 		// start a fresh independent review of the repaired candidate.
@@ -959,6 +961,176 @@ func (s *ReviewCellService) OnRepairTaskCompleted(ctx context.Context, taskID pg
 		}
 		return nil
 	})
+}
+
+// completeAuthorityRepairCandidate closes the repair half of the Authority
+// bridge. It never creates a review Task: the project review-dispatch path
+// owns that later, Authority-gated action. The Issue remains
+// revise_requested until that path has stamped a review Task targeting this
+// exact completed repair.
+func (s *ReviewCellService) completeAuthorityRepairCandidate(ctx context.Context, qtx *db.Queries, issue db.Issue, initial db.AgentTaskQueue) error {
+	task, err := qtx.GetRepairTaskForUpdate(ctx, initial.ID)
+	if err != nil {
+		return fmt.Errorf("review cell: lock repair task: %w", err)
+	}
+	if task.Status != "completed" || !task.IssueID.Valid || task.IssueID != issue.ID || !task.AgentID.Valid ||
+		!task.TriggerEvidenceKind.Valid || task.TriggerEvidenceKind.String != "review_repair" {
+		return ErrRepairCandidateIdentityDrift
+	}
+
+	var payload repairTaskPayload
+	if len(task.Context) == 0 || json.Unmarshal(task.Context, &payload) != nil ||
+		payload.Kind != TaskKindRepair || !canonicalUUID(payload.CandidateTaskID) || !canonicalUUID(payload.ReviewTaskID) {
+		return fmt.Errorf("%w: repair context", ErrRepairCandidateIdentityDrift)
+	}
+	baseTaskID := util.UUIDToString(task.ReviewTargetTaskID)
+	if baseTaskID != payload.CandidateTaskID {
+		return fmt.Errorf("%w: repair target differs from context", ErrRepairCandidateIdentityDrift)
+	}
+	baseTask, err := qtx.GetAgentTask(ctx, task.ReviewTargetTaskID)
+	if err != nil {
+		return fmt.Errorf("review cell: load repair base task: %w", err)
+	}
+	if baseTask.TaskKind != TaskKindWork || baseTask.Status != "completed" || !baseTask.IssueID.Valid || baseTask.IssueID != issue.ID ||
+		!baseTask.AgentID.Valid || baseTask.AgentID != task.AgentID {
+		return ErrRepairCandidateIdentityDrift
+	}
+	var baseContext shadowTaskContext
+	if len(baseTask.Context) == 0 || json.Unmarshal(baseTask.Context, &baseContext) != nil ||
+		!repairCandidateDispatchIdentityMatchesIssue(baseContext.ContinuousDispatch, issue, "implementation", baseContext.ContinuousDispatch.CandidateRevision, baseContext.ContinuousDispatch.Generation) {
+		return fmt.Errorf("%w: base implementation identity", ErrRepairCandidateIdentityDrift)
+	}
+	baseIdentity := baseContext.ContinuousDispatch
+
+	reviewTask, err := qtx.GetAgentTask(ctx, util.MustParseUUID(payload.ReviewTaskID))
+	if err != nil {
+		return fmt.Errorf("review cell: load repair source review task: %w", err)
+	}
+	if reviewTask.TaskKind != TaskKindReview || reviewTask.Status != "completed" || !reviewTask.IssueID.Valid || reviewTask.IssueID != issue.ID ||
+		!reviewTask.ReviewTargetTaskID.Valid || reviewTask.ReviewTargetTaskID != baseTask.ID || !task.TriggerEvidenceRefID.Valid || task.TriggerEvidenceRefID != reviewTask.ID ||
+		!reviewTask.AgentID.Valid || reviewTask.AgentID == task.AgentID || !completedReviewResultHasVerdict(reviewTask.Result) {
+		return ErrRepairCandidateIdentityDrift
+	}
+	var verdict verdictReceipt
+	if json.Unmarshal(reviewTask.Result, &verdict) != nil || verdict.Verdict != "revise" ||
+		verdict.ReviewState != ReviewStateReviseRequested || verdict.ReviewerAgentID != util.UUIDToString(reviewTask.AgentID) ||
+		verdict.CandidateTaskID != util.UUIDToString(baseTask.ID) {
+		return ErrRepairCandidateIdentityDrift
+	}
+
+	marker, err := parseRepairCandidateResult(task.Result)
+	if err != nil {
+		return err
+	}
+	if marker.RepairTaskID != util.UUIDToString(task.ID) || marker.BaseTaskID != util.UUIDToString(baseTask.ID) ||
+		marker.BaseCandidateRevision != baseIdentity.CandidateRevision || marker.BaseGeneration != baseIdentity.Generation {
+		return fmt.Errorf("%w: marker base identity", ErrRepairCandidateIdentityDrift)
+	}
+
+	comments, err := qtx.ListAgentCommentsBySourceTask(ctx, db.ListAgentCommentsBySourceTaskParams{
+		WorkspaceID:  issue.WorkspaceID,
+		IssueID:      issue.ID,
+		SourceTaskID: task.ID,
+		AuthorID:     task.AgentID,
+	})
+	if err != nil {
+		return fmt.Errorf("review cell: load exact repair source comments: %w", err)
+	}
+	markerComments := 0
+	for _, comment := range comments {
+		if strings.Contains(comment.Content, repairCandidateMarkerV1) {
+			candidateMarker, parseErr := parseRepairCandidateOutput(comment.Content)
+			if parseErr != nil {
+				return fmt.Errorf("%w: malformed marker-bearing repair comment", ErrRepairCandidateIdentityDrift)
+			}
+			if candidateMarker != marker {
+				return fmt.Errorf("%w: repair comment marker differs from Task result", ErrRepairCandidateIdentityDrift)
+			}
+			markerComments++
+		}
+	}
+	if markerComments != 1 {
+		return fmt.Errorf("%w: exact repair source comment count=%d", ErrRepairCandidateIdentityDrift, markerComments)
+	}
+	metadata := parseShadowMetadata(issue.Metadata)
+	var currentContext shadowTaskContext
+	_ = json.Unmarshal(task.Context, &currentContext)
+	if repairCandidateDispatchIdentityMatchesIssue(currentContext.ContinuousDispatch, issue, "implementation", marker.CandidateRevision, marker.Generation) &&
+		metadata.Stage == "review" && metadata.CandidateRevision == marker.CandidateRevision && metadata.Generation == marker.Generation &&
+		issue.ReviewState.Valid && issue.ReviewState.String == ReviewStateReviseRequested {
+		// Exact replay: all evidence was revalidated above and both durable
+		// identity projections already carry the marker's new candidate.
+		return nil
+	}
+	if metadata.Stage != "review" || metadata.CandidateRevision != baseIdentity.CandidateRevision || metadata.Generation != baseIdentity.Generation {
+		return fmt.Errorf("%w: issue metadata does not match base candidate", ErrRepairCandidateIdentityDrift)
+	}
+
+	stamped, err := qtx.StampContinuousDispatchTaskIdentity(ctx, db.StampContinuousDispatchTaskIdentityParams{
+		WorkspaceID:       issue.WorkspaceID,
+		IssueID:           issue.ID,
+		Stage:             "implementation",
+		CandidateRevision: marker.CandidateRevision,
+		Generation:        marker.Generation,
+		TaskID:            task.ID,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		// A replay sees the already-stamped Task. Verify the exact identity and
+		// continue to the metadata readback below instead of writing a second one.
+		var stampedContext shadowTaskContext
+		if json.Unmarshal(task.Context, &stampedContext) != nil ||
+			!repairCandidateDispatchIdentityMatchesIssue(stampedContext.ContinuousDispatch, issue, "implementation", marker.CandidateRevision, marker.Generation) {
+			return ErrRepairCandidateIdentityDrift
+		}
+		stamped = task
+	} else if err != nil {
+		return fmt.Errorf("review cell: stamp repair task identity: %w", err)
+	}
+	if stamped.TaskKind != TaskKindRepair || stamped.ReviewTargetTaskID != baseTask.ID {
+		return ErrRepairCandidateIdentityDrift
+	}
+	var stampedContext shadowTaskContext
+	if json.Unmarshal(stamped.Context, &stampedContext) != nil ||
+		!repairCandidateDispatchIdentityMatchesIssue(stampedContext.ContinuousDispatch, issue, "implementation", marker.CandidateRevision, marker.Generation) {
+		return ErrRepairCandidateIdentityDrift
+	}
+
+	updated, err := qtx.AdvanceIssueRepairCandidateToReview(ctx, db.AdvanceIssueRepairCandidateToReviewParams{
+		IssueID:              issue.ID,
+		WorkspaceID:          issue.WorkspaceID,
+		OldCandidateRevision: baseIdentity.CandidateRevision,
+		OldGeneration:        baseIdentity.Generation,
+		NewCandidateRevision: marker.CandidateRevision,
+		NewGeneration:        marker.Generation,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		current, readErr := qtx.GetIssueForUpdate(ctx, issue.ID)
+		if readErr != nil {
+			return readErr
+		}
+		currentMetadata := parseShadowMetadata(current.Metadata)
+		var currentTaskContext shadowTaskContext
+		if json.Unmarshal(task.Context, &currentTaskContext) != nil ||
+			!repairCandidateDispatchIdentityMatchesIssue(currentTaskContext.ContinuousDispatch, current, "implementation", marker.CandidateRevision, marker.Generation) ||
+			currentMetadata.Stage != "review" || currentMetadata.CandidateRevision != marker.CandidateRevision || currentMetadata.Generation != marker.Generation ||
+			!current.ReviewState.Valid || current.ReviewState.String != ReviewStateReviseRequested {
+			return ErrRepairCandidateIdentityDrift
+		}
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("review cell: advance issue repair candidate: %w", err)
+	}
+	if !updated.ReviewState.Valid || updated.ReviewState.String != ReviewStateReviseRequested {
+		return ErrRepairCandidateIdentityDrift
+	}
+	return nil
+}
+
+func repairCandidateDispatchIdentityMatchesIssue(identity continuousdispatch.DispatchIdentity, issue db.Issue, stage, candidateRevision, generation string) bool {
+	return identity.Complete() && identity.WorkspaceID == util.UUIDToString(issue.WorkspaceID) &&
+		identity.IssueID == util.UUIDToString(issue.ID) && identity.Stage == stage &&
+		identity.CandidateRevision == candidateRevision && identity.Generation == generation
 }
 
 // Requeue re-runs candidate lineage for an owner_decision issue. Valid lineage
@@ -1055,6 +1227,7 @@ type repairTaskPayload struct {
 
 type verdictReceipt struct {
 	Verdict            string   `json:"verdict"`
+	VerdictContract    string   `json:"verdict_contract"`
 	ReviewState        string   `json:"review_state"`
 	ReviewerAgentID    string   `json:"reviewer_agent_id"`
 	CandidateTaskID    string   `json:"candidate_task_id"`

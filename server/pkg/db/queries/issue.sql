@@ -387,6 +387,28 @@ UPDATE issue SET
 WHERE id = sqlc.arg('id') AND workspace_id = sqlc.arg('workspace_id')
 RETURNING *;
 
+-- name: AdvanceIssueRepairCandidateToReview :one
+-- One CAS is required: stage, candidate_revision, and generation are one
+-- candidate identity. The old identity is read from canonical Issue metadata;
+-- a stale repair completion must never overwrite a newer candidate.
+UPDATE issue
+SET metadata = jsonb_set(
+        jsonb_set(
+            jsonb_set(COALESCE(metadata, '{}'::jsonb), '{stage}', to_jsonb('review'::text)),
+            '{candidate_revision}', to_jsonb(@new_candidate_revision::text)
+        ),
+        '{generation}', to_jsonb(@new_generation::text)
+    ),
+    updated_at = now()
+WHERE id = @issue_id
+  AND workspace_id = @workspace_id
+  AND status = 'in_review'
+  AND review_state = 'revise_requested'
+  AND metadata ->> 'stage' = 'review'
+  AND metadata ->> 'candidate_revision' = @old_candidate_revision::text
+  AND metadata ->> 'generation' = @old_generation::text
+RETURNING *;
+
 -- name: DeleteIssueMetadataKey :one
 -- Atomically removes a single key from the issue's metadata JSONB.
 -- Deleting a missing key is a no-op (still returns the row).
