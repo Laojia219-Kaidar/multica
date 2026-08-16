@@ -2411,9 +2411,15 @@ INSERT INTO agent_task_queue (
     agent_id, runtime_id, issue_id, status, priority, task_kind, review_target_task_id,
     trigger_summary, context, originator_source, trigger_evidence_kind, trigger_evidence_ref_id
 )
-VALUES (
+SELECT
     $1, $2, $3, 'queued', $4, 'review', $5,
     $6, $7, 'unattributed'::text, 'issue_delivery'::text, $5
+WHERE NOT EXISTS (
+    SELECT 1
+    FROM issue review_issue
+    JOIN project review_project ON review_project.id = review_issue.project_id
+    WHERE review_issue.id = $3
+      AND review_project.status IN ('completed', 'cancelled')
 )
 ON CONFLICT (issue_id, review_target_task_id)
     WHERE task_kind = 'review' AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory')
@@ -3684,6 +3690,86 @@ type GetRepairTaskByEvidenceParams struct {
 // Resolves the exact repair task pinned to a review verdict event.
 func (q *Queries) GetRepairTaskByEvidence(ctx context.Context, arg GetRepairTaskByEvidenceParams) (AgentTaskQueue, error) {
 	row := q.db.QueryRow(ctx, getRepairTaskByEvidence, arg.IssueID, arg.TriggerEvidenceRefID)
+	var i AgentTaskQueue
+	err := row.Scan(
+		&i.ID,
+		&i.AgentID,
+		&i.IssueID,
+		&i.Status,
+		&i.Priority,
+		&i.DispatchedAt,
+		&i.StartedAt,
+		&i.CompletedAt,
+		&i.Result,
+		&i.Error,
+		&i.CreatedAt,
+		&i.Context,
+		&i.RuntimeID,
+		&i.SessionID,
+		&i.WorkDir,
+		&i.TriggerCommentID,
+		&i.ChatSessionID,
+		&i.AutopilotRunID,
+		&i.Attempt,
+		&i.MaxAttempts,
+		&i.ParentTaskID,
+		&i.FailureReason,
+		&i.TriggerSummary,
+		&i.ForceFreshSession,
+		&i.IsLeaderTask,
+		&i.WaitReason,
+		&i.InitiatorUserID,
+		&i.HandoffNote,
+		&i.PrepareLeaseExpiresAt,
+		&i.SquadID,
+		&i.RuntimeMcpOverlay,
+		&i.EscalationForTaskID,
+		&i.FireAt,
+		&i.OriginatorUserID,
+		&i.RuntimeConnectedApps,
+		&i.CoalescedCommentIds,
+		&i.DeliveredCommentIds,
+		&i.ChatInputTaskID,
+		&i.ChatFinalizeDeferredAt,
+		&i.OriginatorSource,
+		&i.DelegatedFromTaskID,
+		&i.RetryOfTaskID,
+		&i.RerunOfTaskID,
+		&i.RuleVersionID,
+		&i.TriggerEvidenceKind,
+		&i.TriggerEvidenceRefID,
+		&i.AccountableUserID,
+		&i.SessionRolloutMissing,
+		&i.RetiredSessionID,
+		&i.TaskKind,
+		&i.ReviewTargetTaskID,
+	)
+	return i, err
+}
+
+const getReviewTaskForCandidate = `-- name: GetReviewTaskForCandidate :one
+SELECT id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, task_kind, review_target_task_id FROM agent_task_queue
+WHERE issue_id = $1
+  AND task_kind = 'review'
+  AND review_target_task_id = $2
+  AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'completed')
+ORDER BY created_at DESC
+LIMIT 1
+`
+
+type GetReviewTaskForCandidateParams struct {
+	IssueID            pgtype.UUID `json:"issue_id"`
+	ReviewTargetTaskID pgtype.UUID `json:"review_target_task_id"`
+}
+
+// A completed review is still a durable verdict for this exact candidate
+// lineage. The issue row is locked by the review-cell transaction before this
+// read, so checking the historical task closes the gap left by the open-only
+// unique index without requiring a migration. Cancelled tasks are excluded:
+// a cancelled round may be retried when the same candidate is explicitly
+// re-entered after cancellation.
+func (q *Queries) GetReviewTaskForCandidate(ctx context.Context, arg GetReviewTaskForCandidateParams) (AgentTaskQueue, error) {
+	row := q.db.QueryRow(ctx, getReviewTaskForCandidate, arg.IssueID, arg.ReviewTargetTaskID)
 	var i AgentTaskQueue
 	err := row.Scan(
 		&i.ID,

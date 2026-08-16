@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -389,6 +390,48 @@ func TestReviewCell_IdempotentEntry(t *testing.T) {
 	}
 	if count != 1 {
 		t.Fatalf("open review task count = %d, want 1", count)
+	}
+}
+
+func TestReviewCell_CompletedCandidateConcurrentReentry(t *testing.T) {
+	f := newReviewCellFixture(t, true)
+	ctx := context.Background()
+	svc := newReviewCellServiceForFixture(f, cfgWithReviewerAndCoordinator(f))
+	if err := svc.OnIssueEnteredReview(ctx, f.issueID); err != nil {
+		t.Fatalf("initial OnIssueEnteredReview: %v", err)
+	}
+	reviewTask := mustOpenReviewTask(t, ctx, f)
+	if _, err := f.pool.Exec(ctx,
+		`UPDATE agent_task_queue SET status = 'completed', completed_at = now(), result = '{}'::jsonb WHERE id = $1`,
+		reviewTask.ID); err != nil {
+		t.Fatalf("complete review task: %v", err)
+	}
+
+	const callers = 8
+	var wg sync.WaitGroup
+	errs := make(chan error, callers)
+	for i := 0; i < callers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errs <- svc.OnIssueEnteredReview(ctx, f.issueID)
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent reentry: %v", err)
+		}
+	}
+
+	var count int64
+	if err := f.pool.QueryRow(ctx,
+		`SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND task_kind = 'review'`, f.issueID).Scan(&count); err != nil {
+		t.Fatalf("count review tasks: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("review task count after concurrent reentry = %d, want one historical task", count)
 	}
 }
 

@@ -1616,14 +1616,35 @@ INSERT INTO agent_task_queue (
     agent_id, runtime_id, issue_id, status, priority, task_kind, review_target_task_id,
     trigger_summary, context, originator_source, trigger_evidence_kind, trigger_evidence_ref_id
 )
-VALUES (
+SELECT
     @agent_id, @runtime_id, @issue_id, 'queued', @priority, 'review', @review_target_task_id,
     sqlc.narg(trigger_summary), @context, 'unattributed'::text, 'issue_delivery'::text, @review_target_task_id
+WHERE NOT EXISTS (
+    SELECT 1
+    FROM issue review_issue
+    JOIN project review_project ON review_project.id = review_issue.project_id
+    WHERE review_issue.id = @issue_id
+      AND review_project.status IN ('completed', 'cancelled')
 )
 ON CONFLICT (issue_id, review_target_task_id)
     WHERE task_kind = 'review' AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory')
 DO NOTHING
 RETURNING *;
+
+-- name: GetReviewTaskForCandidate :one
+-- A completed review is still a durable verdict for this exact candidate
+-- lineage. The issue row is locked by the review-cell transaction before this
+-- read, so checking the historical task closes the gap left by the open-only
+-- unique index without requiring a migration. Cancelled tasks are excluded:
+-- a cancelled round may be retried when the same candidate is explicitly
+-- re-entered after cancellation.
+SELECT * FROM agent_task_queue
+WHERE issue_id = $1
+  AND task_kind = 'review'
+  AND review_target_task_id = $2
+  AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'completed')
+ORDER BY created_at DESC
+LIMIT 1;
 
 -- name: GetOpenReviewTaskForIssue :one
 -- The current open review task for an issue (the task whose agent_id is the

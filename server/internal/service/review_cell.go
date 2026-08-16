@@ -357,6 +357,19 @@ func (s *ReviewCellService) selectReviewer(ctx context.Context, qtx *db.Queries,
 }
 
 func (s *ReviewCellService) createReviewTask(ctx context.Context, qtx *db.Queries, issue db.Issue, candidate db.AgentTaskQueue) (bool, *db.AgentTaskQueue, error) {
+	// The issue row is held FOR UPDATE by the caller. The partial unique index
+	// below protects open tasks, but it intentionally excludes completed rows;
+	// retain completed review history as the idempotency boundary for this exact
+	// candidate lineage so repeated drain ticks cannot re-dispatch it.
+	if _, err := qtx.GetReviewTaskForCandidate(ctx, db.GetReviewTaskForCandidateParams{
+		IssueID:            issue.ID,
+		ReviewTargetTaskID: candidate.ID,
+	}); err == nil {
+		return false, nil, nil
+	} else if !errors.Is(err, pgx.ErrNoRows) {
+		return false, nil, fmt.Errorf("read review task replay: %w", err)
+	}
+
 	reviewer, err := s.selectReviewer(ctx, qtx, issue, candidate.AgentID)
 	if err != nil {
 		return false, nil, err

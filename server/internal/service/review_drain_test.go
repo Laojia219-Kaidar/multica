@@ -203,3 +203,138 @@ func TestReviewDrain_BatchBounded(t *testing.T) {
 		t.Fatalf("review task count = %d, want 4 (bounded, not 5)", reviewTaskCount)
 	}
 }
+
+func TestReviewDrain_DoesNotRedispatchCompletedCandidate(t *testing.T) {
+	f := newDrainFixture(t)
+	ctx := context.Background()
+	issueID, candidateID := f.seedDrainIssue(t, ctx, "completed", 1)
+
+	cell := NewReviewCellService(f.queries, f.pool, nil, ReviewCellConfig{
+		Enabled:             true,
+		ReviewerAgentID:     f.reviewer,
+		ReviewerAgentIDSet:  true,
+		CoordinatorAgentID:  f.implementer,
+		CoordinatorAgentSet: true,
+	})
+	drain := NewReviewDrainService(f.queries, cell)
+	if _, err := drain.ClassifyInReview(ctx, f.workspaceID); err != nil {
+		t.Fatalf("first ClassifyInReview: %v", err)
+	}
+	if receipt, err := drain.DrainBatch(ctx, f.workspaceID, 1); err != nil {
+		t.Fatalf("first DrainBatch: %v", err)
+	} else if receipt.ReviewTasks != 1 {
+		t.Fatalf("first drain receipt = %+v, want one review task", receipt)
+	}
+
+	var reviewTaskID pgtype.UUID
+	if err := f.pool.QueryRow(ctx,
+		`SELECT id FROM agent_task_queue WHERE issue_id = $1 AND task_kind = 'review' AND review_target_task_id = $2`,
+		issueID, candidateID).Scan(&reviewTaskID); err != nil {
+		t.Fatalf("load review task: %v", err)
+	}
+	if _, err := f.pool.Exec(ctx,
+		`UPDATE agent_task_queue SET status = 'completed', completed_at = now(), result = '{}'::jsonb WHERE id = $1`,
+		reviewTaskID); err != nil {
+		t.Fatalf("complete review task: %v", err)
+	}
+
+	// The drain reclassifies legacy in_review rows on every tick. The completed
+	// review is historical evidence for the same candidate and must not fan out
+	// another task.
+	if _, err := drain.ClassifyInReview(ctx, f.workspaceID); err != nil {
+		t.Fatalf("second ClassifyInReview: %v", err)
+	}
+	if receipt, err := drain.DrainBatch(ctx, f.workspaceID, 1); err != nil {
+		t.Fatalf("second DrainBatch: %v", err)
+	} else if receipt.Processed != 1 {
+		t.Fatalf("second drain receipt = %+v, want the existing candidate processed once", receipt)
+	}
+
+	var count int64
+	if err := f.pool.QueryRow(ctx,
+		`SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND task_kind = 'review'`, issueID).Scan(&count); err != nil {
+		t.Fatalf("count review tasks: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("review task count = %d, want one historical task", count)
+	}
+
+	// A new delivery lineage is a new review round even when the previous
+	// candidate already has a completed review task.
+	newCandidateID, err := insertReturningUUID(ctx, f.pool,
+		`INSERT INTO agent_task_queue (agent_id, runtime_id, issue_id, status, task_kind, originator_source)
+		 VALUES ($1, $2, $3, 'completed', 'work', 'unattributed') RETURNING id`,
+		f.implementer, f.implRT, issueID)
+	if err != nil {
+		t.Fatalf("seed new candidate: %v", err)
+	}
+	if _, err := f.pool.Exec(ctx,
+		`UPDATE agent_task_queue SET completed_at = now() WHERE id = $1`, newCandidateID); err != nil {
+		t.Fatalf("complete new candidate: %v", err)
+	}
+	if _, err := f.pool.Exec(ctx,
+		`INSERT INTO comment (issue_id, workspace_id, author_type, author_id, content, type, source_task_id)
+		 VALUES ($1, $2, 'agent', $3, 'new delivery', 'comment', $4)`,
+		issueID, f.workspaceID, f.implementer, newCandidateID); err != nil {
+		t.Fatalf("record new delivery: %v", err)
+	}
+	if _, err := f.pool.Exec(ctx,
+		`UPDATE comment SET created_at = now() + interval '1 second' WHERE issue_id = $1 AND source_task_id = $2`,
+		issueID, newCandidateID); err != nil {
+		t.Fatalf("order new delivery: %v", err)
+	}
+	if _, err := drain.ClassifyInReview(ctx, f.workspaceID); err != nil {
+		t.Fatalf("third ClassifyInReview: %v", err)
+	}
+	if receipt, err := drain.DrainBatch(ctx, f.workspaceID, 1); err != nil {
+		t.Fatalf("third DrainBatch: %v", err)
+	} else if receipt.Processed != 1 {
+		t.Fatalf("third drain receipt = %+v, want new candidate processed", receipt)
+	}
+	if err := f.pool.QueryRow(ctx,
+		`SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND task_kind = 'review'`, issueID).Scan(&count); err != nil {
+		t.Fatalf("recount review tasks: %v", err)
+	}
+	if count != 2 {
+		t.Fatalf("review task count after new candidate = %d, want two rounds", count)
+	}
+}
+
+func TestReviewDrain_DoesNotCreateReviewForClosedProject(t *testing.T) {
+	f := newDrainFixture(t)
+	ctx := context.Background()
+	issueID, _ := f.seedDrainIssue(t, ctx, "completed", 1)
+	projectID, err := insertReturningUUID(ctx, f.pool,
+		`INSERT INTO project (workspace_id, title, status) VALUES ($1, $2, 'completed') RETURNING id`,
+		f.workspaceID, "closed project "+uuid.NewString())
+	if err != nil {
+		t.Fatalf("seed closed project: %v", err)
+	}
+	if _, err := f.pool.Exec(ctx, `UPDATE issue SET project_id = $1 WHERE id = $2`, projectID, issueID); err != nil {
+		t.Fatalf("link issue to closed project: %v", err)
+	}
+
+	cell := NewReviewCellService(f.queries, f.pool, nil, ReviewCellConfig{
+		Enabled:             true,
+		ReviewerAgentID:     f.reviewer,
+		ReviewerAgentIDSet:  true,
+		CoordinatorAgentID:  f.implementer,
+		CoordinatorAgentSet: true,
+	})
+	drain := NewReviewDrainService(f.queries, cell)
+	if _, err := drain.ClassifyInReview(ctx, f.workspaceID); err != nil {
+		t.Fatalf("ClassifyInReview: %v", err)
+	}
+	if _, err := drain.DrainBatch(ctx, f.workspaceID, 1); err != nil {
+		t.Fatalf("DrainBatch: %v", err)
+	}
+
+	var count int64
+	if err := f.pool.QueryRow(ctx,
+		`SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND task_kind = 'review'`, issueID).Scan(&count); err != nil {
+		t.Fatalf("count review tasks: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("review task count for closed project = %d, want zero", count)
+	}
+}
