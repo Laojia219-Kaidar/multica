@@ -523,9 +523,15 @@ func composeShadowWIP(agents []db.Agent, runtimes map[string]db.AgentRuntime, ta
 			evidence.UnknownWorkers++
 			continue
 		}
-		runtime, ok := runtimes[shadowUUIDString(agent.RuntimeID)]
-		if !ok || !runtime.LastSeenAt.Valid || now.Sub(runtime.LastSeenAt.Time) > 5*time.Minute {
-			evidence.UnknownWorkers++
+		// Only a working agent needs a live runtime for WIP truth: its active
+		// tasks cannot be reconciled while the runtime is unreachable. An idle
+		// agent with a stale runtime is a known zero-load worker; route
+		// scoring already excludes it from selection through RuntimeHealth.
+		if agent.Status == "working" {
+			runtime, ok := runtimes[shadowUUIDString(agent.RuntimeID)]
+			if !ok || !runtime.LastSeenAt.Valid || now.Sub(runtime.LastSeenAt.Time) > 5*time.Minute {
+				evidence.UnknownWorkers++
+			}
 		}
 	}
 	return evidence
