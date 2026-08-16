@@ -6,7 +6,7 @@
 # （回滚目标：multica-backend:dev / multica-web:dev，即 8/14 收敛镜像）
 services:
   backend:
-    image: multica-backend:uiconv20260816b
+    image: multica-backend:uiconv20260816c
     environment:
       # loopback owner session（免登录，owner 决策 2026-08-15）：
       # APP_ENV 放开到 local 是 local_operator_session_config 的白名单要求；
