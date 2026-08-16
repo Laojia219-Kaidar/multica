@@ -164,6 +164,30 @@ func bindAuthorityReviewDispatchCandidate(
 	if request.reviewProvenance == nil || request.reviewProvenance.SourceIssueID != *response.IssueLinkage.IssueID {
 		return ErrAuthorityReviewDispatchSourceGap
 	}
+	// A direct-project Authority owns the short-lived delegation (who may
+	// review this exact Issue/WorkOrder), while HiveCrew owns Comment/Task and
+	// candidate-generation truth. Requiring Authority to copy that local
+	// lineage would create a second execution truth. The production dispatcher
+	// therefore locks and revalidates the exact Comment and implementation Task
+	// transactionally after this authorization boundary.
+	if response.Scope.AuthorizationKind != nil && *response.Scope.AuthorizationKind == "direct_project" {
+		direct := response.Evidence.DirectProjectAuthorization
+		if direct.State != "OBSERVED" || len(direct.Records) != 2 {
+			return ErrAuthorityReviewDispatchSourceGap
+		}
+		seen := map[string]bool{}
+		for _, record := range direct.Records {
+			if record.WorkspaceID != request.Identity.WorkspaceID || record.IssueID != request.Identity.IssueID ||
+				(record.DispatchScope != "event_reconcile" && record.DispatchScope != "recovery_only") || seen[record.DispatchScope] {
+				return ErrAuthorityReviewDispatchSourceGap
+			}
+			seen[record.DispatchScope] = true
+		}
+		if !seen["event_reconcile"] || !seen["recovery_only"] {
+			return ErrAuthorityReviewDispatchSourceGap
+		}
+		return nil
+	}
 	reviewEvidence := response.Evidence.ReviewDispatch
 	if reviewEvidence.State != "OBSERVED" || request.reviewProvenance == nil {
 		return ErrAuthorityReviewDispatchSourceGap

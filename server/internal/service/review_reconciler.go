@@ -88,24 +88,30 @@ type ReviewReconcileWIPEvidence struct {
 // task and comment reference prove the implementation output under review;
 // callers cannot use this structure to rerun a general Issue.
 type ReviewReconcileCandidate struct {
-	WorkspaceID       string                       `json:"workspace_id"`
-	ProjectID         string                       `json:"project_id"`
-	IssueID           string                       `json:"issue_id"`
-	Status            string                       `json:"status"`
-	Stage             string                       `json:"stage"`
-	CandidateRevision string                       `json:"candidate_revision"`
-	Generation        string                       `json:"generation"`
-	SourceRef         string                       `json:"source_ref"`
-	SourceTaskID      string                       `json:"source_task_id"`
-	AuthorityKnown    bool                         `json:"authority_known"`
-	AuthorityEligible bool                         `json:"authority_eligible"`
-	AuthorKnown       bool                         `json:"author_known"`
-	AuthorEmployeeID  string                       `json:"author_employee_id,omitempty"`
-	AuthorAgentID     string                       `json:"author_agent_id,omitempty"`
-	Reviewer          ReviewReconcileReviewer      `json:"reviewer"`
-	ExistingTask      ReviewReconcileTaskEvidence  `json:"existing_task"`
-	Lease             ReviewReconcileLeaseEvidence `json:"lease"`
-	WIP               ReviewReconcileWIPEvidence   `json:"wip"`
+	WorkspaceID       string `json:"workspace_id"`
+	ProjectID         string `json:"project_id"`
+	IssueID           string `json:"issue_id"`
+	Status            string `json:"status"`
+	Stage             string `json:"stage"`
+	CandidateRevision string `json:"candidate_revision"`
+	Generation        string `json:"generation"`
+	SourceRef         string `json:"source_ref"`
+	SourceTaskID      string `json:"source_task_id"`
+	// These fields are populated only from the server-side Shadow projection.
+	// They are deliberately excluded from JSON so an Owner/browser request can
+	// never supply an author or reviewer identity to the Authority seam.
+	SourceAuthorAgentID       string                       `json:"-"`
+	PlannedReviewerEmployeeID string                       `json:"-"`
+	PlannedReviewerAgentID    string                       `json:"-"`
+	AuthorityKnown            bool                         `json:"authority_known"`
+	AuthorityEligible         bool                         `json:"authority_eligible"`
+	AuthorKnown               bool                         `json:"author_known"`
+	AuthorEmployeeID          string                       `json:"author_employee_id,omitempty"`
+	AuthorAgentID             string                       `json:"author_agent_id,omitempty"`
+	Reviewer                  ReviewReconcileReviewer      `json:"reviewer"`
+	ExistingTask              ReviewReconcileTaskEvidence  `json:"existing_task"`
+	Lease                     ReviewReconcileLeaseEvidence `json:"lease"`
+	WIP                       ReviewReconcileWIPEvidence   `json:"wip"`
 }
 
 type ReviewReconcileInput struct {

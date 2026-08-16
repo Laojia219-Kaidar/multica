@@ -4,12 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/service"
 )
@@ -29,7 +29,15 @@ type byIssueIdentityProvider struct {
 var errByIssueIdentity = errors.New("by-issue authority identity is unavailable")
 
 type byIssueResponse struct {
-	State            string `json:"state"`
+	SchemaVersion string `json:"schema_version"`
+	OK            bool   `json:"ok"`
+	ReadOnly      bool   `json:"read_only"`
+	Request       struct {
+		TenantID    string `json:"tenant_id"`
+		WorkspaceID string `json:"workspace_id"`
+		IssueID     string `json:"issue_id"`
+	} `json:"request"`
+	State             string `json:"state"`
 	ExecutionIdentity *struct {
 		WorkOrderSourceRef string `json:"work_order_source_ref"`
 		EmployeeID         string `json:"employee_id"`
@@ -37,6 +45,13 @@ type byIssueResponse struct {
 		AgentID            string `json:"agent_id"`
 		AssignmentID       string `json:"assignment_id"`
 	} `json:"execution_identity"`
+	WorkOrderID      string `json:"work_order_id"`
+	ProjectID        string `json:"project_id"`
+	OwnerDecisionRef string `json:"owner_decision_ref"`
+	SourceRef        string `json:"source_ref"`
+	SourceRevision   string `json:"source_revision"`
+	ObservedAt       string `json:"observed_at"`
+	ExpiresAt        string `json:"expires_at"`
 }
 
 func newByIssueIdentityProvider(baseURL, tenantID string, transport http.RoundTripper) *byIssueIdentityProvider {
@@ -51,12 +66,39 @@ func (p *byIssueIdentityProvider) ResolveReviewDispatchIdentity(
 	workspaceID, projectID, issueID pgtype.UUID,
 	_ service.AuthorityReviewDispatchCandidate,
 ) (service.AuthorityReviewDispatchIdentity, error) {
+	return p.resolveByPurpose(ctx, workspaceID, projectID, issueID, "review")
+}
+
+func (p *byIssueIdentityProvider) ResolveImplementationIdentity(
+	ctx context.Context,
+	workspaceID, projectID, issueID pgtype.UUID,
+) (service.AuthorityReviewDispatchIdentity, error) {
+	return p.resolveByPurpose(ctx, workspaceID, projectID, issueID, "implementation")
+}
+
+func (p *byIssueIdentityProvider) resolveByPurpose(
+	ctx context.Context,
+	workspaceID, projectID, issueID pgtype.UUID,
+	purpose string,
+) (service.AuthorityReviewDispatchIdentity, error) {
 	if p == nil || !workspaceID.Valid || !issueID.Valid {
 		return service.AuthorityReviewDispatchIdentity{}, errByIssueIdentity
 	}
-	url := fmt.Sprintf("%s/api/company-ops/issue-dispatch-authorization?tenant_id=%s&workspace_id=%s&issue_id=%s&purpose=review",
-		strings.TrimSuffix(p.baseURL, "/"), p.tenantID, pgUUIDString(workspaceID), pgUUIDString(issueID))
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if !projectID.Valid || (purpose != "implementation" && purpose != "review") {
+		return service.AuthorityReviewDispatchIdentity{}, errByIssueIdentity
+	}
+	workspace, project, issue := pgUUIDString(workspaceID), pgUUIDString(projectID), pgUUIDString(issueID)
+	endpoint, err := url.Parse(strings.TrimSuffix(p.baseURL, "/") + "/api/company-ops/issue-dispatch-authorization")
+	if err != nil {
+		return service.AuthorityReviewDispatchIdentity{}, errByIssueIdentity
+	}
+	query := endpoint.Query()
+	query.Set("tenant_id", p.tenantID)
+	query.Set("workspace_id", workspace)
+	query.Set("issue_id", issue)
+	query.Set("purpose", purpose)
+	endpoint.RawQuery = query.Encode()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
 	if err != nil {
 		return service.AuthorityReviewDispatchIdentity{}, errByIssueIdentity
 	}
@@ -75,7 +117,21 @@ func (p *byIssueIdentityProvider) ResolveReviewDispatchIdentity(
 	if err := decoder.Decode(&body); err != nil {
 		return service.AuthorityReviewDispatchIdentity{}, errByIssueIdentity
 	}
-	if body.State != "OBSERVED" || body.ExecutionIdentity == nil {
+	if body.SchemaVersion != "hivecosm.issue-dispatch-authorization.v1" || !body.OK || !body.ReadOnly ||
+		body.Request.TenantID != p.tenantID || body.Request.WorkspaceID != workspace || body.Request.IssueID != issue ||
+		body.State != "OBSERVED" || body.ExecutionIdentity == nil || body.ProjectID != project ||
+		strings.TrimSpace(body.WorkOrderID) == "" || strings.TrimSpace(body.OwnerDecisionRef) == "" ||
+		strings.TrimSpace(body.SourceRef) == "" || strings.TrimSpace(body.SourceRevision) == "" {
+		return service.AuthorityReviewDispatchIdentity{}, errByIssueIdentity
+	}
+	now := time.Now().UTC()
+	if p.now != nil {
+		now = p.now().UTC()
+	}
+	observedAt, observedErr := time.Parse(time.RFC3339Nano, body.ObservedAt)
+	expiresAt, expiresErr := time.Parse(time.RFC3339Nano, body.ExpiresAt)
+	if observedErr != nil || expiresErr != nil || observedAt.After(now.Add(5*time.Second)) ||
+		now.Sub(observedAt) > 15*time.Minute || !expiresAt.After(now) {
 		return service.AuthorityReviewDispatchIdentity{}, errByIssueIdentity
 	}
 	identity := service.AuthorityReviewDispatchIdentity{
@@ -90,6 +146,9 @@ func (p *byIssueIdentityProvider) ResolveReviewDispatchIdentity(
 		if strings.TrimSpace(value) == "" {
 			return service.AuthorityReviewDispatchIdentity{}, errByIssueIdentity
 		}
+	}
+	if _, err := uuid.Parse(identity.AgentID); err != nil {
+		return service.AuthorityReviewDispatchIdentity{}, errByIssueIdentity
 	}
 	return identity, nil
 }

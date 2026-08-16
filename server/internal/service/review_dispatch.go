@@ -225,9 +225,10 @@ func reviewReconcileCandidateFromShadow(page *ContinuousDispatchShadowResult, sh
 		Status: shadow.Status, Stage: shadow.DispatchIdentity.Stage,
 		CandidateRevision: shadow.DispatchIdentity.CandidateRevision, Generation: shadow.DispatchIdentity.Generation,
 		SourceRef: shadow.SourceRef, SourceTaskID: shadow.SourceTaskID,
-		ExistingTask: ReviewReconcileTaskEvidence{Known: page.Sources.Tasks},
-		Lease:        ReviewReconcileLeaseEvidence{Required: true, Known: page.Sources.WriteLease, Available: page.Sources.WriteLease, LeaseID: shadow.NextAction.WriteLeaseID},
-		WIP:          ReviewReconcileWIPEvidence{Required: true, Known: page.Sources.WIP, Reconciled: page.Sources.WIP},
+		SourceAuthorAgentID: shadow.SourceAuthorAgentID,
+		ExistingTask:        ReviewReconcileTaskEvidence{Known: page.Sources.Tasks},
+		Lease:               ReviewReconcileLeaseEvidence{Required: true, Known: page.Sources.WriteLease, Available: page.Sources.WriteLease, LeaseID: shadow.NextAction.WriteLeaseID},
+		WIP:                 ReviewReconcileWIPEvidence{Required: true, Known: page.Sources.WIP, Reconciled: page.Sources.WIP},
 	}
 	if shadow.NextAction.ExistingTaskID != "" {
 		candidate.ExistingTask = ReviewReconcileTaskEvidence{Known: page.Sources.Tasks, Found: true, Open: true, TaskID: shadow.NextAction.ExistingTaskID}
@@ -235,6 +236,8 @@ func reviewReconcileCandidateFromShadow(page *ContinuousDispatchShadowResult, sh
 	if selected != nil {
 		candidate.WIP.Active = selected.ActiveWIP
 		candidate.WIP.Max = selected.MaxWIP
+		candidate.PlannedReviewerEmployeeID = selected.EmployeeID
+		candidate.PlannedReviewerAgentID = selected.AgentID
 	}
 	// Authority, author and reviewer evidence intentionally remain unknown
 	// unless the explicit provider seam is fully composed above. The Shadow

@@ -144,6 +144,43 @@ func authorityReviewDispatchGateResponse(lookup companyopsapi.DispatchAuthorizat
 	return response
 }
 
+func authorityReviewDirectProjectGateResponse(lookup companyopsapi.DispatchAuthorizationLookup, request ContinuousDispatchRequest) companyopsapi.DispatchAuthorizationResponse {
+	r := authorityReviewDispatchGateResponse(lookup, request)
+	e := r.Evidence
+	eventID, recoveryID := "direct-review-event", "direct-review-recovery"
+	eventRef := "hive://hivecosm/direct-dispatch-authorizations/" + eventID
+	recoveryRef := "hive://hivecosm/direct-dispatch-authorizations/" + recoveryID
+	eventRevision, recoveryRevision := "revision:"+eventID+":1", "revision:"+recoveryID+":1"
+	observed, generated, expires := e.Scope.ObservedAt, *e.Scope.SourceGeneratedAt, *e.Scope.ExpiresAt
+	authorizationKind := "direct_project"
+	e.Scope.AuthorizationKind, e.Scope.WorkflowID, e.Scope.GoalID = &authorizationKind, nil, nil
+	e.Scope.SourceRef, e.Scope.SourceRevision = &eventRef, &eventRevision
+	e.IssueLinkage.SourceRef, e.IssueLinkage.SourceRevision = &eventRef, &eventRevision
+	e.WorkOrder.SourceRevision = &eventRevision
+	e.Assignment.SourceRef, e.Assignment.SourceRevision = &eventRef, &eventRevision
+	e.IdentityBinding.SourceRef, e.IdentityBinding.SourceRevision = &eventRef, &eventRevision
+	e.Custody.SourceRef, e.Custody.SourceRevision = &eventRef, &eventRevision
+	e.ContinuousWorkflowAuthorization.State, e.ContinuousWorkflowAuthorization.Scope = "SOURCE_UNAVAILABLE", nil
+	e.ContinuousWorkflowAuthorization.WorkflowID, e.ContinuousWorkflowAuthorization.GoalID = nil, nil
+	e.ContinuousWorkflowAuthorization.WorkOrderID, e.ContinuousWorkflowAuthorization.OwnerDecisionRef = nil, nil
+	e.ContinuousWorkflowAuthorization.SourceRef, e.ContinuousWorkflowAuthorization.SourceRevision = nil, nil
+	e.ContinuousWorkflowAuthorization.SourceGeneratedAt, e.ContinuousWorkflowAuthorization.ExpiresAt = nil, nil
+	e.ContinuousWorkflowAuthorization.Freshness = "unknown"
+	e.WorkflowAuthority.State, e.WorkflowAuthority.WorkflowID, e.WorkflowAuthority.SourceRef, e.WorkflowAuthority.SourceRevision = "SOURCE_UNAVAILABLE", nil, nil, nil
+	e.WorkflowAuthority.SourceGeneratedAt, e.WorkflowAuthority.ExpiresAt, e.WorkflowAuthority.Freshness = nil, nil, "unknown"
+	e.GoalAuthority.State, e.GoalAuthority.GoalID, e.GoalAuthority.SourceRef, e.GoalAuthority.SourceRevision = "SOURCE_UNAVAILABLE", nil, nil, nil
+	e.GoalAuthority.SourceGeneratedAt, e.GoalAuthority.ExpiresAt, e.GoalAuthority.Freshness = nil, nil, "unknown"
+	e.DirectProjectAuthorization = companyopsapi.DispatchDirectProjectAuthorizationEvidence{State: "OBSERVED", Records: []companyopsapi.DispatchDirectProjectAuthorizationRecord{
+		{DispatchScope: "event_reconcile", DirectDispatchAuthorizationID: eventID, OwnerDecisionRef: "hive://owner-decisions/direct-review-event", ProjectID: *e.IssueLinkage.ProjectID, WorkOrderID: *e.Scope.WorkOrderID, IssueID: *e.IssueLinkage.IssueID, WorkspaceID: *e.Scope.WorkspaceID, SourceRef: eventRef, SourceRevision: eventRevision, ObservedAt: observed, SourceGeneratedAt: generated, Freshness: "current", ExpiresAt: expires},
+		{DispatchScope: "recovery_only", DirectDispatchAuthorizationID: recoveryID, OwnerDecisionRef: "hive://owner-decisions/direct-review-recovery", ProjectID: *e.IssueLinkage.ProjectID, WorkOrderID: *e.Scope.WorkOrderID, IssueID: *e.IssueLinkage.IssueID, WorkspaceID: *e.Scope.WorkspaceID, SourceRef: recoveryRef, SourceRevision: recoveryRevision, ObservedAt: observed, SourceGeneratedAt: generated, Freshness: "current", ExpiresAt: expires},
+	}}
+	e.ReviewDispatch = companyopsapi.DispatchReviewDispatchEvidence{State: "SOURCE_UNAVAILABLE", Records: []companyopsapi.DispatchReviewDispatchEvidenceRecord{}}
+	r.Scope, r.IssueLinkage = e.Scope, e.IssueLinkage
+	r.Authorization.EventReconcile = companyopsapi.DispatchAuthorizationDecision{Eligible: true, Reason: "eligible:all_required_direct_project_authority_evidence_current", SourceRefs: []string{eventRef, lookup.ExecutionIdentity.WorkOrderSourceRef}, SourceRevisions: []string{eventRevision}, ObservedAt: observed, Freshness: "current", ExpiresAt: &expires}
+	r.Authorization.RecoveryOnly = companyopsapi.DispatchAuthorizationDecision{Eligible: true, Reason: "eligible:all_required_direct_project_authority_evidence_current", SourceRefs: []string{eventRef, lookup.ExecutionIdentity.WorkOrderSourceRef, recoveryRef}, SourceRevisions: []string{eventRevision, recoveryRevision}, ObservedAt: observed, Freshness: "current", ExpiresAt: &expires}
+	return r
+}
+
 func TestAuthorityReviewDispatchGateForwardsOnlyExactAuthorizedCandidate(t *testing.T) {
 	identity, candidate := authorityReviewDispatchFixture(210)
 	lookup, err := identity.lookup()
@@ -163,6 +200,22 @@ func TestAuthorityReviewDispatchGateForwardsOnlyExactAuthorizedCandidate(t *test
 	}
 	if authorizer.lookup != lookup || dispatcher.request != candidate.request {
 		t.Fatal("gate changed an Authority selector or server-determined candidate")
+	}
+}
+
+func TestAuthorityReviewDispatchGateUsesDirectProjectAuthorityWithoutCopyingLocalLineage(t *testing.T) {
+	identity, candidate := authorityReviewDispatchFixture(211)
+	lookup, err := identity.lookup()
+	if err != nil {
+		t.Fatal(err)
+	}
+	authorizer := &authorityReviewDispatchAuthorizerFake{response: authorityReviewDirectProjectGateResponse(lookup, candidate.request)}
+	dispatcher := &authorityReviewDispatchDispatcherFake{receipt: dispatchReceiptFixture(218)}
+	if _, err := NewAuthorityReviewDispatchGate(authorizer, dispatcher).DispatchReview(context.Background(), identity, candidate); err != nil {
+		t.Fatalf("DispatchReview direct-project: %v", err)
+	}
+	if authorizer.calls != 1 || dispatcher.calls != 1 {
+		t.Fatalf("calls = %d/%d, want 1/1", authorizer.calls, dispatcher.calls)
 	}
 }
 

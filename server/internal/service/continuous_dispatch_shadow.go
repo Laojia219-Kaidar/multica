@@ -89,10 +89,14 @@ type ContinuousDispatchShadowItem struct {
 	// SourceTaskID is the completed implementation Task that produced the
 	// candidate under review. It is provenance only; clients cannot use it to
 	// choose a reviewer or bypass the server-side route planner.
-	SourceTaskID     string                                `json:"source_task_id,omitempty"`
-	DispatchIdentity continuousdispatch.DispatchIdentity   `json:"dispatch_identity"`
-	Generation       continuousdispatch.GenerationEvidence `json:"generation"`
-	NextAction       continuousdispatch.NextAction         `json:"next_action"`
+	SourceTaskID string `json:"source_task_id,omitempty"`
+	// SourceAuthorAgentID is server-only lineage evidence. The browser does not
+	// receive or choose it; ReviewDispatch uses it to bind the Authority's
+	// implementation delegation to the exact completed source Task author.
+	SourceAuthorAgentID string                                `json:"-"`
+	DispatchIdentity    continuousdispatch.DispatchIdentity   `json:"dispatch_identity"`
+	Generation          continuousdispatch.GenerationEvidence `json:"generation"`
+	NextAction          continuousdispatch.NextAction         `json:"next_action"`
 }
 
 type ContinuousDispatchShadowResult struct {
@@ -307,9 +311,10 @@ func (s *ContinuousDispatchShadowService) inspectProject(
 		})
 		items = append(items, ContinuousDispatchShadowItem{
 			IssueID: shadowUUIDString(issue.ID), IssueTitle: issue.Title, Status: issue.Status,
-			SourceRef:        lineage.SourceRef,
-			SourceTaskID:     lineage.TaskID,
-			DispatchIdentity: identity, Generation: generation, NextAction: next,
+			SourceRef:           lineage.SourceRef,
+			SourceTaskID:        lineage.TaskID,
+			SourceAuthorAgentID: lineage.AuthorID,
+			DispatchIdentity:    identity, Generation: generation, NextAction: next,
 		})
 	}
 

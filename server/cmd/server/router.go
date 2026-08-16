@@ -879,7 +879,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		// may satisfy the identity seam until the Authority by-issue reverse
 		// lookup (Option A) replaces it.
 		var reviewIdentityProvider service.AuthorityReviewDispatchIdentityProvider
+		var byIssueProvider *byIssueIdentityProvider
 		if byIssue := newByIssueIdentityProvider(os.Getenv("HIVECOSM_AUTHORITY_BASE_URL"), os.Getenv("HIVECOSM_TENANT_ID"), companyOpsTransportForBaseURL(os.Getenv("HIVECOSM_AUTHORITY_BASE_URL"))); byIssue != nil {
+			byIssueProvider = byIssue
 			reviewIdentityProvider = byIssue
 			slog.Warn("companyops by-issue authority identity provider enabled (Option A)")
 		} else {
@@ -902,15 +904,24 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			continuousDispatchTrigger,
 		)
 		if reviewIdentityProvider != nil && h.CompanyOpsDispatchAuthorization != nil {
-			if evidence := reviewCanaryAuthorityEvidenceProviderFromEnv(
-				reviewIdentityProvider,
-				canaryReviewAuthorize(h.CompanyOpsDispatchAuthorization, os.Getenv("HIVECOSM_TENANT_ID")),
-			); evidence != nil {
+			var evidence service.ReviewReconcileAuthorityEvidenceProvider
+			if byIssueProvider != nil {
+				evidence = newByIssueReviewAuthorityEvidenceProvider(
+					byIssueProvider,
+					canaryReviewAuthorize(h.CompanyOpsDispatchAuthorization, os.Getenv("HIVECOSM_TENANT_ID")),
+				)
+			} else {
+				evidence = reviewCanaryAuthorityEvidenceProviderFromEnv(
+					reviewIdentityProvider,
+					canaryReviewAuthorize(h.CompanyOpsDispatchAuthorization, os.Getenv("HIVECOSM_TENANT_ID")),
+				)
+			}
+			if evidence != nil {
 				h.ReviewDispatch = service.NewReviewDispatchBatchService(
 					continuousDispatchShadow,
 					continuousDispatchTrigger,
 				).WithAuthorityEvidenceProvider(evidence)
-				slog.Warn("companyops review canary authority evidence provider enabled")
+				slog.Warn("companyops review authority evidence provider enabled")
 			}
 		}
 	}

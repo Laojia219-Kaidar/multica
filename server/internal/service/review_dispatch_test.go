@@ -19,13 +19,14 @@ func reviewDispatchShadowItem(workspaceID, issueID, sourceCommentID, sourceTaskI
 	return ContinuousDispatchShadowItem{
 		IssueID: shadowUUIDString(issueID), Status: "in_review",
 		SourceRef: continuousDispatchReviewCommentRef(sourceCommentID), SourceTaskID: shadowUUIDString(sourceTaskID),
+		SourceAuthorAgentID: shadowUUIDString(reviewDispatchUUID(200)),
 		DispatchIdentity: continuousdispatch.DispatchIdentity{
 			WorkspaceID: shadowUUIDString(workspaceID), IssueID: shadowUUIDString(issueID), Stage: "review",
 			CandidateRevision: "candidate-review", Generation: "generation-review",
 		},
 		NextAction: continuousdispatch.NextAction{
 			State:    continuousdispatch.StateReady,
-			Selected: &continuousdispatch.CandidateDecision{EmployeeID: "EMP-REVIEW", ActiveWIP: 0, MaxWIP: 2, Eligible: true},
+			Selected: &continuousdispatch.CandidateDecision{EmployeeID: "EMP-REVIEW", AgentID: shadowUUIDString(reviewDispatchUUID(201)), ActiveWIP: 0, MaxWIP: 2, Eligible: true},
 		},
 	}
 }
