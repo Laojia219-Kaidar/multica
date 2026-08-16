@@ -67,6 +67,10 @@ describe("resolveRouteIconName", () => {
     expect(resolveRouteIconName("/acme/autopilots")).toBe("Zap");
     expect(resolveRouteIconName("/acme/chat")).toBe("MessageSquare");
     expect(resolveRouteIconName("/acme/squads")).toBe("Users");
+    expect(resolveRouteIconName("/acme/workrooms")).toBe("MessageSquare");
+    expect(resolveRouteIconName("/acme/employees")).toBe("Users");
+    expect(resolveRouteIconName("/acme/datasets")).toBe("FileText");
+    expect(resolveRouteIconName("/acme/work-wall")).toBe("Monitor");
     expect(resolveRouteIconName("/acme/bases")).toBe("Server");
     expect(resolveRouteIconName("/acme/usage")).toBe("BarChart3");
     expect(resolveRouteIconName("/acme/my-issues")).toBe("CircleUser");

@@ -87,7 +87,9 @@ assert_json "$S" '.event_id | length > 0' 'true'
 echo "  started event appended (ok)"
 
 echo "== 5. event (progress, no chain-of-thought) =="
-EV_BODY='{"work_ref":"'"$REF"'","session_id":"'"$SESSION_ID"'","run_id":"'"$RUN_ID"'","event_type":"progress","event_payload":{"step":"verify_kernel_verbs"},"idempotency_key":"canary-progress-1","occurred_at":"'"$OBS_AT"'","observed_at":"'"$OBS_AT"'"}'
+# F10 (forbidden proof fields): run_id is server-issued and must not be
+# caller-supplied — omit it from the event body so the verb rejects nothing.
+EV_BODY='{"work_ref":"'"$REF"'","session_id":"'"$SESSION_ID"'","event_type":"progress","event_payload":{"step":"verify_kernel_verbs"},"idempotency_key":"canary-progress-1","occurred_at":"'"$OBS_AT"'","observed_at":"'"$OBS_AT"'"}'
 EV="$(printf '%s' "$EV_BODY" | "$BIN" work event --state "$STATE" --request-stdin --output json)"
 assert_json "$EV" '.event_id | length > 0' 'true'
 echo "  progress event appended (ok)"

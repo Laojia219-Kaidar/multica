@@ -1,7 +1,41 @@
+import type { ReactNode } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { ProjectUnclaimedInbox } from "./project-unclaimed-inbox";
 import type { Project, WorkInboxItem } from "@multica/core/types";
+
+// Mirror help-launcher.test.tsx: flatten the Base UI dropdown primitives so the
+// menu content stays in the DOM, but preserve the ONE real invariant —
+// DropdownMenuLabel wraps Base UI's Menu.GroupLabel, which throws when it has
+// no Menu.Group ancestor. Rendering the label bare is exactly the VC-05 crash:
+// opening the attach menu threw "Base UI: MenuGroupRootContext is missing".
+vi.mock("@multica/ui/components/ui/dropdown-menu", async () => {
+  const { createContext, useContext } = await import("react");
+  const GroupContext = createContext(false);
+  return {
+    DropdownMenu: ({ children }: { children: ReactNode }) => <>{children}</>,
+    DropdownMenuContent: ({ children }: { children: ReactNode }) => <>{children}</>,
+    DropdownMenuItem: ({ children }: { children: ReactNode }) => <>{children}</>,
+    DropdownMenuGroup: ({ children }: { children: ReactNode }) => (
+      <GroupContext.Provider value={true}>{children}</GroupContext.Provider>
+    ),
+    DropdownMenuLabel: ({ children }: { children: ReactNode }) => {
+      if (!useContext(GroupContext)) {
+        throw new Error(
+          "Base UI: MenuGroupRootContext is missing. Menu group parts must be used within <Menu.Group>.",
+        );
+      }
+      return <div>{children}</div>;
+    },
+    DropdownMenuTrigger: ({
+      render,
+      children,
+    }: {
+      render?: ReactNode;
+      children?: ReactNode;
+    }) => <>{render ?? children}</>,
+  };
+});
 
 function makeInboxItem(overrides: Partial<WorkInboxItem> = {}): WorkInboxItem {
   return {
@@ -81,5 +115,25 @@ describe("ProjectUnclaimedInbox", () => {
     expect(onIgnore).toHaveBeenCalledWith(
       expect.objectContaining({ ID: "inbox-1" }),
     );
+  });
+
+  // VC-05: the attach menu's DropdownMenuLabel must sit inside a
+  // DropdownMenuGroup. Rendering it bare made Base UI's Menu.GroupLabel throw
+  // on open ("Base UI: MenuGroupRootContext is missing"), crashing the whole
+  // project page when a user clicked 关联. Rendering must not throw and the
+  // label + project choices must be present.
+  it("renders the attach-menu label without a missing-group crash", () => {
+    expect(() =>
+      render(
+        <ProjectUnclaimedInbox
+          items={[makeInboxItem()]}
+          projects={[makeProject("proj-1", "多基地经营中心")]}
+          onAttach={vi.fn()}
+          onIgnore={vi.fn()}
+        />,
+      ),
+    ).not.toThrow();
+    expect(screen.getByText("关联到既有项目")).toBeInTheDocument();
+    expect(screen.getByText("多基地经营中心")).toBeInTheDocument();
   });
 });
