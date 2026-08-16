@@ -204,6 +204,39 @@ func TestReviewDrain_BatchBounded(t *testing.T) {
 	}
 }
 
+func TestReviewDrain_AuthorityDispatchOnlyDoesNotCreateReviewTask(t *testing.T) {
+	f := newDrainFixture(t)
+	ctx := context.Background()
+	issueID, _ := f.seedDrainIssue(t, ctx, "completed", 1)
+	cell := NewReviewCellService(f.queries, f.pool, nil, ReviewCellConfig{
+		Enabled:               true,
+		AuthorityDispatchOnly: true,
+		ReviewerAgentID:       f.reviewer,
+		ReviewerAgentIDSet:    true,
+		CoordinatorAgentID:    f.implementer,
+		CoordinatorAgentSet:   true,
+	})
+	drain := NewReviewDrainService(f.queries, cell)
+	if _, err := drain.ClassifyInReview(ctx, f.workspaceID); err != nil {
+		t.Fatalf("ClassifyInReview: %v", err)
+	}
+	receipt, err := drain.DrainBatch(ctx, f.workspaceID, 1)
+	if err != nil {
+		t.Fatalf("DrainBatch: %v", err)
+	}
+	if receipt.ReviewTasks != 0 {
+		t.Fatalf("drain receipt = %+v, want no review task", receipt)
+	}
+	var reviewTaskCount int64
+	if err := f.pool.QueryRow(ctx,
+		`SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND task_kind = 'review'`, issueID).Scan(&reviewTaskCount); err != nil {
+		t.Fatalf("count review tasks: %v", err)
+	}
+	if reviewTaskCount != 0 {
+		t.Fatalf("review task count = %d, want 0", reviewTaskCount)
+	}
+}
+
 func TestReviewDrain_DoesNotRedispatchCompletedCandidate(t *testing.T) {
 	f := newDrainFixture(t)
 	ctx := context.Background()

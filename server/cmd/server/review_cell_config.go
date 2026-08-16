@@ -21,13 +21,16 @@ var reviewCellEnabled = os.Getenv("REVIEW_CELL_ENABLED") == "true"
 // invalid or missing reviewer id keeps auto-selection (least-loaded workspace
 // reviewer != implementer) as the fallback, and a missing coordinator keeps
 // PASS restricted to member owners. An invalid coordinator id fails closed at
-// verdict time.
+// verdict time. Review-cell production wiring is always Authority-only; the
+// service-level tests explicitly set AuthorityDispatchOnly=false to exercise
+// the legacy local-task behavior.
 func reviewCellConfigFromEnv() service.ReviewCellConfig {
 	cfg := service.ReviewCellConfig{
-		Enabled:        reviewCellEnabled,
-		ReviewWIPLimit: int32(envPositiveInt("REVIEW_CELL_REVIEW_WIP_LIMIT", 10)),
-		ReviewPriority: int32(envPositiveInt("REVIEW_CELL_REVIEW_PRIORITY", 5)),
-		RepairPriority: int32(envPositiveInt("REVIEW_CELL_REPAIR_PRIORITY", 5)),
+		Enabled:               reviewCellEnabled,
+		AuthorityDispatchOnly: true,
+		ReviewWIPLimit:        int32(envPositiveInt("REVIEW_CELL_REVIEW_WIP_LIMIT", 10)),
+		ReviewPriority:        int32(envPositiveInt("REVIEW_CELL_REVIEW_PRIORITY", 5)),
+		RepairPriority:        int32(envPositiveInt("REVIEW_CELL_REPAIR_PRIORITY", 5)),
 	}
 	if raw := strings.TrimSpace(os.Getenv("REVIEW_CELL_L1_AGENT_ID")); raw != "" {
 		if parsed, err := uuid.Parse(raw); err == nil {

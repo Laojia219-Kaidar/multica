@@ -498,9 +498,9 @@ func main() {
 		slog.Warn("scheduler: failed to register canonical_write_lease_cancel_cleanup job", "error", err)
 	}
 	// Lane B / P2: legacy in_review batch drain. Registered only when the
-	// review cell is enabled; each tick drains a bounded per-workspace batch
-	// (never the whole queue at once).
-	if h.ReviewCellService != nil {
+	// review cell is enabled without the Authority dispatch gate; each tick
+	// drains a bounded per-workspace batch (never the whole queue at once).
+	if h.ReviewCellService != nil && !h.ReviewCellService.Config.AuthorityDispatchOnly {
 		drainSvc := service.NewReviewDrainService(queries, h.ReviewCellService)
 		if err := schedulerMgr.Register(scheduler.ReviewDrainJob(pool, drainSvc, scheduler.ReviewDrainConfig{
 			BatchSize:        20,

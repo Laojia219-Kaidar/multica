@@ -287,6 +287,233 @@ func TestReviewCell_FullChain(t *testing.T) {
 	}
 }
 
+func TestReviewCell_AuthorityDispatchOnlyQueuesWithoutCreatingReviewTask(t *testing.T) {
+	f := newReviewCellFixture(t, true)
+	ctx := context.Background()
+	cfg := cfgWithReviewerAndCoordinator(f)
+	cfg.AuthorityDispatchOnly = true
+	svc := newReviewCellServiceForFixture(f, cfg)
+
+	if err := svc.OnIssueEnteredReview(ctx, f.issueID); err != nil {
+		t.Fatalf("OnIssueEnteredReview: %v", err)
+	}
+	if err := svc.OnIssueEnteredReview(ctx, f.issueID); err != nil {
+		t.Fatalf("OnIssueEnteredReview replay: %v", err)
+	}
+	issue := mustGetIssue(t, ctx, f)
+	if issue.ReviewState.String != ReviewStateQueued {
+		t.Fatalf("review_state = %q, want queued", issue.ReviewState.String)
+	}
+	if _, err := f.queries.GetOpenReviewTaskForIssue(ctx, f.issueID); !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("GetOpenReviewTaskForIssue error = %v, want no local review task", err)
+	}
+	var reviewTaskCount int64
+	if err := f.pool.QueryRow(ctx,
+		`SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND task_kind = 'review'`, f.issueID).Scan(&reviewTaskCount); err != nil {
+		t.Fatalf("count review tasks: %v", err)
+	}
+	if reviewTaskCount != 0 {
+		t.Fatalf("review task count = %d, want 0", reviewTaskCount)
+	}
+}
+
+func TestReviewCell_AuthorityDispatchOnlyStillFailsClosedForMissingLineage(t *testing.T) {
+	f := newReviewCellFixture(t, false)
+	ctx := context.Background()
+	cfg := cfgWithReviewerAndCoordinator(f)
+	cfg.AuthorityDispatchOnly = true
+	svc := newReviewCellServiceForFixture(f, cfg)
+
+	if err := svc.OnIssueEnteredReview(ctx, f.issueID); err != nil {
+		t.Fatalf("OnIssueEnteredReview: %v", err)
+	}
+	issue := mustGetIssue(t, ctx, f)
+	if issue.ReviewState.String != ReviewStateOwnerDecision {
+		t.Fatalf("review_state = %q, want owner_decision", issue.ReviewState.String)
+	}
+	if !containsString(issue.ReviewStateReason.String, LineageFailureNoSourceTaskID) {
+		t.Fatalf("review_state_reason = %q, want no_source_task_id", issue.ReviewStateReason.String)
+	}
+}
+
+func TestReviewCell_StaleEnterDoesNotQueueClosedIssue(t *testing.T) {
+	for _, status := range []string{"done", "cancelled"} {
+		t.Run(status, func(t *testing.T) {
+			f := newReviewCellFixture(t, true)
+			ctx := context.Background()
+			if _, err := f.pool.Exec(ctx, `UPDATE issue SET status = $2 WHERE id = $1`, f.issueID, status); err != nil {
+				t.Fatalf("set issue status: %v", err)
+			}
+			svc := newReviewCellServiceForFixture(f, cfgWithReviewerAndCoordinator(f))
+			if err := svc.OnIssueEnteredReview(ctx, f.issueID); err != nil {
+				t.Fatalf("stale OnIssueEnteredReview: %v", err)
+			}
+			issue := mustGetIssue(t, ctx, f)
+			if issue.ReviewState.Valid {
+				t.Fatalf("review_state = %#v, want NULL", issue.ReviewState)
+			}
+			var reviewTaskCount int64
+			if err := f.pool.QueryRow(ctx,
+				`SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND task_kind = 'review'`, f.issueID).Scan(&reviewTaskCount); err != nil {
+				t.Fatalf("count review tasks: %v", err)
+			}
+			if reviewTaskCount != 0 {
+				t.Fatalf("review task count = %d, want 0", reviewTaskCount)
+			}
+		})
+	}
+}
+
+func TestReviewCell_StaleLeaveDoesNotClearCurrentReview(t *testing.T) {
+	f := newReviewCellFixture(t, true)
+	ctx := context.Background()
+	svc := newReviewCellServiceForFixture(f, cfgWithReviewerAndCoordinator(f))
+	if err := svc.OnIssueEnteredReview(ctx, f.issueID); err != nil {
+		t.Fatalf("OnIssueEnteredReview: %v", err)
+	}
+	if err := svc.OnIssueLeftReview(ctx, f.issueID); err != nil {
+		t.Fatalf("stale OnIssueLeftReview: %v", err)
+	}
+	issue := mustGetIssue(t, ctx, f)
+	if issue.Status != "in_review" || !issue.ReviewState.Valid || issue.ReviewState.String != ReviewStateQueued {
+		t.Fatalf("current review after stale leave = status %q state %#v, want in_review/queued", issue.Status, issue.ReviewState)
+	}
+	if task := mustOpenReviewTask(t, ctx, f); task.TaskKind != TaskKindReview {
+		t.Fatalf("open task kind = %q, want review", task.TaskKind)
+	}
+}
+
+func TestReviewCell_AuthorityCASNonQueuedStateDoesNotReplay(t *testing.T) {
+	f := newReviewCellFixture(t, true)
+	ctx := context.Background()
+	if _, err := f.pool.Exec(ctx, `UPDATE issue SET review_state = 'owner_decision' WHERE id = $1`, f.issueID); err != nil {
+		t.Fatalf("set owner_decision state: %v", err)
+	}
+	cfg := cfgWithReviewerAndCoordinator(f)
+	cfg.AuthorityDispatchOnly = true
+	svc := newReviewCellServiceForFixture(f, cfg)
+	err := svc.runInTx(ctx, func(qtx *db.Queries) error {
+		issue, err := qtx.GetIssueForUpdate(ctx, f.issueID)
+		if err != nil {
+			return err
+		}
+		issue.ReviewState = pgtype.Text{}
+		_, err = svc.handleFreshEntry(ctx, qtx, issue)
+		return err
+	})
+	if !errors.Is(err, ErrAuthorityReviewStateTransition) {
+		t.Fatalf("fresh CAS error = %v, want ErrAuthorityReviewStateTransition", err)
+	}
+	err = svc.runInTx(ctx, func(qtx *db.Queries) error {
+		issue, err := qtx.GetIssueForUpdate(ctx, f.issueID)
+		if err != nil {
+			return err
+		}
+		issue.ReviewState = pgtype.Text{String: ReviewStateQueued, Valid: true}
+		_, err = svc.handleReentry(ctx, qtx, issue)
+		return err
+	})
+	if !errors.Is(err, ErrAuthorityReviewStateTransition) {
+		t.Fatalf("re-entry CAS error = %v, want ErrAuthorityReviewStateTransition", err)
+	}
+	if _, err := f.pool.Exec(ctx, `UPDATE issue SET review_state = 'queued' WHERE id = $1`, f.issueID); err != nil {
+		t.Fatalf("set queued state: %v", err)
+	}
+	var replay ReviewTaskEnsureResult
+	err = svc.runInTx(ctx, func(qtx *db.Queries) error {
+		issue, err := qtx.GetIssueForUpdate(ctx, f.issueID)
+		if err != nil {
+			return err
+		}
+		issue.ReviewState = pgtype.Text{}
+		replay, err = svc.handleFreshEntry(ctx, qtx, issue)
+		return err
+	})
+	if err != nil || !replay.Replayed {
+		t.Fatalf("queued/in_review CAS replay = result=%+v error=%v, want replay success", replay, err)
+	}
+}
+
+func TestReviewCell_AuthorityDispatchOnlyKeepsReviseRequestedAfterRepairWithoutCreatingRereviewTask(t *testing.T) {
+	f := newReviewCellFixture(t, true)
+	ctx := context.Background()
+	legacy := newReviewCellServiceForFixture(f, cfgWithReviewerAndCoordinator(f))
+	if err := legacy.OnIssueEnteredReview(ctx, f.issueID); err != nil {
+		t.Fatalf("legacy OnIssueEnteredReview: %v", err)
+	}
+	verdict, err := legacy.WriteVerdict(ctx, f.issueID, ReviewActor{ActorType: "agent", ActorID: f.reviewer}, VerdictInput{
+		Verdict: "revise", Notes: "needs rework",
+	})
+	if err != nil {
+		t.Fatalf("legacy WriteVerdict(revise): %v", err)
+	}
+	if _, err := f.pool.Exec(ctx, `UPDATE agent_task_queue SET status = 'completed', completed_at = now() WHERE id = $1`, verdict.RepairTaskID); err != nil {
+		t.Fatalf("complete repair task: %v", err)
+	}
+
+	cfg := cfgWithReviewerAndCoordinator(f)
+	cfg.AuthorityDispatchOnly = true
+	authorityOnly := newReviewCellServiceForFixture(f, cfg)
+	if err := authorityOnly.OnRepairTaskCompleted(ctx, verdict.RepairTaskID); err != nil {
+		t.Fatalf("authority-only OnRepairTaskCompleted: %v", err)
+	}
+	if err := authorityOnly.OnRepairTaskCompleted(ctx, verdict.RepairTaskID); err != nil {
+		t.Fatalf("authority-only OnRepairTaskCompleted replay: %v", err)
+	}
+	issue := mustGetIssue(t, ctx, f)
+	if issue.ReviewState.String != ReviewStateReviseRequested {
+		t.Fatalf("review_state after repair = %q, want revise_requested", issue.ReviewState.String)
+	}
+	if _, err := f.queries.GetOpenReviewTaskForIssue(ctx, f.issueID); !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("GetOpenReviewTaskForIssue after repair error = %v, want no local re-review task", err)
+	}
+	var reviewTaskCount int64
+	if err := f.pool.QueryRow(ctx,
+		`SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND task_kind = 'review'`, f.issueID).Scan(&reviewTaskCount); err != nil {
+		t.Fatalf("count review tasks after repair: %v", err)
+	}
+	if reviewTaskCount != 1 {
+		t.Fatalf("review task count after repair = %d, want historical task only", reviewTaskCount)
+	}
+}
+
+func TestReviewCell_AuthorityRequeueClosedIssueDoesNotMutate(t *testing.T) {
+	for _, status := range []string{"done", "cancelled"} {
+		t.Run(status, func(t *testing.T) {
+			f := newReviewCellFixture(t, false)
+			ctx := context.Background()
+			cfg := cfgWithReviewerAndCoordinator(f)
+			cfg.AuthorityDispatchOnly = true
+			svc := newReviewCellServiceForFixture(f, cfg)
+			if err := svc.OnIssueEnteredReview(ctx, f.issueID); err != nil {
+				t.Fatalf("OnIssueEnteredReview: %v", err)
+			}
+			if _, err := f.pool.Exec(ctx, `UPDATE issue SET status = $2 WHERE id = $1`, f.issueID, status); err != nil {
+				t.Fatalf("set issue status: %v", err)
+			}
+			res, err := svc.Requeue(ctx, f.issueID, ReviewActor{ActorType: "agent", ActorID: f.coordinator})
+			if !errors.Is(err, ErrReviewIssueNotInReview) {
+				t.Fatalf("Requeue error = %v, want ErrReviewIssueNotInReview", err)
+			}
+			if res.ReviewState != ReviewStateOwnerDecision {
+				t.Fatalf("Requeue result state = %q, want owner_decision", res.ReviewState)
+			}
+			issue := mustGetIssue(t, ctx, f)
+			if issue.Status != status || !issue.ReviewState.Valid || issue.ReviewState.String != ReviewStateOwnerDecision {
+				t.Fatalf("closed issue after Requeue = status %q state %#v, want %s/owner_decision", issue.Status, issue.ReviewState, status)
+			}
+			var reviewTaskCount int64
+			if err := f.pool.QueryRow(ctx,
+				`SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND task_kind = 'review'`, f.issueID).Scan(&reviewTaskCount); err != nil {
+				t.Fatalf("count review tasks: %v", err)
+			}
+			if reviewTaskCount != 0 {
+				t.Fatalf("review task count = %d, want 0", reviewTaskCount)
+			}
+		})
+	}
+}
+
 // TestReviewCell_ReviseRequestedReentryDoesNotPreemptRepair guards the
 // production regression where an IssueUpdated re-entry fired while an issue was
 // in revise_requested (repair pending), and handleReentry overwrote

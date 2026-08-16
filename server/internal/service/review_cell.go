@@ -85,6 +85,9 @@ var (
 	ErrReviewStateClosed = errors.New("review cell: review state is not open for this action")
 	// ErrNotInOwnerDecision: requeue requires owner_decision.
 	ErrNotInOwnerDecision = errors.New("review cell: issue is not in owner_decision")
+	// ErrReviewIssueNotInReview: no review-cell state transition is valid when
+	// the delivery axis is no longer in_review.
+	ErrReviewIssueNotInReview = errors.New("review cell: issue is not in_review")
 	// ErrReviewerUnconfigured: no reviewer agent is configured and no
 	// workspace-local reviewer candidate exists (fail-closed).
 	ErrReviewerUnconfigured = errors.New("review cell: reviewer agent is not configured")
@@ -92,19 +95,27 @@ var (
 	ErrReviewerUnavailable = errors.New("review cell: reviewer agent has no claimable runtime")
 	// ErrNoOpenRepairTask: a re-review arrived but no repair task is open.
 	ErrNoOpenRepairTask = errors.New("review cell: no open repair task for this issue")
+	// ErrAuthorityReviewStateTransition indicates that an Authority-only CAS
+	// lost its expected transition and the locked row is not an admissible
+	// queued replay.
+	ErrAuthorityReviewStateTransition = errors.New("review cell: authority review state transition lost")
 )
 
 // ReviewCellConfig is the server-side wiring for the review cell. It is
 // constructed from environment by cmd/server; tests build it directly.
 type ReviewCellConfig struct {
-	Enabled             bool
-	ReviewerAgentID     pgtype.UUID
-	ReviewerAgentIDSet  bool
-	CoordinatorAgentID  pgtype.UUID
-	CoordinatorAgentSet bool
-	ReviewWIPLimit      int32
-	ReviewPriority      int32
-	RepairPriority      int32
+	Enabled bool
+	// AuthorityDispatchOnly makes the ReviewCell a state-machine and
+	// completion-event consumer. Review/re-review task creation is then owned
+	// by the Authority review-dispatch gate wired by the router.
+	AuthorityDispatchOnly bool
+	ReviewerAgentID       pgtype.UUID
+	ReviewerAgentIDSet    bool
+	CoordinatorAgentID    pgtype.UUID
+	CoordinatorAgentSet   bool
+	ReviewWIPLimit        int32
+	ReviewPriority        int32
+	RepairPriority        int32
 }
 
 // ReviewActor is the resolved actor identity for verdict / requeue writes:
@@ -223,6 +234,9 @@ func (s *ReviewCellService) EnsureReviewTask(ctx context.Context, issueID pgtype
 		if err != nil {
 			return fmt.Errorf("review cell: load issue: %w", err)
 		}
+		if issue.Status != "in_review" {
+			return nil
+		}
 		switch {
 		case !issue.ReviewState.Valid:
 			result, err = s.handleFreshEntry(ctx, qtx, issue)
@@ -251,6 +265,21 @@ func (s *ReviewCellService) handleFreshEntry(ctx context.Context, qtx *db.Querie
 	}
 	if !lineage.Valid {
 		return ReviewTaskEnsureResult{}, s.failClosedFromNULL(ctx, qtx, issue, lineage.SubReason)
+	}
+	if s.Config.AuthorityDispatchOnly {
+		_, err = qtx.SetIssueReviewState(ctx, db.SetIssueReviewStateParams{
+			ID:            issue.ID,
+			ExpectedState: pgtype.Text{},
+			NewState:      pgtype.Text{String: ReviewStateQueued, Valid: true},
+			NewReason:     pgtype.Text{},
+		})
+		if errors.Is(err, pgx.ErrNoRows) {
+			return authorityReviewQueueReplay(ctx, qtx, issue.ID, lineage.Task.ID)
+		}
+		if err != nil {
+			return ReviewTaskEnsureResult{}, fmt.Errorf("review cell: transition to queued: %w", err)
+		}
+		return ReviewTaskEnsureResult{CandidateTaskID: lineage.Task.ID}, nil
 	}
 	created, task, err := s.createReviewTask(ctx, qtx, issue, lineage.Task)
 	if err != nil {
@@ -282,6 +311,20 @@ func (s *ReviewCellService) handleReentry(ctx context.Context, qtx *db.Queries, 
 	}
 	if !lineage.Valid {
 		return ReviewTaskEnsureResult{}, s.failClosedFromOpen(ctx, qtx, issue, lineage.SubReason)
+	}
+	if s.Config.AuthorityDispatchOnly {
+		_, err = qtx.SetIssueReviewStateFromOpen(ctx, db.SetIssueReviewStateFromOpenParams{
+			ID:        issue.ID,
+			NewState:  pgtype.Text{String: ReviewStateQueued, Valid: true},
+			NewReason: pgtype.Text{},
+		})
+		if errors.Is(err, pgx.ErrNoRows) {
+			return authorityReviewQueueReplay(ctx, qtx, issue.ID, lineage.Task.ID)
+		}
+		if err != nil {
+			return ReviewTaskEnsureResult{}, fmt.Errorf("review cell: requeue after authority dispatch: %w", err)
+		}
+		return ReviewTaskEnsureResult{CandidateTaskID: lineage.Task.ID}, nil
 	}
 
 	existing, err := qtx.GetOpenReviewTaskForIssue(ctx, issue.ID)
@@ -451,6 +494,24 @@ func reviewTaskEnsureResult(created bool, task *db.AgentTaskQueue, candidateID p
 	return result
 }
 
+func authorityReviewQueueReplay(ctx context.Context, qtx *db.Queries, issueID, candidateID pgtype.UUID) (ReviewTaskEnsureResult, error) {
+	current, err := qtx.GetIssueForUpdate(ctx, issueID)
+	if err != nil {
+		return ReviewTaskEnsureResult{}, fmt.Errorf("review cell: reread authority review state transition: %w", err)
+	}
+	if current.Status != "in_review" || !current.ReviewState.Valid || current.ReviewState.String != ReviewStateQueued {
+		state := "<null>"
+		if current.ReviewState.Valid {
+			state = current.ReviewState.String
+		}
+		return ReviewTaskEnsureResult{}, fmt.Errorf(
+			"%w: issue %s current status=%q review_state=%q",
+			ErrAuthorityReviewStateTransition, util.UUIDToString(issueID), current.Status, state,
+		)
+	}
+	return ReviewTaskEnsureResult{Replayed: true, CandidateTaskID: candidateID}, nil
+}
+
 // OnIssueLeftReview resets the acceptance axis when the issue leaves in_review:
 // open review tasks are cancelled and review_state is cleared.
 func (s *ReviewCellService) OnIssueLeftReview(ctx context.Context, issueID pgtype.UUID) error {
@@ -458,6 +519,9 @@ func (s *ReviewCellService) OnIssueLeftReview(ctx context.Context, issueID pgtyp
 		issue, err := qtx.GetIssueForUpdate(ctx, issueID)
 		if err != nil {
 			return fmt.Errorf("review cell: load issue: %w", err)
+		}
+		if issue.Status == "in_review" {
+			return nil
 		}
 		if !issue.ReviewState.Valid {
 			return nil
@@ -837,8 +901,9 @@ func (s *ReviewCellService) createRepairTask(ctx context.Context, qtx *db.Querie
 }
 
 // OnRepairTaskCompleted is the TaskCompleted listener entry for task_kind ==
-// 'repair'. It re-enters the issue into review and creates a fresh, independent
-// review round for the repaired candidate.
+// 'repair'. Non-Authority mode re-enters the issue into review and creates a
+// fresh, independent review round; Authority-only mode leaves revise_requested
+// pending the canonical recovery dispatch.
 func (s *ReviewCellService) OnRepairTaskCompleted(ctx context.Context, taskID pgtype.UUID) error {
 	return s.runInTx(ctx, func(qtx *db.Queries) error {
 		task, err := qtx.GetAgentTask(ctx, taskID)
@@ -861,6 +926,14 @@ func (s *ReviewCellService) OnRepairTaskCompleted(ctx context.Context, taskID pg
 			return nil
 		}
 		if issue.ReviewState.Valid && issue.ReviewState.String != ReviewStateReviseRequested {
+			return nil
+		}
+		if s.Config.AuthorityDispatchOnly {
+			// The production recovery reader is not wired into this listener yet.
+			// Keep revise_requested until the Authority review-dispatch path can
+			// prove the repaired candidate and create its review Task.
+			slog.Warn("review cell: authority repair awaits recovery review dispatch",
+				"issue_id", util.UUIDToString(issue.ID), "repair_task_id", util.UUIDToString(task.ID))
 			return nil
 		}
 		// Cancel any open review round (defensive: should not exist) and
@@ -902,6 +975,10 @@ func (s *ReviewCellService) Requeue(ctx context.Context, issueID pgtype.UUID, ac
 		if err != nil {
 			return fmt.Errorf("review cell: load issue: %w", err)
 		}
+		if issue.Status != "in_review" {
+			res.ReviewState = reviewStateOrNull(issue.ReviewState)
+			return ErrReviewIssueNotInReview
+		}
 		if !issue.ReviewState.Valid || issue.ReviewState.String != ReviewStateOwnerDecision {
 			res.ReviewState = reviewStateOrNull(issue.ReviewState)
 			return ErrNotInOwnerDecision
@@ -923,6 +1000,19 @@ func (s *ReviewCellService) Requeue(ctx context.Context, issueID pgtype.UUID, ac
 			res.ReviewState = ReviewStateOwnerDecision
 			res.ReviewTaskCreated = false
 			res.Reason = reason
+			return nil
+		}
+		if s.Config.AuthorityDispatchOnly {
+			if _, err := qtx.SetIssueReviewState(ctx, db.SetIssueReviewStateParams{
+				ID:            issue.ID,
+				ExpectedState: pgtype.Text{String: ReviewStateOwnerDecision, Valid: true},
+				NewState:      pgtype.Text{String: ReviewStateQueued, Valid: true},
+				NewReason:     pgtype.Text{},
+			}); err != nil {
+				return fmt.Errorf("review cell: authority requeue transition: %w", err)
+			}
+			res.ReviewState = ReviewStateQueued
+			res.ReviewTaskCreated = false
 			return nil
 		}
 		created, _, err := s.createReviewTask(ctx, qtx, issue, lineage.Task)
