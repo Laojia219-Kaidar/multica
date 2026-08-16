@@ -1,6 +1,8 @@
 package handler
 
 import (
+	"log/slog"
+
 	"encoding/json"
 	"errors"
 	"io"
@@ -137,6 +139,7 @@ func writeContinuousDispatchCommandError(w http.ResponseWriter, err error) {
 	case errors.Is(err, service.ErrContinuousDispatchSourceGap):
 		writeContinuousDispatchShadowError(w, http.StatusServiceUnavailable, "source_gap", "continuous dispatch source is temporarily unavailable")
 	default:
+		slog.Warn("continuous dispatch command failed", "error", err)
 		writeContinuousDispatchShadowError(w, http.StatusServiceUnavailable, "dispatch_unavailable", "continuous dispatch is temporarily unavailable")
 	}
 }
