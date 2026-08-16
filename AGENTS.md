@@ -44,3 +44,11 @@ under project `PRJ-G71-HIVECREW`. Its sole progress-state authority is
 re-identity result remains a verified candidate baseline, not the active work
 frontier. Product-facing code must continue to follow the compatibility classes
 in `docs/architecture/PRODUCT-IDENTITY-COMPATIBILITY-MAP.md`.
+
+## Production deploy lock (2026-08-16)
+
+- This line currently HOLDS the production deploy lock for compose project
+  `multica`. See `/Volumes/HiveData/hivecosm/.prod-multica-deploy/PROTOCOL.md`
+  and `LOCK`. Keep following the protocol: verify image binary symbols before
+  deploy, never retag another line's tags, and expect other agents to read
+  this protocol before touching prod.

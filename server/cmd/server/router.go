@@ -1983,6 +1983,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// HIV-405: bounded Project start/continue control.
 					r.Post("/start-preview", h.ProjectStartPreview)
 					r.Post("/start", h.ProjectStart)
+					// HIV-403: preview-only wave decomposition. Read-only:
+					// no Task creation, no status mutation, no dispatch.
+					r.Get("/wave-preview", h.GetProjectWavePreview)
 					r.Get("/resources", h.ListProjectResources)
 					r.Post("/resources", h.CreateProjectResource)
 					r.Put("/resources/{resourceId}", h.UpdateProjectResource)
