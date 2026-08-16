@@ -215,4 +215,3 @@ WHERE c.workspace_id = @workspace_id
   )
 ORDER BY c.created_at ASC
 LIMIT @limit_rows;
-
