@@ -1226,7 +1226,7 @@ func TestBriefModeRouterMatchesPromptMarkers(t *testing.T) {
 			t.Errorf("brief mode router does not name %s\n---\n%s", want, brief)
 		}
 	}
-	for _, want := range []string{"Never run `multica issue status` in Repair mode", "exactly one Task-linked Agent Comment"} {
+	for _, want := range []string{"Never run `multica issue status` in Repair mode", "exactly one Task-linked Agent Comment", `"base_generation":"1"`, `"generation":"2"`} {
 		if !strings.Contains(brief, want) {
 			t.Errorf("brief repair mode missing %q\n---\n%s", want, brief)
 		}

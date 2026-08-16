@@ -530,6 +530,7 @@ func writeWorkflowIssue(b *strings.Builder, ctx TaskContextForEnv) {
 	b.WriteString("**Repair mode only — preserve the ReviewCell state machine**\n\n")
 	b.WriteString("- Keep the Issue status exactly as you found it. Never run `multica issue status` in Repair mode — not for in_progress, in_review, done, blocked, or any other status.\n")
 	b.WriteString("- Follow the repair handoff note exactly. Complete only the named base candidate, persist exactly one Task-linked Agent Comment carrying the required repair marker, and make the final assistant response repeat that identical marker as its final non-empty line.\n")
+	b.WriteString("- In that marker, every JSON field value is a double-quoted string. Write generation fields like `\"base_generation\":\"1\"` and `\"generation\":\"2\"`; bare numeric values such as `\"generation\":2` are malformed and fail closed.\n")
 	b.WriteString("- If the repair cannot be completed under that contract, report the blocker in the single required Task-linked Comment and final response without changing Issue status or fabricating a repair marker.\n\n")
 
 	b.WriteString("**Reply mode only — respond to the comment in the user message**\n\n")

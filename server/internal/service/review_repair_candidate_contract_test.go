@@ -39,6 +39,7 @@ func TestParseRepairCandidateResultStrictContract(t *testing.T) {
 		{name: "not final", out: marker + "\nmore", want: ErrRepairCandidateMarkerMissing},
 		{name: "duplicate", out: marker + "\n" + marker, want: ErrRepairCandidateMarkerMalformed},
 		{name: "unknown field", out: repairCandidateMarkerV1 + ` {"repair_task_id":"01972f7e-7e8d-77ef-a13d-1b0ce3e9c012","base_task_id":"01972f7e-7e8d-77ef-a13d-1b0ce3e9c013","base_candidate_revision":"candidate-old","base_generation":"7","candidate_revision":"candidate-new","generation":"8","extra":"no"}`, want: ErrRepairCandidateMarkerMalformed},
+		{name: "numeric generation values", out: repairCandidateMarkerV1 + ` {"repair_task_id":"01972f7e-7e8d-77ef-a13d-1b0ce3e9c012","base_task_id":"01972f7e-7e8d-77ef-a13d-1b0ce3e9c013","base_candidate_revision":"candidate-old","base_generation":7,"candidate_revision":"candidate-new","generation":8}`, want: ErrRepairCandidateMarkerMalformed},
 		{name: "same revision", out: repairCandidateMarkerLine(repairCandidatePayload{RepairTaskID: payload.RepairTaskID, BaseTaskID: payload.BaseTaskID, BaseCandidateRevision: "same", BaseGeneration: "7", CandidateRevision: "same", Generation: "8"}), want: ErrRepairCandidateIdentityDrift},
 		{name: "non numeric generation", out: repairCandidateMarkerLine(repairCandidatePayload{RepairTaskID: payload.RepairTaskID, BaseTaskID: payload.BaseTaskID, BaseCandidateRevision: "old", BaseGeneration: "g-7", CandidateRevision: "new", Generation: "g-8"}), want: ErrRepairCandidateIdentityDrift},
 		{name: "not incremented", out: repairCandidateMarkerLine(repairCandidatePayload{RepairTaskID: payload.RepairTaskID, BaseTaskID: payload.BaseTaskID, BaseCandidateRevision: "old", BaseGeneration: "7", CandidateRevision: "new", Generation: "9"}), want: ErrRepairCandidateIdentityDrift},
@@ -65,6 +66,9 @@ func TestRepairCandidateHandoffNoteRequiresExactMarker(t *testing.T) {
 		!containsString(note, "Keep the Issue status unchanged") ||
 		!containsString(note, "source_task_id is the current repair Task ID") ||
 		!containsString(note, "final assistant response MUST repeat the identical marker") ||
+		!containsString(note, "All six JSON field values MUST be double-quoted JSON strings") ||
+		!containsString(note, `"base_generation":"1"`) ||
+		!containsString(note, `"generation":"2"`) ||
 		!containsString(note, "comment-only, result-only, mismatched") {
 		t.Fatalf("handoff note = %q", note)
 	}
