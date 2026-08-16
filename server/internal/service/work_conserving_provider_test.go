@@ -1,0 +1,92 @@
+package service
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/continuousdispatch"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
+)
+
+func TestReadWorkConservingGoalSourceRequiresExplicitBindingAndUsesContentDigest(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "CHECKLIST.yaml")
+	content := "schema_version: hivecosm.goal-graph/v2\nwork_conserving_authority:\n  schema_version: hivecosm.goal-graph/v2\n  goal_id: goal-1\n  workspace_id: 00000000-0000-0000-0000-000000000001\n  project_id: 00000000-0000-0000-0000-000000000002\n  source_ref: /goal/CHECKLIST.yaml\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := readWorkConservingGoalSource(path)
+	if err != nil {
+		t.Fatalf("read source: %v", err)
+	}
+	if snapshot.Binding.GoalID != "goal-1" || snapshot.Binding.ProjectID == "" || len(snapshot.Digest) != 64 {
+		t.Fatalf("snapshot = %+v, want explicit binding and sha256 digest", snapshot)
+	}
+	if _, err := readWorkConservingGoalSource(filepath.Join(t.TempDir(), "missing.yaml")); err == nil || !strings.Contains(err.Error(), "source gap") {
+		t.Fatal("missing source must fail closed")
+	}
+	if err := os.WriteFile(path, []byte("schema_version: hivecosm.goal-graph/v2\nmeta:\n  goal_id: goal-1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readWorkConservingGoalSource(path); err == nil || !strings.Contains(err.Error(), "workspace_id") {
+		t.Fatal("missing workspace scope must fail closed")
+	}
+}
+
+type providerPaginationStore struct {
+	shadowStoreFixture
+	pages [][]db.ListIssuesRow
+}
+
+func (s providerPaginationStore) ListIssues(_ context.Context, params db.ListIssuesParams) ([]db.ListIssuesRow, error) {
+	index := int(params.Offset) / workConservingPageSize
+	if index >= len(s.pages) {
+		return []db.ListIssuesRow{}, nil
+	}
+	return append([]db.ListIssuesRow(nil), s.pages[index]...), nil
+}
+
+func TestWorkConservingProviderReadsAllPagesAndRejectsDuplicatePageIdentity(t *testing.T) {
+	workspaceID := pgtype.UUID{Bytes: [16]byte{1}, Valid: true}
+	projectID := pgtype.UUID{Bytes: [16]byte{2}, Valid: true}
+	issueA := db.ListIssuesRow{ID: pgtype.UUID{Bytes: [16]byte{3}, Valid: true}, WorkspaceID: workspaceID, ProjectID: projectID}
+	issueB := db.ListIssuesRow{ID: pgtype.UUID{Bytes: [16]byte{4}, Valid: true}, WorkspaceID: workspaceID, ProjectID: projectID}
+	path := filepath.Join(t.TempDir(), "CHECKLIST.yaml")
+	content := "schema_version: test\nwork_conserving_authority:\n  schema_version: test\n  goal_id: goal-1\n  workspace_id: " + uuid.UUID(workspaceID.Bytes).String() + "\n  project_id: " + uuid.UUID(projectID.Bytes).String() + "\n  source_ref: /goal/checklist\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	shadow := NewContinuousDispatchShadowService(&providerPaginationStore{pages: [][]db.ListIssuesRow{{issueA}, {issueB}}}, shadowDirectoryFixture{}, nil, nil)
+	provider := NewFileWorkConservingProjectionProvider(shadow, path)
+	issues, err := provider.readAllIssues(context.Background(), workspaceID, projectID)
+	if err != nil || len(issues) != 2 {
+		t.Fatalf("issues = %v, err=%v; want two pages", len(issues), err)
+	}
+	duplicate := NewContinuousDispatchShadowService(&providerPaginationStore{pages: [][]db.ListIssuesRow{{issueA}, {issueA}}}, shadowDirectoryFixture{}, nil, nil)
+	provider = NewFileWorkConservingProjectionProvider(duplicate, path)
+	if _, err := provider.readAllIssues(context.Background(), workspaceID, projectID); err == nil || !strings.Contains(err.Error(), "duplicated identity") {
+		t.Fatal("duplicate page identity must fail closed")
+	}
+}
+
+func TestWorkConservingProjectionValidationRejectsExpiredSourceAndAcceptsBlockedPlan(t *testing.T) {
+	now := time.Date(2026, 8, 16, 8, 0, 0, 0, time.UTC)
+	workspaceID := pgtype.UUID{Bytes: [16]byte{1}, Valid: true}
+	projectID := pgtype.UUID{Bytes: [16]byte{2}, Valid: true}
+	p := WorkConservingProjection{SchemaVersion: WorkConservingProjectionSchemaV1, State: WorkConservingProjectionBlocked, GoalID: "goal-1", Authority: WorkConservingAuthoritySnapshot{WorkspaceID: uuid.UUID(workspaceID.Bytes).String(), ProjectID: uuid.UUID(projectID.Bytes).String(), SourceRef: "/goal/checklist", Revision: "sha256:" + strings.Repeat("a", 64), ObservedAt: now.Add(-time.Minute).Format(time.RFC3339), ExpiresAt: now.Add(10 * time.Minute).Format(time.RFC3339)}, BlockedBacklog: []continuousdispatch.WorkConservingBlockedIssue{{IssueID: "issue-1", GoalID: "goal-1", Reasons: []continuousdispatch.Reason{"source_gap"}, Receiver: "dispatch-coordinator", WakeCondition: "source repaired"}}, Mismatch: continuousdispatch.WorkConservingMismatch{OpenIssues: 1, BlockedBacklog: 1}, Total: 1, Limit: 50, Offset: 0}
+	if err := ValidateWorkConservingProjectionAt(p, WorkConservingProjectionRequest{WorkspaceID: workspaceID, ProjectID: projectID, Limit: 50}, now); err != nil {
+		t.Fatalf("blocked plan should validate: %v", err)
+	}
+	p.Authority.ExpiresAt = now.Add(-time.Second).Format(time.RFC3339)
+	if err := ValidateWorkConservingProjectionAt(p, WorkConservingProjectionRequest{WorkspaceID: workspaceID, ProjectID: projectID, Limit: 50}, now); err == nil {
+		t.Fatal("expired source must fail closed")
+	}
+	if got := now.Add(workConservingProjectionTTL); !got.After(now) {
+		t.Fatal("provider TTL must be positive")
+	}
+}

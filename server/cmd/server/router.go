@@ -854,6 +854,13 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		service.NewWriteLeaseService(pool),
 	)
 	h.ContinuousDispatchShadow = continuousDispatchShadow
+	// The Goal/CHECKLIST file is an explicit, read-only execution-status
+	// source. It is optional so an unmounted or malformed source remains the
+	// truthful source_gap projection; no local project status is promoted to
+	// company authority. The deploy overlay supplies the path when enabled.
+	if goalSourcePath := strings.TrimSpace(os.Getenv("HIVECREW_WORK_CONSERVING_GOAL_SOURCE")); goalSourcePath != "" {
+		h.WorkConservingProjection = service.NewFileWorkConservingProjectionProvider(continuousDispatchShadow, goalSourcePath)
+	}
 	continuousDispatchBackend, continuousDispatchErr := service.NewProductionContinuousDispatchBackend(queries, pool, h.TaskService)
 	if continuousDispatchErr != nil {
 		slog.Warn("continuous dispatch writer disabled", "error", continuousDispatchErr)
