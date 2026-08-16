@@ -29,10 +29,12 @@ func freshSessionRetryPrompt(prompt string) string {
 //
 // Reply mode = respond to the triggering comment, do not touch issue status.
 // Ownership mode = an assignment/status change started this run; own the
-// status arc. Applying the wrong one silently changes issue status.
+// status arc. Repair mode = complete a ReviewCell repair while preserving the
+// existing review-state arc. Applying the wrong one silently changes status.
 const (
 	turnModeReply     = "**Turn mode: Reply.** Follow the Reply-mode block in your runtime workflow file for this turn; the Ownership-mode status steps do not apply.\n\n"
 	turnModeOwnership = "**Turn mode: Ownership.** Follow the Ownership-mode block in your runtime workflow file for this turn; the Reply-mode rules do not apply.\n\n"
+	turnModeRepair    = "**Turn mode: Repair.** Follow the Repair-mode block in your runtime workflow file for this turn; never apply the Ownership-mode status steps.\n\n"
 )
 
 // perTurnContextBlocks renders the run-scoped context blocks that used to live
@@ -95,7 +97,11 @@ func buildPromptBody(task Task, provider string) string {
 	var b strings.Builder
 	b.WriteString("You are running as a local coding agent for a Multica workspace.\n\n")
 	fmt.Fprintf(&b, "Your assigned issue ID is: %s\n\n", task.IssueID)
-	b.WriteString(turnModeOwnership)
+	if task.TaskKind == "repair" {
+		b.WriteString(turnModeRepair)
+	} else {
+		b.WriteString(turnModeOwnership)
+	}
 	// Assignment handoff (MUL-3375): a free-text instruction the person who
 	// assigned/promoted this issue left for you. Frame it as a handoff, not a
 	// comment to reply to — there is no comment thread to answer here.

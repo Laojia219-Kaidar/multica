@@ -1162,6 +1162,12 @@ func TestTurnModeMarkerAlwaysPresent(t *testing.T) {
 			want: "**Turn mode: Ownership.**",
 			deny: "**Turn mode: Reply.**",
 		},
+		{
+			name: "repair-task",
+			task: Task{IssueID: "issue-1", TaskKind: "repair", HandoffNote: "repair only the named candidate"},
+			want: "**Turn mode: Repair.**",
+			deny: "**Turn mode: Ownership.**",
+		},
 	}
 
 	for _, tc := range cases {
@@ -1196,7 +1202,7 @@ func TestTurnModeMarkerAbsentOnIssuelessKinds(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			prompt := BuildPrompt(tc.task, "claude")
-			for _, banned := range []string{"**Turn mode: Reply.**", "**Turn mode: Ownership.**"} {
+			for _, banned := range []string{"**Turn mode: Reply.**", "**Turn mode: Ownership.**", "**Turn mode: Repair.**"} {
 				if strings.Contains(prompt, banned) {
 					t.Errorf("%s prompt must not carry %q\n---\n%s", tc.name, banned, prompt)
 				}
@@ -1215,9 +1221,14 @@ func TestBriefModeRouterMatchesPromptMarkers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("InjectRuntimeConfig: %v", err)
 	}
-	for _, want := range []string{"`Turn mode: Reply.`", "`Turn mode: Ownership.`"} {
+	for _, want := range []string{"`Turn mode: Reply.`", "`Turn mode: Ownership.`", "`Turn mode: Repair.`"} {
 		if !strings.Contains(brief, want) {
 			t.Errorf("brief mode router does not name %s\n---\n%s", want, brief)
+		}
+	}
+	for _, want := range []string{"Never run `multica issue status` in Repair mode", "exactly one Task-linked Agent Comment"} {
+		if !strings.Contains(brief, want) {
+			t.Errorf("brief repair mode missing %q\n---\n%s", want, brief)
 		}
 	}
 	// The retired wording keyed off the prompt's first line, which was never

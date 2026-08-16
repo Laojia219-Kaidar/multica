@@ -561,6 +561,44 @@ func TestReviewCell_AuthorityRequeueClosedIssueDoesNotMutate(t *testing.T) {
 	}
 }
 
+func TestReviewCell_AuthorityRepairCompletionFailsClosedOnStateDrift(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		update string
+	}{
+		{name: "delivery status drift", update: `UPDATE issue SET status = 'in_progress' WHERE id = $1`},
+		{name: "review state drift", update: `UPDATE issue SET review_state = 'queued' WHERE id = $1`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newReviewCellFixture(t, true)
+			ctx := context.Background()
+			cfg := cfgWithReviewerAndCoordinator(f)
+			cfg.AuthorityDispatchOnly = true
+			svc := newReviewCellServiceForFixture(f, cfg)
+			if err := svc.OnIssueEnteredReview(ctx, f.issueID); err != nil {
+				t.Fatalf("OnIssueEnteredReview: %v", err)
+			}
+			verdict, err := svc.WriteVerdict(ctx, f.issueID, ReviewActor{ActorType: "agent", ActorID: f.reviewer}, VerdictInput{
+				Verdict:            "revise",
+				Notes:              "repair required",
+				RepairRequirements: []string{"preserve the review state"},
+			})
+			if err != nil {
+				t.Fatalf("WriteVerdict(revise): %v", err)
+			}
+			if _, err := f.pool.Exec(ctx, `UPDATE agent_task_queue SET status = 'completed', completed_at = now() WHERE id = $1`, verdict.RepairTaskID); err != nil {
+				t.Fatalf("complete repair task: %v", err)
+			}
+			if _, err := f.pool.Exec(ctx, tc.update, f.issueID); err != nil {
+				t.Fatalf("create state drift: %v", err)
+			}
+			if err := svc.OnRepairTaskCompleted(ctx, verdict.RepairTaskID); !errors.Is(err, ErrAuthorityRepairStateDrift) {
+				t.Fatalf("OnRepairTaskCompleted error = %v, want ErrAuthorityRepairStateDrift", err)
+			}
+		})
+	}
+}
+
 // TestReviewCell_ReviseRequestedReentryDoesNotPreemptRepair guards the
 // production regression where an IssueUpdated re-entry fired while an issue was
 // in revise_requested (repair pending), and handleReentry overwrote

@@ -69,11 +69,14 @@ type Task struct {
 	RuntimeID   string `json:"runtime_id"`
 	IssueID     string `json:"issue_id"`
 	WorkspaceID string `json:"workspace_id"`
+	// TaskKind is the authoritative server queue kind (work | review | repair).
+	// Empty remains backward-compatible with servers that predate this field.
+	TaskKind string `json:"task_kind,omitempty"`
 	// WorkspaceContext mirrors workspace.context (the per-workspace system
 	// prompt set in Settings → General). Server populates this on every claim
 	// regardless of task kind so the daemon can inject `## Workspace Context`
 	// into the brief. Empty when the owner hasn't set one.
-	WorkspaceContext              string                 `json:"workspace_context,omitempty"`
+	WorkspaceContext string `json:"workspace_context,omitempty"`
 	// EmployeeMemories are this agent's PROMOTED memories; the daemon renders
 	// them into the runtime brief as `## Employee Memories` so past lessons
 	// directly shape future runs. Empty for agents with none.

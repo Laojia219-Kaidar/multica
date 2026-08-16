@@ -2704,6 +2704,41 @@ type UpdateIssueRequest struct {
 	HandoffNote string `json:"handoff_note,omitempty"`
 }
 
+// rejectRepairTaskStatusMutation is the server-side backstop for ReviewCell's
+// repair bridge. Repair tasks inherit the current issue's in_review /
+// revise_requested state and must not own the ordinary issue-status arc. The
+// prompt says so too, but task-scoped API authorization is the durable boundary:
+// a repair process cannot bypass it with a direct or batch status request.
+//
+// X-Actor-Source is stripped and set by auth middleware, so task_token is a
+// trusted signal. Missing or invalid task identity fails closed for status
+// writes; non-task actors and non-repair tasks retain their existing behavior.
+func (h *Handler) rejectRepairTaskStatusMutation(w http.ResponseWriter, r *http.Request) bool {
+	if r.Header.Get("X-Actor-Source") != "task_token" {
+		return false
+	}
+	taskID := strings.TrimSpace(r.Header.Get("X-Task-ID"))
+	if taskID == "" {
+		writeError(w, http.StatusForbidden, "task-scoped status update missing task identity")
+		return true
+	}
+	taskUUID, err := util.ParseUUID(taskID)
+	if err != nil {
+		writeError(w, http.StatusForbidden, "invalid task-scoped status update identity")
+		return true
+	}
+	task, err := h.Queries.GetAgentTask(r.Context(), taskUUID)
+	if err != nil {
+		writeError(w, http.StatusForbidden, "task-scoped status update identity not found")
+		return true
+	}
+	if task.TaskKind != service.TaskKindRepair {
+		return false
+	}
+	writeError(w, http.StatusConflict, "repair tasks must preserve issue status")
+	return true
+}
+
 func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	prevIssue, ok := h.loadIssueForUser(w, r, id)
@@ -2723,6 +2758,9 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	var req UpdateIssueRequest
 	if err := json.Unmarshal(bodyBytes, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.Status != nil && h.rejectRepairTaskStatusMutation(w, r) {
 		return
 	}
 
@@ -3259,6 +3297,9 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Updates.Status != nil {
 		if !validateIssueEnum(w, "status", *req.Updates.Status, validIssueStatuses) {
+			return
+		}
+		if h.rejectRepairTaskStatusMutation(w, r) {
 			return
 		}
 	}

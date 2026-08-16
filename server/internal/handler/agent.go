@@ -284,12 +284,16 @@ type AgentTaskResponse struct {
 	RuntimeID   string `json:"runtime_id"`
 	IssueID     string `json:"issue_id"`
 	WorkspaceID string `json:"workspace_id"`
+	// TaskKind is the authoritative queue kind (work | review | repair).
+	// The daemon uses it to select the per-turn workflow mode; it is distinct
+	// from Kind below, which is a UI-oriented source discriminator.
+	TaskKind string `json:"task_kind,omitempty"`
 	// WorkspaceContext is the workspace-level system prompt set in workspace
 	// settings (`workspace.context` DB column). Injected into the agent brief
 	// as `## Workspace Context` so every agent running in this workspace —
 	// regardless of issue / chat / autopilot / quick-create — sees the same
 	// shared context. Empty when the workspace owner hasn't set it.
-	WorkspaceContext   string                `json:"workspace_context,omitempty"`
+	WorkspaceContext string `json:"workspace_context,omitempty"`
 	// EmployeeMemories are this agent's PROMOTED memories (memory_candidate
 	// rows that cleared validation + independent-reviewer promotion). The
 	// daemon renders them into the runtime brief as `## Employee Memories`
@@ -631,6 +635,7 @@ func taskToResponse(t db.AgentTaskQueue, workspaceID string) AgentTaskResponse {
 		RuntimeID:           uuidToString(t.RuntimeID),
 		IssueID:             uuidToString(t.IssueID),
 		WorkspaceID:         workspaceID,
+		TaskKind:            t.TaskKind,
 		Status:              t.Status,
 		Priority:            t.Priority,
 		DispatchedAt:        timestampToPtr(t.DispatchedAt),

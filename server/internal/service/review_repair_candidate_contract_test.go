@@ -60,7 +60,12 @@ func TestParseRepairCandidateResultStrictContract(t *testing.T) {
 
 func TestRepairCandidateHandoffNoteRequiresExactMarker(t *testing.T) {
 	note := repairCandidateHandoffNote("01972f7e-7e8d-77ef-a13d-1b0ce3e9c013")
-	if !containsString(note, repairCandidateMarkerV1) || !containsString(note, "generation must be the base numeric generation plus one") {
+	if !containsString(note, repairCandidateMarkerV1) ||
+		!containsString(note, "generation must be the base numeric generation plus one") ||
+		!containsString(note, "Keep the Issue status unchanged") ||
+		!containsString(note, "source_task_id is the current repair Task ID") ||
+		!containsString(note, "final assistant response MUST repeat the identical marker") ||
+		!containsString(note, "comment-only, result-only, mismatched") {
 		t.Fatalf("handoff note = %q", note)
 	}
 }

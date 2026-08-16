@@ -89,6 +89,11 @@ var (
 	// ErrReviewIssueNotInReview: no review-cell state transition is valid when
 	// the delivery axis is no longer in_review.
 	ErrReviewIssueNotInReview = errors.New("review cell: issue is not in_review")
+	// ErrAuthorityRepairStateDrift makes the Authority repair bridge fail
+	// visibly when its delivery/review axes no longer match the strict
+	// in_review + revise_requested precondition. Non-Authority mode preserves
+	// its legacy no-op behavior for compatibility.
+	ErrAuthorityRepairStateDrift = errors.New("review cell: authority repair state drift")
 	// ErrReviewerUnconfigured: no reviewer agent is configured and no
 	// workspace-local reviewer candidate exists (fail-closed).
 	ErrReviewerUnconfigured = errors.New("review cell: reviewer agent is not configured")
@@ -930,9 +935,15 @@ func (s *ReviewCellService) OnRepairTaskCompleted(ctx context.Context, taskID pg
 		if issue.Status != "in_review" {
 			// The delivery axis is authoritative; only re-review when the
 			// issue is actually sitting in review.
+			if s.Config.AuthorityDispatchOnly {
+				return fmt.Errorf("%w: issue status=%s", ErrAuthorityRepairStateDrift, issue.Status)
+			}
 			return nil
 		}
 		if issue.ReviewState.Valid && issue.ReviewState.String != ReviewStateReviseRequested {
+			if s.Config.AuthorityDispatchOnly {
+				return fmt.Errorf("%w: review_state=%s", ErrAuthorityRepairStateDrift, issue.ReviewState.String)
+			}
 			return nil
 		}
 		if s.Config.AuthorityDispatchOnly {
