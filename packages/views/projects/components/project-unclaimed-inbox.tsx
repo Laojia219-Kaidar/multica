@@ -7,6 +7,7 @@ import { Skeleton } from "@multica/ui/components/ui/skeleton";
 import {
   DropdownMenu,
   DropdownMenuContent,
+  DropdownMenuGroup,
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuTrigger,
@@ -119,9 +120,11 @@ export function ProjectUnclaimedInbox({
                     }
                   />
                   <DropdownMenuContent align="end" className="w-64">
-                    <DropdownMenuLabel className="text-xs text-muted-foreground">
-                      关联到既有项目
-                    </DropdownMenuLabel>
+                    <DropdownMenuGroup>
+                      <DropdownMenuLabel className="text-xs text-muted-foreground">
+                        关联到既有项目
+                      </DropdownMenuLabel>
+                    </DropdownMenuGroup>
                     {projects.length === 0 ? (
                       <div className="px-2 py-3 text-center text-xs text-muted-foreground">
                         暂无项目可关联
