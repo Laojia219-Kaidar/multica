@@ -195,6 +195,9 @@ func (s *CompanyOpsDirectoryService) GetEmployee(
 	workspaceID pgtype.UUID,
 	employeeID string,
 ) (*EmployeeDetailResult, error) {
+	if s == nil || s.adapter == nil {
+		return nil, fmt.Errorf("%w: companyops directory adapter is not configured", companyopsapi.ErrAdapterSourceGap)
+	}
 	workspace := util.UUIDToString(workspaceID)
 	response, err := s.adapter.GetEmployee(ctx, workspace, employeeID)
 	if err != nil {
@@ -268,6 +271,9 @@ func (s *CompanyOpsDirectoryService) GetWorkforceBaseRuntimeJoin(
 	ctx context.Context,
 	workspaceID pgtype.UUID,
 ) (companyopsapi.PublicAuthorityRef, []WorkforceBaseRuntimeRow, error) {
+	if s == nil || s.adapter == nil {
+		return companyopsapi.PublicAuthorityRef{}, nil, fmt.Errorf("%w: companyops directory adapter is not configured", companyopsapi.ErrAdapterSourceGap)
+	}
 	response, err := s.adapter.GetEmployees(ctx, util.UUIDToString(workspaceID))
 	if err != nil {
 		return companyopsapi.PublicAuthorityRef{}, nil, err

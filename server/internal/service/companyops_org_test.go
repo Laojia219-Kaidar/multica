@@ -494,6 +494,17 @@ func TestDirectoryServiceMapsNotFoundWithoutRawIdentity(t *testing.T) {
 	}
 }
 
+func TestDirectoryServiceFailsClosedWhenAuthorityAdapterIsMissing(t *testing.T) {
+	service := NewCompanyOpsDirectoryService(nil, &stubAgentLookup{})
+
+	if _, err := service.GetEmployee(context.Background(), testWorkspaceUUID, "DE-MISSING"); !errors.Is(err, companyopsapi.ErrAdapterSourceGap) {
+		t.Fatalf("GetEmployee error = %v, want source gap", err)
+	}
+	if _, _, err := service.GetWorkforceBaseRuntimeJoin(context.Background(), testWorkspaceUUID); !errors.Is(err, companyopsapi.ErrAdapterSourceGap) {
+		t.Fatalf("GetWorkforceBaseRuntimeJoin error = %v, want source gap", err)
+	}
+}
+
 func cloneOrganization(value *companyopsapi.AdapterOrganizationResponse) *companyopsapi.AdapterOrganizationResponse {
 	copy := *value
 	copy.Departments = append([]companyopsapi.AdapterOrganizationDepartment(nil), value.Departments...)
