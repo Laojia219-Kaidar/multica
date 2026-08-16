@@ -503,10 +503,11 @@ func writeWorkflowIssue(b *strings.Builder, ctx TaskContextForEnv) {
 	b.WriteString("**Mode router — read this before acting.** This file is identical on every run, so it cannot tell you what triggered THIS turn. The user message for this turn names its mode on a line of its own:\n\n")
 	b.WriteString("- `Turn mode: Reply.` → **Reply mode**. That message also carries the triggering comment's id, the exact `--parent` value for your reply, and the comment's content when the platform supplied it.\n")
 	b.WriteString("- `Turn mode: Ownership.` → **Ownership mode** (an assignment or status change started this run).\n")
+	b.WriteString("- `Turn mode: Review.` → **Review mode** (a ReviewCell verdict task that must preserve the existing review status).\n")
 	b.WriteString("- `Turn mode: Repair.` → **Repair mode** (a ReviewCell repair task that must preserve the existing review status).\n\n")
-	b.WriteString("Steps 1–6 below are the same in all three modes. The mode blocks after them differ, and they differ on issue status in particular — **apply exactly one mode block, the one the user message named. Never combine modes.** If no mode line is present, treat the turn as Reply mode and do not change the issue status.\n\n")
+	b.WriteString("Steps 1–6 below are the same in all four modes. The mode blocks after them differ, and they differ on issue status in particular — **apply exactly one mode block, the one the user message named. Never combine modes.** If no mode line is present, treat the turn as Reply mode and do not change the issue status.\n\n")
 
-	b.WriteString("**Steps 1–6 — all three modes**\n\n")
+	b.WriteString("**Steps 1–6 — all four modes**\n\n")
 	fmt.Fprintf(b, "1. Run `multica issue get %s --output json` to understand the issue context\n", ctx.IssueID)
 	fmt.Fprintf(b, "2. Run `multica issue metadata list %s --output json` to see what prior agents pinned — best-effort, empty `{}` and CLI failures are normal. See the `## Issue Metadata` section above for what to look for.\n", ctx.IssueID)
 	fmt.Fprintf(b, "3. Catch up on the comment history — this is mandatory, not optional, but read it in two bounded steps instead of one bulk pull. First scan every thread cheaply: `multica issue comment list %s --roots-only --summary --output json`, which tells you what discussion exists without paying for its contents. Then expand only the threads that matter: `multica issue comment list %s --thread <thread-id> --tail 30 --output json`. Earlier comments often carry context the issue body lacks (e.g. which repo to work in, the prior agent's findings, the reason the issue was reassigned to you). Skipping this step is the most common cause of agents acting on stale or incomplete instructions — so always run the scan, even when the trigger looks self-contained. In Reply mode the per-turn user message names the thread to expand first; the scan is how you decide whether any OTHER thread is also relevant. If these two reads genuinely are not enough, the rest of the read surface and its pagination cursors are documented once in `## Available Commands` above.\n", ctx.IssueID, ctx.IssueID)
@@ -526,6 +527,12 @@ func writeWorkflowIssue(b *strings.Builder, ctx TaskContextForEnv) {
 		fmt.Fprintf(b, "- When done, run `multica issue status %s in_review` unless your Agent Identity forbids issue status changes; if it does, skip it.\n", ctx.IssueID)
 	}
 	fmt.Fprintf(b, "- If blocked, run `multica issue status %s blocked` unless your Agent Identity forbids issue status changes. Post a comment explaining the blocker unless your Agent Identity forbids issue comments.\n\n", ctx.IssueID)
+
+	b.WriteString("**Review mode only — preserve the ReviewCell state machine**\n\n")
+	b.WriteString("- Keep the Issue status exactly as you found it. Never run `multica issue status` in Review mode — not for in_progress, in_review, done, blocked, or any other status.\n")
+	b.WriteString("- Inspect only the candidate Task and evidence named by the review handoff. Post exactly one Task-linked Agent Comment carrying the required `HIVECREW_REVIEW_VERDICT_V1` marker, and make the final assistant response repeat that identical marker as its final non-empty line.\n")
+	b.WriteString("- The ReviewCell listener owns the canonical Issue transition after it verifies the completed Task and verdict. Never close, accept, requeue, or otherwise mutate the Issue status yourself.\n")
+	b.WriteString("- If the review cannot be completed under that contract, report the blocker in the single required Task-linked Comment and final response without changing Issue status or fabricating a verdict marker.\n\n")
 
 	b.WriteString("**Repair mode only — preserve the ReviewCell state machine**\n\n")
 	b.WriteString("- Keep the Issue status exactly as you found it. Never run `multica issue status` in Repair mode — not for in_progress, in_review, done, blocked, or any other status.\n")

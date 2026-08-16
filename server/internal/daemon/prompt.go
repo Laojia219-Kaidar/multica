@@ -29,13 +29,28 @@ func freshSessionRetryPrompt(prompt string) string {
 //
 // Reply mode = respond to the triggering comment, do not touch issue status.
 // Ownership mode = an assignment/status change started this run; own the
-// status arc. Repair mode = complete a ReviewCell repair while preserving the
-// existing review-state arc. Applying the wrong one silently changes status.
+// status arc. Review mode = produce a ReviewCell verdict while preserving the
+// existing review-state arc. Repair mode = complete a ReviewCell repair under
+// that same status boundary. Applying the wrong one silently changes status.
 const (
 	turnModeReply     = "**Turn mode: Reply.** Follow the Reply-mode block in your runtime workflow file for this turn; the Ownership-mode status steps do not apply.\n\n"
 	turnModeOwnership = "**Turn mode: Ownership.** Follow the Ownership-mode block in your runtime workflow file for this turn; the Reply-mode rules do not apply.\n\n"
+	turnModeReview    = "**Turn mode: Review.** Follow the Review-mode block in your runtime workflow file for this turn; never apply the Ownership-mode status steps.\n\n"
 	turnModeRepair    = "**Turn mode: Repair.** Follow the Repair-mode block in your runtime workflow file for this turn; never apply the Ownership-mode status steps.\n\n"
 )
+
+func turnModeForTask(task Task) string {
+	switch task.TaskKind {
+	case "review":
+		return turnModeReview
+	case "repair":
+		return turnModeRepair
+	}
+	if task.TriggerCommentID != "" {
+		return turnModeReply
+	}
+	return turnModeOwnership
+}
 
 // perTurnContextBlocks renders the run-scoped context blocks that used to live
 // in the runtime brief (CLAUDE.md / AGENTS.md).
@@ -97,11 +112,7 @@ func buildPromptBody(task Task, provider string) string {
 	var b strings.Builder
 	b.WriteString("You are running as a local coding agent for a Multica workspace.\n\n")
 	fmt.Fprintf(&b, "Your assigned issue ID is: %s\n\n", task.IssueID)
-	if task.TaskKind == "repair" {
-		b.WriteString(turnModeRepair)
-	} else {
-		b.WriteString(turnModeOwnership)
-	}
+	b.WriteString(turnModeForTask(task))
 	// Assignment handoff (MUL-3375): a free-text instruction the person who
 	// assigned/promoted this issue left for you. Frame it as a handoff, not a
 	// comment to reply to — there is no comment thread to answer here.
@@ -234,7 +245,7 @@ func buildCommentPrompt(task Task, provider string) string {
 	// TriggerCommentContent: an empty comment body (or an older server that
 	// doesn't send one) would otherwise leave the turn unlabelled, and the
 	// agent would fall through to Ownership mode and change the issue status.
-	b.WriteString(turnModeReply)
+	b.WriteString(turnModeForTask(task))
 	if task.TriggerCommentContent != "" {
 		authorLabel := "A user"
 		if task.TriggerAuthorType == "agent" {

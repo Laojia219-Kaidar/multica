@@ -2704,16 +2704,16 @@ type UpdateIssueRequest struct {
 	HandoffNote string `json:"handoff_note,omitempty"`
 }
 
-// rejectRepairTaskStatusMutation is the server-side backstop for ReviewCell's
-// repair bridge. Repair tasks inherit the current issue's in_review /
-// revise_requested state and must not own the ordinary issue-status arc. The
-// prompt says so too, but task-scoped API authorization is the durable boundary:
-// a repair process cannot bypass it with a direct or batch status request.
+// rejectReviewCellTaskStatusMutation is the server-side backstop for
+// ReviewCell's review and repair bridges. Both task kinds inherit the current
+// review-state arc and must not own the ordinary issue-status arc. The prompt
+// says so too, but task-scoped API authorization is the durable boundary: a
+// review or repair process cannot bypass it with a direct or batch request.
 //
 // X-Actor-Source is stripped and set by auth middleware, so task_token is a
 // trusted signal. Missing or invalid task identity fails closed for status
-// writes; non-task actors and non-repair tasks retain their existing behavior.
-func (h *Handler) rejectRepairTaskStatusMutation(w http.ResponseWriter, r *http.Request) bool {
+// writes; non-task actors and ordinary work tasks retain existing behavior.
+func (h *Handler) rejectReviewCellTaskStatusMutation(w http.ResponseWriter, r *http.Request) bool {
 	if r.Header.Get("X-Actor-Source") != "task_token" {
 		return false
 	}
@@ -2732,10 +2732,10 @@ func (h *Handler) rejectRepairTaskStatusMutation(w http.ResponseWriter, r *http.
 		writeError(w, http.StatusForbidden, "task-scoped status update identity not found")
 		return true
 	}
-	if task.TaskKind != service.TaskKindRepair {
+	if task.TaskKind != service.TaskKindReview && task.TaskKind != service.TaskKindRepair {
 		return false
 	}
-	writeError(w, http.StatusConflict, "repair tasks must preserve issue status")
+	writeError(w, http.StatusConflict, "review and repair tasks must preserve issue status")
 	return true
 }
 
@@ -2760,7 +2760,7 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if req.Status != nil && h.rejectRepairTaskStatusMutation(w, r) {
+	if req.Status != nil && h.rejectReviewCellTaskStatusMutation(w, r) {
 		return
 	}
 
@@ -3299,7 +3299,7 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 		if !validateIssueEnum(w, "status", *req.Updates.Status, validIssueStatuses) {
 			return
 		}
-		if h.rejectRepairTaskStatusMutation(w, r) {
+		if h.rejectReviewCellTaskStatusMutation(w, r) {
 			return
 		}
 	}
