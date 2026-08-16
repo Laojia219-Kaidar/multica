@@ -68,6 +68,9 @@ type EmployeeDetailResult struct {
 }
 
 func (s *CompanyOpsDirectoryService) GetOrganization(ctx context.Context, workspaceID pgtype.UUID) (*OrganizationResult, error) {
+	if s == nil || s.adapter == nil {
+		return nil, fmt.Errorf("%w: companyops directory adapter is not configured", companyopsapi.ErrAdapterSourceGap)
+	}
 	workspace := util.UUIDToString(workspaceID)
 	organization, err := s.adapter.GetOrganization(ctx, workspace)
 	if err != nil {
@@ -139,6 +142,12 @@ func (s *CompanyOpsDirectoryService) GetEmployees(
 	limit int,
 	offset int,
 ) (*EmployeesResult, error) {
+	if s == nil || s.adapter == nil {
+		// The authority adapter is optional at composition time; a runtime
+		// without it must fail closed as a source gap instead of panicking
+		// inside the shadow dispatch path.
+		return nil, fmt.Errorf("%w: companyops directory adapter is not configured", companyopsapi.ErrAdapterSourceGap)
+	}
 	response, err := s.adapter.GetEmployees(ctx, util.UUIDToString(workspaceID))
 	if err != nil {
 		return nil, err
