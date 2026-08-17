@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/multica-ai/multica/server/internal/cli"
 	"github.com/spf13/cobra"
 )
@@ -342,6 +344,19 @@ func runRepoCheckout(cmd *cobra.Command, args []string) error {
 	workspaceID := os.Getenv("MULTICA_WORKSPACE_ID")
 	agentName := os.Getenv("MULTICA_AGENT_NAME")
 	taskID := os.Getenv("MULTICA_TASK_ID")
+	runtimeID := os.Getenv("MULTICA_RUNTIME_ID")
+	capabilityFile := os.Getenv("MULTICA_MUTATION_CAPABILITY_FILE")
+	if capabilityFile == "" {
+		return fmt.Errorf("MULTICA_MUTATION_CAPABILITY_FILE not set")
+	}
+	capabilityBytes, err := os.ReadFile(capabilityFile)
+	if err != nil {
+		return fmt.Errorf("read mutation capability: %w", err)
+	}
+	capability := strings.TrimSpace(string(capabilityBytes))
+	if capability == "" {
+		return fmt.Errorf("mutation capability file is empty")
+	}
 
 	// Use current working directory as the checkout target.
 	workDir, err := os.Getwd()
@@ -356,6 +371,7 @@ func runRepoCheckout(cmd *cobra.Command, args []string) error {
 		"ref":           repoCheckoutRef,
 		"agent_name":    agentName,
 		"task_id":       taskID,
+		"runtime_id":    runtimeID,
 		"checkout_mode": strings.TrimSpace(os.Getenv("MULTICA_REPO_CHECKOUT_MODE")),
 	}
 
@@ -365,11 +381,14 @@ func runRepoCheckout(cmd *cobra.Command, args []string) error {
 	}
 
 	client := &http.Client{Timeout: 5 * time.Minute}
-	resp, err := client.Post(
-		fmt.Sprintf("http://127.0.0.1:%s/repo/checkout", daemonPort),
-		"application/json",
-		bytes.NewReader(data),
-	)
+	req, err := http.NewRequest(http.MethodPost, fmt.Sprintf("http://127.0.0.1:%s/repo/checkout", daemonPort), bytes.NewReader(data))
+	if err != nil {
+		return fmt.Errorf("build checkout request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Multica-Mutation-Capability", capability)
+	req.Header.Set("X-Multica-Mutation-Request-ID", uuid.NewString())
+	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("connect to daemon: %w", err)
 	}

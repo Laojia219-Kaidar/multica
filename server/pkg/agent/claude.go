@@ -829,7 +829,27 @@ func resolveSessionID(requestedResume, emitted string, failed bool, texts ...str
 }
 
 func buildEnv(extra map[string]string) []string {
-	return mergeEnv(os.Environ(), extra)
+	mediated := extra["MULTICA_MEDIATED_VCS_POLICY"] == "1"
+	env := mergeEnv(os.Environ(), extra)
+	if !mediated {
+		return env
+	}
+	filtered := env[:0]
+	for _, entry := range env {
+		key := entry
+		if i := strings.IndexByte(entry, '='); i >= 0 {
+			key = entry[:i]
+		}
+		upper := strings.ToUpper(key)
+		credentialNamed := upper == "GIT_TOKEN" || upper == "GIT_PAT" || upper == "GIT_PASSWORD" || upper == "GIT_USERNAME" || upper == "GIT_HTTP_EXTRAHEADER" || upper == "GIT_CONFIG_PARAMETERS" || upper == "GIT_PROXY_COMMAND" || upper == "NETRC" || upper == "SSH_AGENT_PID" || upper == "GIT_CREDENTIAL_HELPER" || upper == "SSH_PRIVATE_KEY" || upper == "SSH_KEY" || upper == "SSH_PASSWORD" || upper == "GIT_SSH" || upper == "GIT_DIR" || upper == "GIT_WORK_TREE" || upper == "GIT_INDEX_FILE" || upper == "GIT_COMMON_DIR" || upper == "GIT_OBJECT_DIRECTORY"
+		credentialPattern := strings.HasPrefix(upper, "GIT_") && (strings.Contains(upper, "TOKEN") || strings.Contains(upper, "PAT") || strings.Contains(upper, "PASSWORD") || strings.Contains(upper, "USERNAME") || strings.Contains(upper, "AUTH"))
+		alternateObjectDir := upper == "GIT_ALTERNATE_OBJECT_DIRECTORIES" || upper == "GIT_ALTERNATE_OBJECT_DIRECTORIES_REL"
+		if upper == "MULTICA_MEDIATED_VCS_POLICY" || upper == "GIT_ASKPASS" || upper == "SSH_ASKPASS" || upper == "SSH_AUTH_SOCK" || upper == "GIT_SSH_COMMAND" || upper == "GIT_CONFIG_GLOBAL" || upper == "GIT_CONFIG_SYSTEM" || upper == "GIT_CONFIG_COUNT" || credentialNamed || credentialPattern || alternateObjectDir || strings.Contains(upper, "CREDENTIAL") || strings.HasPrefix(upper, "GIT_CONFIG_KEY_") || strings.HasPrefix(upper, "GIT_CONFIG_VALUE_") || strings.HasPrefix(upper, "GITHUB_") || strings.HasPrefix(upper, "GITLAB_") || strings.HasPrefix(upper, "GH_") || strings.HasPrefix(upper, "GCM_") {
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+	return append(filtered, "GIT_CONFIG_NOSYSTEM=1", "GIT_TERMINAL_PROMPT=0", "GCM_INTERACTIVE=never")
 }
 
 func claudeRootSudoPreflight(args, env []string) error {

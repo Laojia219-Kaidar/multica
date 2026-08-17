@@ -153,12 +153,19 @@ func TestWriterLeaseEnforceMissingBundleFailsClosedWithoutCallback(t *testing.T)
 	}
 }
 
-func TestWriterLeaseOffAndShadowDoNotCallLeaseLifecycle(t *testing.T) {
+func TestWriterLeaseOffAndShadowRegisterAndReleaseLifecycle(t *testing.T) {
 	for _, mode := range []string{string(service.WriterLeaseModeOff), string(service.WriterLeaseModeShadow)} {
 		d := &Daemon{}
 		release, abort := d.acquireWriterLeaseForTask(context.Background(), Task{ID: "task", WriterLeaseMode: mode, TaskKind: string(service.WriterLeaseTaskKindWork), WriterLeaseTargets: []WriterLeaseTarget{{ResourceID: "r", MutexKey: "k"}}}, func() {}, slog.Default())
-		if release != nil || abort {
+		if release == nil || abort {
 			t.Fatalf("mode=%s release=%v abort=%v", mode, release != nil, abort)
+		}
+		if got := d.writerLeaseModes["task"]; got != mode {
+			t.Fatalf("mode=%s registered=%q", mode, got)
+		}
+		release()
+		if _, ok := d.writerLeaseModes["task"]; ok {
+			t.Fatalf("mode=%s registration retained after release", mode)
 		}
 	}
 }

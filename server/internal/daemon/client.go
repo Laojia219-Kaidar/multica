@@ -198,12 +198,16 @@ func (c *Client) setIdentityHeaders(req *http.Request) {
 // coalesced-comments) as the HTTP path. rpc-v1 advertises WS request/response
 // support (MUL-4257).
 func daemonClientCapabilities() string {
-	return strings.Join([]string{
+	capabilities := []string{
 		protocol.DaemonCapabilitySkillBundlesV1,
 		protocol.DaemonCapabilityCoalescedCommentsV1,
 		protocol.DaemonCapabilityRPCV1,
 		protocol.DaemonCapabilityWriterLeaseV1,
-	}, ",")
+	}
+	if runtime.GOOS == "linux" {
+		capabilities = append(capabilities, protocol.DaemonCapabilityMediatedOverlayV1)
+	}
+	return strings.Join(capabilities, ",")
 }
 
 // SetToken sets the auth token for authenticated requests.

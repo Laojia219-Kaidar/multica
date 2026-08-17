@@ -4470,6 +4470,16 @@ func TestSanitizeAgentEnv(t *testing.T) {
 	}
 }
 
+func TestStripMediatedVCSCredentialEnv(t *testing.T) {
+	env := map[string]string{"GIT_ASKPASS": "helper", "SSH_AUTH_SOCK": "/tmp/agent.sock", "GIT_CONFIG_KEY_0": "credential.helper", "GIT_CONFIG_VALUE_0": "store", "GIT_SSH_COMMAND": "ssh -i key", "SSH_PRIVATE_KEY": "secret", "GIT_DIR": "/tmp/git", "GIT_ALTERNATE_OBJECT_DIRECTORIES": "/tmp/objects", "SAFE": "ok"}
+	stripMediatedVCSCredentialEnv(env)
+	for key := range env {
+		if key != "SAFE" {
+			t.Fatalf("credential env %q survived mediated filtering", key)
+		}
+	}
+}
+
 // TestHermesLaunchArgsAndEnvByScenario covers the profile chain end to end at
 // the decision level: the final launch args + the final HERMES_HOME the child
 // sees, for a skill-less vs. an overlay-active task that both set a profile.

@@ -24,6 +24,7 @@ import (
 
 	"github.com/multica-ai/multica/server/internal/cli"
 	"github.com/multica-ai/multica/server/internal/daemon/execenv"
+	"github.com/multica-ai/multica/server/internal/daemon/mutationbroker"
 	"github.com/multica-ai/multica/server/internal/daemon/repocache"
 	"github.com/multica-ai/multica/server/internal/selfexec"
 	"github.com/multica-ai/multica/server/pkg/agent"
@@ -329,6 +330,7 @@ type Daemon struct {
 	// Tokens and generations never leave the session object.
 	writerLeaseModes    map[string]string
 	writerLeaseSessions map[string]*writerLeaseCheckoutSession
+	mutationBroker      *mutationbroker.Registry
 
 	// batchClaimUnsupported is set once a batch claim gets a 404 from the
 	// server (no /api/daemon/tasks/claim route — an un-upgraded server), so
@@ -468,6 +470,7 @@ func New(cfg Config, logger *slog.Logger) *Daemon {
 		wsRPC:                     newWSRPCClient(wsRPCResponseGrace),
 		writerLeaseModes:          make(map[string]string),
 		writerLeaseSessions:       make(map[string]*writerLeaseCheckoutSession),
+		mutationBroker:            mutationbroker.New(),
 	}
 	d.activeEnvRootsCond = sync.NewCond(&d.activeEnvRootsMu)
 	d.activeCodexStoresCond = sync.NewCond(&d.activeCodexStoresMu)
@@ -2074,15 +2077,30 @@ func (d *Daemon) waitBackgroundSyncs() {
 }
 
 func (d *Daemon) syncWorkspaceRepos(workspaceID string, repos []RepoData) {
+	_ = d.syncWorkspaceReposContext(context.Background(), workspaceID, repos)
+}
+
+func (d *Daemon) syncWorkspaceReposContext(ctx context.Context, workspaceID string, repos []RepoData) error {
 	if d.repoCache == nil {
-		return
+		return nil
 	}
-	if err := d.repoCache.Sync(workspaceID, repoDataToInfo(repos)); err != nil {
+	var err error
+	if contextual, ok := d.repoCache.(interface {
+		SyncContext(context.Context, string, []repocache.RepoInfo) error
+	}); ok {
+		err = contextual.SyncContext(ctx, workspaceID, repoDataToInfo(repos))
+	} else if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
+	} else {
+		err = d.repoCache.Sync(workspaceID, repoDataToInfo(repos))
+	}
+	if err != nil {
 		d.setWorkspaceRepoSyncError(workspaceID, err.Error())
 		d.logger.Warn("repo cache sync failed", "workspace_id", workspaceID, "error", err)
-		return
+		return err
 	}
 	d.setWorkspaceRepoSyncError(workspaceID, "")
+	return nil
 }
 
 func (d *Daemon) refreshWorkspaceRepos(ctx context.Context, workspaceID string) (*WorkspaceReposResponse, error) {
@@ -2313,7 +2331,9 @@ func (d *Daemon) ensureRepoReady(ctx context.Context, workspaceID, repoURL strin
 		return nil
 	}
 
-	d.syncWorkspaceRepos(workspaceID, resp.Repos)
+	if err := d.syncWorkspaceReposContext(ctx, workspaceID, resp.Repos); err != nil && ctx.Err() != nil {
+		return ctx.Err()
+	}
 
 	if d.repoCache.Lookup(workspaceID, repoURL) != "" {
 		return nil
@@ -4700,6 +4720,11 @@ func employeeMemoriesForEnv(in []EmployeeMemoryData) []execenv.EmployeeMemoryFor
 }
 
 func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot int, taskLog *slog.Logger) (taskResult TaskResult, returnErr error) {
+	if d.mutationBroker == nil {
+		// Keep hand-built daemon fixtures and older embedding callers safe while
+		// preserving the same fail-closed broker path in production.
+		d.mutationBroker = mutationbroker.New()
+	}
 	// Refuse to spawn an agent without a workspace. An empty workspace_id
 	// here would make MULTICA_WORKSPACE_ID empty in the agent env, and the
 	// CLI would otherwise silently fall back to the user-global config — a
@@ -4707,6 +4732,10 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// multiple workspaces share a host.
 	if task.WorkspaceID == "" {
 		return TaskResult{}, fmt.Errorf("refusing to spawn agent: task has no workspace_id (task_id=%s)", task.ID)
+	}
+	enforceGitTarget := task.WriterLeaseMode == "enforce" && (len(task.WriterLeaseTargets) > 0 || len(task.Repos) > 0)
+	if enforceGitTarget && repoCheckoutModeFor(provider, runtime.GOOS) == "" {
+		return TaskResult{}, fmt.Errorf("writer lease enforce requires mediated Linux Codex checkout")
 	}
 
 	prepareTimeout := d.effectiveTaskPrepareTimeout()
@@ -4867,6 +4896,9 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// LocalWorkDir into execenv. handleTask already validated + locked the
 	// path for worker tasks; leader tasks intentionally skip the assignment.
 	localAssignment, _ := localDirectoryAssignmentForTask(task, d.cfg.DaemonID)
+	if enforceGitTarget && localAssignment != nil {
+		return TaskResult{}, fmt.Errorf("writer lease enforce does not support local_directory checkout")
+	}
 	// Reuse intentionally skipped for local_directory tasks: the prior
 	// WorkDir is the user's own path (always present) but the reuse path
 	// loses the envRoot association the GC loop needs, and re-running
@@ -4976,6 +5008,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			HermesSourceMustExist: hermesSourceMustExist,
 			HermesEnv:             hermesEnv,
 			CodexCustomArgs:       codexSandboxArgs,
+			MediatedEnforce:       enforceGitTarget && provider == "codex" && runtime.GOOS == "linux",
 			Task:                  taskCtx,
 		})
 		if err != nil {
@@ -5000,6 +5033,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			HermesSourceMustExist: hermesSourceMustExist,
 			HermesEnv:             hermesEnv,
 			CodexCustomArgs:       codexSandboxArgs,
+			MediatedEnforce:       enforceGitTarget && provider == "codex" && runtime.GOOS == "linux",
 			Task:                  taskCtx,
 		}
 		if localAssignment != nil {
@@ -5025,6 +5059,31 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			taskLog.Warn("task temp dir cleanup failed", "path", taskTempDir, "error", cerr)
 		}
 	}()
+	var mutationCapabilityFile string
+	brokerTargets := make([]mutationbroker.Target, 0, len(task.WriterLeaseTargets)+len(task.Repos))
+	if len(task.WriterLeaseTargets) > 0 {
+		for _, target := range task.WriterLeaseTargets {
+			brokerTargets = append(brokerTargets, mutationbroker.Target{ResourceID: target.ResourceID, URL: target.URL, Ref: target.Ref})
+		}
+	} else {
+		for _, repo := range task.Repos {
+			brokerTargets = append(brokerTargets, mutationbroker.Target{URL: repo.URL, Ref: repo.Ref})
+		}
+	}
+	capDir := filepath.Join(taskTempDir, ".multica")
+	if len(brokerTargets) > 0 {
+		d.mutationBroker.Sweep(time.Now())
+		checkoutMode := repoCheckoutModeFor(provider, runtime.GOOS)
+		mutationCapabilityFile, _, err = d.mutationBroker.Issue(mutationbroker.IssueRequest{TaskID: task.ID, RuntimeID: task.RuntimeID, WorkspaceID: task.WorkspaceID, WorkDir: env.WorkDir, AgentName: agentName, OwnedRoot: taskTempDir, Operation: mutationbroker.OperationRepoCheckout, CheckoutMode: checkoutMode, Targets: brokerTargets}, capDir)
+		if err != nil {
+			return TaskResult{}, fmt.Errorf("issue task mutation capability: %w", err)
+		}
+		defer func() {
+			if err := d.mutationBroker.Revoke(mutationCapabilityFile); err != nil {
+				taskLog.Warn("mutation capability cleanup failed", "error", err)
+			}
+		}()
+	}
 
 	// Issue #3999 race A: now that env.WorkDir is on disk, transition the
 	// server-side state machine dispatched (or waiting_local_directory) →
@@ -5108,17 +5167,19 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		return TaskResult{}, err
 	}
 	agentEnv := map[string]string{
-		"MULTICA_TOKEN":        agentToken,
-		"MULTICA_SERVER_URL":   d.cfg.ServerBaseURL,
-		"MULTICA_DAEMON_PORT":  fmt.Sprintf("%d", d.cfg.HealthPort),
-		"MULTICA_WORKSPACE_ID": task.WorkspaceID,
-		"MULTICA_AGENT_NAME":   agentName,
-		"MULTICA_AGENT_ID":     task.AgentID,
-		"MULTICA_TASK_ID":      task.ID,
-		"MULTICA_TASK_SLOT":    strconv.Itoa(slot),
-		"TMPDIR":               taskTempDir,
-		"TMP":                  taskTempDir,
-		"TEMP":                 taskTempDir,
+		"MULTICA_TOKEN":                    agentToken,
+		"MULTICA_SERVER_URL":               d.cfg.ServerBaseURL,
+		"MULTICA_DAEMON_PORT":              fmt.Sprintf("%d", d.cfg.HealthPort),
+		"MULTICA_WORKSPACE_ID":             task.WorkspaceID,
+		"MULTICA_AGENT_NAME":               agentName,
+		"MULTICA_AGENT_ID":                 task.AgentID,
+		"MULTICA_TASK_ID":                  task.ID,
+		"MULTICA_RUNTIME_ID":               task.RuntimeID,
+		"MULTICA_MUTATION_CAPABILITY_FILE": mutationCapabilityFile,
+		"MULTICA_TASK_SLOT":                strconv.Itoa(slot),
+		"TMPDIR":                           taskTempDir,
+		"TMP":                              taskTempDir,
+		"TEMP":                             taskTempDir,
 	}
 	if checkoutMode := repoCheckoutModeFor(provider, runtime.GOOS); checkoutMode != "" {
 		agentEnv[repoCheckoutModeEnv] = checkoutMode
@@ -5204,6 +5265,10 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		agentCustomEnv = task.Agent.CustomEnv
 	}
 	layerCustomEnvAndHermesHome(agentEnv, agentCustomEnv, env.HermesHome, d.logger)
+	if enforceGitTarget && provider == "codex" && runtime.GOOS == "linux" {
+		stripMediatedVCSCredentialEnv(agentEnv)
+		agentEnv["MULTICA_MEDIATED_VCS_POLICY"] = "1"
+	}
 	if err := configureCodexTaskShellEnvironment(provider, env.CodexHome, os.Environ(), agentEnv, agentCustomEnv, d.logger); err != nil {
 		return TaskResult{}, err
 	}
@@ -5658,6 +5723,34 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			FailureReason: failureReason,
 		}, nil
 	}
+}
+
+func stripMediatedVCSCredentialEnv(env map[string]string) {
+	for key := range env {
+		if mediatedVCSCredentialKey(key) {
+			delete(env, key)
+		}
+	}
+}
+
+func stripMediatedVCSCredentialEnvList(env []string) []string {
+	filtered := make([]string, 0, len(env))
+	for _, entry := range env {
+		key, _, ok := strings.Cut(entry, "=")
+		if ok && mediatedVCSCredentialKey(key) {
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+	return filtered
+}
+
+func mediatedVCSCredentialKey(key string) bool {
+	upper := strings.ToUpper(key)
+	credentialNamed := upper == "GIT_TOKEN" || upper == "GIT_PAT" || upper == "GIT_PASSWORD" || upper == "GIT_USERNAME" || upper == "GIT_HTTP_EXTRAHEADER" || upper == "GIT_CONFIG_PARAMETERS" || upper == "GIT_PROXY_COMMAND" || upper == "NETRC" || upper == "SSH_AGENT_PID" || upper == "GIT_CREDENTIAL_HELPER" || upper == "SSH_PRIVATE_KEY" || upper == "SSH_KEY" || upper == "SSH_PASSWORD" || upper == "GIT_SSH" || upper == "GIT_DIR" || upper == "GIT_WORK_TREE" || upper == "GIT_INDEX_FILE" || upper == "GIT_COMMON_DIR" || upper == "GIT_OBJECT_DIRECTORY"
+	credentialPattern := strings.HasPrefix(upper, "GIT_") && (strings.Contains(upper, "TOKEN") || strings.Contains(upper, "PAT") || strings.Contains(upper, "PASSWORD") || strings.Contains(upper, "USERNAME") || strings.Contains(upper, "AUTH"))
+	alternateObjectDir := upper == "GIT_ALTERNATE_OBJECT_DIRECTORIES" || upper == "GIT_ALTERNATE_OBJECT_DIRECTORIES_REL"
+	return upper == "GIT_ASKPASS" || upper == "SSH_ASKPASS" || upper == "SSH_AUTH_SOCK" || upper == "GIT_SSH_COMMAND" || upper == "GIT_CONFIG_GLOBAL" || upper == "GIT_CONFIG_SYSTEM" || upper == "GIT_CONFIG_COUNT" || credentialNamed || credentialPattern || alternateObjectDir || strings.HasPrefix(upper, "GIT_CONFIG_KEY_") || strings.HasPrefix(upper, "GIT_CONFIG_VALUE_") || strings.HasPrefix(upper, "GITHUB_") || strings.HasPrefix(upper, "GITLAB_") || strings.HasPrefix(upper, "GH_") || strings.HasPrefix(upper, "GCM_")
 }
 
 // shouldRetryWithFreshSession reports whether a failed run that requested
@@ -6655,6 +6748,9 @@ func configureCodexTaskShellEnvironment(provider, codexHome string, inherited []
 		return errors.New("configure Codex shell environment: task CODEX_HOME is missing")
 	}
 	authorizedExplicit := codexShellAuthorizedCustomEnvNames(agentCustomEnv)
+	if agentEnv["MULTICA_MEDIATED_VCS_POLICY"] == "1" {
+		inherited = stripMediatedVCSCredentialEnvList(inherited)
+	}
 	includeOnly := execenv.CodexShellEnvAllowlist(inherited, agentEnv, authorizedExplicit)
 	configPath := filepath.Join(codexHome, "config.toml")
 	if err := execenv.EnsureCodexShellEnvPolicyConfig(configPath, includeOnly, logger); err != nil {

@@ -181,6 +181,9 @@ func (d *Daemon) withWriterLeaseCheckout(ctx context.Context, taskID, repoURL, r
 	mode := d.writerLeaseModes[taskID]
 	bundle := d.writerLeaseSessions[taskID]
 	d.mu.Unlock()
+	if mode == "" && bundle == nil {
+		return service.ErrWriterLeaseStale
+	}
 	if mode != string(service.WriterLeaseModeEnforce) {
 		return fn(ctx)
 	}
@@ -228,15 +231,27 @@ func (d *Daemon) withWriterLeaseExecution(ctx context.Context, taskID string, fn
 }
 
 func (d *Daemon) acquireWriterLeaseForTask(ctx context.Context, task Task, cancel context.CancelFunc, taskLog *slog.Logger) (func(), bool) {
-	if task.WriterLeaseMode != string(service.WriterLeaseModeEnforce) {
-		return nil, false
+	mode := service.WriterLeaseMode(strings.TrimSpace(task.WriterLeaseMode))
+	if mode == "" && len(task.WriterLeaseTargets) == 0 && len(task.Repos) == 0 {
+		mode = service.WriterLeaseModeOff
+	}
+	if mode != service.WriterLeaseModeOff && mode != service.WriterLeaseModeShadow && mode != service.WriterLeaseModeEnforce {
+		taskLog.Error("writer lease: unknown mode", "mode", task.WriterLeaseMode)
+		return nil, true
 	}
 	d.mu.Lock()
 	if d.writerLeaseModes == nil {
 		d.writerLeaseModes = make(map[string]string)
 	}
-	d.writerLeaseModes[task.ID] = task.WriterLeaseMode
+	d.writerLeaseModes[task.ID] = string(mode)
 	d.mu.Unlock()
+	if mode != service.WriterLeaseModeEnforce {
+		// Off/shadow still need a task-scoped lifecycle registration so
+		// checkout cannot silently fall back for an unknown task. Release the
+		// registration when the task exits, just as enforce releases its
+		// lease/session state below.
+		return func() { d.clearWriterLeaseState(task.ID) }, false
+	}
 	cleanupState := true
 	defer func() {
 		if cleanupState {
@@ -260,7 +275,6 @@ func (d *Daemon) acquireWriterLeaseForTask(ctx context.Context, task Task, cance
 			_ = d.reportTerminalTask(ctx, terminalTaskReport{kind: terminalTaskReportFail, taskID: task.ID, errorMessage: "writer lease targets unavailable", failureReason: "writer_lease_unavailable"})
 			return nil, true
 		}
-		d.clearWriterLeaseState(task.ID)
 		return nil, false
 	}
 	store := NewRemoteWriterLeaseStore(d.client, task.RuntimeID, task.ID, task.WriterLeaseTargets)

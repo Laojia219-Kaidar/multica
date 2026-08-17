@@ -2551,8 +2551,14 @@ func (h *Handler) populateWriterLeaseClaim(r *http.Request, task *db.AgentTaskQu
 		resp.WriterLeaseMode = string(persisted.Mode)
 		resp.WriterLeaseTargets = persisted.Targets
 		if persisted.Mode == service.WriterLeaseModeEnforce && len(persisted.Targets) > 0 {
+			if !enforceMediatedRuntimeSupported(r, runtime) {
+				return nil, &claimBuildFailure{outcome: "error_writer_lease_capability", status: http.StatusConflict, message: "enforce requires mediated Linux Codex runtime"}
+			}
 			if !requestHasClientCapability(r, protocol.DaemonCapabilityWriterLeaseV1) {
 				return nil, &claimBuildFailure{outcome: "error_writer_lease_capability", status: http.StatusConflict, message: "daemon writer lease capability required"}
+			}
+			if !requestHasClientCapability(r, protocol.DaemonCapabilityMediatedOverlayV1) {
+				return nil, &claimBuildFailure{outcome: "error_writer_lease_capability", status: http.StatusConflict, message: "daemon mediated checkout capability required"}
 			}
 			if daemonIDForClaim(r) == "" {
 				return nil, &claimBuildFailure{outcome: "error_writer_lease_identity", status: http.StatusForbidden, message: "daemon identity required for writer lease"}
@@ -2610,6 +2616,12 @@ func (h *Handler) populateWriterLeaseClaim(r *http.Request, task *db.AgentTaskQu
 	if !requestHasClientCapability(r, protocol.DaemonCapabilityWriterLeaseV1) {
 		return nil, &claimBuildFailure{outcome: "error_writer_lease_capability", status: http.StatusConflict, message: "daemon writer lease capability required"}
 	}
+	if mode == service.WriterLeaseModeEnforce && len(resources) > 0 && !enforceMediatedRuntimeSupported(r, runtime) {
+		return nil, &claimBuildFailure{outcome: "error_writer_lease_capability", status: http.StatusConflict, message: "enforce requires mediated Linux Codex runtime"}
+	}
+	if !requestHasClientCapability(r, protocol.DaemonCapabilityMediatedOverlayV1) {
+		return nil, &claimBuildFailure{outcome: "error_writer_lease_capability", status: http.StatusConflict, message: "daemon mediated checkout capability required"}
+	}
 	// DaemonID is authenticated by DaemonAuth. A missing daemon id is a
 	// protocol failure; never accept a caller-supplied substitute.
 	daemonID := daemonIDForClaim(r)
@@ -2626,6 +2638,10 @@ func (h *Handler) populateWriterLeaseClaim(r *http.Request, task *db.AgentTaskQu
 
 func daemonIDForClaim(r *http.Request) string {
 	return strings.TrimSpace(middleware.DaemonIDFromContext(r.Context()))
+}
+
+func enforceMediatedRuntimeSupported(r *http.Request, runtime db.AgentRuntime) bool {
+	return strings.EqualFold(strings.TrimSpace(runtime.Provider), "codex") && strings.EqualFold(strings.TrimSpace(r.Header.Get("X-Client-OS")), "linux") && requestHasClientCapability(r, protocol.DaemonCapabilityMediatedOverlayV1)
 }
 
 // employeePromotedMemories resolves the promoted memory projections for one

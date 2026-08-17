@@ -13,6 +13,10 @@ const (
 	// DaemonCapabilityWriterLeaseV1 advertises support for migration-262
 	// writer-lease lifecycle calls. Enforce claims fail closed when absent.
 	DaemonCapabilityWriterLeaseV1 = "writer-lease-v1"
+	// DaemonCapabilityMediatedOverlayV1 gates task-scoped repository mutation
+	// through the daemon capability broker. Enforce claims fail closed when an
+	// older daemon has not negotiated this capability.
+	DaemonCapabilityMediatedOverlayV1 = "mediated-overlay-v1"
 
 	// AppCapabilityChatDraftRestoreV1 is advertised (X-Client-Capabilities) by
 	// app clients that understand the durable draft-restore recovery path:

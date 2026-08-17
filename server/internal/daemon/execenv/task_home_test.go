@@ -191,6 +191,59 @@ func TestPrepareTaskHomeSeedsCredentials(t *testing.T) {
 	}
 }
 
+func TestPrepareTaskHomeMediatedEnforceOmitsVCSCredentials(t *testing.T) {
+	fakeHome := t.TempDir()
+	writeFile(t, filepath.Join(fakeHome, ".gitconfig"), "[credential]\n\thelper = store\n")
+	writeFile(t, filepath.Join(fakeHome, ".netrc"), "machine github.com login x password y\n")
+	writeFile(t, filepath.Join(fakeHome, ".git-credentials"), "https://x:y@github.com\n")
+	writeFile(t, filepath.Join(fakeHome, ".ssh", "id_ed25519"), "KEY\n")
+	writeFile(t, filepath.Join(fakeHome, ".config", "gh", "hosts.yml"), "github.com: {}\n")
+	t.Setenv("HOME", fakeHome)
+	taskHome := filepath.Join(t.TempDir(), "home")
+	if err := prepareTaskHome(taskHome, testLogger(), true); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{".gitconfig", ".netrc", ".git-credentials", ".ssh", filepath.Join(".config", "gh"), filepath.Join(".config", "git")} {
+		if _, err := os.Lstat(filepath.Join(taskHome, name)); !os.IsNotExist(err) {
+			t.Errorf("mediated task home contains %s: %v", name, err)
+		}
+	}
+}
+
+func TestPrepareTaskHomeMediatedCleansReusedRegularFilesAndConfigSymlink(t *testing.T) {
+	fakeHome := t.TempDir()
+	writeFile(t, filepath.Join(fakeHome, ".npmrc"), "//registry/:_authToken=abc\n")
+	t.Setenv("HOME", fakeHome)
+	taskHome := filepath.Join(t.TempDir(), "home")
+	if err := os.MkdirAll(filepath.Join(taskHome, ".config"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(taskHome, ".gitconfig"), "stale")
+	writeFile(t, filepath.Join(taskHome, ".ssh", "known_hosts"), "stale")
+	external := t.TempDir()
+	writeFile(t, filepath.Join(external, "gh", "hosts.yml"), "keep")
+	if err := os.Remove(filepath.Join(taskHome, ".config")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(external, filepath.Join(taskHome, ".config")); err != nil {
+		t.Fatal(err)
+	}
+	if err := prepareTaskHome(taskHome, testLogger(), true); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{".gitconfig", ".ssh"} {
+		if _, err := os.Lstat(filepath.Join(taskHome, name)); !os.IsNotExist(err) {
+			t.Errorf("reused mediated home contains %s: %v", name, err)
+		}
+	}
+	if info, err := os.Lstat(filepath.Join(taskHome, ".config")); err != nil || info.Mode()&os.ModeSymlink != 0 {
+		t.Fatalf(".config was not replaced with local directory: info=%v err=%v", info, err)
+	}
+	if _, err := os.Stat(filepath.Join(external, "gh", "hosts.yml")); err != nil {
+		t.Fatalf("external config target was changed: %v", err)
+	}
+}
+
 // TestPrepareTaskHomeNoRealHome verifies prepareTaskHome degrades gracefully when
 // there is no user home to seed from — the writable home is still created.
 func TestPrepareTaskHomeNoRealHome(t *testing.T) {

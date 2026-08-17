@@ -92,6 +92,7 @@ type PrepareParams struct {
 	// Windows sandbox decision reads them, to honor a `-c windows.sandbox=...`
 	// override that never lands in config.toml (MUL-4957).
 	CodexCustomArgs []string
+	MediatedEnforce bool
 	Task            TaskContextForEnv // context data for writing files
 }
 
@@ -360,7 +361,7 @@ func Prepare(params PrepareParams, logger *slog.Logger) (*Environment, error) {
 		// Under the Linux workspace-write sandbox the real HOME is read-only;
 		// give the task a writable HOME and grant write access to it in the
 		// Codex config so npm/Prisma can write their caches (MUL-4856).
-		taskHome, writableRoots, err := prepareCodexSandboxHome(envRoot, "", params.CodexVersion, logger)
+		taskHome, writableRoots, err := prepareCodexSandboxHome(envRoot, "", params.CodexVersion, logger, params.MediatedEnforce)
 		if err != nil {
 			return nil, fmt.Errorf("execenv: prepare task home: %w", err)
 		}
@@ -486,6 +487,7 @@ type ReuseParams struct {
 	// Windows sandbox decision honors a `-c windows.sandbox=...` override here
 	// too (MUL-4957).
 	CodexCustomArgs []string
+	MediatedEnforce bool
 	Task            TaskContextForEnv // refreshed context files / skills
 }
 
@@ -584,7 +586,7 @@ func Reuse(params ReuseParams, logger *slog.Logger) *Environment {
 		// Refresh the per-task writable HOME (re-seed credential symlinks in
 		// case the user's real home changed) and recompute the sandbox
 		// writable_roots on reuse, mirroring the fresh Prepare path (MUL-4856).
-		taskHome, writableRoots, err := prepareCodexSandboxHome(env.RootDir, "", params.CodexVersion, logger)
+		taskHome, writableRoots, err := prepareCodexSandboxHome(env.RootDir, "", params.CodexVersion, logger, params.MediatedEnforce)
 		if err != nil {
 			logger.Warn("execenv: refresh task home failed", "error", err)
 		}

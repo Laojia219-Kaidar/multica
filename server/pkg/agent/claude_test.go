@@ -14,6 +14,44 @@ import (
 	"time"
 )
 
+func TestBuildEnvMediatedVCSFiltersInheritedCredentials(t *testing.T) {
+	t.Setenv("GIT_ASKPASS", "host-helper")
+	t.Setenv("SSH_AUTH_SOCK", "/tmp/host-agent")
+	t.Setenv("GH_TOKEN", "host-token")
+	t.Setenv("GIT_CONFIG_PARAMETERS", "'http.extraheader=Authorization: bearer host'")
+	t.Setenv("GIT_HTTP_EXTRAHEADER", "Authorization: bearer host")
+	t.Setenv("GIT_TOKEN", "host-token")
+	t.Setenv("NETRC", "/host/.netrc")
+	t.Setenv("SSH_AGENT_PID", "123")
+	t.Setenv("GIT_PROXY_COMMAND", "/host/proxy")
+	t.Setenv("SSH_PRIVATE_KEY", "private")
+	t.Setenv("GIT_DIR", "/host/.git")
+	t.Setenv("GIT_OBJECT_DIRECTORY", "/host/objects")
+	t.Setenv("GCM_INTERACTIVE", "always")
+	mediated := buildEnv(map[string]string{"MULTICA_MEDIATED_VCS_POLICY": "1", "SAFE_ENV": "ok"})
+	for _, entry := range mediated {
+		if strings.HasPrefix(entry, "GIT_ASKPASS=") || strings.HasPrefix(entry, "SSH_AUTH_SOCK=") || strings.HasPrefix(entry, "GH_TOKEN=") || strings.HasPrefix(entry, "GCM_INTERACTIVE=always") || strings.HasPrefix(entry, "GIT_CONFIG_PARAMETERS=") || strings.HasPrefix(entry, "GIT_HTTP_EXTRAHEADER=") || strings.HasPrefix(entry, "GIT_TOKEN=") || strings.HasPrefix(entry, "NETRC=") || strings.HasPrefix(entry, "SSH_AGENT_PID=") || strings.HasPrefix(entry, "GIT_PROXY_COMMAND=") || strings.HasPrefix(entry, "SSH_PRIVATE_KEY=") || strings.HasPrefix(entry, "GIT_DIR=") || strings.HasPrefix(entry, "GIT_OBJECT_DIRECTORY=") {
+			t.Fatalf("host credential leaked: %q", entry)
+		}
+	}
+	if !containsEnv(mediated, "GIT_CONFIG_NOSYSTEM=1") || !containsEnv(mediated, "GIT_TERMINAL_PROMPT=0") || !containsEnv(mediated, "GCM_INTERACTIVE=never") {
+		t.Fatalf("mediated git hardening missing: %v", mediated)
+	}
+	off := buildEnv(map[string]string{"SAFE_ENV": "ok"})
+	if !containsEnv(off, "GIT_ASKPASS=host-helper") {
+		t.Fatal("off mode unexpectedly filtered inherited env")
+	}
+}
+
+func containsEnv(env []string, want string) bool {
+	for _, entry := range env {
+		if entry == want {
+			return true
+		}
+	}
+	return false
+}
+
 func TestClaudeHandleAssistantText(t *testing.T) {
 	t.Parallel()
 

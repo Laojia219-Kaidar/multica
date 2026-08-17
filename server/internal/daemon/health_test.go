@@ -1,17 +1,23 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/multica-ai/multica/server/internal/daemon/mutationbroker"
 	"github.com/multica-ai/multica/server/internal/daemon/repocache"
 )
 
@@ -238,8 +244,8 @@ func TestRepoCheckoutUsesTaskScopedProjectRefByDefault(t *testing.T) {
 	d.registerTaskRepos(workspaceID, "task-1", []RepoData{{URL: repoURL, Ref: "release/v2"}})
 
 	rec := httptest.NewRecorder()
-	body := strings.NewReader(`{"url":"` + repoURL + `","workspace_id":"` + workspaceID + `","workdir":"/tmp/work","task_id":"task-1"}`)
-	d.repoCheckoutHandler().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/repo/checkout", body))
+	body := `{"url":"` + repoURL + `","workspace_id":"` + workspaceID + `","workdir":"` + t.TempDir() + `","task_id":"task-1","runtime_id":"rt-1"}`
+	d.repoCheckoutHandler().ServeHTTP(rec, authorizedCheckoutRequest(t, d, body))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
@@ -259,8 +265,8 @@ func TestRepoCheckoutExplicitRefOverridesProjectDefault(t *testing.T) {
 	d.registerTaskRepos(workspaceID, "task-1", []RepoData{{URL: repoURL, Ref: "release/v2"}})
 
 	rec := httptest.NewRecorder()
-	body := strings.NewReader(`{"url":"` + repoURL + `","workspace_id":"` + workspaceID + `","workdir":"/tmp/work","task_id":"task-1","ref":"hotfix"}`)
-	d.repoCheckoutHandler().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/repo/checkout", body))
+	body := `{"url":"` + repoURL + `","workspace_id":"` + workspaceID + `","workdir":"` + t.TempDir() + `","task_id":"task-1","runtime_id":"rt-1","ref":"hotfix"}`
+	d.repoCheckoutHandler().ServeHTTP(rec, authorizedCheckoutRequest(t, d, body))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
@@ -279,8 +285,8 @@ func TestRepoCheckoutForwardsIsolatedMode(t *testing.T) {
 	d := newRepoCheckoutTestDaemon(t, workspaceID, repoURL, cache)
 
 	rec := httptest.NewRecorder()
-	body := strings.NewReader(`{"url":"` + repoURL + `","workspace_id":"` + workspaceID + `","workdir":"/tmp/work","task_id":"task-1","checkout_mode":"isolated"}`)
-	d.repoCheckoutHandler().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/repo/checkout", body))
+	body := `{"url":"` + repoURL + `","workspace_id":"` + workspaceID + `","workdir":"` + t.TempDir() + `","task_id":"task-1","runtime_id":"rt-1","checkout_mode":"isolated"}`
+	d.repoCheckoutHandler().ServeHTTP(rec, authorizedCheckoutRequest(t, d, body))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
@@ -310,6 +316,131 @@ func TestRepoCheckoutRejectsUnknownMode(t *testing.T) {
 	}
 }
 
+func TestRepoCheckoutInvalidReplayIsDroppedWithoutCacheCallback(t *testing.T) {
+	const workspaceID = "ws-checkout"
+	const repoURL = "https://github.com/org/repo.git"
+	cases := []struct {
+		name   string
+		result func(string) []byte
+	}{
+		{name: "malformed", result: func(string) []byte { return []byte("{malformed") }},
+		{name: "missing", result: func(workDir string) []byte { return []byte(`{"path":"` + filepath.Join(workDir, "missing") + `"}`) }},
+		{name: "outside", result: func(workDir string) []byte { return []byte(`{"path":"` + filepath.Dir(workDir) + `"}`) }},
+		{name: "symlink", result: func(workDir string) []byte { return []byte(`{"path":"` + filepath.Join(workDir, "repo") + `"}`) }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cache := &recordingRepoCache{lookupPath: "/cache/org/repo.git"}
+			d := newRepoCheckoutTestDaemon(t, workspaceID, repoURL, cache)
+			workDir := t.TempDir()
+			if tc.name == "symlink" {
+				if err := os.Symlink(t.TempDir(), filepath.Join(workDir, "repo")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			body := `{"url":"` + repoURL + `","workspace_id":"` + workspaceID + `","workdir":"` + workDir + `","task_id":"task-1","runtime_id":"rt-1"}`
+			httpReq := authorizedCheckoutRequest(t, d, body)
+			var req repoCheckoutRequest
+			if err := json.Unmarshal([]byte(body), &req); err != nil {
+				t.Fatal(err)
+			}
+			brokerReq := mutationbroker.CheckoutRequest{TaskID: req.TaskID, RuntimeID: req.RuntimeID, WorkspaceID: req.WorkspaceID, WorkDir: req.WorkDir, AgentName: req.AgentName, URL: req.URL, Operation: mutationbroker.OperationRepoCheckout, RequestID: httpReq.Header.Get(mutationbroker.RequestIDHeader)}
+			capability := httpReq.Header.Get(mutationbroker.CapabilityHeader)
+			decision, err := d.mutationBroker.Authorize(capability, brokerReq)
+			if err != nil || !decision.Acquired {
+				t.Fatalf("authorize replay fixture = %+v, err=%v", decision, err)
+			}
+			if err := d.mutationBroker.Complete(capability, brokerReq, tc.result(workDir)); err != nil {
+				t.Fatal(err)
+			}
+			rec := httptest.NewRecorder()
+			d.repoCheckoutHandler().ServeHTTP(rec, httpReq)
+			if rec.Code != http.StatusConflict {
+				t.Fatalf("invalid replay status=%d body=%s", rec.Code, rec.Body.String())
+			}
+			if got := cache.lastCreateParams(); got != (repocache.WorktreeParams{}) {
+				t.Fatalf("invalid replay reached repo cache: %+v", got)
+			}
+			if decision, err := d.mutationBroker.Authorize(capability, brokerReq); err != nil || !decision.Acquired {
+				t.Fatalf("invalid replay was not dropped: %+v, err=%v", decision, err)
+			} else if err := d.mutationBroker.Abort(capability, brokerReq); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestRepoCheckoutCapabilityDriftHasZeroRepoCacheCallbacks(t *testing.T) {
+	const workspaceID = "ws-checkout"
+	const repoURL = "https://github.com/org/repo.git"
+	cases := []struct {
+		name   string
+		mutate func(*http.Request, *repoCheckoutRequest)
+	}{
+		{name: "task", mutate: func(_ *http.Request, req *repoCheckoutRequest) { req.TaskID = "task-other" }},
+		{name: "runtime", mutate: func(_ *http.Request, req *repoCheckoutRequest) { req.RuntimeID = "rt-other" }},
+		{name: "workspace", mutate: func(_ *http.Request, req *repoCheckoutRequest) { req.WorkspaceID = "ws-other" }},
+		{name: "workdir", mutate: func(_ *http.Request, req *repoCheckoutRequest) { req.WorkDir = filepath.Join(req.WorkDir, "other") }},
+		{name: "url", mutate: func(_ *http.Request, req *repoCheckoutRequest) { req.URL = "https://github.com/org/other.git" }},
+		{name: "ref", mutate: func(_ *http.Request, req *repoCheckoutRequest) { req.Ref = "unbound-ref" }},
+		{name: "mode", mutate: func(_ *http.Request, req *repoCheckoutRequest) { req.CheckoutMode = repoCheckoutModeIsolated }},
+		{name: "agent", mutate: func(_ *http.Request, req *repoCheckoutRequest) { req.AgentName = "agent-other" }},
+		{name: "missing-capability", mutate: func(r *http.Request, _ *repoCheckoutRequest) { r.Header.Del(mutationbroker.CapabilityHeader) }},
+		{name: "unknown-capability", mutate: func(r *http.Request, _ *repoCheckoutRequest) {
+			r.Header.Set(mutationbroker.CapabilityHeader, "unknown-capability")
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cache := &recordingRepoCache{lookupPath: "/cache/org/repo.git"}
+			d := newRepoCheckoutTestDaemon(t, workspaceID, repoURL, cache)
+			workDir := t.TempDir()
+			body := `{"url":"` + repoURL + `","workspace_id":"` + workspaceID + `","workdir":"` + workDir + `","task_id":"task-1","runtime_id":"rt-1","agent_name":"agent-1","ref":"release/v2"}`
+			req := authorizedCheckoutRequest(t, d, body)
+			var payload repoCheckoutRequest
+			if err := json.Unmarshal([]byte(body), &payload); err != nil {
+				t.Fatal(err)
+			}
+			tc.mutate(req, &payload)
+			encoded, err := json.Marshal(payload)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Body = io.NopCloser(bytes.NewReader(encoded))
+			req.ContentLength = int64(len(encoded))
+			rec := httptest.NewRecorder()
+			d.repoCheckoutHandler().ServeHTTP(rec, req)
+			if rec.Code < http.StatusBadRequest || rec.Code >= http.StatusInternalServerError {
+				t.Fatalf("drift status=%d body=%s", rec.Code, rec.Body.String())
+			}
+			if got := cache.callbackCalls(); got != 0 {
+				t.Fatalf("drift reached repo cache/ensure callbacks %d times", got)
+			}
+		})
+	}
+}
+
+func TestDisableWorktreePushRemoteLeavesNoGitHubPushURL(t *testing.T) {
+	dir := t.TempDir()
+	cmd := exec.Command("git", "-C", dir, "init")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git init: %s: %v", output, err)
+	}
+	if output, err := exec.Command("git", "-C", dir, "remote", "add", "origin", "https://github.com/acme/repo.git").CombinedOutput(); err != nil {
+		t.Fatalf("git remote add: %s: %v", output, err)
+	}
+	if err := disableWorktreePushRemote(context.Background(), dir); err != nil {
+		t.Fatal(err)
+	}
+	output, err := exec.Command("git", "-C", dir, "config", "--local", "--get", "remote.origin.pushurl").CombinedOutput()
+	if err != nil {
+		t.Fatalf("read pushurl: %s: %v", output, err)
+	}
+	if got := strings.TrimSpace(string(output)); got == "" || strings.Contains(got, "github.com") {
+		t.Fatalf("pushurl = %q, want mediated non-GitHub URL", got)
+	}
+}
+
 func newRepoCheckoutTestDaemon(t *testing.T, workspaceID, repoURL string, cache *recordingRepoCache) *Daemon {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -331,8 +462,38 @@ func newRepoCheckoutTestDaemon(t *testing.T, workspaceID, repoURL string, cache 
 		workspaces: map[string]*workspaceState{
 			workspaceID: newWorkspaceState(workspaceID, nil, "", []RepoData{{URL: repoURL}}, nil),
 		},
-		logger: slog.Default(),
+		logger:           slog.Default(),
+		mutationBroker:   mutationbroker.New(),
+		writerLeaseModes: map[string]string{"task-1": "off"},
 	}
+}
+
+func authorizedCheckoutRequest(t *testing.T, d *Daemon, body string) *http.Request {
+	t.Helper()
+	var req repoCheckoutRequest
+	if err := json.Unmarshal([]byte(body), &req); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(req.WorkDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path, _, err := d.mutationBroker.Issue(mutationbroker.IssueRequest{TaskID: req.TaskID, RuntimeID: req.RuntimeID, WorkspaceID: req.WorkspaceID, WorkDir: req.WorkDir, Operation: mutationbroker.OperationRepoCheckout, CheckoutMode: req.CheckoutMode, Targets: []mutationbroker.Target{{URL: req.URL, Ref: ""}, {URL: req.URL, Ref: "release/v2"}, {URL: req.URL, Ref: "hotfix"}}}, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = d.mutationBroker.Revoke(path) })
+	httpReq := httptest.NewRequest(http.MethodPost, "/repo/checkout", strings.NewReader(body))
+	httpReq.Header.Set(mutationbroker.CapabilityHeader, readTestCapability(t, path))
+	httpReq.Header.Set(mutationbroker.RequestIDHeader, "req-"+req.Ref+req.WorkDir)
+	return httpReq
+}
+
+func readTestCapability(t *testing.T, path string) string {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return strings.TrimSpace(string(b))
 }
 
 type blockingLookupRepoCache struct {
@@ -376,23 +537,34 @@ type recordingRepoCache struct {
 	lookupPath string
 	mu         sync.Mutex
 	params     []repocache.WorktreeParams
+	calls      int
 }
 
 func (c *recordingRepoCache) Lookup(_, _ string) string {
+	c.mu.Lock()
+	c.calls++
+	c.mu.Unlock()
 	return c.lookupPath
 }
 
 func (c *recordingRepoCache) Sync(string, []repocache.RepoInfo) error {
+	c.mu.Lock()
+	c.calls++
+	c.mu.Unlock()
 	return nil
 }
 
 func (c *recordingRepoCache) WithRepoLock(_ string, fn func() error) error {
+	c.mu.Lock()
+	c.calls++
+	c.mu.Unlock()
 	return fn()
 }
 
 func (c *recordingRepoCache) CreateWorktree(params repocache.WorktreeParams) (*repocache.WorktreeResult, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.calls++
 	c.params = append(c.params, params)
 	return &repocache.WorktreeResult{Path: params.WorkDir, BranchName: "agent/test"}, nil
 }
@@ -404,6 +576,18 @@ func (c *recordingRepoCache) lastCreateParams() repocache.WorktreeParams {
 		return repocache.WorktreeParams{}
 	}
 	return c.params[len(c.params)-1]
+}
+
+func (c *recordingRepoCache) createCalls() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.params)
+}
+
+func (c *recordingRepoCache) callbackCalls() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.calls
 }
 
 func (c *blockingLookupRepoCache) waitForLookup(t *testing.T) {

@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -210,6 +212,12 @@ func TestRunRepoCheckoutForwardsManagedCheckoutMode(t *testing.T) {
 	t.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
 	t.Setenv("MULTICA_AGENT_NAME", "Test Agent")
 	t.Setenv("MULTICA_TASK_ID", "task-1")
+	capFile := filepath.Join(t.TempDir(), "capability")
+	if err := os.WriteFile(capFile, []byte("opaque-test-capability"), 0o400); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("MULTICA_RUNTIME_ID", "rt-1")
+	t.Setenv("MULTICA_MUTATION_CAPABILITY_FILE", capFile)
 	t.Setenv("MULTICA_REPO_CHECKOUT_MODE", "isolated")
 
 	previousRef := repoCheckoutRef

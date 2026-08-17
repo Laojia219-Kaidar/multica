@@ -117,6 +117,40 @@ func TestRunGitOutputTimesOut(t *testing.T) {
 	}
 }
 
+func TestRunGitContextCancellationStopsBeforeSubprocess(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := runGitCombinedOutputContext(ctx, "--version"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("runGitCombinedOutputContext error=%v, want context canceled", err)
+	}
+}
+
+func TestValidateWorktreePathRejectsSymlinkEscape(t *testing.T) {
+	root := t.TempDir()
+	workDir := filepath.Join(root, "work")
+	if err := os.MkdirAll(workDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	external := t.TempDir()
+	if err := os.Symlink(external, filepath.Join(workDir, "repo")); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateWorktreePath(workDir, filepath.Join(workDir, "repo")); err == nil {
+		t.Fatal("symlink checkout path unexpectedly accepted")
+	}
+
+	logicalRoot := filepath.Join(root, "logical")
+	if err := os.Symlink(workDir, logicalRoot); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateWorktreePath(logicalRoot, filepath.Join(logicalRoot, "new-repo")); err != nil {
+		t.Fatalf("workdir symlink should resolve safely: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(external, "config")); !os.IsNotExist(err) {
+		t.Fatalf("external target changed during validation: %v", err)
+	}
+}
+
 func TestBareDirName(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -617,6 +651,8 @@ func TestCreateWorktreeReusesIsolatedGitMetadata(t *testing.T) {
 		AgentName:           "Linux Codex",
 		TaskID:              "22222222-2222-2222-2222-222222222222",
 		IsolatedGitMetadata: true,
+		Mediated:            true,
+		NoPush:              true,
 	})
 	if err != nil {
 		t.Fatalf("second CreateWorktree failed: %v", err)
@@ -629,6 +665,10 @@ func TestCreateWorktreeReusesIsolatedGitMetadata(t *testing.T) {
 	}
 	if got := gitHead(t, second.Path); got != wantHead {
 		t.Fatalf("reused checkout HEAD = %s, want refreshed upstream %s", got, wantHead)
+	}
+	pushURL, err := runGitOutput("-C", second.Path, "config", "--local", "--get", "remote.origin.pushurl")
+	if err != nil || strings.TrimSpace(string(pushURL)) != "no_push://multica-mediated/disabled" {
+		t.Fatalf("reused mediated checkout pushurl = %q, err=%v", strings.TrimSpace(string(pushURL)), err)
 	}
 
 	// Reuse must not accumulate earlier tasks' agent/* branches, but it must

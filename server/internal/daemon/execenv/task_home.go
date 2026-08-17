@@ -68,7 +68,8 @@ var taskHomeConfigSeedEntries = []string{
 // git/npm/ssh credentials. Best-effort: seeding failures are logged, not fatal —
 // the writable home still resolves the EROFS problem for cache writes even if a
 // particular credential source is absent.
-func prepareTaskHome(taskHome string, logger *slog.Logger) error {
+func prepareTaskHome(taskHome string, logger *slog.Logger, mediated ...bool) error {
+	mediatedEnforce := len(mediated) > 0 && mediated[0]
 	if err := os.MkdirAll(taskHome, 0o700); err != nil {
 		return fmt.Errorf("create task home: %w", err)
 	}
@@ -83,7 +84,12 @@ func prepareTaskHome(taskHome string, logger *slog.Logger) error {
 		return nil
 	}
 
-	for _, name := range taskHomeSeedEntries {
+	seedEntries := taskHomeSeedEntries
+	if mediatedEnforce {
+		removeTaskVCSSymlinks(taskHome)
+		seedEntries = []string{".npmrc"}
+	}
+	for _, name := range seedEntries {
 		src := filepath.Join(sharedHome, name)
 		if _, err := os.Lstat(src); err != nil {
 			continue // best-effort: skip missing sources
@@ -104,7 +110,11 @@ func prepareTaskHome(taskHome string, logger *slog.Logger) error {
 		return nil
 	}
 	sharedConfig := filepath.Join(sharedHome, ".config")
-	for _, name := range taskHomeConfigSeedEntries {
+	configEntries := taskHomeConfigSeedEntries
+	if mediatedEnforce {
+		configEntries = nil
+	}
+	for _, name := range configEntries {
 		src := filepath.Join(sharedConfig, name)
 		if _, err := os.Lstat(src); err != nil {
 			continue // best-effort: skip missing sources
@@ -115,6 +125,25 @@ func prepareTaskHome(taskHome string, logger *slog.Logger) error {
 	}
 
 	return nil
+}
+
+func removeTaskVCSSymlinks(taskHome string) {
+	configDir := filepath.Join(taskHome, ".config")
+	if info, err := os.Lstat(configDir); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		_ = os.Remove(configDir)
+		_ = os.MkdirAll(configDir, 0o700)
+	}
+	for _, name := range []string{".gitconfig", ".git-credentials", ".netrc", ".ssh", filepath.Join(".config", "gh"), filepath.Join(".config", "git")} {
+		path := filepath.Join(taskHome, name)
+		if _, err := os.Lstat(path); err != nil {
+			continue
+		}
+		// This path is constructed below taskHome and is one of the known
+		// VCS credential entries. RemoveAll removes a symlink itself rather
+		// than following it, while also clearing stale task-owned regular
+		// files/directories left by a prior off/shadow run.
+		_ = os.RemoveAll(path)
+	}
 }
 
 // TaskHomeEnv returns the environment overrides that redirect a task's HOME and
@@ -147,7 +176,7 @@ func TaskHomeEnv(taskHome string) map[string]string {
 // writable roots to add to the config.toml — just the task home, which lives
 // outside the sandbox cwd and is not a git metadata dir, so Codex does not
 // re-protect it.
-func prepareCodexSandboxHome(envRoot, goos, codexVersion string, logger *slog.Logger) (taskHome string, writableRoots []string, err error) {
+func prepareCodexSandboxHome(envRoot, goos, codexVersion string, logger *slog.Logger, mediated ...bool) (taskHome string, writableRoots []string, err error) {
 	if envRoot == "" {
 		// No task env root to anchor the home under (legacy local_directory
 		// reuse fallback). Leave the real HOME in place.
@@ -161,7 +190,7 @@ func prepareCodexSandboxHome(envRoot, goos, codexVersion string, logger *slog.Lo
 	}
 
 	taskHome = filepath.Join(envRoot, "home")
-	if err := prepareTaskHome(taskHome, logger); err != nil {
+	if err := prepareTaskHome(taskHome, logger, mediated...); err != nil {
 		return "", nil, err
 	}
 	return taskHome, []string{taskHome}, nil
