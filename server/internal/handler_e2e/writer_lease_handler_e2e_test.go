@@ -409,13 +409,13 @@ func seedWriterLeaseE2EFixture(t *testing.T, ctx context.Context, pool *pgxpool.
 	}
 	if err := pool.QueryRow(ctx, `
 		INSERT INTO agent_runtime (workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, owner_id, last_seen_at)
-		VALUES ($1, $2, $3, 'cloud', 'c2a_test', 'online', 'c2a test', '{}'::jsonb, $4, now()) RETURNING id
+		VALUES ($1, $2, $3, 'local', 'codex', 'online', 'c2a mediated Linux Codex test runtime', '{}'::jsonb, $4, now()) RETURNING id
 	`, f.workspaceID, daemonID, "C2a runtime", f.userID).Scan(&f.runtimeID); err != nil {
 		t.Fatalf("seed runtime: %v", err)
 	}
 	if err := pool.QueryRow(ctx, `
 		INSERT INTO agent (workspace_id, name, description, runtime_mode, runtime_config, runtime_id, visibility, max_concurrent_tasks, owner_id)
-		VALUES ($1, 'C2a agent', '', 'cloud', '{}'::jsonb, $2, 'private', 1, $3) RETURNING id
+		VALUES ($1, 'C2a agent', '', 'local', '{}'::jsonb, $2, 'private', 1, $3) RETURNING id
 	`, f.workspaceID, f.runtimeID, f.userID).Scan(&f.agentID); err != nil {
 		t.Fatalf("seed agent: %v", err)
 	}
