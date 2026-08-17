@@ -5,6 +5,8 @@ package mutationbroker
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,11 +14,16 @@ import (
 	"net"
 	"os"
 	"sync"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
 
-const maxInFlight = 128
+const (
+	maxInFlight       = 128
+	maxClients        = 32
+	handshakeDeadline = 2 * time.Second
+)
 
 const operationFailedCode = "operation_failed"
 
@@ -35,26 +42,45 @@ func errorCode(err error) string {
 	}
 }
 
+var randRead = rand.Read
+
 type activeRequest struct {
-	cancel context.CancelFunc
+	cancel     context.CancelFunc
+	generation uint64
+	admitted   bool
+}
+
+type clientState struct {
+	mu        sync.Mutex
+	conn      *net.UnixConn
+	peer      RunnerIdentity
+	uid       uint32
+	helloSeen bool
+	active    map[string]*activeRequest
+	writeMu   sync.Mutex
 }
 
 type linuxEndpoint struct {
-	mu           sync.Mutex
-	lifecycleMu  sync.Mutex
-	conn         *net.UnixConn
-	runnerHold   *os.File
-	closed       bool
-	generation   uint64
-	prepared     bool
-	bound        bool
-	identity     RunnerIdentity
-	serving      bool
-	helloSeen    bool
-	rotating     bool
-	active       map[string]*activeRequest
-	writeMu      sync.Mutex
-	dispatchGate sync.RWMutex
+	mu              sync.Mutex
+	lifecycleMu     sync.Mutex
+	listener        net.Listener
+	locator         string
+	closed          bool
+	generation      uint64
+	prepared        bool
+	bound           bool
+	identity        RunnerIdentity
+	serving         bool
+	rotating        bool
+	clients         map[*clientState]struct{}
+	active          int
+	expectedUID     uint32
+	dispatchGate    sync.RWMutex
+	dispatchBarrier func()
+}
+
+func newEndpoint() *Endpoint {
+	return &Endpoint{state: &linuxEndpoint{clients: make(map[*clientState]struct{}), expectedUID: uint32(os.Getuid())}}
 }
 
 func linuxState(e *Endpoint) (*linuxEndpoint, error) {
@@ -68,59 +94,57 @@ func linuxState(e *Endpoint) (*linuxEndpoint, error) {
 	return state, nil
 }
 
-func newEndpoint() *Endpoint {
-	return &Endpoint{state: &linuxEndpoint{active: make(map[string]*activeRequest)}}
+func abstractName(name string) string { return "@" + name }
+
+func dial(ctx context.Context, locator string) (net.Conn, error) {
+	if locator == "" {
+		return nil, ErrNotBound
+	}
+	return (&net.Dialer{}).DialContext(ctx, "unixpacket", abstractName(locator))
 }
 
-func duplicateFile(file *os.File, name string) (*os.File, error) {
-	fd, err := unix.Dup(int(file.Fd()))
-	if err != nil {
-		return nil, err
-	}
-	unix.CloseOnExec(fd)
-	return os.NewFile(uintptr(fd), name), nil
+func makeListener(locator string) (net.Listener, error) {
+	return net.Listen("unixpacket", abstractName(locator))
 }
 
-func makeSocketPair() (*net.UnixConn, *os.File, *os.File, error) {
-	fds, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_SEQPACKET|unix.SOCK_CLOEXEC, 0)
-	if err != nil {
-		return nil, nil, nil, err
+func newLocator(generation uint64) (string, error) {
+	var raw [32]byte
+	if _, err := randRead(raw[:]); err != nil {
+		return "", ErrEntropyUnavailable
 	}
-	daemonFile := os.NewFile(uintptr(fds[0]), "mutation-broker-daemon")
-	runnerFile := os.NewFile(uintptr(fds[1]), "mutation-broker-runner")
-	if daemonFile == nil || runnerFile == nil {
-		if daemonFile != nil {
-			_ = daemonFile.Close()
+	return fmt.Sprintf("multica-%d-%s", generation, hex.EncodeToString(raw[:])), nil
+}
+
+func socketControl(conn *net.UnixConn, fn func(int) error) error {
+	raw, err := conn.SyscallConn()
+	if err != nil {
+		return err
+	}
+	var controlErr error
+	if err := raw.Control(func(fd uintptr) { controlErr = fn(int(fd)) }); err != nil {
+		return err
+	}
+	return controlErr
+}
+
+func configureAccepted(conn *net.UnixConn) (RunnerIdentity, uint32, error) {
+	var cred *unix.Ucred
+	err := socketControl(conn, func(fd int) error {
+		if err := unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_PASSCRED, 1); err != nil {
+			return err
 		}
-		if runnerFile != nil {
-			_ = runnerFile.Close()
-		}
-		return nil, nil, nil, errors.New("create mutation broker socketpair")
+		var err error
+		cred, err = unix.GetsockoptUcred(fd, unix.SOL_SOCKET, unix.SO_PEERCRED)
+		return err
+	})
+	if err != nil || cred == nil {
+		return RunnerIdentity{}, 0, ErrPeerUnauthorized
 	}
-	if err := unix.SetsockoptInt(int(daemonFile.Fd()), unix.SOL_SOCKET, unix.SO_PASSCRED, 1); err != nil {
-		_ = daemonFile.Close()
-		_ = runnerFile.Close()
-		return nil, nil, nil, fmt.Errorf("enable SCM_CREDENTIALS: %w", err)
+	start, err := procStartTime(int(cred.Pid))
+	if err != nil || start == 0 {
+		return RunnerIdentity{}, 0, ErrPeerUnauthorized
 	}
-	raw, err := net.FileConn(daemonFile)
-	_ = daemonFile.Close()
-	if err != nil {
-		_ = runnerFile.Close()
-		return nil, nil, nil, fmt.Errorf("wrap mutation broker socket: %w", err)
-	}
-	conn, ok := raw.(*net.UnixConn)
-	if !ok {
-		_ = raw.Close()
-		_ = runnerFile.Close()
-		return nil, nil, nil, errors.New("mutation broker socket is not UnixConn")
-	}
-	hold, err := duplicateFile(runnerFile, "mutation-broker-runner-hold")
-	if err != nil {
-		_ = conn.Close()
-		_ = runnerFile.Close()
-		return nil, nil, nil, err
-	}
-	return conn, runnerFile, hold, nil
+	return RunnerIdentity{PID: int(cred.Pid), StartTime: start}, cred.Uid, nil
 }
 
 func (e *Endpoint) prepareRunner() (PreparedRunner, error) {
@@ -130,57 +154,65 @@ func (e *Endpoint) prepareRunner() (PreparedRunner, error) {
 	}
 	state.lifecycleMu.Lock()
 	defer state.lifecycleMu.Unlock()
-	conn, runnerFile, hold, err := makeSocketPair()
+	state.mu.Lock()
+	if state.closed || state.rotating || state.generation == ^uint64(0) {
+		state.mu.Unlock()
+		return PreparedRunner{}, ErrClosed
+	}
+	nextGeneration := state.generation + 1
+	state.mu.Unlock()
+	locator, err := newLocator(nextGeneration)
 	if err != nil {
 		return PreparedRunner{}, err
 	}
 	state.mu.Lock()
-	if state.closed || state.rotating || state.generation == ^uint64(0) {
+	if state.closed || state.rotating {
 		state.mu.Unlock()
-		_ = conn.Close()
-		_ = runnerFile.Close()
-		_ = hold.Close()
 		return PreparedRunner{}, ErrClosed
 	}
-	oldConn, oldHold := state.conn, state.runnerHold
-	for id, request := range state.active {
-		request.cancel()
-		delete(state.active, id)
+	oldListener := state.listener
+	oldClients := make([]*clientState, 0, len(state.clients))
+	for client := range state.clients {
+		oldClients = append(oldClients, client)
 	}
 	state.rotating = true
-	state.conn = nil
-	state.runnerHold = nil
+	state.listener = nil
 	state.prepared = false
 	state.bound = false
 	state.identity = RunnerIdentity{}
-	state.serving = false
-	state.helloSeen = false
+	state.clients = make(map[*clientState]struct{})
+	state.active = 0
 	state.mu.Unlock()
-	if oldConn != nil {
-		_ = oldConn.Close()
+	if oldListener != nil {
+		_ = oldListener.Close()
 	}
-	if oldHold != nil {
-		_ = oldHold.Close()
+	for _, client := range oldClients {
+		client.mu.Lock()
+		for id, req := range client.active {
+			req.cancel()
+			delete(client.active, id)
+		}
+		client.mu.Unlock()
+		_ = client.conn.Close()
 	}
 	state.dispatchGate.Lock()
-	defer state.dispatchGate.Unlock()
 	state.mu.Lock()
 	if state.closed {
 		state.rotating = false
 		state.mu.Unlock()
-		_ = conn.Close()
-		_ = runnerFile.Close()
-		_ = hold.Close()
 		return PreparedRunner{}, ErrClosed
 	}
 	state.generation++
-	state.conn = conn
-	state.runnerHold = hold
+	state.listener = nil
+	state.locator = locator
 	state.prepared = true
+	state.serving = false
 	state.rotating = false
 	generation := state.generation
+	publishedLocator := state.locator
 	state.mu.Unlock()
-	return PreparedRunner{File: runnerFile, Generation: generation}, nil
+	state.dispatchGate.Unlock()
+	return PreparedRunner{Locator: publishedLocator, Generation: generation}, nil
 }
 
 func (e *Endpoint) bindPreparedRunner(generation uint64, rootPID int, rootStartTime uint64) error {
@@ -199,17 +231,34 @@ func (e *Endpoint) bindPreparedRunner(generation uint64, rootPID int, rootStartT
 		state.mu.Unlock()
 		return ErrClosed
 	}
-	if state.rotating || !state.prepared || state.generation != generation || state.runnerHold == nil || state.conn == nil {
+	if state.rotating || !state.prepared || state.generation != generation || state.listener != nil {
 		state.mu.Unlock()
 		return ErrNotBound
 	}
+	locator := state.locator
+	state.mu.Unlock()
+	listener, err := makeListener(locator)
+	if err != nil {
+		return ErrNotBound
+	}
+	if !runnerIdentityStable(identity) {
+		_ = listener.Close()
+		return ErrRunnerUnauthorized
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if state.closed {
+		_ = listener.Close()
+		return ErrClosed
+	}
+	if state.rotating || !state.prepared || state.generation != generation || state.listener != nil || state.locator != locator {
+		_ = listener.Close()
+		return ErrNotBound
+	}
+	state.listener = listener
 	state.identity = identity
 	state.bound = true
 	state.prepared = false
-	hold := state.runnerHold
-	state.runnerHold = nil
-	state.mu.Unlock()
-	_ = hold.Close()
 	return nil
 }
 
@@ -226,7 +275,7 @@ func (e *Endpoint) serve(generation uint64, ctx context.Context, handler Handler
 		state.mu.Unlock()
 		return ErrClosed
 	}
-	if generation == 0 || generation != state.generation || !state.bound || state.conn == nil {
+	if generation == 0 || generation != state.generation || !state.bound || state.listener == nil {
 		state.mu.Unlock()
 		return ErrNotBound
 	}
@@ -234,85 +283,177 @@ func (e *Endpoint) serve(generation uint64, ctx context.Context, handler Handler
 		state.mu.Unlock()
 		return ErrProtocol
 	}
-	conn := state.conn
+	listener := state.listener
 	state.serving = true
-	state.helloSeen = false
 	state.mu.Unlock()
-	done := make(chan struct{})
-	defer close(done)
 	defer func() {
 		state.mu.Lock()
-		if state.generation == generation && state.conn == conn {
+		if state.generation == generation {
 			state.serving = false
 		}
 		state.mu.Unlock()
 	}()
-	go func() {
-		select {
-		case <-ctx.Done():
-			_ = e.revokeGeneration(generation, conn)
-		case <-done:
-		}
-	}()
-
+	go func() { <-ctx.Done(); _ = e.revokeGeneration(generation, listener) }()
 	for {
-		req, cred, err := readRequest(conn)
+		conn, err := listener.Accept()
 		if err != nil {
-			_ = e.revokeGeneration(generation, conn)
-			return err
-		}
-		if err := state.authorize(generation, conn, cred); err != nil {
-			_ = e.failGeneration(generation, conn, err)
-			return err
-		}
-		if err := validateEnvelope(state, generation, conn, req); err != nil {
-			_ = e.failGeneration(generation, conn, err)
-			return err
-		}
-		if req.Kind == HelloKind {
-			if err := writeResponse(state, conn, Response{Version: ProtocolVersion, RequestID: req.RequestID, OK: true}); err != nil {
-				_ = e.revokeGeneration(generation, conn)
-				return err
+			if ctx.Err() != nil {
+				return ctx.Err()
 			}
+			state.mu.Lock()
+			current := state.generation == generation && state.listener == listener
+			state.mu.Unlock()
+			if !current {
+				return ErrNotBound
+			}
+			return err
+		}
+		unixConn, ok := conn.(*net.UnixConn)
+		if !ok {
+			_ = conn.Close()
+			continue
+		}
+		peer, uid, err := configureAccepted(unixConn)
+		if err != nil {
+			_ = unixConn.Close()
+			continue
+		}
+		// Re-read the captured peer starttime before admitting the connection.
+		// This is separate from the per-message check in authorizeClient: a PID
+		// must not consume a client slot while it is already stale.
+		peerStart, startErr := procStartTime(peer.PID)
+		if startErr != nil || peerStart != peer.StartTime {
+			_ = unixConn.Close()
 			continue
 		}
 		state.mu.Lock()
-		if state.generation != generation || state.conn != conn || !state.bound || state.rotating {
-			state.mu.Unlock()
-			return ErrNotBound
-		}
-		if len(state.active) >= maxInFlight {
-			state.mu.Unlock()
-			_ = e.failGeneration(generation, conn, ErrInFlightLimit)
-			return ErrInFlightLimit
-		}
-		if _, exists := state.active[req.RequestID]; exists {
-			state.mu.Unlock()
-			_ = e.failGeneration(generation, conn, ErrProtocol)
-			return ErrProtocol
-		}
-		reqCtx, cancel := context.WithCancel(ctx)
-		active := &activeRequest{cancel: cancel}
-		state.active[req.RequestID] = active
+		current := state.generation == generation && state.listener == listener && state.bound && !state.rotating && uid == state.expectedUID
+		root := state.identity
 		state.mu.Unlock()
-		go e.dispatch(generation, conn, handler, req, reqCtx, active)
+		if !current || !runnerIsDescendantStable(peer.PID, root) {
+			_ = unixConn.Close()
+			continue
+		}
+		state.mu.Lock()
+		allowed := state.generation == generation && state.listener == listener && state.bound && !state.rotating && uid == state.expectedUID && len(state.clients) < maxClients
+		client := &clientState{conn: unixConn, peer: peer, uid: uid, active: make(map[string]*activeRequest)}
+		if allowed {
+			state.clients[client] = struct{}{}
+		}
+		state.mu.Unlock()
+		if !allowed {
+			_ = unixConn.Close()
+			continue
+		}
+		_ = unixConn.SetReadDeadline(time.Now().Add(handshakeDeadline))
+		go e.serveClient(generation, listener, state, client, handler, ctx)
 	}
 }
 
-func validateEnvelope(state *linuxEndpoint, generation uint64, conn *net.UnixConn, req Request) error {
+func (e *Endpoint) serveClient(generation uint64, listener net.Listener, state *linuxEndpoint, client *clientState, handler Handler, ctx context.Context) {
+	defer func() {
+		client.mu.Lock()
+		for id, req := range client.active {
+			req.cancel()
+			delete(client.active, id)
+		}
+		client.mu.Unlock()
+		_ = client.conn.Close()
+		state.mu.Lock()
+		delete(state.clients, client)
+		state.mu.Unlock()
+	}()
+	for {
+		req, cred, err := readRequest(client.conn)
+		if err != nil {
+			return
+		}
+		if err := authorizeClient(state, generation, listener, client, cred); err != nil {
+			return
+		}
+		if err := validateClientEnvelope(client, req); err != nil {
+			return
+		}
+		if req.Kind == HelloKind {
+			_ = client.conn.SetReadDeadline(time.Time{})
+			if writeResponse(client, Response{Version: ProtocolVersion, RequestID: req.RequestID, OK: true}) != nil {
+				return
+			}
+			continue
+		}
+		client.mu.Lock()
+		if len(client.active) >= maxInFlight {
+			client.mu.Unlock()
+			return
+		}
+		if _, exists := client.active[req.RequestID]; exists {
+			client.mu.Unlock()
+			return
+		}
+		reqCtx, cancel := context.WithCancel(ctx)
+		active := &activeRequest{cancel: cancel, generation: generation}
+		client.active[req.RequestID] = active
+		client.mu.Unlock()
+		// Hold the read side from admission through dispatch start. Rotation
+		// takes the write side, so an admitted request cannot queue behind a
+		// rotation writer and deadlock the generation transition.
+		state.dispatchGate.RLock()
+		state.mu.Lock()
+		stale := state.generation != generation || state.listener != listener || !state.bound || state.rotating
+		limitExceeded := !stale && state.active >= maxInFlight
+		if !stale && !limitExceeded {
+			state.active++
+			active.admitted = true
+		}
+		state.mu.Unlock()
+		if !stale && !limitExceeded && state.dispatchBarrier != nil {
+			state.dispatchBarrier()
+		}
+		if stale || limitExceeded {
+			state.dispatchGate.RUnlock()
+			client.mu.Lock()
+			delete(client.active, req.RequestID)
+			client.mu.Unlock()
+			active.cancel()
+			if limitExceeded {
+				_ = writeResponse(client, Response{Version: ProtocolVersion, RequestID: req.RequestID, OK: false, Error: errorCode(ErrInFlightLimit)})
+			}
+			return
+		}
+		go e.dispatchClient(generation, listener, state, client, handler, req, reqCtx, active, true)
+	}
+}
+
+func authorizeClient(state *linuxEndpoint, generation uint64, listener net.Listener, client *clientState, cred *unix.Ucred) error {
+	if cred == nil || uint32(cred.Uid) != client.uid || int(cred.Pid) != client.peer.PID {
+		return ErrPeerUnauthorized
+	}
+	peerStart, err := procStartTime(client.peer.PID)
+	if err != nil || peerStart != client.peer.StartTime {
+		return ErrPeerUnauthorized
+	}
+	state.mu.Lock()
+	current := state.generation == generation && state.listener == listener && state.bound
+	root := state.identity
+	expectedUID := state.expectedUID
+	state.mu.Unlock()
+	if !current || client.uid != expectedUID || uint32(cred.Uid) != expectedUID || !runnerIsDescendantStable(client.peer.PID, root) {
+		return ErrRunnerUnauthorized
+	}
+	return nil
+}
+
+func validateClientEnvelope(client *clientState, req Request) error {
 	if req.Version != ProtocolVersion {
 		return ErrProtocol
 	}
-	state.mu.Lock()
-	defer state.mu.Unlock()
-	if state.generation != generation || state.conn != conn || !state.bound {
-		return ErrNotBound
-	}
-	if !state.helloSeen {
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	if !client.helloSeen {
 		if req.Kind != HelloKind || req.RequestID == "" || req.Operation != "" || len(req.Payload) != 0 {
 			return ErrProtocol
 		}
-		state.helloSeen = true
+		client.helloSeen = true
 		return nil
 	}
 	if req.Kind == HelloKind || req.Kind != RequestKind || req.RequestID == "" {
@@ -321,36 +462,54 @@ func validateEnvelope(state *linuxEndpoint, generation uint64, conn *net.UnixCon
 	return nil
 }
 
-func (e *Endpoint) dispatch(generation uint64, conn *net.UnixConn, handler Handler, req Request, reqCtx context.Context, active *activeRequest) {
-	state, err := linuxState(e)
-	if err != nil {
-		active.cancel()
-		return
+func (e *Endpoint) dispatchClient(generation uint64, listener net.Listener, state *linuxEndpoint, client *clientState, handler Handler, req Request, reqCtx context.Context, active *activeRequest, gateHeld bool) {
+	if !gateHeld {
+		state.dispatchGate.RLock()
 	}
-	state.dispatchGate.RLock()
 	state.mu.Lock()
-	current := state.generation == generation && state.conn == conn && state.bound && !state.rotating && state.active[req.RequestID] == active
+	current := state.generation == generation && state.listener == listener && state.bound && !state.rotating
 	state.mu.Unlock()
 	if !current {
-		state.dispatchGate.RUnlock()
 		active.cancel()
+		client.mu.Lock()
+		if client.active[req.RequestID] == active {
+			delete(client.active, req.RequestID)
+		}
+		client.mu.Unlock()
+		state.mu.Lock()
+		if active.admitted && active.generation == generation && state.generation == generation && state.active > 0 {
+			state.active--
+		}
+		active.admitted = false
+		state.mu.Unlock()
+		state.dispatchGate.RUnlock()
 		return
 	}
 	payload, handlerErr := handler(reqCtx, req)
-	state.dispatchGate.RUnlock()
 	resp := Response{Version: ProtocolVersion, RequestID: req.RequestID, OK: handlerErr == nil, Payload: payload}
 	if handlerErr != nil {
 		resp.Error = operationFailedCode
 	}
-	if writeErr := writeResponse(state, conn, resp); writeErr != nil {
-		_ = e.revokeGeneration(generation, conn)
-	}
+	writeErr := writeResponse(client, resp)
 	active.cancel()
-	state.mu.Lock()
-	if state.active[req.RequestID] == active {
-		delete(state.active, req.RequestID)
+	client.mu.Lock()
+	if client.active[req.RequestID] == active {
+		delete(client.active, req.RequestID)
 	}
+	client.mu.Unlock()
+	state.mu.Lock()
+	if active.admitted && active.generation == generation && state.generation == generation && state.active > 0 {
+		state.active--
+	}
+	active.admitted = false
 	state.mu.Unlock()
+	// Rotation takes the write side of this gate. Keep the read lock until
+	// generation-local accounting is complete, otherwise an old dispatch can
+	// decrement the active count of a freshly installed generation.
+	state.dispatchGate.RUnlock()
+	if writeErr != nil {
+		_ = client.conn.Close()
+	}
 }
 
 func readRequest(conn *net.UnixConn) (Request, *unix.Ucred, error) {
@@ -371,9 +530,9 @@ func readRequest(conn *net.UnixConn) (Request, *unix.Ucred, error) {
 		closeRights(oob[:oobn])
 		return Request{}, nil, ErrFrameTooLarge
 	}
-	var req Request
 	decoder := json.NewDecoder(bytes.NewReader(buf[:n]))
 	decoder.DisallowUnknownFields()
+	var req Request
 	if err := decoder.Decode(&req); err != nil {
 		closeRights(oob[:oobn])
 		return Request{}, nil, ErrProtocol
@@ -432,6 +591,10 @@ func parseCredentials(oob []byte) (*unix.Ucred, error) {
 				invalid = true
 				continue
 			}
+			if len(msg.Data) < unix.SizeofUcred {
+				invalid = true
+				continue
+			}
 			parsed, err := unix.ParseUnixCredentials(msg)
 			if err != nil {
 				invalid = true
@@ -456,7 +619,7 @@ func parseCredentials(oob []byte) (*unix.Ucred, error) {
 	return cred, nil
 }
 
-func writeResponse(state *linuxEndpoint, conn *net.UnixConn, resp Response) error {
+func writeResponse(client *clientState, resp Response) error {
 	data, err := json.Marshal(resp)
 	if err != nil {
 		return err
@@ -464,12 +627,9 @@ func writeResponse(state *linuxEndpoint, conn *net.UnixConn, resp Response) erro
 	if len(data) > MaxFrameBytes {
 		return ErrFrameTooLarge
 	}
-	if conn == nil {
-		return ErrClosed
-	}
-	state.writeMu.Lock()
-	defer state.writeMu.Unlock()
-	n, oobn, err := conn.WriteMsgUnix(data, nil, nil)
+	client.writeMu.Lock()
+	defer client.writeMu.Unlock()
+	n, oobn, err := client.conn.WriteMsgUnix(data, nil, nil)
 	if err != nil {
 		return err
 	}
@@ -477,37 +637,6 @@ func writeResponse(state *linuxEndpoint, conn *net.UnixConn, resp Response) erro
 		return io.ErrShortWrite
 	}
 	return nil
-}
-
-func (s *linuxEndpoint) authorize(generation uint64, conn *net.UnixConn, cred *unix.Ucred) error {
-	if cred == nil || int(cred.Uid) != os.Getuid() {
-		return ErrPeerUnauthorized
-	}
-	s.mu.Lock()
-	if s.generation != generation || s.conn != conn || !s.bound {
-		s.mu.Unlock()
-		return ErrNotBound
-	}
-	identity := s.identity
-	s.mu.Unlock()
-	if !runnerIsDescendantStable(int(cred.Pid), identity) {
-		return ErrRunnerUnauthorized
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.generation != generation || s.conn != conn || s.identity != identity || !s.bound {
-		return ErrNotBound
-	}
-	return nil
-}
-
-func (e *Endpoint) failGeneration(generation uint64, conn *net.UnixConn, cause error) error {
-	state, err := linuxState(e)
-	if err != nil {
-		return err
-	}
-	_ = writeResponse(state, conn, Response{Version: ProtocolVersion, Error: errorCode(cause)})
-	return e.revokeGeneration(generation, conn)
 }
 
 func (e *Endpoint) revoke() error {
@@ -520,19 +649,22 @@ func (e *Endpoint) revoke() error {
 	return e.revokeLocked(state, 0, nil)
 }
 
-func (e *Endpoint) revokeGeneration(generation uint64, expected *net.UnixConn) error {
+func (e *Endpoint) revokeGenerationOnly(generation uint64) error {
+	return e.revokeGeneration(generation, nil)
+}
+func (e *Endpoint) revokeGeneration(generation uint64, listener net.Listener) error {
 	state, err := linuxState(e)
 	if err != nil {
 		return err
 	}
 	state.lifecycleMu.Lock()
 	defer state.lifecycleMu.Unlock()
-	return e.revokeLocked(state, generation, expected)
+	return e.revokeLocked(state, generation, listener)
 }
 
-func (e *Endpoint) revokeLocked(state *linuxEndpoint, generation uint64, expected *net.UnixConn) error {
+func (e *Endpoint) revokeLocked(state *linuxEndpoint, generation uint64, expected net.Listener) error {
 	state.mu.Lock()
-	if generation != 0 && (state.generation != generation || state.conn != expected) {
+	if generation != 0 && (state.generation != generation || (expected != nil && state.listener != expected)) {
 		state.mu.Unlock()
 		return nil
 	}
@@ -540,21 +672,29 @@ func (e *Endpoint) revokeLocked(state *linuxEndpoint, generation uint64, expecte
 		state.mu.Unlock()
 		return nil
 	}
-	conn, hold := state.conn, state.runnerHold
-	state.conn, state.runnerHold = nil, nil
+	listener := state.listener
+	state.listener = nil
 	state.rotating = true
-	state.prepared, state.bound, state.serving, state.helloSeen = false, false, false, false
+	state.prepared, state.bound, state.serving = false, false, false
 	state.identity = RunnerIdentity{}
-	for id, request := range state.active {
-		request.cancel()
-		delete(state.active, id)
+	clients := make([]*clientState, 0, len(state.clients))
+	for client := range state.clients {
+		clients = append(clients, client)
 	}
+	state.clients = make(map[*clientState]struct{})
+	state.active = 0
 	state.mu.Unlock()
-	if conn != nil {
-		_ = conn.Close()
+	if listener != nil {
+		_ = listener.Close()
 	}
-	if hold != nil {
-		_ = hold.Close()
+	for _, client := range clients {
+		client.mu.Lock()
+		for id, req := range client.active {
+			req.cancel()
+			delete(client.active, id)
+		}
+		client.mu.Unlock()
+		_ = client.conn.Close()
 	}
 	state.dispatchGate.Lock()
 	state.dispatchGate.Unlock()

@@ -74,6 +74,34 @@ func TestRegistryModeBindingAndAbortAllowsRetry(t *testing.T) {
 	}
 }
 
+func TestRegistryGrantNeverCreatesBearerFileAndSupportsReplay(t *testing.T) {
+	workDir := t.TempDir()
+	r := New()
+	authority, err := r.Grant(IssueRequest{TaskID: "task", RuntimeID: "runtime", WorkspaceID: "workspace", WorkDir: workDir, Operation: OperationRepoCheckout, Targets: []Target{{URL: "https://github.com/acme/repo.git", Ref: "main"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := CheckoutRequest{TaskID: "task", RuntimeID: "runtime", WorkspaceID: "workspace", WorkDir: workDir, URL: "https://github.com/acme/repo.git", Ref: "main", Operation: OperationRepoCheckout, RequestID: "grant-1"}
+	decision, err := authority.Authorize(req)
+	if err != nil || !decision.Acquired {
+		t.Fatalf("grant authorize = %+v, err=%v", decision, err)
+	}
+	result := []byte(`{"path":"` + filepath.Join(workDir, "checkout") + `"}`)
+	if err := authority.Complete(req, result); err != nil {
+		t.Fatal(err)
+	}
+	replay, err := authority.Authorize(req)
+	if err != nil || string(replay.Replay) != string(result) {
+		t.Fatalf("grant replay = %+v, err=%v", replay, err)
+	}
+	if err := r.RevokeAuthority(authority); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := authority.Authorize(req); !errors.Is(err, ErrInvalidCapability) {
+		t.Fatalf("revoked grant err=%v, want invalid capability", err)
+	}
+}
+
 func TestRegistryRejectsExpiredAndRevokedCapability(t *testing.T) {
 	workDir := t.TempDir()
 	r := New()

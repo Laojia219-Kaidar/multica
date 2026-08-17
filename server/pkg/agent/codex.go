@@ -883,6 +883,17 @@ func (b *codexBackend) executeOnce(ctx context.Context, prompt string, opts Exec
 	}
 	codexArgs := buildCodexArgs(opts, b.cfg.Logger)
 	cmd := exec.CommandContext(runCtx, execPath, codexArgs...)
+	var launchAttempt LaunchHookAttempt
+	launchPrepared := false
+	if opts.LaunchHook != nil {
+		var prepareErr error
+		launchAttempt, prepareErr = opts.LaunchHook.Prepare(runCtx)
+		if prepareErr != nil {
+			cancel()
+			return nil, fmt.Errorf("codex launch prepare: %w", prepareErr)
+		}
+		launchPrepared = true
+	}
 	hideAgentWindow(cmd)
 	// Run codex in its own process group so a cancel-on-stuck cleanup
 	// reaches the whole tree — the codex Node wrapper plus the native
@@ -912,15 +923,28 @@ func (b *codexBackend) executeOnce(ctx context.Context, prompt string, opts Exec
 	if opts.Cwd != "" {
 		cmd.Dir = opts.Cwd
 	}
-	cmd.Env = buildEnv(b.cfg.Env)
+	effectiveEnv := make(map[string]string, len(b.cfg.Env)+len(launchAttempt.Env))
+	for key, value := range b.cfg.Env {
+		effectiveEnv[key] = value
+	}
+	for key, value := range launchAttempt.Env {
+		effectiveEnv[key] = value
+	}
+	cmd.Env = buildEnv(effectiveEnv)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
+		if launchPrepared {
+			_ = opts.LaunchHook.Cleanup(context.Background(), launchAttempt)
+		}
 		cancel()
 		return nil, fmt.Errorf("codex stdout pipe: %w", err)
 	}
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
+		if launchPrepared {
+			_ = opts.LaunchHook.Cleanup(context.Background(), launchAttempt)
+		}
 		cancel()
 		return nil, fmt.Errorf("codex stdin pipe: %w", err)
 	}
@@ -930,8 +954,20 @@ func (b *codexBackend) executeOnce(ctx context.Context, prompt string, opts Exec
 	cmd.Stderr = stderrBuf
 
 	if err := cmd.Start(); err != nil {
+		if launchPrepared {
+			_ = opts.LaunchHook.Cleanup(context.Background(), launchAttempt)
+		}
 		cancel()
 		return nil, fmt.Errorf("start codex: %w", err)
+	}
+	if launchPrepared {
+		if err := opts.LaunchHook.Bind(runCtx, launchAttempt, cmd.Process.Pid); err != nil {
+			signalProcessGroup(cmd.Process, syscall.SIGKILL)
+			_ = cmd.Wait()
+			_ = opts.LaunchHook.Cleanup(context.Background(), launchAttempt)
+			cancel()
+			return nil, fmt.Errorf("codex launch bind: %w", err)
+		}
 	}
 	activeLaunches := activeCodexLaunches.Add(1)
 	for {
@@ -1178,11 +1214,18 @@ func (b *codexBackend) executeOnce(ctx context.Context, prompt string, opts Exec
 	// Shutdown sequence: lifecycle goroutine closes stdin + cancels context →
 	// codex process exits → reader goroutine's scanner.Scan() returns false →
 	// readerDone closes → lifecycle goroutine collects final output and sends Result.
+	var launchCleanupOnce sync.Once
+	cleanupLaunch := func() {
+		if launchPrepared {
+			launchCleanupOnce.Do(func() { _ = opts.LaunchHook.Cleanup(context.Background(), launchAttempt) })
+		}
+	}
 	go func() {
 		defer activeCodexLaunches.Add(-1)
 		defer cancel()
 		defer close(msgCh)
 		defer close(resCh)
+		defer cleanupLaunch()
 		defer drainAndWait()
 
 		startTime := time.Now()
@@ -1232,6 +1275,7 @@ func (b *codexBackend) executeOnce(ctx context.Context, prompt string, opts Exec
 				finalError += "; retry suppressed: process-tree cleanup cannot be confirmed on this platform"
 			}
 			b.cfg.Logger.Warn("codex lifecycle", "phase", "initialize_failure", "task_id", b.cfg.TaskID, "runtime_id", b.cfg.RuntimeID, "pid", cmd.Process.Pid, "attempt", attempt, "latency", initializeLatency.Round(time.Millisecond).String(), "semantic_activity", semanticObserved.Load(), "cleanup_confirmed", cleanupConfirmed, "retry_safe", retrySafe)
+			cleanupLaunch()
 			resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds(), codexInitializeRetrySafe: retrySafe}
 			return
 		}
@@ -1276,6 +1320,7 @@ func (b *codexBackend) executeOnce(ctx context.Context, prompt string, opts Exec
 					"stderr_bare_timeout_count", classification.bareTimeout,
 				)
 			}
+			cleanupLaunch()
 			resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds()}
 			return
 		}
@@ -1334,6 +1379,7 @@ func (b *codexBackend) executeOnce(ctx context.Context, prompt string, opts Exec
 				drainAndWait() // flush os/exec stderr goroutine before sampling Tail
 				finalStatus = "failed"
 				finalError = withAgentStderr(fmt.Sprintf("codex turn/start failed: %v", err), "codex", sanitizeCodexDiagnostic(stderrBuf.Tail()))
+				cleanupLaunch()
 				resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds()}
 				return
 			}
@@ -1452,6 +1498,7 @@ func (b *codexBackend) executeOnce(ctx context.Context, prompt string, opts Exec
 		// window expires. A clean shutdown lets codex flush OTEL telemetry;
 		// a stuck process is killed via the process-group SIGKILL.
 		drainAndWait()
+		cleanupLaunch()
 
 		if processExitErr != nil {
 			finalError = withAgentStderr(processExitErr.Error(), "codex", sanitizeCodexDiagnostic(stderrBuf.Tail()))

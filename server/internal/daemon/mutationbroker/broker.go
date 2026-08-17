@@ -57,9 +57,66 @@ type IssueRequest struct {
 }
 
 type CheckoutRequest struct {
-	TaskID, RuntimeID, WorkspaceID, WorkDir, AgentName string
-	URL, Ref, Operation, RequestID                     string
-	CheckoutMode                                       string
+	TaskID       string `json:"task_id"`
+	RuntimeID    string `json:"runtime_id"`
+	WorkspaceID  string `json:"workspace_id"`
+	WorkDir      string `json:"workdir"`
+	AgentName    string `json:"agent_name"`
+	URL          string `json:"url"`
+	Ref          string `json:"ref"`
+	Operation    string `json:"operation"`
+	RequestID    string `json:"request_id"`
+	CheckoutMode string `json:"checkout_mode"`
+}
+
+// Authority is a daemon-private grant for transports that cannot safely hand
+// a bearer capability to the task. It stores only the registry digest; the
+// plaintext capability is never retained after Grant returns.
+type Authority struct {
+	registry *Registry
+	digest   [32]byte
+	mu       sync.Mutex
+}
+
+func (a *Authority) snapshot() (*Registry, [32]byte, bool) {
+	if a == nil {
+		return nil, [32]byte{}, false
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.registry, a.digest, a.registry != nil && a.digest != ([32]byte{})
+}
+
+func (a *Authority) Authorize(req CheckoutRequest) (Decision, error) {
+	registry, digest, ok := a.snapshot()
+	if !ok {
+		return Decision{}, ErrInvalidCapability
+	}
+	return registry.authorizeDigest(digest, req)
+}
+
+func (a *Authority) Complete(req CheckoutRequest, result []byte) error {
+	registry, digest, ok := a.snapshot()
+	if !ok {
+		return ErrInvalidCapability
+	}
+	return registry.completeDigest(digest, req, result)
+}
+
+func (a *Authority) Abort(req CheckoutRequest) error {
+	registry, digest, ok := a.snapshot()
+	if !ok {
+		return ErrInvalidCapability
+	}
+	return registry.abortDigest(digest, req)
+}
+
+func (a *Authority) InvalidateReplay(req CheckoutRequest) error {
+	registry, digest, ok := a.snapshot()
+	if !ok {
+		return ErrInvalidCapability
+	}
+	return registry.invalidateReplayDigest(digest, req)
 }
 
 type record struct {
@@ -208,6 +265,52 @@ func (r *Registry) Issue(in IssueRequest, dir string) (string, string, error) {
 	return path, capability, nil
 }
 
+// Grant creates the same exact-replay registry record as Issue without
+// creating a task-readable file. It is used only by the daemon-owned Unix
+// transport; the returned Authority never crosses the process boundary.
+func (r *Registry) Grant(in IssueRequest) (*Authority, error) {
+	in, err := normalizeIssue(in)
+	if err != nil {
+		return nil, err
+	}
+	realWorkDir, err := filepath.EvalSymlinks(in.WorkDir)
+	if err != nil {
+		return nil, ErrUnauthorized
+	}
+	var raw [32]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return nil, fmt.Errorf("random grant: %w", err)
+	}
+	capability := hex.EncodeToString(raw[:])
+	digest := hashCapability(capability)
+	r.mu.Lock()
+	r.byDigest[digest] = &record{digest: digest, expires: time.Now().Add(in.TTL), request: make(map[string]requestRecord), requestBase: in, realWorkDir: realWorkDir}
+	r.mu.Unlock()
+	// The plaintext is used only to derive the digest and is not retained in
+	// the Authority or Registry record.
+	return &Authority{registry: r, digest: digest}, nil
+}
+
+// RevokeAuthority drops a daemon-private grant without exposing its bearer.
+func (r *Registry) RevokeAuthority(a *Authority) error {
+	if a == nil {
+		return ErrInvalidCapability
+	}
+	a.mu.Lock()
+	if a.registry != r || a.digest == ([32]byte{}) {
+		a.mu.Unlock()
+		return ErrInvalidCapability
+	}
+	digest := a.digest
+	a.digest = [32]byte{}
+	a.registry = nil
+	a.mu.Unlock()
+	r.mu.Lock()
+	delete(r.byDigest, digest)
+	r.mu.Unlock()
+	return nil
+}
+
 func rejectSymlinkComponents(path string) error {
 	abs, err := filepath.Abs(path)
 	if err != nil {
@@ -293,6 +396,13 @@ func (r *Registry) Authorize(capability string, req CheckoutRequest) (Decision, 
 		return Decision{}, ErrInvalidCapability
 	}
 	digest := hashCapability(strings.TrimSpace(capability))
+	return r.authorizeDigest(digest, req)
+}
+
+func (r *Registry) authorizeDigest(digest [32]byte, req CheckoutRequest) (Decision, error) {
+	if digest == ([32]byte{}) || strings.TrimSpace(req.RequestID) == "" {
+		return Decision{}, ErrInvalidCapability
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	rec := r.byDigest[digest]
@@ -328,7 +438,14 @@ func (r *Registry) Authorize(capability string, req CheckoutRequest) (Decision, 
 }
 
 func (r *Registry) Complete(capability string, req CheckoutRequest, result []byte) error {
+	if strings.TrimSpace(capability) == "" {
+		return ErrInvalidCapability
+	}
 	digest := hashCapability(strings.TrimSpace(capability))
+	return r.completeDigest(digest, req, result)
+}
+
+func (r *Registry) completeDigest(digest [32]byte, req CheckoutRequest, result []byte) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	rec := r.byDigest[digest]
@@ -360,7 +477,14 @@ func (r *Registry) Complete(capability string, req CheckoutRequest, result []byt
 // Abort releases an in-flight request after any pre-completion failure so the
 // same request ID can be retried without weakening replay binding.
 func (r *Registry) Abort(capability string, req CheckoutRequest) error {
+	if strings.TrimSpace(capability) == "" {
+		return ErrInvalidCapability
+	}
 	digest := hashCapability(strings.TrimSpace(capability))
+	return r.abortDigest(digest, req)
+}
+
+func (r *Registry) abortDigest(digest [32]byte, req CheckoutRequest) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	rec := r.byDigest[digest]
@@ -382,7 +506,14 @@ func (r *Registry) Abort(capability string, req CheckoutRequest) error {
 // capability and request digest. In-flight work and drifted requests remain
 // untouched so a concurrent owner cannot be canceled by a stale replay.
 func (r *Registry) InvalidateReplay(capability string, req CheckoutRequest) error {
+	if strings.TrimSpace(capability) == "" {
+		return ErrInvalidCapability
+	}
 	digest := hashCapability(strings.TrimSpace(capability))
+	return r.invalidateReplayDigest(digest, req)
+}
+
+func (r *Registry) invalidateReplayDigest(digest [32]byte, req CheckoutRequest) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	rec := r.byDigest[digest]

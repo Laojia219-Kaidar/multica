@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"os"
+	"net"
 )
 
 const (
@@ -23,6 +23,7 @@ var (
 	ErrFrameTooLarge      = errors.New("mutation broker frame too large")
 	ErrProtocol           = errors.New("mutation broker protocol error")
 	ErrInFlightLimit      = errors.New("mutation broker in-flight limit exceeded")
+	ErrEntropyUnavailable = errors.New("mutation broker entropy unavailable")
 )
 
 // Request is the transport envelope. Task identity is bound to the endpoint;
@@ -49,11 +50,14 @@ type Response struct {
 // by the upper Registry/receipt layer, not by this transport.
 type Handler func(context.Context, Request) (json.RawMessage, error)
 
-// PreparedRunner is the parent-side half of one transport generation. The
-// File is intended to be inherited by the runner process and closed by the
-// caller after cmd.Start succeeds.
+// PreparedRunner is the parent-side half of one transport generation. Locator
+// is passed through the runner environment only as a non-authoritative
+// rendezvous value; the daemon binds authority to peer credentials after the
+// runner starts.
 type PreparedRunner struct {
-	File       *os.File
+	// Locator is an abstract AF_UNIX address. It is a locator only; peer
+	// credentials and the bound root ancestry are the authority.
+	Locator    string
 	Generation uint64
 }
 
@@ -74,7 +78,8 @@ type Endpoint struct {
 func NewEndpoint() *Endpoint { return newEndpoint() }
 
 // PrepareRunner rotates the endpoint and returns a fresh generation and
-// inherited runner FD. Any prior connection and in-flight work is revoked.
+// abstract listener locator. Any prior connection and in-flight work is
+// revoked.
 func (e *Endpoint) PrepareRunner() (PreparedRunner, error) {
 	return e.prepareRunner()
 }
@@ -94,5 +99,16 @@ func (e *Endpoint) Serve(generation uint64, ctx context.Context, handler Handler
 // subsequent PrepareRunner starts a fresh generation.
 func (e *Endpoint) Revoke() error { return e.revoke() }
 
+func (e *Endpoint) RevokeGeneration(generation uint64) error {
+	return e.revokeGenerationOnly(generation)
+}
+
 // Close permanently closes the endpoint and cancels all active requests.
 func (e *Endpoint) Close() error { return e.close() }
+
+// Dial connects one independent client to a prepared generation. The Linux
+// implementation returns a SOCK_SEQPACKET UnixConn; unsupported platforms
+// fail closed.
+func Dial(ctx context.Context, locator string) (net.Conn, error) {
+	return dial(ctx, locator)
+}

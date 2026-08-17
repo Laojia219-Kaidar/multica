@@ -26,6 +26,8 @@ func procStartTime(pid int) (uint64, error) {
 	return strconv.ParseUint(fields[19], 10, 64)
 }
 
+func ProcessStartTime(pid int) (uint64, error) { return procStartTime(pid) }
+
 func procParent(pid int) (int, error) {
 	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
 	if err != nil {

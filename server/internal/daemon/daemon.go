@@ -5060,6 +5060,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		}
 	}()
 	var mutationCapabilityFile string
+	var mutationAuthority *mutationbroker.Authority
 	brokerTargets := make([]mutationbroker.Target, 0, len(task.WriterLeaseTargets)+len(task.Repos))
 	if len(task.WriterLeaseTargets) > 0 {
 		for _, target := range task.WriterLeaseTargets {
@@ -5074,15 +5075,28 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	if len(brokerTargets) > 0 {
 		d.mutationBroker.Sweep(time.Now())
 		checkoutMode := repoCheckoutModeFor(provider, runtime.GOOS)
-		mutationCapabilityFile, _, err = d.mutationBroker.Issue(mutationbroker.IssueRequest{TaskID: task.ID, RuntimeID: task.RuntimeID, WorkspaceID: task.WorkspaceID, WorkDir: env.WorkDir, AgentName: agentName, OwnedRoot: taskTempDir, Operation: mutationbroker.OperationRepoCheckout, CheckoutMode: checkoutMode, Targets: brokerTargets}, capDir)
-		if err != nil {
-			return TaskResult{}, fmt.Errorf("issue task mutation capability: %w", err)
-		}
-		defer func() {
-			if err := d.mutationBroker.Revoke(mutationCapabilityFile); err != nil {
-				taskLog.Warn("mutation capability cleanup failed", "error", err)
+		issue := mutationbroker.IssueRequest{TaskID: task.ID, RuntimeID: task.RuntimeID, WorkspaceID: task.WorkspaceID, WorkDir: env.WorkDir, AgentName: agentName, OwnedRoot: taskTempDir, Operation: mutationbroker.OperationRepoCheckout, CheckoutMode: checkoutMode, Targets: brokerTargets}
+		if enforceGitTarget {
+			mutationAuthority, err = d.mutationBroker.Grant(issue)
+			if err != nil {
+				return TaskResult{}, fmt.Errorf("grant task mutation authority: %w", err)
 			}
-		}()
+			defer func() {
+				if err := d.mutationBroker.RevokeAuthority(mutationAuthority); err != nil {
+					taskLog.Warn("mutation authority cleanup failed", "error", err)
+				}
+			}()
+		} else {
+			mutationCapabilityFile, _, err = d.mutationBroker.Issue(issue, capDir)
+			if err != nil {
+				return TaskResult{}, fmt.Errorf("issue task mutation capability: %w", err)
+			}
+			defer func() {
+				if err := d.mutationBroker.Revoke(mutationCapabilityFile); err != nil {
+					taskLog.Warn("mutation capability cleanup failed", "error", err)
+				}
+			}()
+		}
 	}
 
 	// Issue #3999 race A: now that env.WorkDir is on disk, transition the
@@ -5167,22 +5181,24 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		return TaskResult{}, err
 	}
 	agentEnv := map[string]string{
-		"MULTICA_TOKEN":                    agentToken,
-		"MULTICA_SERVER_URL":               d.cfg.ServerBaseURL,
-		"MULTICA_DAEMON_PORT":              fmt.Sprintf("%d", d.cfg.HealthPort),
-		"MULTICA_WORKSPACE_ID":             task.WorkspaceID,
-		"MULTICA_AGENT_NAME":               agentName,
-		"MULTICA_AGENT_ID":                 task.AgentID,
-		"MULTICA_TASK_ID":                  task.ID,
-		"MULTICA_RUNTIME_ID":               task.RuntimeID,
-		"MULTICA_MUTATION_CAPABILITY_FILE": mutationCapabilityFile,
-		"MULTICA_TASK_SLOT":                strconv.Itoa(slot),
-		"TMPDIR":                           taskTempDir,
-		"TMP":                              taskTempDir,
-		"TEMP":                             taskTempDir,
+		"MULTICA_TOKEN":        agentToken,
+		"MULTICA_SERVER_URL":   d.cfg.ServerBaseURL,
+		"MULTICA_DAEMON_PORT":  fmt.Sprintf("%d", d.cfg.HealthPort),
+		"MULTICA_WORKSPACE_ID": task.WorkspaceID,
+		"MULTICA_AGENT_NAME":   agentName,
+		"MULTICA_AGENT_ID":     task.AgentID,
+		"MULTICA_TASK_ID":      task.ID,
+		"MULTICA_RUNTIME_ID":   task.RuntimeID,
+		"MULTICA_TASK_SLOT":    strconv.Itoa(slot),
+		"TMPDIR":               taskTempDir,
+		"TMP":                  taskTempDir,
+		"TEMP":                 taskTempDir,
 	}
 	if checkoutMode := repoCheckoutModeFor(provider, runtime.GOOS); checkoutMode != "" {
 		agentEnv[repoCheckoutModeEnv] = checkoutMode
+	}
+	if mutationCapabilityFile != "" {
+		agentEnv["MULTICA_MUTATION_CAPABILITY_FILE"] = mutationCapabilityFile
 	}
 	if task.AutopilotRunID != "" {
 		agentEnv["MULTICA_AUTOPILOT_RUN_ID"] = task.AutopilotRunID
@@ -5271,6 +5287,23 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	}
 	if err := configureCodexTaskShellEnvironment(provider, env.CodexHome, os.Environ(), agentEnv, agentCustomEnv, d.logger); err != nil {
 		return TaskResult{}, err
+	}
+	var mutationLaunchHook agent.LaunchHook
+	if enforceGitTarget {
+		if mutationAuthority == nil {
+			return TaskResult{}, errors.New("mediated checkout authority unavailable")
+		}
+		endpoint := mutationbroker.NewEndpoint()
+		hook := &codexMutationLaunchHook{
+			endpoint: endpoint,
+			handler:  d.mutationCheckoutHandler(mutationAuthority, task.ID, task.RuntimeID, task.WorkspaceID, env.WorkDir, agentName, repoCheckoutModeFor(provider, runtime.GOOS)),
+		}
+		mutationLaunchHook = hook
+		defer func() {
+			if err := hook.Close(); err != nil {
+				taskLog.Warn("mutation transport cleanup failed", "error", err)
+			}
+		}()
 	}
 	backend, err := agent.New(provider, agent.Config{
 		ExecutablePath: entry.Path,
@@ -5390,6 +5423,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		idleWatchdogTimeout = d.cfg.OpenCodeIdleWatchdog
 	}
 	execOpts := agent.ExecOptions{
+		LaunchHook:                mutationLaunchHook,
 		Cwd:                       env.WorkDir,
 		Model:                     model,
 		ThreadName:                deriveTaskThreadName(task),

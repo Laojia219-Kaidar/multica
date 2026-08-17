@@ -6,14 +6,17 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
+	"runtime"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/multica-ai/multica/server/internal/cli"
+	"github.com/multica-ai/multica/server/internal/daemon/mutationbroker"
 	"github.com/spf13/cobra"
 )
 
@@ -335,6 +338,17 @@ func runRepoRemove(cmd *cobra.Command, args []string) error {
 
 func runRepoCheckout(cmd *cobra.Command, args []string) error {
 	repoURL := args[0]
+	transport := strings.TrimSpace(os.Getenv("MULTICA_REPO_CHECKOUT_TRANSPORT"))
+	selected, err := selectRepoCheckoutTransport(transport, strings.TrimSpace(os.Getenv("MULTICA_MEDIATED_VCS_POLICY")))
+	if err != nil {
+		return err
+	}
+	if selected == "unix-seqpacket-v1" {
+		if runtime.GOOS != "linux" {
+			return fmt.Errorf("unix-seqpacket-v1 checkout transport is Linux-only")
+		}
+		return runUnixRepoCheckout(repoURL)
+	}
 
 	daemonPort := os.Getenv("MULTICA_DAEMON_PORT")
 	if daemonPort == "" {
@@ -411,5 +425,156 @@ func runRepoCheckout(cmd *cobra.Command, args []string) error {
 	fmt.Fprintf(os.Stdout, "%s\n", result.Path)
 	fmt.Fprintf(os.Stderr, "Checked out %s → %s (branch: %s)\n", repoURL, result.Path, result.BranchName)
 
+	return nil
+}
+
+func selectRepoCheckoutTransport(transport, policy string) (string, error) {
+	switch transport {
+	case "":
+		if policy == "1" {
+			return "", fmt.Errorf("mediated checkout transport missing or unsupported")
+		}
+		return "legacy-http", nil
+	case "unix-seqpacket-v1":
+		return transport, nil
+	default:
+		return "", fmt.Errorf("unsupported mediated checkout transport %q", transport)
+	}
+}
+
+func runUnixRepoCheckout(repoURL string) error {
+	locator := strings.TrimSpace(os.Getenv("MULTICA_REPO_CHECKOUT_LOCATOR"))
+	if locator == "" {
+		return fmt.Errorf("MULTICA_REPO_CHECKOUT_LOCATOR not set")
+	}
+	workspaceID := os.Getenv("MULTICA_WORKSPACE_ID")
+	agentName := os.Getenv("MULTICA_AGENT_NAME")
+	taskID := os.Getenv("MULTICA_TASK_ID")
+	runtimeID := os.Getenv("MULTICA_RUNTIME_ID")
+	workDir, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("get working directory: %w", err)
+	}
+	requestID := uuid.NewString()
+	payload, err := json.Marshal(mutationbroker.CheckoutRequest{
+		WorkspaceID:  workspaceID,
+		AgentName:    agentName,
+		TaskID:       taskID,
+		RuntimeID:    runtimeID,
+		WorkDir:      workDir,
+		URL:          repoURL,
+		Ref:          strings.TrimSpace(repoCheckoutRef),
+		CheckoutMode: strings.TrimSpace(os.Getenv("MULTICA_REPO_CHECKOUT_MODE")),
+	})
+	if err != nil {
+		return fmt.Errorf("encode mediated checkout request: %w", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	conn, err := mutationbroker.Dial(ctx, locator)
+	if err != nil {
+		return fmt.Errorf("connect mediated checkout transport: %w", err)
+	}
+	defer conn.Close()
+	uconn, ok := conn.(*net.UnixConn)
+	if !ok {
+		return fmt.Errorf("mediated checkout transport is not Unix seqpacket")
+	}
+	cred, err := repoCheckoutCredentials()
+	if err != nil {
+		return err
+	}
+	write := func(req mutationbroker.Request) error {
+		if deadline, ok := ctx.Deadline(); ok {
+			if err := uconn.SetWriteDeadline(deadline); err != nil {
+				return err
+			}
+		} else if err := uconn.SetWriteDeadline(time.Time{}); err != nil {
+			return err
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		data, err := json.Marshal(req)
+		if err != nil {
+			return err
+		}
+		if len(data) > mutationbroker.MaxFrameBytes {
+			return mutationbroker.ErrFrameTooLarge
+		}
+		n, oobn, err := uconn.WriteMsgUnix(data, cred, nil)
+		if err != nil {
+			return err
+		}
+		if n != len(data) || oobn != len(cred) {
+			return io.ErrShortWrite
+		}
+		return nil
+	}
+	read := func() (mutationbroker.Response, error) {
+		if deadline, ok := ctx.Deadline(); ok {
+			if err := uconn.SetReadDeadline(deadline); err != nil {
+				return mutationbroker.Response{}, err
+			}
+		} else if err := uconn.SetReadDeadline(time.Time{}); err != nil {
+			return mutationbroker.Response{}, err
+		}
+		if err := ctx.Err(); err != nil {
+			return mutationbroker.Response{}, err
+		}
+		data := make([]byte, mutationbroker.MaxFrameBytes+1)
+		n, _, flags, _, err := uconn.ReadMsgUnix(data, nil)
+		if err != nil {
+			return mutationbroker.Response{}, err
+		}
+		if flags != 0 || n > mutationbroker.MaxFrameBytes {
+			return mutationbroker.Response{}, mutationbroker.ErrProtocol
+		}
+		var response mutationbroker.Response
+		decoder := json.NewDecoder(bytes.NewReader(data[:n]))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&response); err != nil {
+			return mutationbroker.Response{}, err
+		}
+		var trailing any
+		if err := decoder.Decode(&trailing); err == nil || err != io.EOF {
+			return mutationbroker.Response{}, mutationbroker.ErrProtocol
+		}
+		if response.Version != mutationbroker.ProtocolVersion {
+			return mutationbroker.Response{}, mutationbroker.ErrProtocol
+		}
+		return response, nil
+	}
+	if err := write(mutationbroker.Request{Version: mutationbroker.ProtocolVersion, Kind: mutationbroker.HelloKind, RequestID: requestID + "-hello"}); err != nil {
+		return fmt.Errorf("send mediated checkout hello: %w", err)
+	}
+	if response, err := read(); err != nil || !response.OK || response.RequestID != requestID+"-hello" {
+		if err != nil {
+			return fmt.Errorf("mediated checkout hello failed: %w", err)
+		}
+		return fmt.Errorf("mediated checkout hello rejected")
+	}
+	if err := write(mutationbroker.Request{Version: mutationbroker.ProtocolVersion, Kind: mutationbroker.RequestKind, RequestID: requestID, Operation: mutationbroker.OperationRepoCheckout, Payload: payload}); err != nil {
+		return fmt.Errorf("send mediated checkout request: %w", err)
+	}
+	response, err := read()
+	if err != nil {
+		return fmt.Errorf("read mediated checkout response: %w", err)
+	}
+	if response.RequestID != requestID || !response.OK {
+		return fmt.Errorf("checkout failed: mediated operation rejected")
+	}
+	var result struct {
+		Path       string `json:"path"`
+		BranchName string `json:"branch_name"`
+	}
+	if err := json.Unmarshal(response.Payload, &result); err != nil {
+		return fmt.Errorf("parse mediated checkout response: %w", err)
+	}
+	if strings.TrimSpace(result.Path) == "" {
+		return fmt.Errorf("mediated checkout response has no path")
+	}
+	fmt.Fprintf(os.Stdout, "%s\n", result.Path)
+	fmt.Fprintf(os.Stderr, "Checked out %s → %s (branch: %s)\n", repoURL, result.Path, result.BranchName)
 	return nil
 }

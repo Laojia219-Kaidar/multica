@@ -18,6 +18,39 @@ import (
 	"unicode/utf8"
 )
 
+type recordingLaunchHook struct {
+	mu      sync.Mutex
+	events  []string
+	bindErr error
+}
+
+func (h *recordingLaunchHook) Prepare(context.Context) (LaunchHookAttempt, error) {
+	h.mu.Lock()
+	h.events = append(h.events, "prepare")
+	h.mu.Unlock()
+	return LaunchHookAttempt{Generation: 1, Env: map[string]string{"TEST_LAUNCH_HOOK": "1"}}, nil
+}
+
+func (h *recordingLaunchHook) Bind(context.Context, LaunchHookAttempt, int) error {
+	h.mu.Lock()
+	h.events = append(h.events, "bind")
+	h.mu.Unlock()
+	return h.bindErr
+}
+
+func (h *recordingLaunchHook) Cleanup(context.Context, LaunchHookAttempt) error {
+	h.mu.Lock()
+	h.events = append(h.events, "cleanup")
+	h.mu.Unlock()
+	return nil
+}
+
+func (h *recordingLaunchHook) snapshot() []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]string(nil), h.events...)
+}
+
 func newTestCodexClient(t *testing.T) (*codexClient, *fakeStdin, []Message) {
 	t.Helper()
 	fs := &fakeStdin{}
@@ -2185,7 +2218,8 @@ func TestCodexExecuteSurfacesStderrWhenChildExitsEarly(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	session, err := backend.Execute(ctx, "prompt-ignored", ExecOptions{Timeout: 5 * time.Second})
+	hook := &recordingLaunchHook{}
+	session, err := backend.Execute(ctx, "prompt-ignored", ExecOptions{Timeout: 5 * time.Second, LaunchHook: hook})
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
@@ -2211,6 +2245,9 @@ func TestCodexExecuteSurfacesStderrWhenChildExitsEarly(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("timeout waiting for result")
+	}
+	if got := hook.snapshot(); !reflect.DeepEqual(got, []string{"prepare", "bind", "cleanup"}) {
+		t.Fatalf("launch hook events=%v, want prepare/bind/cleanup before result", got)
 	}
 }
 

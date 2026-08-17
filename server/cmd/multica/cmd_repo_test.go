@@ -234,3 +234,29 @@ func TestRunRepoCheckoutForwardsManagedCheckoutMode(t *testing.T) {
 		t.Fatalf("ref = %q, want release/v2", got)
 	}
 }
+
+func TestSelectRepoCheckoutTransportFailsClosed(t *testing.T) {
+	tests := []struct {
+		transport string
+		policy    string
+		want      string
+		failed    bool
+	}{
+		{transport: "unix-seqpacket-v1", want: "unix-seqpacket-v1"},
+		{transport: "", want: "legacy-http"},
+		{transport: "", policy: "1", failed: true},
+		{transport: "unknown-v2", want: "", failed: true},
+	}
+	for _, tt := range tests {
+		got, err := selectRepoCheckoutTransport(tt.transport, tt.policy)
+		if tt.failed {
+			if err == nil {
+				t.Fatalf("transport=%q policy=%q unexpectedly succeeded", tt.transport, tt.policy)
+			}
+			continue
+		}
+		if err != nil || got != tt.want {
+			t.Fatalf("transport=%q policy=%q got=%q err=%v want=%q", tt.transport, tt.policy, got, err, tt.want)
+		}
+	}
+}

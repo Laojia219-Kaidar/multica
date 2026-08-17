@@ -197,6 +197,13 @@ func (d *Daemon) repoCheckoutHandler() http.HandlerFunc {
 			http.Error(w, "invalid checkout_mode", http.StatusBadRequest)
 			return
 		}
+		// Enforced mediated tasks must arrive through the daemon-owned Unix
+		// transport. Reject before touching repoCache or replay state, even if a
+		// caller presents a capability left by an older daemon generation.
+		if d.writerLeaseMode(req.TaskID) == "enforce" {
+			http.Error(w, "mediated checkout transport required", http.StatusForbidden)
+			return
+		}
 
 		if d.repoCache == nil {
 			http.Error(w, "repo cache not initialized", http.StatusInternalServerError)
@@ -214,139 +221,21 @@ func (d *Daemon) repoCheckoutHandler() http.HandlerFunc {
 		}
 		brokerReq := mutationbroker.CheckoutRequest{TaskID: req.TaskID, RuntimeID: req.RuntimeID, WorkspaceID: req.WorkspaceID, WorkDir: req.WorkDir, AgentName: req.AgentName, URL: req.URL, Ref: checkoutRef, Operation: mutationbroker.OperationRepoCheckout, RequestID: requestID}
 		brokerReq.CheckoutMode = req.CheckoutMode
-		decision, err := d.mutationBroker.Authorize(capability, brokerReq)
+		encoded, err := d.executeAuthorizedCheckout(r.Context(), brokerReq, capabilityCheckoutAuthorizer{registry: d.mutationBroker, capability: capability})
 		if err != nil {
-			status := http.StatusForbidden
-			if errors.Is(err, mutationbroker.ErrInvalidCapability) || errors.Is(err, mutationbroker.ErrExpiredCapability) {
+			status := http.StatusInternalServerError
+			switch {
+			case errors.Is(err, mutationbroker.ErrInvalidCapability), errors.Is(err, mutationbroker.ErrExpiredCapability):
 				status = http.StatusUnauthorized
-			}
-			if errors.Is(err, mutationbroker.ErrReplayDrift) || errors.Is(err, mutationbroker.ErrReplayInProgress) || errors.Is(err, mutationbroker.ErrRequestLimit) {
+			case errors.Is(err, mutationbroker.ErrUnauthorized):
+				status = http.StatusForbidden
+			case errors.Is(err, mutationbroker.ErrReplayDrift), errors.Is(err, mutationbroker.ErrReplayInProgress), errors.Is(err, mutationbroker.ErrRequestLimit), errors.Is(err, errStaleMutationReplay):
 				status = http.StatusConflict
 			}
-			http.Error(w, "task mutation capability rejected", status)
-			return
-		}
-		var completed bool
-		if decision.Acquired {
-			defer func() {
-				if !completed {
-					_ = d.mutationBroker.Abort(capability, brokerReq)
-				}
-			}()
-		}
-		if len(decision.Replay) > 0 {
-			var replayResult repocache.WorktreeResult
-			invalidateReplay := func() {
-				_ = d.mutationBroker.InvalidateReplay(capability, brokerReq)
-			}
-			if json.Unmarshal(decision.Replay, &replayResult) != nil || replayResult.Path == "" || repocache.ValidateWorktreePath(req.WorkDir, replayResult.Path) != nil {
-				invalidateReplay()
-				http.Error(w, "stale checkout replay", http.StatusConflict)
-				return
-			}
-			if info, err := os.Stat(replayResult.Path); err != nil || !info.IsDir() {
-				invalidateReplay()
-				http.Error(w, "stale checkout replay", http.StatusConflict)
-				return
-			}
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write(decision.Replay)
-			completed = true
-			return
-		}
-
-		result, err := d.checkoutWithWriterLease(r.Context(), req.TaskID, req.URL, checkoutRef, func(mutationCtx context.Context) (*repocache.WorktreeResult, error) {
-			if d.writerLeaseMode(req.TaskID) == "enforce" && req.CheckoutMode != repoCheckoutModeIsolated {
-				return nil, errors.New("enforce checkout requires mediated isolated mode")
-			}
-			if err := d.ensureRepoReady(mutationCtx, req.WorkspaceID, req.URL); err != nil {
-				return nil, err
-			}
-			params := repocache.WorktreeParams{
-				WorkspaceID: req.WorkspaceID, RepoURL: req.URL, WorkDir: req.WorkDir,
-				Ref: checkoutRef, AgentName: req.AgentName, TaskID: req.TaskID,
-				CoAuthoredByEnabled: d.workspaceCoAuthoredByEnabled(req.WorkspaceID),
-				IsolatedGitMetadata: req.CheckoutMode == repoCheckoutModeIsolated,
-				Mediated:            d.writerLeaseMode(req.TaskID) == "enforce",
-				NoPush:              d.writerLeaseMode(req.TaskID) == "enforce",
-			}
-			var worktree *repocache.WorktreeResult
-			var createErr error
-			if contextual, ok := d.repoCache.(interface {
-				CreateWorktreeContext(context.Context, repocache.WorktreeParams) (*repocache.WorktreeResult, error)
-			}); ok {
-				worktree, createErr = contextual.CreateWorktreeContext(mutationCtx, params)
-			} else if d.writerLeaseMode(req.TaskID) == "enforce" {
-				return nil, errors.New("enforce checkout requires context-aware repo cache")
-			} else if err := mutationCtx.Err(); err != nil {
-				return nil, err
-			} else {
-				worktree, createErr = d.repoCache.CreateWorktree(params)
-			}
-			if createErr != nil {
-				return nil, createErr
-			}
-			if worktree == nil {
-				return nil, errors.New("checkout result unavailable")
-			}
-			if d.writerLeaseMode(req.TaskID) == "enforce" {
-				var sanitizeErr error
-				if sanitizer, ok := d.repoCache.(interface {
-					SanitizeMediatedWorktree(context.Context, string) error
-				}); ok {
-					sanitizeErr = sanitizer.SanitizeMediatedWorktree(mutationCtx, worktree.Path)
-				} else {
-					sanitizeErr = disableWorktreePushRemote(mutationCtx, worktree.Path)
-				}
-				if err := sanitizeErr; err != nil {
-					if worktree.Created {
-						_ = os.RemoveAll(worktree.Path)
-					}
-					return nil, err
-				}
-			}
-			return worktree, nil
-		})
-		if err != nil {
 			d.logger.Error("repo checkout failed", "url", req.URL, "error", err)
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			http.Error(w, "task mutation checkout rejected", status)
 			return
 		}
-		if err := r.Context().Err(); err != nil {
-			if result != nil && result.Created {
-				_ = os.RemoveAll(result.Path)
-			}
-			http.Error(w, "checkout request canceled", http.StatusRequestTimeout)
-			return
-		}
-		if err := d.writerLeaseVerifyAll(r.Context(), req.TaskID); err != nil {
-			if result != nil && result.Created {
-				_ = os.RemoveAll(result.Path)
-			}
-			http.Error(w, "writer lease no longer publishable", http.StatusConflict)
-			return
-		}
-
-		if result == nil || result.Path == "" {
-			http.Error(w, "checkout result unavailable", http.StatusInternalServerError)
-			return
-		}
-		if _, err := os.Stat(result.Path); err != nil {
-			if result.Created {
-				_ = os.RemoveAll(result.Path)
-			}
-			http.Error(w, "checkout result unavailable", http.StatusInternalServerError)
-			return
-		}
-		encoded, err := json.Marshal(result)
-		if err != nil || d.mutationBroker.Complete(capability, brokerReq, encoded) != nil {
-			if result.Created {
-				_ = os.RemoveAll(result.Path)
-			}
-			http.Error(w, "checkout result unavailable", http.StatusInternalServerError)
-			return
-		}
-		completed = true
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write(encoded)
 	}

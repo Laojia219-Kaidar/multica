@@ -23,8 +23,11 @@ type Backend interface {
 
 // ExecOptions configures a single execution.
 type ExecOptions struct {
-	Cwd   string
-	Model string
+	// LaunchHook owns per-attempt preparation, post-Start binding and cleanup.
+	// Backends must invoke it only around the process they actually launch.
+	LaunchHook LaunchHook
+	Cwd        string
+	Model      string
 	// SystemPrompt carries the Multica runtime brief for the few providers
 	// that cannot pick it up from disk. The daemon leaves it empty for every
 	// other provider (see daemon.providerNeedsInlineSystemPrompt), because the
@@ -89,6 +92,18 @@ type ExecOptions struct {
 	// through Claude Code's --settings flag. It currently carries restrictive
 	// runtime-skill overrides only; other providers ignore it.
 	ClaudeSettingsPath string
+}
+
+type LaunchHookAttempt struct {
+	Generation uint64
+	Env        map[string]string
+	State      any
+}
+
+type LaunchHook interface {
+	Prepare(context.Context) (LaunchHookAttempt, error)
+	Bind(context.Context, LaunchHookAttempt, int) error
+	Cleanup(context.Context, LaunchHookAttempt) error
 }
 
 // runContext derives the execution context for an agent subprocess from the
