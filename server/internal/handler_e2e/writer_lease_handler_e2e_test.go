@@ -99,6 +99,14 @@ func TestWriterLeaseHandlerRemoteTerminalE2E(t *testing.T) {
 	if tokenHash != auth.HashToken(task.AuthToken) || tokenHash == task.AuthToken {
 		t.Fatalf("task token persistence is not hash-only: %q", tokenHash)
 	}
+	var persistedMode, persistedDigest string
+	var persistedSnapshot []byte
+	if err := pool.QueryRow(ctx, `SELECT writer_lease_claim_mode, writer_lease_target_snapshot, writer_lease_target_digest FROM agent_task_queue WHERE id = $1`, fixture.taskID).Scan(&persistedMode, &persistedSnapshot, &persistedDigest); err != nil {
+		t.Fatalf("read persisted writer lease snapshot: %v", err)
+	}
+	if persistedMode != string(service.WriterLeaseModeEnforce) || len(persistedSnapshot) == 0 || len(persistedDigest) != 64 {
+		t.Fatalf("persisted writer lease claim = mode:%q snapshot:%s digest:%q", persistedMode, persistedSnapshot, persistedDigest)
+	}
 	assertTaskStatus(t, ctx, pool, fixture.taskID, "dispatched")
 
 	serviceTargets := make([]service.WriterLeaseTarget, 0, len(task.WriterLeaseTargets))
@@ -144,6 +152,9 @@ func TestWriterLeaseHandlerRemoteTerminalE2E(t *testing.T) {
 	if _, err := leaseService.ForceCancel(ctx, first.MutexKey, "C2a stale writer recovery"); err != nil {
 		t.Fatalf("force-cancel first target: %v", err)
 	}
+	// Flip the current rollout flag after claim. The persisted enforce snapshot
+	// remains authoritative, so stale proof must still be rejected under 412.
+	flagsProvider.Set(featureflags.WriterLeaseMode, featureflag.Rule{Default: true, Variant: string(service.WriterLeaseModeOff)})
 
 	oldProof := make([]daemon.WriterLeaseTerminalProof, 0, len(serviceTargets))
 	for _, target := range serviceTargets {
@@ -169,6 +180,7 @@ func TestWriterLeaseHandlerRemoteTerminalE2E(t *testing.T) {
 		t.Fatalf("running-task remote reacquire error = %v, want HTTP 409 safety gate", err)
 	}
 	assertTaskStatus(t, ctx, pool, fixture.taskID, "running")
+	flagsProvider.Set(featureflags.WriterLeaseMode, featureflag.Rule{Default: true, Variant: string(service.WriterLeaseModeEnforce)})
 
 	// Task B is a fresh workspace/runtime/task so the successful terminal path
 	// cannot accidentally reuse Task A's lease or daemon credentials.
@@ -194,6 +206,45 @@ func TestWriterLeaseHandlerRemoteTerminalE2E(t *testing.T) {
 			ResourceID: target.ResourceID, LeaseToken: lease.LeaseToken,
 			FenceGeneration: lease.FenceGeneration,
 		})
+	}
+	// The task-level snapshot is the authority after claim: mutate one target,
+	// delete another, and add a new project resource. The real HTTP handler must
+	// still resolve renew/verify/release against the original two target rows;
+	// the newly added resource must not become an implicit completion target.
+	if _, err := pool.Exec(ctx, `UPDATE project_resource SET resource_ref = $2::jsonb WHERE id = $1`, fixtureB.resourceIDs[0], `{"url":"https://github.com/hivecosm/c2a-mutated","ref":"changed"}`); err != nil {
+		t.Fatalf("mutate task-B first resource: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `DELETE FROM project_resource WHERE id = $1`, fixtureB.resourceIDs[1]); err != nil {
+		t.Fatalf("delete task-B second resource: %v", err)
+	}
+	var addedResourceID string
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO project_resource (project_id, workspace_id, resource_type, resource_ref, label, position, created_by)
+		VALUES ($1, $2, 'github_repo', $3::jsonb, 'C2a added target', 9, $4) RETURNING id
+	`, fixtureB.projectID, fixtureB.workspaceID, `{"url":"https://github.com/hivecosm/c2a-added","ref":"new"}`, fixtureB.userID).Scan(&addedResourceID); err != nil {
+		t.Fatalf("add task-B resource: %v", err)
+	}
+	if addedResourceID == "" {
+		t.Fatal("added task-B resource id is empty")
+	}
+	for _, target := range taskB.WriterLeaseTargets {
+		serviceTarget := service.WriterLeaseTarget{ResourceID: target.ResourceID, MutexKey: target.MutexKey, URL: target.URL, Ref: target.Ref}
+		// The proof list preserves taskB target order, while the lease token is
+		// looked up by resource below so this remains correct if target sorting
+		// changes.
+		var proof daemon.WriterLeaseTerminalProof
+		for _, candidate := range currentProofB {
+			if candidate.ResourceID == target.ResourceID {
+				proof = candidate
+				break
+			}
+		}
+		if proof.ResourceID == "" {
+			t.Fatalf("missing task-B proof for resource %s", target.ResourceID)
+		}
+		if _, err := storeBTask.VerifyHeld(ctx, serviceTarget.MutexKey, proof.LeaseToken, proof.FenceGeneration); err != nil {
+			t.Fatalf("verify persisted task-B target after resource drift %s: %v", target.ResourceID, err)
+		}
 	}
 	if err := clientBTask.StartTask(ctx, fixtureB.taskID); err != nil {
 		t.Fatalf("daemon-B start: %v", err)

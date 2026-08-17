@@ -1513,7 +1513,7 @@ func (h *Handler) ClaimTasksByRuntime(w http.ResponseWriter, r *http.Request) {
 		if handled, _ := h.repairStaleCommentPlanIfNeeded(r.Context(), &task, rtWorkspaceID); handled {
 			continue
 		}
-		resp, deliveredCommentIDs, _, _, failure := h.buildClaimedTaskResponse(r, &task, rt, uuidToString(task.RuntimeID), rtWorkspaceID)
+		resp, deliveredCommentIDs, _, _, claim, failure := h.buildClaimedTaskResponse(r, &task, rt, uuidToString(task.RuntimeID), rtWorkspaceID)
 		if failure != nil {
 			// Builder rejected this task (workspace isolation / chat-input);
 			// it has already cancelled the task where the failure requires it.
@@ -1555,14 +1555,14 @@ func (h *Handler) ClaimTasksByRuntime(w http.ResponseWriter, r *http.Request) {
 		// comment/coalesced-comment tasks) are persisted atomically; on failure
 		// the exact claim is requeued and omitted from this batch.
 		commentBackedTask := task.TriggerCommentID.Valid || len(task.CoalescedCommentIds) > 0
-		receipt, ferr := h.TaskService.FinalizeTaskClaim(r.Context(), task, db.CreateTaskTokenParams{
+		receipt, ferr := h.TaskService.FinalizeTaskClaimWithWriterLeaseClaim(r.Context(), task, db.CreateTaskTokenParams{
 			TokenHash:   auth.HashToken(tokenStr),
 			TaskID:      task.ID,
 			AgentID:     task.AgentID,
 			WorkspaceID: parseUUID(resp.WorkspaceID),
 			UserID:      rt.OwnerID,
 			ExpiresAt:   pgtype.Timestamptz{Time: time.Now().Add(24 * time.Hour), Valid: true},
-		}, deliveredCommentIDs, commentBackedTask, executionEvidence)
+		}, deliveredCommentIDs, commentBackedTask, executionEvidence, claim, resp.WorkspaceID)
 		if ferr != nil {
 			slog.Error("batch claim: finalize task claim failed; requeueing claim",
 				"task_id", uuidToString(task.ID), "error", ferr)
@@ -1604,7 +1604,7 @@ type claimBuildFailure struct {
 // feed the same delivery receipt into FinalizeTaskClaim. A non-nil failure
 // means the task must not be dispatched; the builder has already cancelled it
 // where the failure semantics require it.
-func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQueue, runtime db.AgentRuntime, runtimeID, runtimeWorkspaceID string) (resp AgentTaskResponse, deliveredCommentIDs []pgtype.UUID, agentSkillCount, builtinSkillCount int, failure *claimBuildFailure) {
+func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQueue, runtime db.AgentRuntime, runtimeID, runtimeWorkspaceID string) (resp AgentTaskResponse, deliveredCommentIDs []pgtype.UUID, agentSkillCount, builtinSkillCount int, claim *service.WriterLeaseClaim, failure *claimBuildFailure) {
 	// Build response with fresh agent data (name + skills + custom_env + custom_args).
 	resp = taskToResponse(*task, runtimeWorkspaceID)
 	supportsCoalescedComments := requestHasClientCapability(r, protocol.DaemonCapabilityCoalescedCommentsV1)
@@ -2239,7 +2239,7 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 					"task_id", uuidToString(task.ID),
 					"chat_session_id", uuidToString(cs.ID),
 					"error", inputLoadErr)
-				return resp, deliveredCommentIDs, agentSkillCount, builtinSkillCount, &claimBuildFailure{
+				return resp, deliveredCommentIDs, agentSkillCount, builtinSkillCount, nil, &claimBuildFailure{
 					outcome: "error_chat_input_load",
 					status:  http.StatusInternalServerError,
 					message: "failed to load chat input",
@@ -2282,7 +2282,7 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 					slog.Error("chat claim: cancel after empty input failed",
 						"task_id", uuidToString(task.ID), "error", cerr)
 				}
-				return resp, deliveredCommentIDs, agentSkillCount, builtinSkillCount, &claimBuildFailure{
+				return resp, deliveredCommentIDs, agentSkillCount, builtinSkillCount, nil, &claimBuildFailure{
 					outcome: "error_empty_chat_input",
 					status:  http.StatusInternalServerError,
 					message: "chat task has no user input",
@@ -2490,7 +2490,7 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			slog.Error("task claim: cancel after workspace check failed",
 				"task_id", uuidToString(task.ID), "error", cerr)
 		}
-		return resp, deliveredCommentIDs, agentSkillCount, builtinSkillCount, &claimBuildFailure{
+		return resp, deliveredCommentIDs, agentSkillCount, builtinSkillCount, nil, &claimBuildFailure{
 			outcome: "error_workspace",
 			status:  http.StatusInternalServerError,
 			message: "task workspace isolation check failed",
@@ -2524,7 +2524,8 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		resp.EmployeeMemories = mems
 	}
 
-	if leaseFailure := h.populateWriterLeaseClaim(r, task, runtime, runtimeID, runtimeWorkspaceID, &resp); leaseFailure != nil {
+	claim, leaseFailure := h.populateWriterLeaseClaim(r, task, runtime, runtimeID, runtimeWorkspaceID, &resp)
+	if leaseFailure != nil {
 		if leaseFailure.outcome == "error_writer_lease_capability" || leaseFailure.outcome == "error_writer_lease_mode" {
 			if _, rerr := h.TaskService.RequeueTaskAfterClaimFailure(r.Context(), *task); rerr != nil {
 				slog.Error("task claim: requeue after writer lease negotiation failure failed", "task_id", uuidToString(task.ID), "error", rerr)
@@ -2532,27 +2533,44 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		} else if _, cerr := h.TaskService.CancelTask(r.Context(), task.ID); cerr != nil {
 			slog.Error("task claim: cancel after writer lease claim failure failed", "task_id", uuidToString(task.ID), "error", cerr)
 		}
-		return resp, deliveredCommentIDs, agentSkillCount, builtinSkillCount, leaseFailure
+		return resp, deliveredCommentIDs, agentSkillCount, builtinSkillCount, nil, leaseFailure
 	}
 
-	return resp, deliveredCommentIDs, agentSkillCount, builtinSkillCount, nil
+	return resp, deliveredCommentIDs, agentSkillCount, builtinSkillCount, claim, nil
 }
 
 // populateWriterLeaseClaim resolves the rollout and targets on the server.
 // The daemon never supplies a key or holder, and legacy/off paths remain
 // behaviorally unchanged.
-func (h *Handler) populateWriterLeaseClaim(r *http.Request, task *db.AgentTaskQueue, runtime db.AgentRuntime, runtimeID, runtimeWorkspaceID string, resp *AgentTaskResponse) *claimBuildFailure {
+func (h *Handler) populateWriterLeaseClaim(r *http.Request, task *db.AgentTaskQueue, runtime db.AgentRuntime, runtimeID, runtimeWorkspaceID string, resp *AgentTaskResponse) (*service.WriterLeaseClaim, *claimBuildFailure) {
+	persisted, legacy, persistedErr := service.DecodePersistedWriterLeaseClaim(*task, runtimeWorkspaceID)
+	if persistedErr != nil {
+		return nil, &claimBuildFailure{outcome: "error_writer_lease_target", status: http.StatusInternalServerError, message: "writer lease target unavailable"}
+	}
+	if !legacy {
+		resp.WriterLeaseMode = string(persisted.Mode)
+		resp.WriterLeaseTargets = persisted.Targets
+		if persisted.Mode == service.WriterLeaseModeEnforce && len(persisted.Targets) > 0 {
+			if !requestHasClientCapability(r, protocol.DaemonCapabilityWriterLeaseV1) {
+				return nil, &claimBuildFailure{outcome: "error_writer_lease_capability", status: http.StatusConflict, message: "daemon writer lease capability required"}
+			}
+			if daemonIDForClaim(r) == "" {
+				return nil, &claimBuildFailure{outcome: "error_writer_lease_identity", status: http.StatusForbidden, message: "daemon identity required for writer lease"}
+			}
+		}
+		return &persisted, nil
+	}
 	decision := h.FeatureFlags.Decision(r.Context(), featureflags.WriterLeaseMode, false)
 	if decision.Reason == featureflag.ReasonError {
-		return &claimBuildFailure{outcome: "error_writer_lease_mode", status: http.StatusInternalServerError, message: "writer lease mode unavailable"}
+		return nil, &claimBuildFailure{outcome: "error_writer_lease_mode", status: http.StatusInternalServerError, message: "writer lease mode unavailable"}
 	}
 	mode, err := service.NormalizeWriterLeaseMode(decision.Variant)
 	if err != nil {
-		return &claimBuildFailure{outcome: "error_writer_lease_mode", status: http.StatusInternalServerError, message: "writer lease mode unavailable"}
+		return nil, &claimBuildFailure{outcome: "error_writer_lease_mode", status: http.StatusInternalServerError, message: "writer lease mode unavailable"}
 	}
 	resp.WriterLeaseMode = string(mode)
 	if mode != service.WriterLeaseModeEnforce && mode != service.WriterLeaseModeShadow {
-		return nil
+		return &service.WriterLeaseClaim{Mode: mode, Targets: []service.WriterLeaseTarget{}}, nil
 	}
 	resources := make([]service.WriterLeaseResource, 0, len(resp.ProjectResources))
 	for _, resource := range resp.ProjectResources {
@@ -2561,7 +2579,7 @@ func (h *Handler) populateWriterLeaseClaim(r *http.Request, task *db.AgentTaskQu
 		}
 		resourceID, parseErr := uuid.Parse(strings.TrimSpace(resource.ID))
 		if parseErr != nil {
-			return &claimBuildFailure{outcome: "error_writer_lease_target", status: http.StatusInternalServerError, message: "writer lease target unavailable"}
+			return nil, &claimBuildFailure{outcome: "error_writer_lease_target", status: http.StatusInternalServerError, message: "writer lease target unavailable"}
 		}
 		var ref struct {
 			URL               string `json:"url"`
@@ -2569,7 +2587,7 @@ func (h *Handler) populateWriterLeaseClaim(r *http.Request, task *db.AgentTaskQu
 			DefaultBranchHint string `json:"default_branch_hint"`
 		}
 		if json.Unmarshal(resource.ResourceRef, &ref) != nil || strings.TrimSpace(ref.URL) == "" {
-			return &claimBuildFailure{outcome: "error_writer_lease_target", status: http.StatusInternalServerError, message: "writer lease target unavailable"}
+			return nil, &claimBuildFailure{outcome: "error_writer_lease_target", status: http.StatusInternalServerError, message: "writer lease target unavailable"}
 		}
 		resources = append(resources, service.WriterLeaseResource{ID: resourceID, ResourceType: resource.ResourceType, URL: ref.URL, Ref: ref.Ref, DefaultBranchHint: ref.DefaultBranchHint})
 	}
@@ -2580,30 +2598,30 @@ func (h *Handler) populateWriterLeaseClaim(r *http.Request, task *db.AgentTaskQu
 		if resp.ProjectID != "" && len(resources) > 0 {
 			targets, targetErr := service.ResolveWriterLeaseTargets(mode, runtimeWorkspaceID, resp.ProjectID, daemonIDForClaim(r), runtimeID, resp.ID, resources)
 			if targetErr != nil {
-				return &claimBuildFailure{outcome: "error_writer_lease_target", status: http.StatusInternalServerError, message: "writer lease target unavailable"}
+				return nil, &claimBuildFailure{outcome: "error_writer_lease_target", status: http.StatusInternalServerError, message: "writer lease target unavailable"}
 			}
 			resp.WriterLeaseTargets = targets
 		}
-		return nil
+		return &service.WriterLeaseClaim{Mode: mode, Targets: resp.WriterLeaseTargets}, nil
 	}
 	if len(resources) == 0 || resp.ProjectID == "" {
-		return nil
+		return &service.WriterLeaseClaim{Mode: mode, Targets: []service.WriterLeaseTarget{}}, nil
 	}
 	if !requestHasClientCapability(r, protocol.DaemonCapabilityWriterLeaseV1) {
-		return &claimBuildFailure{outcome: "error_writer_lease_capability", status: http.StatusConflict, message: "daemon writer lease capability required"}
+		return nil, &claimBuildFailure{outcome: "error_writer_lease_capability", status: http.StatusConflict, message: "daemon writer lease capability required"}
 	}
 	// DaemonID is authenticated by DaemonAuth. A missing daemon id is a
 	// protocol failure; never accept a caller-supplied substitute.
 	daemonID := daemonIDForClaim(r)
 	if daemonID == "" {
-		return &claimBuildFailure{outcome: "error_writer_lease_identity", status: http.StatusForbidden, message: "daemon identity required for writer lease"}
+		return nil, &claimBuildFailure{outcome: "error_writer_lease_identity", status: http.StatusForbidden, message: "daemon identity required for writer lease"}
 	}
 	targets, err := service.ResolveWriterLeaseTargets(mode, runtimeWorkspaceID, resp.ProjectID, daemonID, runtimeID, resp.ID, resources)
 	if err != nil {
-		return &claimBuildFailure{outcome: "error_writer_lease_target", status: http.StatusInternalServerError, message: "writer lease target unavailable"}
+		return nil, &claimBuildFailure{outcome: "error_writer_lease_target", status: http.StatusInternalServerError, message: "writer lease target unavailable"}
 	}
 	resp.WriterLeaseTargets = targets
-	return nil
+	return &service.WriterLeaseClaim{Mode: mode, Targets: targets}, nil
 }
 
 func daemonIDForClaim(r *http.Request) string {
@@ -2741,7 +2759,7 @@ func (h *Handler) ClaimTaskByRuntime(w http.ResponseWriter, r *http.Request) {
 	outcome = "claimed"
 	buildStart = time.Now()
 
-	resp, deliveredCommentIDs, agentSkillCount, builtinSkillCount, failure := h.buildClaimedTaskResponse(r, task, runtime, runtimeID, runtimeWorkspaceID)
+	resp, deliveredCommentIDs, agentSkillCount, builtinSkillCount, claim, failure := h.buildClaimedTaskResponse(r, task, runtime, runtimeID, runtimeWorkspaceID)
 	if failure != nil {
 		outcome = failure.outcome
 		writeError(w, failure.status, failure.message)
@@ -2803,14 +2821,14 @@ func (h *Handler) ClaimTaskByRuntime(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to mint task token")
 		return
 	}
-	receipt, ferr := h.TaskService.FinalizeTaskClaim(r.Context(), *task, db.CreateTaskTokenParams{
+	receipt, ferr := h.TaskService.FinalizeTaskClaimWithWriterLeaseClaim(r.Context(), *task, db.CreateTaskTokenParams{
 		TokenHash:   auth.HashToken(tokenStr),
 		TaskID:      task.ID,
 		AgentID:     task.AgentID,
 		WorkspaceID: parseUUID(resp.WorkspaceID),
 		UserID:      runtime.OwnerID,
 		ExpiresAt:   pgtype.Timestamptz{Time: time.Now().Add(24 * time.Hour), Valid: true},
-	}, deliveredCommentIDs, commentBackedTask, executionEvidence)
+	}, deliveredCommentIDs, commentBackedTask, executionEvidence, claim, resp.WorkspaceID)
 	if ferr != nil {
 		outcome = "error_claim_finalize"
 		slog.Error("task claim: failed to finalize token and comment delivery receipt",

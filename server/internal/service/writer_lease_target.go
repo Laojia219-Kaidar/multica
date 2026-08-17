@@ -1,14 +1,20 @@
 package service
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"sort"
 	"strings"
 
 	"github.com/google/uuid"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 // WriterLeaseMode is the server-resolved rollout mode for the migration-262
@@ -48,6 +54,163 @@ type WriterLeaseTarget struct {
 	MutexKey   string `json:"mutex_key"`
 	URL        string `json:"url"`
 	Ref        string `json:"ref"`
+}
+
+// WriterLeaseClaim is the immutable, task-scoped authority captured when a
+// daemon claims a task. It deliberately contains no token, generation, or
+// holder: those remain properties of migration-262 lease rows and sessions.
+type WriterLeaseClaim struct {
+	Mode    WriterLeaseMode
+	Targets []WriterLeaseTarget
+	Digest  string
+}
+
+// canonicalWriterLeaseTarget is intentionally private so the persisted JSON
+// shape cannot grow token/fencing fields by accident.
+type canonicalWriterLeaseTarget struct {
+	ResourceID string `json:"resource_id"`
+	MutexKey   string `json:"mutex_key"`
+	URL        string `json:"url"`
+	Ref        string `json:"ref"`
+}
+
+// CanonicalWriterLeaseClaim serializes the persisted target array and hashes a
+// stable mode+targets envelope. The mode is deliberately absent from the
+// persisted JSON array, but remains cryptographically bound to its digest.
+// The workspace is part of the canonical mutex key, so callers must provide
+// the exact runtime workspace that owns the task.
+func CanonicalWriterLeaseClaim(mode WriterLeaseMode, workspaceID string, targets []WriterLeaseTarget) (canonical []byte, digest string, err error) {
+	normalizedMode, err := NormalizeWriterLeaseMode(string(mode))
+	if err != nil {
+		return nil, "", err
+	}
+	if _, err := writerLeaseCanonicalUUID(workspaceID, "workspace"); err != nil {
+		return nil, "", err
+	}
+	if normalizedMode == WriterLeaseModeOff && len(targets) != 0 {
+		return nil, "", fmt.Errorf("%w: off claim cannot carry targets", ErrWriterLeaseInvalidTarget)
+	}
+	ordered := make([]canonicalWriterLeaseTarget, 0, len(targets))
+	seenResources := make(map[string]struct{}, len(targets))
+	seenMutexes := make(map[string]struct{}, len(targets))
+	for _, target := range targets {
+		resourceID, err := writerLeaseCanonicalUUID(target.ResourceID, "resource_id")
+		if err != nil {
+			return nil, "", err
+		}
+		if target.URL == "" || target.URL != strings.TrimSpace(target.URL) {
+			return nil, "", fmt.Errorf("%w: empty or noncanonical URL", ErrWriterLeaseInvalidTarget)
+		}
+		decodedRef, decodeErr := url.PathUnescape(target.Ref)
+		if decodeErr != nil || target.Ref == "" || target.Ref != NormalizeWriterLeaseRef(decodedRef, "") {
+			return nil, "", fmt.Errorf("%w: noncanonical ref", ErrWriterLeaseInvalidTarget)
+		}
+		expectedMutex := writerLeaseMutexKeyNormalized(workspaceID, resourceID, target.Ref)
+		if target.MutexKey == "" || target.MutexKey != expectedMutex {
+			return nil, "", fmt.Errorf("%w: noncanonical mutex key", ErrWriterLeaseInvalidTarget)
+		}
+		if _, exists := seenResources[resourceID]; exists {
+			return nil, "", fmt.Errorf("%w: duplicate resource", ErrWriterLeaseInvalidTarget)
+		}
+		if _, exists := seenMutexes[target.MutexKey]; exists {
+			return nil, "", fmt.Errorf("%w: duplicate mutex", ErrWriterLeaseInvalidTarget)
+		}
+		seenResources[resourceID] = struct{}{}
+		seenMutexes[target.MutexKey] = struct{}{}
+		ordered = append(ordered, canonicalWriterLeaseTarget{
+			ResourceID: resourceID,
+			MutexKey:   target.MutexKey,
+			URL:        target.URL,
+			Ref:        target.Ref,
+		})
+	}
+	sort.SliceStable(ordered, func(i, j int) bool { return ordered[i].MutexKey < ordered[j].MutexKey })
+	canonical, err = json.Marshal(ordered)
+	if err != nil {
+		return nil, "", fmt.Errorf("marshal writer lease claim: %w", err)
+	}
+	digestInput, err := json.Marshal(struct {
+		Mode    WriterLeaseMode              `json:"mode"`
+		Targets []canonicalWriterLeaseTarget `json:"targets"`
+	}{Mode: normalizedMode, Targets: ordered})
+	if err != nil {
+		return nil, "", fmt.Errorf("marshal writer lease digest envelope: %w", err)
+	}
+	hash := sha256.Sum256(digestInput)
+	return canonical, hex.EncodeToString(hash[:]), nil
+}
+
+// DecodePersistedWriterLeaseClaim validates the all-or-none database fields
+// and requires the stored JSON and digest to be exactly canonical. legacy is
+// true only for the pre-406 all-NULL row; partial/corrupt state fails closed.
+func DecodePersistedWriterLeaseClaim(task db.AgentTaskQueue, workspaceID string) (claim WriterLeaseClaim, legacy bool, err error) {
+	modeSet := task.WriterLeaseClaimMode.Valid
+	snapshotSet := len(task.WriterLeaseTargetSnapshot) != 0
+	digestSet := task.WriterLeaseTargetDigest.Valid
+	if !modeSet && !snapshotSet && !digestSet {
+		return WriterLeaseClaim{}, true, nil
+	}
+	if !modeSet || !snapshotSet || !digestSet {
+		return WriterLeaseClaim{}, false, fmt.Errorf("%w: partial persisted claim", ErrWriterLeaseFenceRejected)
+	}
+	mode, err := NormalizeWriterLeaseMode(task.WriterLeaseClaimMode.String)
+	if err != nil {
+		return WriterLeaseClaim{}, false, err
+	}
+	targets, err := decodeCanonicalWriterLeaseTargets(task.WriterLeaseTargetSnapshot)
+	if err != nil {
+		return WriterLeaseClaim{}, false, err
+	}
+	_, digest, err := CanonicalWriterLeaseClaim(mode, workspaceID, targets)
+	if err != nil {
+		return WriterLeaseClaim{}, false, err
+	}
+	// PostgreSQL JSONB canonicalizes object/array representation on storage and
+	// readback, so raw bytes are not an authority. The strict decoder rejects
+	// unknown fields, while the canonical re-encoding and digest validate the
+	// semantic target set and its canonical hash.
+	if task.WriterLeaseTargetDigest.String != digest {
+		return WriterLeaseClaim{}, false, fmt.Errorf("%w: persisted claim digest or encoding mismatch", ErrWriterLeaseFenceRejected)
+	}
+	return WriterLeaseClaim{Mode: mode, Targets: targets, Digest: digest}, false, nil
+}
+
+func decodeCanonicalWriterLeaseTargets(raw []byte) ([]WriterLeaseTarget, error) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || trimmed[0] != '[' {
+		return nil, fmt.Errorf("%w: target snapshot must be a JSON array", ErrWriterLeaseFenceRejected)
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	var encoded []canonicalWriterLeaseTarget
+	if err := decoder.Decode(&encoded); err != nil {
+		return nil, fmt.Errorf("%w: invalid target snapshot: %v", ErrWriterLeaseFenceRejected, err)
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		return nil, fmt.Errorf("%w: target snapshot has trailing data", ErrWriterLeaseFenceRejected)
+	}
+	targets := make([]WriterLeaseTarget, 0, len(encoded))
+	for _, target := range encoded {
+		targets = append(targets, WriterLeaseTarget{
+			ResourceID: target.ResourceID,
+			MutexKey:   target.MutexKey,
+			URL:        target.URL,
+			Ref:        target.Ref,
+		})
+	}
+	return targets, nil
+}
+
+func writerLeaseCanonicalUUID(raw, field string) (string, error) {
+	if raw == "" || raw != strings.TrimSpace(raw) {
+		return "", fmt.Errorf("%w: invalid %s", ErrWriterLeaseInvalidTarget, field)
+	}
+	parsed, err := uuid.Parse(raw)
+	if err != nil || parsed.String() != raw {
+		return "", fmt.Errorf("%w: noncanonical %s", ErrWriterLeaseInvalidTarget, field)
+	}
+	return raw, nil
 }
 
 func NormalizeWriterLeaseMode(raw string) (WriterLeaseMode, error) {

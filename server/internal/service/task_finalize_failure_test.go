@@ -36,14 +36,14 @@ func TestFinalizeTaskClaimFailureRollsBackTokenThenRequeue(t *testing.T) {
 	// A delivered id outside the task's plan (no trigger/coalesced match) makes
 	// SetTaskDeliveredCommentIDs match zero rows → FinalizeTaskClaim errors.
 	bogus := util.MustParseUUID("11111111-1111-1111-1111-111111111111")
-	_, ferr := svc.FinalizeTaskClaim(ctx, task, db.CreateTaskTokenParams{
+	_, ferr := svc.FinalizeTaskClaimWithWriterLeaseClaim(ctx, task, db.CreateTaskTokenParams{
 		TokenHash:   fmt.Sprintf("finalize-fail-hash-%d", time.Now().UnixNano()),
 		TaskID:      task.ID,
 		AgentID:     task.AgentID,
 		WorkspaceID: util.MustParseUUID(workspaceID),
 		UserID:      util.MustParseUUID(userID),
 		ExpiresAt:   pgtype.Timestamptz{Time: time.Now().Add(24 * time.Hour), Valid: true},
-	}, []pgtype.UUID{bogus}, true, nil)
+	}, []pgtype.UUID{bogus}, true, nil, &WriterLeaseClaim{Mode: WriterLeaseModeEnforce, Targets: []WriterLeaseTarget{}}, workspaceID)
 	if ferr == nil {
 		t.Fatal("expected FinalizeTaskClaim to fail for an out-of-plan delivery receipt")
 	}
@@ -58,6 +58,13 @@ func TestFinalizeTaskClaimFailureRollsBackTokenThenRequeue(t *testing.T) {
 	}
 	if tokenCount != 0 {
 		t.Fatalf("expected token rolled back, found %d task_token rows", tokenCount)
+	}
+	var modeNull, snapshotNull, digestNull bool
+	if err := pool.QueryRow(ctx, `SELECT writer_lease_claim_mode IS NULL, writer_lease_target_snapshot IS NULL, writer_lease_target_digest IS NULL FROM agent_task_queue WHERE id = $1`, taskID).Scan(&modeNull, &snapshotNull, &digestNull); err != nil {
+		t.Fatalf("read rolled-back writer lease snapshot: %v", err)
+	}
+	if !modeNull || !snapshotNull || !digestNull {
+		t.Fatalf("writer lease snapshot was not rolled back: mode_null=%v snapshot_null=%v digest_null=%v", modeNull, snapshotNull, digestNull)
 	}
 
 	// The exact dispatched claim is released back to queued.

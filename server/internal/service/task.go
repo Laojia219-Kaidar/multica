@@ -2729,8 +2729,56 @@ func (s *TaskService) FinalizeTaskClaim(
 	recordCommentReceipt bool,
 	executionEvidence *CompanyOpsExecutionPayloadEvidence,
 ) ([]pgtype.UUID, error) {
+	return s.FinalizeTaskClaimWithWriterLeaseClaim(ctx, task, token, deliveredCommentIDs, recordCommentReceipt, executionEvidence, nil, "")
+}
+
+// FinalizeTaskClaimWithWriterLeaseClaim persists the immutable writer-lease
+// authority before creating the task token, in the same transaction as all
+// other claim finalization writes. A nil claim is the explicit legacy path for
+// callers that predate migration 406; production daemon claims always pass it.
+func (s *TaskService) FinalizeTaskClaimWithWriterLeaseClaim(
+	ctx context.Context,
+	task db.AgentTaskQueue,
+	token db.CreateTaskTokenParams,
+	deliveredCommentIDs []pgtype.UUID,
+	recordCommentReceipt bool,
+	executionEvidence *CompanyOpsExecutionPayloadEvidence,
+	claim *WriterLeaseClaim,
+	workspaceID string,
+) ([]pgtype.UUID, error) {
 	receipt := task.DeliveredCommentIds
+	var canonical []byte
+	var digest string
+	if claim != nil {
+		if s.TxStarter == nil {
+			return nil, fmt.Errorf("%w: transaction starter unavailable for writer lease claim", ErrWriterLeaseFenceRejected)
+		}
+		var err error
+		canonical, digest, err = CanonicalWriterLeaseClaim(claim.Mode, workspaceID, claim.Targets)
+		if err != nil {
+			return nil, err
+		}
+		if claim.Digest != "" && claim.Digest != digest {
+			return nil, fmt.Errorf("%w: claim digest mismatch", ErrWriterLeaseFenceRejected)
+		}
+	}
 	err := s.runInTx(ctx, func(qtx *db.Queries) error {
+		if claim != nil {
+			rows, err := qtx.PersistWriterLeaseClaimSnapshot(ctx, db.PersistWriterLeaseClaimSnapshotParams{
+				ClaimMode:      pgtype.Text{String: string(claim.Mode), Valid: true},
+				TargetSnapshot: canonical,
+				TargetDigest:   pgtype.Text{String: digest, Valid: true},
+				TaskID:         task.ID,
+				RuntimeID:      task.RuntimeID,
+				DispatchedAt:   task.DispatchedAt,
+			})
+			if err != nil {
+				return fmt.Errorf("persist writer lease claim snapshot: %w", err)
+			}
+			if rows != 1 {
+				return fmt.Errorf("%w: writer lease claim CAS rejected", ErrWriterLeaseFenceRejected)
+			}
+		}
 		if _, err := qtx.CreateTaskToken(ctx, token); err != nil {
 			return fmt.Errorf("create task token: %w", err)
 		}
@@ -3128,9 +3176,38 @@ func (s *TaskService) CompleteTask(ctx context.Context, taskID pgtype.UUID, resu
 // the daemon transport. When migration-262 enforcement resolves github
 // targets, the proof is checked under the same transaction as completion.
 func (s *TaskService) CompleteTaskWithWriterLeaseProof(ctx context.Context, taskID pgtype.UUID, result []byte, sessionID, workDir string, sessionRolloutMissing bool, retiredSessionID string, writerLeaseProof []WriterLeaseTerminalProof) (*db.AgentTaskQueue, error) {
-	writerLeaseMode, err := s.writerLeaseCompletionMode(ctx)
+	// Resolve persisted claim authority before consulting the current rollout
+	// flag. Once migration 406 has captured a claim, flag flips/provider errors
+	// must not change or block that task's terminal semantics. Legacy all-NULL
+	// rows retain the historical feature-flag path.
+	preloadedTask, err := s.Queries.GetAgentTask(ctx, taskID)
 	if err != nil {
 		return nil, err
+	}
+	writerLeaseMode := WriterLeaseModeOff
+	persistedFields := preloadedTask.WriterLeaseClaimMode.Valid || len(preloadedTask.WriterLeaseTargetSnapshot) != 0 || preloadedTask.WriterLeaseTargetDigest.Valid
+	if persistedFields {
+		runtime, runtimeErr := s.Queries.GetAgentRuntime(ctx, preloadedTask.RuntimeID)
+		if runtimeErr != nil {
+			return nil, fmt.Errorf("load task runtime for persisted writer lease claim: %w", runtimeErr)
+		}
+		persisted, legacy, persistedErr := DecodePersistedWriterLeaseClaim(preloadedTask, runtime.WorkspaceID.String())
+		if persistedErr != nil {
+			return nil, persistedErr
+		}
+		if !legacy {
+			writerLeaseMode = persisted.Mode
+		} else {
+			writerLeaseMode, err = s.writerLeaseCompletionMode(ctx)
+			if err != nil {
+				return nil, err
+			}
+		}
+	} else {
+		writerLeaseMode, err = s.writerLeaseCompletionMode(ctx)
+		if err != nil {
+			return nil, err
+		}
 	}
 	if err := requireWriterLeaseCompletionTransaction(writerLeaseMode, s.TxStarter); err != nil {
 		return nil, err
@@ -3155,7 +3232,22 @@ func (s *TaskService) CompleteTaskWithWriterLeaseProof(ctx context.Context, task
 			terminalReplay = true
 			return nil
 		}
-		if writerLeaseMode == WriterLeaseModeEnforce {
+		effectiveWriterLeaseMode := writerLeaseMode
+		if lockedTask.WriterLeaseClaimMode.Valid || len(lockedTask.WriterLeaseTargetSnapshot) != 0 || lockedTask.WriterLeaseTargetDigest.Valid {
+			runtime, runtimeErr := qtx.GetAgentRuntime(ctx, lockedTask.RuntimeID)
+			if runtimeErr != nil {
+				return fmt.Errorf("load task runtime for writer lease completion: %w", runtimeErr)
+			}
+			if persisted, legacy, persistedErr := DecodePersistedWriterLeaseClaim(lockedTask, runtime.WorkspaceID.String()); persistedErr != nil {
+				return persistedErr
+			} else if !legacy {
+				effectiveWriterLeaseMode = persisted.Mode
+			}
+		}
+		if err := requireWriterLeaseCompletionTransaction(effectiveWriterLeaseMode, s.TxStarter); err != nil {
+			return err
+		}
+		if effectiveWriterLeaseMode == WriterLeaseModeEnforce {
 			if err := s.validateWriterLeaseTerminalProof(ctx, qtx, lockedTask, writerLeaseProof); err != nil {
 				return err
 			}

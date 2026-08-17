@@ -73,31 +73,55 @@ func (h *Handler) WriterLease(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "resource_id is required")
 		return
 	}
-	resource, err := h.Queries.GetProjectResourceInWorkspace(r.Context(), db.GetProjectResourceInWorkspaceParams{ID: resourceID, WorkspaceID: runtime.WorkspaceID})
-	if err != nil || resource.ResourceType != "github_repo" {
-		writeError(w, http.StatusNotFound, "writer lease target not found")
-		return
-	}
-	projectID, err := taskProjectID(r.Context(), h.Queries, task)
-	if err != nil || !projectID.Valid || projectID != resource.ProjectID {
-		writeError(w, http.StatusNotFound, "writer lease target not found")
-		return
-	}
-	var ref struct {
-		URL               string `json:"url"`
-		Ref               string `json:"ref"`
-		DefaultBranchHint string `json:"default_branch_hint"`
-	}
-	if err := json.Unmarshal(resource.ResourceRef, &ref); err != nil || strings.TrimSpace(ref.URL) == "" {
+	var target service.WriterLeaseTarget
+	persisted, legacy, snapshotErr := service.DecodePersistedWriterLeaseClaim(task, uuidToString(runtime.WorkspaceID))
+	if snapshotErr != nil {
 		writeError(w, http.StatusConflict, "writer lease target unavailable")
 		return
 	}
-	targets, err := service.ResolveWriterLeaseTargets(service.WriterLeaseModeEnforce, uuidToString(runtime.WorkspaceID), uuidToString(projectID), daemonID, runtimeID, taskID, []service.WriterLeaseResource{{ID: uuid.UUID(resource.ID.Bytes), ResourceType: resource.ResourceType, URL: ref.URL, Ref: ref.Ref, DefaultBranchHint: ref.DefaultBranchHint}})
-	if err != nil || len(targets) != 1 {
-		writeError(w, http.StatusConflict, "writer lease target unavailable")
-		return
+	if !legacy {
+		if persisted.Mode != service.WriterLeaseModeEnforce {
+			writeError(w, http.StatusConflict, "writer lease operation unavailable")
+			return
+		}
+		resourceKey := resourceID.String()
+		for _, candidate := range persisted.Targets {
+			if candidate.ResourceID == resourceKey {
+				target = candidate
+				break
+			}
+		}
+		if target.ResourceID == "" {
+			writeError(w, http.StatusNotFound, "writer lease target not found")
+			return
+		}
+	} else {
+		resource, resourceErr := h.Queries.GetProjectResourceInWorkspace(r.Context(), db.GetProjectResourceInWorkspaceParams{ID: resourceID, WorkspaceID: runtime.WorkspaceID})
+		if resourceErr != nil || resource.ResourceType != "github_repo" {
+			writeError(w, http.StatusNotFound, "writer lease target not found")
+			return
+		}
+		projectID, projectErr := taskProjectID(r.Context(), h.Queries, task)
+		if projectErr != nil || !projectID.Valid || projectID != resource.ProjectID {
+			writeError(w, http.StatusNotFound, "writer lease target not found")
+			return
+		}
+		var ref struct {
+			URL               string `json:"url"`
+			Ref               string `json:"ref"`
+			DefaultBranchHint string `json:"default_branch_hint"`
+		}
+		if err := json.Unmarshal(resource.ResourceRef, &ref); err != nil || strings.TrimSpace(ref.URL) == "" {
+			writeError(w, http.StatusConflict, "writer lease target unavailable")
+			return
+		}
+		targets, targetErr := service.ResolveWriterLeaseTargets(service.WriterLeaseModeEnforce, uuidToString(runtime.WorkspaceID), uuidToString(projectID), daemonID, runtimeID, taskID, []service.WriterLeaseResource{{ID: uuid.UUID(resource.ID.Bytes), ResourceType: resource.ResourceType, URL: ref.URL, Ref: ref.Ref, DefaultBranchHint: ref.DefaultBranchHint}})
+		if targetErr != nil || len(targets) != 1 {
+			writeError(w, http.StatusConflict, "writer lease target unavailable")
+			return
+		}
+		target = targets[0]
 	}
-	target := targets[0]
 	holder := service.WriterLeaseHolderID(daemonID, runtimeID, taskID)
 	ttl := time.Duration(req.TTLMS) * time.Millisecond
 	if ttl == 0 && (action == "acquire" || action == "renew") {

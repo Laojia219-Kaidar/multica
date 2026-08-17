@@ -80,7 +80,7 @@ fi
 cd "$repo_root/server"
 DATABASE_URL="$database_url" go run ./cmd/migrate up
 DATABASE_URL="$database_url" HIVECREW_ISOLATED_TEST_PORT="$test_port" \
-  go test -race ./internal/service -run 'Test(ContinuousDispatchReceiptRepositoryExactReplayAndConflict|ContinuousDispatchReceiptRepositoryConcurrentExactReplayCreatesOneRow|WriteLease_)' -count=1 -v
+  go test -race ./internal/service -run 'Test(ContinuousDispatchReceiptRepositoryExactReplayAndConflict|ContinuousDispatchReceiptRepositoryConcurrentExactReplayCreatesOneRow|WriteLease_|FinalizeTaskClaimFailureRollsBackTokenThenRequeue)' -count=1 -v
 DATABASE_URL="$database_url" HIVECREW_ISOLATED_TEST_PORT="$test_port" HIVECREW_ISOLATED_TEST_REQUIRED=1 \
   go test -race ./internal/handler_e2e -run '^TestWriterLeaseHandlerRemoteTerminalE2E$' -count=1 -v
 DATABASE_URL="$database_url" HIVECREW_ISOLATED_TEST_PORT="$test_port" \

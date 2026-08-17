@@ -612,6 +612,29 @@ WHERE id = @task_id
   )
 RETURNING delivered_comment_ids;
 
+-- Persist the immutable writer-lease claim authority exactly once. Reclaims
+-- may repeat the same claim after a response retry, but a changed target set,
+-- mode, runtime, dispatch epoch, or status must never overwrite it.
+-- name: PersistWriterLeaseClaimSnapshot :execrows
+UPDATE agent_task_queue
+SET writer_lease_claim_mode = sqlc.arg('claim_mode'),
+    writer_lease_target_snapshot = sqlc.arg('target_snapshot')::jsonb,
+    writer_lease_target_digest = sqlc.arg('target_digest')
+WHERE id = sqlc.arg('task_id')
+  AND runtime_id = sqlc.arg('runtime_id')
+  AND dispatched_at = sqlc.arg('dispatched_at')
+  AND status = 'dispatched'
+  AND started_at IS NULL
+  AND (
+      (writer_lease_claim_mode IS NULL
+       AND writer_lease_target_snapshot IS NULL
+       AND writer_lease_target_digest IS NULL)
+      OR
+      (writer_lease_claim_mode = sqlc.arg('claim_mode')
+       AND writer_lease_target_snapshot = sqlc.arg('target_snapshot')::jsonb
+       AND writer_lease_target_digest = sqlc.arg('target_digest'))
+  );
+
 -- name: RequeueAgentTaskAfterClaimFailure :one
 -- Claim finalization (task token + optional comment receipt) failed before any
 -- response bytes were written. Return only that exact claim generation to the

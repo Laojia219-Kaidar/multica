@@ -136,6 +136,14 @@ func (s *TaskService) authoritativeWriterLeaseTargets(ctx context.Context, qtx *
 	if runtime.WorkspaceID != agent.WorkspaceID || !runtime.DaemonID.Valid || strings.TrimSpace(runtime.DaemonID.String) == "" {
 		return nil, db.AgentRuntime{}, fmt.Errorf("%w: runtime ownership unavailable", ErrWriterLeaseFenceRejected)
 	}
+	if persisted, legacy, err := DecodePersistedWriterLeaseClaim(task, runtime.WorkspaceID.String()); err != nil {
+		return nil, db.AgentRuntime{}, err
+	} else if !legacy {
+		if persisted.Mode != WriterLeaseModeEnforce {
+			return nil, runtime, nil
+		}
+		return persisted.Targets, runtime, nil
+	}
 	projectID, ok, err := terminalTaskProjectID(ctx, qtx, task)
 	if err != nil {
 		return nil, db.AgentRuntime{}, err

@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 func TestResolveWriterLeaseTargetsCanonicalRefAndHolder(t *testing.T) {
@@ -102,5 +104,135 @@ func TestResolveWriterLeaseTargetsRejectsUnknownMode(t *testing.T) {
 	_, err := ResolveWriterLeaseTargets("future", "ws", "project", "daemon", "runtime", "task", nil)
 	if !errors.Is(err, ErrWriterLeaseInvalidMode) {
 		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestCanonicalWriterLeaseClaimSortsAndHashesStableJSON(t *testing.T) {
+	workspaceID := uuid.New().String()
+	firstID := uuid.New().String()
+	secondID := uuid.New().String()
+	targets := []WriterLeaseTarget{
+		{ResourceID: secondID, MutexKey: WriterLeaseMutexKey(workspaceID, secondID, "main"), URL: "https://github.com/acme/two", Ref: "main"},
+		{ResourceID: firstID, MutexKey: WriterLeaseMutexKey(workspaceID, firstID, "main"), URL: "https://github.com/acme/one", Ref: "main"},
+	}
+	canonical, digest, err := CanonicalWriterLeaseClaim(WriterLeaseModeEnforce, workspaceID, targets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reversed, reversedDigest, err := CanonicalWriterLeaseClaim(WriterLeaseModeEnforce, workspaceID, []WriterLeaseTarget{targets[1], targets[0]})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(canonical) != string(reversed) || digest != reversedDigest {
+		t.Fatalf("canonicalization is order-sensitive: %s/%s vs %s/%s", canonical, digest, reversed, reversedDigest)
+	}
+	if digest == "" || len(digest) != 64 {
+		t.Fatalf("digest=%q", digest)
+	}
+}
+
+func TestCanonicalWriterLeaseClaimAcceptsEscapedSlashRef(t *testing.T) {
+	workspaceID := uuid.New().String()
+	resourceID := uuid.New().String()
+	ref := "release%2Fv1"
+	target := WriterLeaseTarget{ResourceID: resourceID, MutexKey: WriterLeaseMutexKey(workspaceID, resourceID, "release/v1"), URL: "https://github.com/acme/repo", Ref: ref}
+	if _, _, err := CanonicalWriterLeaseClaim(WriterLeaseModeEnforce, workspaceID, []WriterLeaseTarget{target}); err != nil {
+		t.Fatalf("escaped slash ref rejected: %v", err)
+	}
+}
+
+func TestCanonicalWriterLeaseClaimRejectsDriftAndForbiddenFields(t *testing.T) {
+	workspaceID := uuid.New().String()
+	resourceID := uuid.New().String()
+	base := WriterLeaseTarget{ResourceID: resourceID, MutexKey: WriterLeaseMutexKey(workspaceID, resourceID, "main"), URL: "https://github.com/acme/repo", Ref: "main"}
+	for name, target := range map[string]WriterLeaseTarget{
+		"duplicate resource": base,
+		"noncanonical ref":   {ResourceID: resourceID, MutexKey: base.MutexKey, URL: base.URL, Ref: "refs/heads/main"},
+		"noncanonical mutex": {ResourceID: resourceID, MutexKey: "wrong", URL: base.URL, Ref: base.Ref},
+	} {
+		t.Run(name, func(t *testing.T) {
+			targets := []WriterLeaseTarget{base, target}
+			if _, _, err := CanonicalWriterLeaseClaim(WriterLeaseModeEnforce, workspaceID, targets); err == nil {
+				t.Fatal("expected canonical validation error")
+			}
+		})
+	}
+	if _, err := decodeCanonicalWriterLeaseTargets([]byte(`[{"resource_id":"` + resourceID + `","mutex_key":"` + base.MutexKey + `","url":"` + base.URL + `","ref":"main","lease_token":"secret"}]`)); err == nil {
+		t.Fatal("forbidden lease field was accepted")
+	}
+	if _, err := decodeCanonicalWriterLeaseTargets([]byte(`null`)); err == nil {
+		t.Fatal("non-array snapshot was accepted")
+	}
+}
+
+func TestDecodePersistedWriterLeaseClaimRequiresCanonicalDigest(t *testing.T) {
+	workspaceID := uuid.New().String()
+	resourceID := uuid.New().String()
+	target := WriterLeaseTarget{ResourceID: resourceID, MutexKey: WriterLeaseMutexKey(workspaceID, resourceID, "main"), URL: "https://github.com/acme/repo", Ref: "main"}
+	canonical, digest, err := CanonicalWriterLeaseClaim(WriterLeaseModeEnforce, workspaceID, []WriterLeaseTarget{target})
+	if err != nil {
+		t.Fatal(err)
+	}
+	task := db.AgentTaskQueue{
+		WriterLeaseClaimMode:      pgtype.Text{String: "enforce", Valid: true},
+		WriterLeaseTargetSnapshot: canonical,
+		WriterLeaseTargetDigest:   pgtype.Text{String: digest, Valid: true},
+	}
+	claim, legacy, err := DecodePersistedWriterLeaseClaim(task, workspaceID)
+	if err != nil || legacy || claim.Digest != digest || len(claim.Targets) != 1 {
+		t.Fatalf("claim=%+v legacy=%v err=%v", claim, legacy, err)
+	}
+	// JSONB may normalize whitespace/encoding on readback; digest validation is
+	// semantic and must not depend on the original wire bytes.
+	task.WriterLeaseTargetSnapshot = append([]byte("  "), canonical...)
+	task.WriterLeaseTargetSnapshot = append(task.WriterLeaseTargetSnapshot, '\n')
+	if _, _, err := DecodePersistedWriterLeaseClaim(task, workspaceID); err != nil {
+		t.Fatalf("JSONB-equivalent snapshot rejected: %v", err)
+	}
+	task.WriterLeaseTargetSnapshot = canonical
+	task.WriterLeaseTargetDigest = pgtype.Text{String: "deadbeef", Valid: true}
+	if _, _, err := DecodePersistedWriterLeaseClaim(task, workspaceID); err == nil {
+		t.Fatal("digest tampering was accepted")
+	}
+	task.WriterLeaseTargetDigest = pgtype.Text{String: digest, Valid: true}
+	task.WriterLeaseClaimMode = pgtype.Text{String: string(WriterLeaseModeShadow), Valid: true}
+	if _, _, err := DecodePersistedWriterLeaseClaim(task, workspaceID); err == nil {
+		t.Fatal("persisted mode drift was accepted with the original digest")
+	}
+	_, offDigest, err := CanonicalWriterLeaseClaim(WriterLeaseModeOff, workspaceID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, shadowDigest, err := CanonicalWriterLeaseClaim(WriterLeaseModeShadow, workspaceID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, enforceDigest, err := CanonicalWriterLeaseClaim(WriterLeaseModeEnforce, workspaceID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if offDigest == shadowDigest || offDigest == enforceDigest || shadowDigest == enforceDigest {
+		t.Fatalf("empty-target mode digests collided: off=%s shadow=%s enforce=%s", offDigest, shadowDigest, enforceDigest)
+	}
+	legacyTask := db.AgentTaskQueue{}
+	_, legacy, err = DecodePersistedWriterLeaseClaim(legacyTask, workspaceID)
+	if err != nil || !legacy {
+		t.Fatalf("legacy=%v err=%v", legacy, err)
+	}
+}
+
+func TestFinalizeWriterLeaseClaimFailsClosedWithoutTransactionStarter(t *testing.T) {
+	workspaceID := uuid.New().String()
+	task := db.AgentTaskQueue{
+		ID:           pgtype.UUID{Bytes: uuid.New(), Valid: true},
+		RuntimeID:    pgtype.UUID{Bytes: uuid.New(), Valid: true},
+		DispatchedAt: pgtype.Timestamptz{Time: time.Now(), Valid: true},
+	}
+	_, err := (&TaskService{}).FinalizeTaskClaimWithWriterLeaseClaim(
+		context.Background(), task, db.CreateTaskTokenParams{}, nil, false, nil,
+		&WriterLeaseClaim{Mode: WriterLeaseModeEnforce, Targets: []WriterLeaseTarget{}}, workspaceID,
+	)
+	if !errors.Is(err, ErrWriterLeaseFenceRejected) {
+		t.Fatalf("error=%v, want fail-closed writer lease rejection", err)
 	}
 }
