@@ -182,6 +182,17 @@ func (s *WriterLeaseSession) ReadOnly() bool {
 	return s != nil && s.readOnly
 }
 
+// Stale reports whether fencing has been lost or terminal release has begun.
+// It is read-only and does not expose the private token or generation.
+func (s *WriterLeaseSession) Stale() bool {
+	if s == nil {
+		return true
+	}
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	return s.state == writerLeaseSessionStale || s.state == writerLeaseSessionClosing || s.state == writerLeaseSessionReleased
+}
+
 // WithMutation verifies the lease and invokes fn exactly once only when the
 // concurrent release cannot invalidate the guarded mutation between verify
 // and callback entry. fn receives the execution context, so it must honor

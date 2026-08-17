@@ -842,6 +842,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		ServerVersion:               normalizeServerVersion(version),
 	}
 	h := handler.New(queries, pool, hub, bus, emailSvc, store, cfSigner, analyticsClient, signupConfig, daemonHub)
+	h.WriterLeaseService = service.NewWriteLeaseService(pool)
 	runtimeSources := configureCompanyOps(h, queries, pool)
 	// Universal Work Registration Kernel (Phase-1). Reuses the existing
 	// project/issue/external_work_order_link/project_lifecycle_receipt/
@@ -1564,6 +1565,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		r.Post("/claim", h.ClaimTasksByRuntime)
 		r.Post("/runtimes/{runtimeId}/tasks/{taskId}/prepare-lease", h.ExtendTaskPrepareLease)
 		r.Post("/runtimes/{runtimeId}/tasks/{taskId}/skill-bundles/resolve", h.ResolveTaskSkillBundles)
+		r.Post("/runtimes/{runtimeId}/tasks/{taskId}/writer-lease/{action}", h.WriterLease)
 		r.Get("/runtimes/{runtimeId}/tasks/pending", h.ListPendingTasksByRuntime)
 		r.Post("/runtimes/{runtimeId}/update/{updateId}/result", h.ReportUpdateResult)
 		r.Post("/runtimes/{runtimeId}/models/{requestId}/result", h.ReportModelListResult)

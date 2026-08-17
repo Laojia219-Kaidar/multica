@@ -10,6 +10,9 @@ const (
 	// Gated so only daemons+servers that both support it route claim over WS;
 	// everyone else keeps using the HTTP claim endpoint.
 	DaemonCapabilityRPCV1 = "rpc-v1"
+	// DaemonCapabilityWriterLeaseV1 advertises support for migration-262
+	// writer-lease lifecycle calls. Enforce claims fail closed when absent.
+	DaemonCapabilityWriterLeaseV1 = "writer-lease-v1"
 
 	// AppCapabilityChatDraftRestoreV1 is advertised (X-Client-Capabilities) by
 	// app clients that understand the durable draft-restore recovery path:

@@ -554,14 +554,26 @@ func parseUUIDLoose(s string) (pgtype.UUID, error) {
 }
 
 // listProjectResourcesForProject is a small helper used by the daemon claim
-// handler to attach project resources to outgoing tasks.
-func (h *Handler) listProjectResourcesForProject(ctx context.Context, projectID pgtype.UUID) []db.ProjectResource {
-	if !projectID.Valid {
+// handler to attach only rows belonging to the authoritative project and
+// workspace. The SQL query is project-scoped; the in-memory checks defend
+// against malformed/legacy rows carrying a foreign workspace or project id.
+func (h *Handler) listProjectResourcesForProject(ctx context.Context, projectID, workspaceID pgtype.UUID) []db.ProjectResource {
+	if !projectID.Valid || !workspaceID.Valid {
 		return nil
 	}
 	rows, err := h.Queries.ListProjectResources(ctx, projectID)
 	if err != nil {
 		return nil
 	}
-	return rows
+	return filterProjectResourcesForWorkspace(rows, projectID, workspaceID)
+}
+
+func filterProjectResourcesForWorkspace(rows []db.ProjectResource, projectID, workspaceID pgtype.UUID) []db.ProjectResource {
+	filtered := make([]db.ProjectResource, 0, len(rows))
+	for _, row := range rows {
+		if row.ProjectID == projectID && row.WorkspaceID == workspaceID {
+			filtered = append(filtered, row)
+		}
+	}
+	return filtered
 }

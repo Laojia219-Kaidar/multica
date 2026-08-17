@@ -215,15 +215,13 @@ func (d *Daemon) repoCheckoutHandler() http.HandlerFunc {
 			checkoutRef = d.taskRepoDefaultRef(req.WorkspaceID, req.TaskID, req.URL)
 		}
 
-		result, err := d.repoCache.CreateWorktree(repocache.WorktreeParams{
-			WorkspaceID:         req.WorkspaceID,
-			RepoURL:             req.URL,
-			WorkDir:             req.WorkDir,
-			Ref:                 checkoutRef,
-			AgentName:           req.AgentName,
-			TaskID:              req.TaskID,
-			CoAuthoredByEnabled: d.workspaceCoAuthoredByEnabled(req.WorkspaceID),
-			IsolatedGitMetadata: req.CheckoutMode == repoCheckoutModeIsolated,
+		result, err := d.checkoutWithWriterLease(r.Context(), req.TaskID, req.URL, checkoutRef, func(context.Context) (*repocache.WorktreeResult, error) {
+			return d.repoCache.CreateWorktree(repocache.WorktreeParams{
+				WorkspaceID: req.WorkspaceID, RepoURL: req.URL, WorkDir: req.WorkDir,
+				Ref: checkoutRef, AgentName: req.AgentName, TaskID: req.TaskID,
+				CoAuthoredByEnabled: d.workspaceCoAuthoredByEnabled(req.WorkspaceID),
+				IsolatedGitMetadata: req.CheckoutMode == repoCheckoutModeIsolated,
+			})
 		})
 		if err != nil {
 			d.logger.Error("repo checkout failed", "url", req.URL, "error", err)
@@ -234,4 +232,14 @@ func (d *Daemon) repoCheckoutHandler() http.HandlerFunc {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(result)
 	}
+}
+
+func (d *Daemon) checkoutWithWriterLease(ctx context.Context, taskID, repoURL, ref string, fn func(context.Context) (*repocache.WorktreeResult, error)) (*repocache.WorktreeResult, error) {
+	var result *repocache.WorktreeResult
+	err := d.withWriterLeaseCheckout(ctx, taskID, repoURL, ref, func(mutationCtx context.Context) error {
+		var err error
+		result, err = fn(mutationCtx)
+		return err
+	})
+	return result, err
 }

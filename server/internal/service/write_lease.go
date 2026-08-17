@@ -53,20 +53,20 @@ const (
 
 // WriteLease is the in-memory representation of a write_lease row.
 type WriteLease struct {
-	ID               uuid.UUID
-	MutexKey         string
-	HolderID         string
-	LeaseToken       uuid.UUID
-	FenceGeneration  int64
-	Status           WriteLeaseStatus
-	AcquiredAt       time.Time
-	ExpiresAt        *time.Time
-	RenewedCount     int32
-	ReleasedAt       *time.Time
-	LastCancelReason *string
-	LastCancelledAt  *time.Time
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
+	ID               uuid.UUID        `json:"id"`
+	MutexKey         string           `json:"mutex_key"`
+	HolderID         string           `json:"holder_id"`
+	LeaseToken       uuid.UUID        `json:"lease_token"`
+	FenceGeneration  int64            `json:"fence_generation"`
+	Status           WriteLeaseStatus `json:"status"`
+	AcquiredAt       time.Time        `json:"acquired_at"`
+	ExpiresAt        *time.Time       `json:"expires_at,omitempty"`
+	RenewedCount     int32            `json:"renewed_count"`
+	ReleasedAt       *time.Time       `json:"released_at,omitempty"`
+	LastCancelReason *string          `json:"last_cancel_reason,omitempty"`
+	LastCancelledAt  *time.Time       `json:"last_cancelled_at,omitempty"`
+	CreatedAt        time.Time        `json:"created_at"`
+	UpdatedAt        time.Time        `json:"updated_at"`
 }
 
 // ErrLeaseBusy is returned when a lease cannot be acquired because another

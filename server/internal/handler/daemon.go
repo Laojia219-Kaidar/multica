@@ -16,10 +16,12 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/analytics"
 	"github.com/multica-ai/multica/server/internal/auth"
 	"github.com/multica-ai/multica/server/internal/daemonws"
+	"github.com/multica-ai/multica/server/internal/featureflags"
 	"github.com/multica-ai/multica/server/internal/integrations/channel"
 	"github.com/multica-ai/multica/server/internal/integrations/slack"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
@@ -28,6 +30,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/featureflag"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 	"github.com/multica-ai/multica/server/pkg/redact"
 )
@@ -1466,11 +1469,15 @@ func (h *Handler) ClaimTasksByRuntime(w http.ResponseWriter, r *http.Request) {
 		if !h.verifyDaemonWorkspaceAccess(r, uuidToString(rt.WorkspaceID)) {
 			continue
 		}
-		// Group-ownership check (mirrors the WS path, daemon_ws.go): a runtime
-		// bound to a different daemon must not be claimed by this one. Runtimes
-		// with a NULL daemon_id (e.g. cloud runtimes) are not machine-pinned, so
-		// they stay claimable — same tolerance as the WS handler.
-		if rt.DaemonID.Valid && rt.DaemonID.String != req.DaemonID {
+		// Group-ownership check: an mdt_ token is machine-scoped and therefore
+		// requires a non-NULL exact runtime daemon_id. Legacy PAT/JWT callers
+		// with no daemon identity retain the historical NULL-daemon fallback.
+		ctxDaemonID := strings.TrimSpace(middleware.DaemonIDFromContext(r.Context()))
+		if ctxDaemonID != "" {
+			if !daemonRuntimeClaimOwnership(rt, ctxDaemonID) {
+				continue
+			}
+		} else if rt.DaemonID.Valid && rt.DaemonID.String != req.DaemonID {
 			continue
 		}
 		runtimeByID[uuidToString(rt.ID)] = rt
@@ -1791,42 +1798,42 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 
 			var projectRepos []RepoData
 			if issue.ProjectID.Valid {
-				resp.ProjectID = uuidToString(issue.ProjectID)
-				if proj, err := h.Queries.GetProject(r.Context(), issue.ProjectID); err == nil {
+				if proj, err := h.Queries.GetProjectInWorkspace(r.Context(), db.GetProjectInWorkspaceParams{ID: issue.ProjectID, WorkspaceID: issue.WorkspaceID}); err == nil {
+					resp.ProjectID = uuidToString(proj.ID)
 					resp.ProjectTitle = proj.Title
 					resp.ProjectDescription = proj.Description.String
-				}
-				if rows := h.listProjectResourcesForProject(r.Context(), issue.ProjectID); len(rows) > 0 {
-					out := make([]ProjectResourceData, 0, len(rows))
-					for _, row := range rows {
-						label := ""
-						if row.Label.Valid {
-							label = row.Label.String
-						}
-						ref := json.RawMessage(row.ResourceRef)
-						if len(ref) == 0 {
-							ref = json.RawMessage("{}")
-						}
-						out = append(out, ProjectResourceData{
-							ID:           uuidToString(row.ID),
-							ResourceType: row.ResourceType,
-							ResourceRef:  ref,
-							Label:        label,
-						})
-						// Lift github_repo resources into the daemon's repo list
-						// so `multica repo checkout` and the meta-skill render
-						// them as the issue's repos.
-						if row.ResourceType == "github_repo" {
-							var payload struct {
-								URL string `json:"url"`
-								Ref string `json:"ref,omitempty"`
+					if rows := h.listProjectResourcesForProject(r.Context(), proj.ID, issue.WorkspaceID); len(rows) > 0 {
+						out := make([]ProjectResourceData, 0, len(rows))
+						for _, row := range rows {
+							label := ""
+							if row.Label.Valid {
+								label = row.Label.String
 							}
-							if json.Unmarshal(row.ResourceRef, &payload) == nil && payload.URL != "" {
-								projectRepos = append(projectRepos, RepoData{URL: payload.URL, Ref: strings.TrimSpace(payload.Ref)})
+							ref := json.RawMessage(row.ResourceRef)
+							if len(ref) == 0 {
+								ref = json.RawMessage("{}")
+							}
+							out = append(out, ProjectResourceData{
+								ID:           uuidToString(row.ID),
+								ResourceType: row.ResourceType,
+								ResourceRef:  ref,
+								Label:        label,
+							})
+							// Lift github_repo resources into the daemon's repo list
+							// so `multica repo checkout` and the meta-skill render
+							// them as the issue's repos.
+							if row.ResourceType == "github_repo" {
+								var payload struct {
+									URL string `json:"url"`
+									Ref string `json:"ref,omitempty"`
+								}
+								if json.Unmarshal(row.ResourceRef, &payload) == nil && payload.URL != "" {
+									projectRepos = append(projectRepos, RepoData{URL: payload.URL, Ref: strings.TrimSpace(payload.Ref)})
+								}
 							}
 						}
+						resp.ProjectResources = out
 					}
-					resp.ProjectResources = out
 				}
 			}
 
@@ -2130,7 +2137,7 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 					resp.ProjectID = uuidToString(project.ID)
 					resp.ProjectTitle = project.Title
 					resp.ProjectDescription = project.Description.String
-					if rows := h.listProjectResourcesForProject(r.Context(), project.ID); len(rows) > 0 {
+					if rows := h.listProjectResourcesForProject(r.Context(), project.ID, cs.WorkspaceID); len(rows) > 0 {
 						resources := make([]ProjectResourceData, 0, len(rows))
 						for _, row := range rows {
 							label := ""
@@ -2345,41 +2352,42 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			// github_repo resources instead of the workspace fallback.
 			var projectRepos []RepoData
 			if qc.ProjectID != "" {
-				projectUUID, err := util.ParseUUID(qc.ProjectID)
-				if err == nil {
-					resp.ProjectID = qc.ProjectID
-					if proj, err := h.Queries.GetProject(r.Context(), projectUUID); err == nil {
+				projectUUID, projectErr := util.ParseUUID(qc.ProjectID)
+				workspaceUUID, workspaceErr := util.ParseUUID(qc.WorkspaceID)
+				if projectErr == nil && workspaceErr == nil {
+					if proj, err := h.Queries.GetProjectInWorkspace(r.Context(), db.GetProjectInWorkspaceParams{ID: projectUUID, WorkspaceID: workspaceUUID}); err == nil {
+						resp.ProjectID = uuidToString(proj.ID)
 						resp.ProjectTitle = proj.Title
 						resp.ProjectDescription = proj.Description.String
-					}
-					if rows := h.listProjectResourcesForProject(r.Context(), projectUUID); len(rows) > 0 {
-						out := make([]ProjectResourceData, 0, len(rows))
-						for _, row := range rows {
-							label := ""
-							if row.Label.Valid {
-								label = row.Label.String
-							}
-							ref := json.RawMessage(row.ResourceRef)
-							if len(ref) == 0 {
-								ref = json.RawMessage("{}")
-							}
-							out = append(out, ProjectResourceData{
-								ID:           uuidToString(row.ID),
-								ResourceType: row.ResourceType,
-								ResourceRef:  ref,
-								Label:        label,
-							})
-							if row.ResourceType == "github_repo" {
-								var payload struct {
-									URL string `json:"url"`
-									Ref string `json:"ref,omitempty"`
+						if rows := h.listProjectResourcesForProject(r.Context(), proj.ID, workspaceUUID); len(rows) > 0 {
+							out := make([]ProjectResourceData, 0, len(rows))
+							for _, row := range rows {
+								label := ""
+								if row.Label.Valid {
+									label = row.Label.String
 								}
-								if json.Unmarshal(row.ResourceRef, &payload) == nil && payload.URL != "" {
-									projectRepos = append(projectRepos, RepoData{URL: payload.URL, Ref: strings.TrimSpace(payload.Ref)})
+								ref := json.RawMessage(row.ResourceRef)
+								if len(ref) == 0 {
+									ref = json.RawMessage("{}")
+								}
+								out = append(out, ProjectResourceData{
+									ID:           uuidToString(row.ID),
+									ResourceType: row.ResourceType,
+									ResourceRef:  ref,
+									Label:        label,
+								})
+								if row.ResourceType == "github_repo" {
+									var payload struct {
+										URL string `json:"url"`
+										Ref string `json:"ref,omitempty"`
+									}
+									if json.Unmarshal(row.ResourceRef, &payload) == nil && payload.URL != "" {
+										projectRepos = append(projectRepos, RepoData{URL: payload.URL, Ref: strings.TrimSpace(payload.Ref)})
+									}
 								}
 							}
+							resp.ProjectResources = out
 						}
-						resp.ProjectResources = out
 					}
 				}
 			}
@@ -2516,7 +2524,90 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		resp.EmployeeMemories = mems
 	}
 
+	if leaseFailure := h.populateWriterLeaseClaim(r, task, runtime, runtimeID, runtimeWorkspaceID, &resp); leaseFailure != nil {
+		if leaseFailure.outcome == "error_writer_lease_capability" || leaseFailure.outcome == "error_writer_lease_mode" {
+			if _, rerr := h.TaskService.RequeueTaskAfterClaimFailure(r.Context(), *task); rerr != nil {
+				slog.Error("task claim: requeue after writer lease negotiation failure failed", "task_id", uuidToString(task.ID), "error", rerr)
+			}
+		} else if _, cerr := h.TaskService.CancelTask(r.Context(), task.ID); cerr != nil {
+			slog.Error("task claim: cancel after writer lease claim failure failed", "task_id", uuidToString(task.ID), "error", cerr)
+		}
+		return resp, deliveredCommentIDs, agentSkillCount, builtinSkillCount, leaseFailure
+	}
+
 	return resp, deliveredCommentIDs, agentSkillCount, builtinSkillCount, nil
+}
+
+// populateWriterLeaseClaim resolves the rollout and targets on the server.
+// The daemon never supplies a key or holder, and legacy/off paths remain
+// behaviorally unchanged.
+func (h *Handler) populateWriterLeaseClaim(r *http.Request, task *db.AgentTaskQueue, runtime db.AgentRuntime, runtimeID, runtimeWorkspaceID string, resp *AgentTaskResponse) *claimBuildFailure {
+	decision := h.FeatureFlags.Decision(r.Context(), featureflags.WriterLeaseMode, false)
+	if decision.Reason == featureflag.ReasonError {
+		return &claimBuildFailure{outcome: "error_writer_lease_mode", status: http.StatusInternalServerError, message: "writer lease mode unavailable"}
+	}
+	mode, err := service.NormalizeWriterLeaseMode(decision.Variant)
+	if err != nil {
+		return &claimBuildFailure{outcome: "error_writer_lease_mode", status: http.StatusInternalServerError, message: "writer lease mode unavailable"}
+	}
+	resp.WriterLeaseMode = string(mode)
+	if mode != service.WriterLeaseModeEnforce && mode != service.WriterLeaseModeShadow {
+		return nil
+	}
+	resources := make([]service.WriterLeaseResource, 0, len(resp.ProjectResources))
+	for _, resource := range resp.ProjectResources {
+		if resource.ResourceType != "github_repo" {
+			continue
+		}
+		resourceID, parseErr := uuid.Parse(strings.TrimSpace(resource.ID))
+		if parseErr != nil {
+			return &claimBuildFailure{outcome: "error_writer_lease_target", status: http.StatusInternalServerError, message: "writer lease target unavailable"}
+		}
+		var ref struct {
+			URL               string `json:"url"`
+			Ref               string `json:"ref"`
+			DefaultBranchHint string `json:"default_branch_hint"`
+		}
+		if json.Unmarshal(resource.ResourceRef, &ref) != nil || strings.TrimSpace(ref.URL) == "" {
+			return &claimBuildFailure{outcome: "error_writer_lease_target", status: http.StatusInternalServerError, message: "writer lease target unavailable"}
+		}
+		resources = append(resources, service.WriterLeaseResource{ID: resourceID, ResourceType: resource.ResourceType, URL: ref.URL, Ref: ref.Ref, DefaultBranchHint: ref.DefaultBranchHint})
+	}
+	if mode == service.WriterLeaseModeShadow {
+		// Shadow resolves and records the authoritative target set but never
+		// acquires migration-262 leases. The response remains useful to a
+		// compatible daemon without changing production behavior.
+		if resp.ProjectID != "" && len(resources) > 0 {
+			targets, targetErr := service.ResolveWriterLeaseTargets(mode, runtimeWorkspaceID, resp.ProjectID, daemonIDForClaim(r), runtimeID, resp.ID, resources)
+			if targetErr != nil {
+				return &claimBuildFailure{outcome: "error_writer_lease_target", status: http.StatusInternalServerError, message: "writer lease target unavailable"}
+			}
+			resp.WriterLeaseTargets = targets
+		}
+		return nil
+	}
+	if len(resources) == 0 || resp.ProjectID == "" {
+		return nil
+	}
+	if !requestHasClientCapability(r, protocol.DaemonCapabilityWriterLeaseV1) {
+		return &claimBuildFailure{outcome: "error_writer_lease_capability", status: http.StatusConflict, message: "daemon writer lease capability required"}
+	}
+	// DaemonID is authenticated by DaemonAuth. A missing daemon id is a
+	// protocol failure; never accept a caller-supplied substitute.
+	daemonID := daemonIDForClaim(r)
+	if daemonID == "" {
+		return &claimBuildFailure{outcome: "error_writer_lease_identity", status: http.StatusForbidden, message: "daemon identity required for writer lease"}
+	}
+	targets, err := service.ResolveWriterLeaseTargets(mode, runtimeWorkspaceID, resp.ProjectID, daemonID, runtimeID, resp.ID, resources)
+	if err != nil {
+		return &claimBuildFailure{outcome: "error_writer_lease_target", status: http.StatusInternalServerError, message: "writer lease target unavailable"}
+	}
+	resp.WriterLeaseTargets = targets
+	return nil
+}
+
+func daemonIDForClaim(r *http.Request) string {
+	return strings.TrimSpace(middleware.DaemonIDFromContext(r.Context()))
 }
 
 // employeePromotedMemories resolves the promoted memory projections for one
@@ -2609,6 +2700,10 @@ func (h *Handler) ClaimTaskByRuntime(w http.ResponseWriter, r *http.Request) {
 	// runtime_id (defense-in-depth against upstream routing bugs).
 	runtime, ok := h.requireDaemonRuntimeAccess(w, r, runtimeID)
 	if !ok {
+		return
+	}
+	if authDaemonID := strings.TrimSpace(middleware.DaemonIDFromContext(r.Context())); authDaemonID != "" && !daemonRuntimeClaimOwnership(runtime, authDaemonID) {
+		writeError(w, http.StatusForbidden, "daemon identity does not match runtime")
 		return
 	}
 	runtimeWorkspaceID := uuidToString(runtime.WorkspaceID)
@@ -2743,6 +2838,18 @@ func (h *Handler) ClaimTaskByRuntime(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	payloadBytes, _ = writeMeasuredJSON(w, http.StatusOK, map[string]any{"task": resp})
+}
+
+// daemonRuntimeClaimOwnership distinguishes the authenticated mdt_ path from
+// legacy PAT/JWT callers. A non-empty DaemonIDFromContext is a machine token
+// and therefore requires a stored, exact runtime daemon_id match; legacy
+// callers with no daemon identity retain the historical workspace-scoped
+// fallback.
+func daemonRuntimeClaimOwnership(runtime db.AgentRuntime, authenticatedDaemonID string) bool {
+	if strings.TrimSpace(authenticatedDaemonID) == "" {
+		return true
+	}
+	return runtime.DaemonID.Valid && runtime.DaemonID.String == authenticatedDaemonID
 }
 
 type resolveSkillBundlesRequest struct {

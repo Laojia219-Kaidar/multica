@@ -244,7 +244,7 @@ type Handler struct {
 	) (db.Issue, error)
 	// WorkEntry is the Universal Work Registration Kernel service. Nil when not
 	// wired; the /api/work/* routes fail closed with 503 in that state.
-	WorkEntry            *workentry.Service
+	WorkEntry             *workentry.Service
 	AutopilotService      *service.AutopilotService
 	EmailService          *service.EmailService
 	UpdateStore           UpdateStore
@@ -252,6 +252,7 @@ type Handler struct {
 	LocalSkillListStore   LocalSkillListStore
 	LocalSkillImportStore LocalSkillImportStore
 	FeatureFlags          *featureflag.Service
+	WriterLeaseService    *service.WriteLeaseService
 	LivenessStore         LivenessStore
 	HeartbeatScheduler    HeartbeatScheduler
 	Storage               storage.Storage

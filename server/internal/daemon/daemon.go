@@ -324,6 +324,10 @@ type Daemon struct {
 	// connection in runTaskWakeupConnection and detached on disconnect; when
 	// detached, callers fall back to HTTP.
 	wsRPC *wsRPCClient
+	// writerLeaseModes/session bundles are process-local checkout/run gates.
+	// Tokens and generations never leave the session object.
+	writerLeaseModes    map[string]string
+	writerLeaseSessions map[string]*writerLeaseCheckoutSession
 
 	// batchClaimUnsupported is set once a batch claim gets a 404 from the
 	// server (no /api/daemon/tasks/claim route — an un-upgraded server), so
@@ -461,6 +465,8 @@ func New(cfg Config, logger *slog.Logger) *Daemon {
 		reconcile:                 newReconcileBroadcaster(),
 		workspaceChanges:          newWorkspaceChangeSignal(),
 		wsRPC:                     newWSRPCClient(wsRPCResponseGrace),
+		writerLeaseModes:          make(map[string]string),
+		writerLeaseSessions:       make(map[string]*writerLeaseCheckoutSession),
 	}
 	d.activeEnvRootsCond = sync.NewCond(&d.activeEnvRootsMu)
 	d.activeCodexStoresCond = sync.NewCond(&d.activeCodexStoresMu)
@@ -3759,6 +3765,13 @@ func (d *Daemon) handleTask(ctx context.Context, task Task, slot int) {
 	// deleted (404).
 	runCtx, runCancel := context.WithCancel(ctx)
 	defer runCancel()
+	writerLeaseRelease, writerLeaseAbort := d.acquireWriterLeaseForTask(runCtx, task, runCancel, taskLog)
+	if writerLeaseRelease != nil {
+		defer writerLeaseRelease()
+	}
+	if writerLeaseAbort {
+		return
+	}
 
 	// Poll interval is d.cancelPollInterval (5s in production, reduced in tests
 	// via direct field override). Guard against zero so a misconfigured daemon
@@ -3776,7 +3789,12 @@ func (d *Daemon) handleTask(ctx context.Context, task Task, slot int) {
 		}
 	}()
 
-	result, err := d.runner.run(runCtx, task, provider, slot, taskLog)
+	var result TaskResult
+	var err error
+	err = d.withWriterLeaseExecution(runCtx, task.ID, func(execCtx context.Context) error {
+		result, err = d.runner.run(execCtx, task, provider, slot, taskLog)
+		return err
+	})
 
 	// Report usage before any early return — the agent accumulates tokens
 	// whether the task completes, errors, or is cancelled mid-run by the poll
@@ -3801,6 +3819,17 @@ func (d *Daemon) handleTask(ctx context.Context, task Task, slot int) {
 		}
 		return
 	default:
+	}
+	// A writer-lease heartbeat also cancels runCtx when fencing is lost. A
+	// runner is allowed to ignore cancellation and return a completed result;
+	// never send CompleteTask from that stale execution. Other cancellation and
+	// error paths retain the daemon's pre-existing terminal-report semantics.
+	if d.writerLeaseWasLost(task.ID) {
+		taskLog.Info("writer lease stale before terminal report, discarding result")
+		if ackErr := d.client.AckTaskCancelled(ctx, task.ID); ackErr != nil {
+			taskLog.Warn("cancel ack failed; server sweeper will finalize", "error", ackErr)
+		}
+		return
 	}
 
 	if err != nil {
@@ -4032,6 +4061,13 @@ func (d *Daemon) acquireLocalDirectoryLockIfNeeded(ctx context.Context, task Tas
 func (d *Daemon) reportTaskResult(ctx context.Context, taskID string, result TaskResult, taskLog *slog.Logger) {
 	switch result.Status {
 	case "completed":
+		if err := d.writerLeaseVerifyAll(ctx, taskID); err != nil {
+			taskLog.Info("writer lease stale before terminal report, discarding result", "error", err)
+			if ackErr := d.client.AckTaskCancelled(ctx, taskID); ackErr != nil {
+				taskLog.Warn("cancel ack failed; server sweeper will finalize", "error", ackErr)
+			}
+			return
+		}
 		taskLog.Info("task completed", "status", result.Status)
 		err := d.reportTerminalTask(ctx, terminalTaskReport{
 			kind:                  terminalTaskReportComplete,

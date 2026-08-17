@@ -22,6 +22,8 @@ const (
 	// this key arrives as an explicit true. That makes publishing the key here
 	// mandatory — a key the client never receives can never be turned on.
 	DesktopHangStackCapture = "desktop_hang_stack_capture"
+	// WriterLeaseMode selects the migration-262 writer lease rollout arm.
+	WriterLeaseMode = "writer_lease_mode"
 	// agentBuilderCompat is no longer a release flag. Keep publishing the key
 	// as enabled so installed desktop clients that still gate the AI creation
 	// entry on this config decision receive the permanently enabled behavior.
