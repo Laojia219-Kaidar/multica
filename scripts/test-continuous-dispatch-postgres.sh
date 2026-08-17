@@ -85,3 +85,5 @@ DATABASE_URL="$database_url" HIVECREW_ISOLATED_TEST_PORT="$test_port" \
   go test -race ./internal/service -run '^TestProductionContinuousDispatch' -count=1 -v
 DATABASE_URL="$database_url" HIVECREW_ISOLATED_TEST_PORT="$test_port" \
   go test -race ./internal/service -run '^TestProductionCompanyOps' -count=1 -v
+DATABASE_URL="$database_url" HIVECREW_ISOLATED_TEST_PORT="$test_port" \
+  go test -race ./internal/service -run '^TestWriterLeaseTerminalPostgresAtomicFence$' -count=1 -v
