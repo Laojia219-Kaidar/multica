@@ -149,6 +149,10 @@ func writerLeaseDaemonMatchesRuntime(runtime db.AgentRuntime, daemonID string) b
 	return daemonID != "" && runtime.DaemonID.Valid && runtime.DaemonID.String == daemonID
 }
 
+func writerLeaseTaskRuntimeMatchesDaemon(task db.AgentTaskQueue, runtime db.AgentRuntime, daemonID string) bool {
+	return task.RuntimeID.Valid && runtime.ID == task.RuntimeID && writerLeaseDaemonMatchesRuntime(runtime, daemonID)
+}
+
 func validateWriterLeaseRequest(action string, req writerLeaseRequest) error {
 	switch action {
 	case "acquire":

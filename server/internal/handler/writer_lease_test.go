@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -69,13 +70,34 @@ func TestWriterLeaseRequestActionCredentialsAndTTL(t *testing.T) {
 }
 
 func TestWriterLeaseDaemonMatchesRuntime(t *testing.T) {
-	runtime := db.AgentRuntime{DaemonID: pgtype.Text{String: "daemon-a", Valid: true}}
+	runtimeID := uuid.New()
+	runtime := db.AgentRuntime{ID: pgtype.UUID{Bytes: runtimeID, Valid: true}, DaemonID: pgtype.Text{String: "daemon-a", Valid: true}}
 	if !writerLeaseDaemonMatchesRuntime(runtime, "daemon-a") || writerLeaseDaemonMatchesRuntime(runtime, "daemon-b") {
 		t.Fatal("valid runtime daemon identity was not enforced")
 	}
 	runtime.DaemonID = pgtype.Text{}
 	if writerLeaseDaemonMatchesRuntime(runtime, "legacy-daemon") {
 		t.Fatal("writer lease accepted runtime without stored daemon_id")
+	}
+	task := db.AgentTaskQueue{RuntimeID: runtime.ID}
+	runtime.DaemonID = pgtype.Text{String: "daemon-a", Valid: true}
+	if !writerLeaseTaskRuntimeMatchesDaemon(task, runtime, "daemon-a") || writerLeaseTaskRuntimeMatchesDaemon(task, runtime, "daemon-b") {
+		t.Fatal("proof accepted a cross-daemon runtime identity")
+	}
+	runtime.ID = pgtype.UUID{Bytes: uuid.New(), Valid: true}
+	if writerLeaseTaskRuntimeMatchesDaemon(task, runtime, "daemon-a") {
+		t.Fatal("proof accepted a runtime different from task.RuntimeID")
+	}
+}
+
+func TestTaskCompleteResultExcludesWriterLeaseProof(t *testing.T) {
+	proof := service.WriterLeaseTerminalProof{ResourceID: uuid.New(), LeaseToken: uuid.New(), FenceGeneration: 4}
+	encoded, err := json.Marshal(taskCompleteResult{Output: "done"})
+	if err != nil {
+		t.Fatalf("marshal task result: %v", err)
+	}
+	if strings.Contains(string(encoded), proof.ResourceID.String()) || strings.Contains(string(encoded), proof.LeaseToken.String()) || strings.Contains(string(encoded), "fence_generation") {
+		t.Fatalf("persisted task result shape leaked writer lease proof: %s", encoded)
 	}
 }
 

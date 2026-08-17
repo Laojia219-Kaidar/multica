@@ -138,6 +138,44 @@ func (d *Daemon) writerLeaseVerifyAll(ctx context.Context, taskID string) error 
 	return nil
 }
 
+// writerLeaseTerminalProof snapshots the daemon-private token/generation pair
+// for every claimed resource after a final local check. The server remains the
+// authority: it re-resolves the target set and validates these values under
+// the task/lease-row transaction lock.
+func (d *Daemon) writerLeaseTerminalProof(ctx context.Context, taskID string) ([]WriterLeaseTerminalProof, error) {
+	d.mu.Lock()
+	mode := d.writerLeaseModes[taskID]
+	bundle := d.writerLeaseSessions[taskID]
+	d.mu.Unlock()
+	if mode != string(service.WriterLeaseModeEnforce) {
+		return nil, nil
+	}
+	if bundle == nil || bundle.allStale() {
+		return nil, service.ErrWriterLeaseStale
+	}
+	resourceIDs := make([]string, 0, len(bundle.sessions))
+	for resourceID := range bundle.sessions {
+		resourceIDs = append(resourceIDs, resourceID)
+	}
+	sort.Strings(resourceIDs)
+	proof := make([]WriterLeaseTerminalProof, 0, len(resourceIDs))
+	for _, resourceID := range resourceIDs {
+		target := bundle.sessions[resourceID]
+		if target.session == nil {
+			return nil, service.ErrWriterLeaseStale
+		}
+		if err := target.session.WithMutation(ctx, func(context.Context) error { return nil }); err != nil {
+			return nil, err
+		}
+		token, generation, err := target.session.TerminalProof()
+		if err != nil {
+			return nil, err
+		}
+		proof = append(proof, WriterLeaseTerminalProof{ResourceID: resourceID, LeaseToken: token, FenceGeneration: generation})
+	}
+	return proof, nil
+}
+
 func (d *Daemon) withWriterLeaseCheckout(ctx context.Context, taskID, repoURL, ref string, fn func(context.Context) error) error {
 	d.mu.Lock()
 	mode := d.writerLeaseModes[taskID]

@@ -3121,6 +3121,20 @@ func (s *TaskService) MarkTaskWaitingLocalDirectory(ctx context.Context, taskID 
 // flipping to 'completed' and chat_session.session_id being refreshed,
 // causing the new task to resume against a stale (or NULL) session.
 func (s *TaskService) CompleteTask(ctx context.Context, taskID pgtype.UUID, result []byte, sessionID, workDir string, sessionRolloutMissing bool, retiredSessionID string) (*db.AgentTaskQueue, error) {
+	return s.CompleteTaskWithWriterLeaseProof(ctx, taskID, result, sessionID, workDir, sessionRolloutMissing, retiredSessionID, nil)
+}
+
+// CompleteTaskWithWriterLeaseProof accepts terminal lease evidence only from
+// the daemon transport. When migration-262 enforcement resolves github
+// targets, the proof is checked under the same transaction as completion.
+func (s *TaskService) CompleteTaskWithWriterLeaseProof(ctx context.Context, taskID pgtype.UUID, result []byte, sessionID, workDir string, sessionRolloutMissing bool, retiredSessionID string, writerLeaseProof []WriterLeaseTerminalProof) (*db.AgentTaskQueue, error) {
+	writerLeaseMode, err := s.writerLeaseCompletionMode(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err := requireWriterLeaseCompletionTransaction(writerLeaseMode, s.TxStarter); err != nil {
+		return nil, err
+	}
 	var task db.AgentTaskQueue
 	var terminalReplay bool
 	// chatAssistantMsg is the single assistant outcome row written for a chat
@@ -3128,6 +3142,24 @@ func (s *TaskService) CompleteTask(ctx context.Context, taskID pgtype.UUID, resu
 	// only after the transaction commits.
 	var chatAssistantMsg *db.ChatMessage
 	if err := s.runInTx(ctx, func(qtx *db.Queries) error {
+		lockedTask, err := qtx.LockAgentTaskForCompletion(ctx, taskID)
+		if err != nil {
+			return err
+		}
+		if lockedTask.Status != "running" {
+			_, replayErr := replayCompanyOpsExecutionCompleted(ctx, qtx, lockedTask, result)
+			if replayErr != nil {
+				return replayErr
+			}
+			task = lockedTask
+			terminalReplay = true
+			return nil
+		}
+		if writerLeaseMode == WriterLeaseModeEnforce {
+			if err := s.validateWriterLeaseTerminalProof(ctx, qtx, lockedTask, writerLeaseProof); err != nil {
+				return err
+			}
+		}
 		t, err := qtx.CompleteAgentTask(ctx, db.CompleteAgentTaskParams{
 			ID:                    taskID,
 			Result:                result,
@@ -3137,22 +3169,6 @@ func (s *TaskService) CompleteTask(ctx context.Context, taskID pgtype.UUID, resu
 			RetiredSessionID:      pgtype.Text{String: retiredSessionID, Valid: retiredSessionID != ""},
 		})
 		if err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
-				existing, lookupErr := qtx.GetAgentTask(ctx, taskID)
-				if lookupErr != nil {
-					return err
-				}
-				_, replayErr := replayCompanyOpsExecutionCompleted(ctx, qtx, existing, result)
-				if replayErr != nil {
-					return replayErr
-				}
-				// Preserve the historical idempotent callback behavior for other
-				// task families. CompanyOps tasks reached here only after exact
-				// terminal verification.
-				task = existing
-				terminalReplay = true
-				return nil
-			}
 			return err
 		}
 		task = t

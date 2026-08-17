@@ -3121,13 +3121,25 @@ type TaskCompleteRequest struct {
 	// to report" — this says "never hand this id to a later run". Older
 	// daemons omit it, which is exactly the pre-fix behaviour.
 	RetiredSessionID string `json:"retired_session_id,omitempty"`
+	// WriterLeaseProof is daemon-private terminal evidence. It is validated
+	// server-side and deliberately excluded from the persisted task result.
+	WriterLeaseProof []service.WriterLeaseTerminalProof `json:"writer_lease_proof,omitempty"`
+}
+
+type taskCompleteResult struct {
+	PRURL                 string `json:"pr_url"`
+	Output                string `json:"output"`
+	SessionID             string `json:"session_id"`
+	WorkDir               string `json:"work_dir"`
+	SessionRolloutMissing bool   `json:"session_rollout_missing,omitempty"`
+	RetiredSessionID      string `json:"retired_session_id,omitempty"`
 }
 
 func (h *Handler) CompleteTask(w http.ResponseWriter, r *http.Request) {
 	taskID := chi.URLParam(r, "taskId")
 
 	// Verify the caller owns this task's workspace.
-	_, workspaceID, ok := h.requireDaemonTaskAccessWithWorkspace(w, r, taskID)
+	taskRow, workspaceID, ok := h.requireDaemonTaskAccessWithWorkspace(w, r, taskID)
 	if !ok {
 		return
 	}
@@ -3137,14 +3149,33 @@ func (h *Handler) CompleteTask(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
+	if len(req.WriterLeaseProof) > 0 && strings.TrimSpace(middleware.DaemonIDFromContext(r.Context())) == "" {
+		writeError(w, http.StatusForbidden, "writer lease terminal proof requires daemon identity")
+		return
+	}
+	if len(req.WriterLeaseProof) > 0 {
+		runtime, runtimeErr := h.Queries.GetAgentRuntime(r.Context(), taskRow.RuntimeID)
+		if runtimeErr != nil || !writerLeaseTaskRuntimeMatchesDaemon(taskRow, runtime, middleware.DaemonIDFromContext(r.Context())) {
+			writeError(w, http.StatusForbidden, "writer lease terminal proof runtime ownership mismatch")
+			return
+		}
+	}
 
-	result, _ := json.Marshal(req)
+	result, _ := json.Marshal(taskCompleteResult{
+		PRURL: req.PRURL, Output: req.Output, SessionID: req.SessionID,
+		WorkDir: req.WorkDir, SessionRolloutMissing: req.SessionRolloutMissing,
+		RetiredSessionID: req.RetiredSessionID,
+	})
 	// MUL-5305: SessionRolloutMissing is applied inside CompleteTask's terminal
 	// transaction (force session_id NULL + flag the row), so an auto-retry the
 	// same commit creates and wakes can never observe the withheld pointer or a
 	// missing continuity-gap flag.
-	task, err := h.TaskService.CompleteTask(r.Context(), parseUUID(taskID), result, req.SessionID, req.WorkDir, req.SessionRolloutMissing, req.RetiredSessionID)
+	task, err := h.TaskService.CompleteTaskWithWriterLeaseProof(r.Context(), parseUUID(taskID), result, req.SessionID, req.WorkDir, req.SessionRolloutMissing, req.RetiredSessionID, req.WriterLeaseProof)
 	if err != nil {
+		if errors.Is(err, service.ErrWriterLeaseFenceRejected) {
+			writeError(w, http.StatusPreconditionFailed, "writer lease terminal fence rejected")
+			return
+		}
 		// A CompleteTask error is an infrastructure failure (transaction /
 		// assistant-outcome write), not a bad request: an already-finalized
 		// callback is treated as idempotent success and returns no error. Return

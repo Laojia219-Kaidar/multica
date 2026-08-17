@@ -56,6 +56,20 @@ func isTaskNotFoundError(err error) bool {
 	return strings.Contains(strings.ToLower(reqErr.Body), "task not found")
 }
 
+// isWriterLeaseCompletionFenceRejected identifies the server's deliberate
+// completion precondition failure. It is distinct from ordinary permanent
+// callback errors: a stale writer must remain running for recovery/sweeping,
+// never be downgraded to failed by the daemon's legacy fallback.
+func isWriterLeaseCompletionFenceRejected(err error) bool {
+	var reqErr *requestError
+	if !errors.As(err, &reqErr) {
+		return false
+	}
+	return reqErr.StatusCode == http.StatusPreconditionFailed &&
+		strings.HasSuffix(reqErr.Path, "/complete") &&
+		strings.Contains(strings.ToLower(reqErr.Body), "writer lease terminal fence")
+}
+
 // isUnauthorizedError returns true if the error is a 401 from the server.
 // Used by the token-renewal loop to surface a clear "re-login required"
 // message instead of a generic transport-level retry.
@@ -372,6 +386,10 @@ func (c *Client) ReportTaskMessages(ctx context.Context, taskID string, messages
 }
 
 func (c *Client) CompleteTask(ctx context.Context, taskID, output, branchName, sessionID, workDir string, sessionRolloutMissing bool, retiredSessionID string) error {
+	return c.completeTask(ctx, taskID, output, branchName, sessionID, workDir, sessionRolloutMissing, retiredSessionID, nil)
+}
+
+func (c *Client) completeTask(ctx context.Context, taskID, output, branchName, sessionID, workDir string, sessionRolloutMissing bool, retiredSessionID string, writerLeaseProof []WriterLeaseTerminalProof) error {
 	body := map[string]any{"output": output}
 	if branchName != "" {
 		body["branch_name"] = branchName
@@ -388,7 +406,14 @@ func (c *Client) CompleteTask(ctx context.Context, taskID, output, branchName, s
 	if retiredSessionID != "" {
 		body["retired_session_id"] = retiredSessionID
 	}
+	if len(writerLeaseProof) > 0 {
+		body["writer_lease_proof"] = writerLeaseProof
+	}
 	return c.postJSONWithRetry(ctx, fmt.Sprintf("/api/daemon/tasks/%s/complete", taskID), body, nil, defaultTerminalRetrySchedule)
+}
+
+func (c *Client) CompleteTaskWithWriterLeaseProof(ctx context.Context, taskID, output, branchName, sessionID, workDir string, sessionRolloutMissing bool, retiredSessionID string, writerLeaseProof []WriterLeaseTerminalProof) error {
+	return c.completeTask(ctx, taskID, output, branchName, sessionID, workDir, sessionRolloutMissing, retiredSessionID, writerLeaseProof)
 }
 
 func (c *Client) ReportTaskUsage(ctx context.Context, taskID string, usage []TaskUsageEntry) error {

@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
@@ -468,5 +469,37 @@ func TestTerminalReportsOmitEmptyRetiredSessionID(t *testing.T) {
 	}
 	if _, present := body["retired_session_id"]; present {
 		t.Fatalf("retired_session_id must be omitted when nothing was retired, got %v", body)
+	}
+}
+
+func TestCompleteTaskWithWriterLeaseProofSendsOnlyTerminalProof(t *testing.T) {
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/daemon/tasks/task-1/complete" {
+			t.Fatalf("path = %q", r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	resourceID := uuid.New()
+	token := uuid.New()
+	if err := NewClient(srv.URL).CompleteTaskWithWriterLeaseProof(context.Background(), "task-1", "done", "branch", "sess", "/tmp/wd", false, "", []WriterLeaseTerminalProof{{
+		ResourceID: resourceID.String(), LeaseToken: token, FenceGeneration: 7,
+	}}); err != nil {
+		t.Fatalf("complete task: %v", err)
+	}
+	proof, ok := body["writer_lease_proof"].([]any)
+	if !ok || len(proof) != 1 {
+		t.Fatalf("writer_lease_proof = %#v", body["writer_lease_proof"])
+	}
+	if _, leaked := body["mutex_key"]; leaked {
+		t.Fatal("mutex_key must not cross the terminal transport")
+	}
+	if _, leaked := body["holder"]; leaked {
+		t.Fatal("holder must not cross the terminal transport")
 	}
 }

@@ -3,6 +3,7 @@ package daemon
 import (
 	"encoding/json"
 
+	"github.com/google/uuid"
 	"github.com/multica-ai/multica/server/internal/runtimeapps"
 )
 
@@ -164,6 +165,15 @@ type WriterLeaseTarget struct {
 	MutexKey   string `json:"mutex_key"`
 	URL        string `json:"url"`
 	Ref        string `json:"ref"`
+}
+
+// WriterLeaseTerminalProof is daemon-private terminal evidence. It is built
+// from the server-provided target bundle and is sent only on the terminal
+// completion callback; it is never part of TaskResult or the task claim.
+type WriterLeaseTerminalProof struct {
+	ResourceID      string    `json:"resource_id"`
+	LeaseToken      uuid.UUID `json:"lease_token"`
+	FenceGeneration int64     `json:"fence_generation"`
 }
 
 // ChatAttachmentMeta is the structured attachment metadata the daemon

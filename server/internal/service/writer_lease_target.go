@@ -28,6 +28,7 @@ var (
 	ErrWriterLeaseNoProject     = errors.New("writer lease: project is required")
 	ErrWriterLeaseNoGithubRepo  = errors.New("writer lease: no project github_repo target")
 	ErrWriterLeaseInvalidTarget = errors.New("writer lease: invalid project resource")
+	ErrWriterLeaseFenceRejected = errors.New("writer lease: terminal fence rejected")
 )
 
 // WriterLeaseResource is the narrow, server-loaded project resource shape used

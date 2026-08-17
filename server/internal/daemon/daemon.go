@@ -164,6 +164,7 @@ type terminalTaskReport struct {
 	// run on the issue or chat can select it again, however many clean rows
 	// still reference it.
 	retiredSessionID string
+	writerLeaseProof []WriterLeaseTerminalProof
 }
 
 type executionEnvironmentCommand func() ([]string, error)
@@ -4068,6 +4069,14 @@ func (d *Daemon) reportTaskResult(ctx context.Context, taskID string, result Tas
 			}
 			return
 		}
+		writerLeaseProof, proofErr := d.writerLeaseTerminalProof(ctx, taskID)
+		if proofErr != nil {
+			taskLog.Info("writer lease terminal proof unavailable, discarding result", "error", proofErr)
+			if ackErr := d.client.AckTaskCancelled(ctx, taskID); ackErr != nil {
+				taskLog.Warn("cancel ack failed; server sweeper will finalize", "error", ackErr)
+			}
+			return
+		}
 		taskLog.Info("task completed", "status", result.Status)
 		err := d.reportTerminalTask(ctx, terminalTaskReport{
 			kind:                  terminalTaskReportComplete,
@@ -4078,6 +4087,7 @@ func (d *Daemon) reportTaskResult(ctx context.Context, taskID string, result Tas
 			workDir:               result.WorkDir,
 			sessionRolloutMissing: result.SessionRolloutMissing,
 			retiredSessionID:      result.RetiredSessionID,
+			writerLeaseProof:      writerLeaseProof,
 		})
 		if err == nil {
 			return
@@ -4095,6 +4105,10 @@ func (d *Daemon) reportTaskResult(ctx context.Context, taskID string, result Tas
 		// left is a concrete failure.
 		if isTransientError(err) {
 			taskLog.Error("complete task failed after retries; leaving task in running rather than falling back to fail", "error", err)
+			return
+		}
+		if isWriterLeaseCompletionFenceRejected(err) {
+			taskLog.Info("writer lease completion fence rejected; leaving task in running for recovery", "error", err)
 			return
 		}
 		taskLog.Error("complete task rejected by server, falling back to fail", "error", err)
@@ -4165,7 +4179,7 @@ func (d *Daemon) reportTerminalTask(parentCtx context.Context, report terminalTa
 
 	switch report.kind {
 	case terminalTaskReportComplete:
-		return d.client.CompleteTask(ctx, report.taskID, report.output, report.branchName, report.sessionID, report.workDir, report.sessionRolloutMissing, report.retiredSessionID)
+		return d.client.CompleteTaskWithWriterLeaseProof(ctx, report.taskID, report.output, report.branchName, report.sessionID, report.workDir, report.sessionRolloutMissing, report.retiredSessionID, report.writerLeaseProof)
 	case terminalTaskReportFail:
 		return d.client.FailTask(ctx, report.taskID, report.errorMessage, report.sessionID, report.workDir, report.failureReason, report.sessionRolloutMissing, report.retiredSessionID)
 	default:

@@ -44,6 +44,16 @@ type WriterLeaseStore interface {
 	Release(context.Context, string, uuid.UUID, int64) (*WriteLease, error)
 }
 
+// WriterLeaseTerminalProof is the daemon-private terminal fence evidence.
+// The server intentionally recomputes the mutex key and holder from the task,
+// runtime, and project resource relationship; neither value crosses this
+// boundary.
+type WriterLeaseTerminalProof struct {
+	ResourceID      uuid.UUID `json:"resource_id"`
+	LeaseToken      uuid.UUID `json:"lease_token"`
+	FenceGeneration int64     `json:"fence_generation"`
+}
+
 // WriterLeaseGuard owns policy around one execution lease. It deliberately
 // does not know about HTTP, tasks, queues, repositories, or agent processes.
 // mutexKey and holderID must come from a future server-side resolver; this
@@ -165,6 +175,21 @@ type WriterLeaseSession struct {
 	state         writerLeaseSessionState
 	heartbeatStop context.CancelFunc
 	heartbeatDone chan struct{}
+}
+
+// TerminalProof returns only the token and fencing generation needed by the
+// server's atomic completion check. The daemon associates the resource id
+// with this proof from its server-provided target bundle.
+func (s *WriterLeaseSession) TerminalProof() (uuid.UUID, int64, error) {
+	if s == nil {
+		return uuid.Nil, 0, ErrWriterLeaseStale
+	}
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	if err := s.requireActiveLocked(); err != nil {
+		return uuid.Nil, 0, err
+	}
+	return s.leaseToken, s.generation, nil
 }
 
 type writerLeaseSessionState uint8

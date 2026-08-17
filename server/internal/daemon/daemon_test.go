@@ -3638,6 +3638,36 @@ func TestReportTaskResult_PermanentCompleteFallsBackToFail(t *testing.T) {
 	}
 }
 
+func TestReportTaskResult_WriterLeaseFence412DoesNotFallbackToFail(t *testing.T) {
+	defer noSleepRetry(t)()
+
+	var completeCalls, failCalls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		switch {
+		case strings.HasSuffix(req.URL.Path, "/complete"):
+			completeCalls.Add(1)
+			w.WriteHeader(http.StatusPreconditionFailed)
+			_, _ = w.Write([]byte(`{"error":"writer lease terminal fence rejected"}`))
+		case strings.HasSuffix(req.URL.Path, "/fail"):
+			failCalls.Add(1)
+			w.WriteHeader(http.StatusOK)
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	d := &Daemon{client: NewClient(srv.URL), logger: slog.Default()}
+	d.reportTaskResult(context.Background(), "task-fence", TaskResult{Status: "completed", Comment: "stale result"}, slog.Default())
+
+	if got := completeCalls.Load(); got != 1 {
+		t.Fatalf("412 completion calls = %d, want 1", got)
+	}
+	if got := failCalls.Load(); got != 0 {
+		t.Fatalf("writer lease 412 must not call /fail, got %d", got)
+	}
+}
+
 func TestReportTaskResult_CancelledParentStillRunsPermanentFailureFallback(t *testing.T) {
 	defer noSleepRetry(t)()
 

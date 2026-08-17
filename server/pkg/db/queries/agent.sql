@@ -500,6 +500,14 @@ RETURNING *;
 SELECT * FROM agent_task_queue
 WHERE id = $1;
 
+-- name: LockAgentTaskForCompletion :one
+-- The terminal writer-lease fence and the running -> completed CAS must share
+-- one transaction boundary. This row lock serializes terminal replay and
+-- competing cancellation/failure transitions.
+SELECT * FROM agent_task_queue
+WHERE id = $1
+FOR UPDATE;
+
 -- name: GetAgentTaskInWorkspace :one
 -- Loads a task only when its owning agent lives in the given workspace.
 -- agent_id is NOT NULL on every task row (and ON DELETE CASCADE, so the agent
