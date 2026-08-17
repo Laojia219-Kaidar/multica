@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 // ArtifactPersistenceTxStarter is the narrow database boundary needed to make
@@ -169,6 +170,63 @@ func (r *DurableArtifactMaterializationRepository) VerifyPromotion(
 ) error {
 	_, err := artifactRepositoryTransaction(ctx, r.txStarter, func(repo *ArtifactPersistenceRepository) (struct{}, error) {
 		return struct{}{}, repo.VerifyPromotion(ctx, workspaceID, promotionID, candidateID, lineageID, payload)
+	})
+	return err
+}
+
+func (r *DurableArtifactMaterializationRepository) EnsureArtifactPromotionDelivery(ctx context.Context, workspaceID, promotionID, candidateID, lineageID string, payload PromotionClaimPayload, requestPayload []byte) (db.ArtifactPromotionDelivery, error) {
+	return artifactRepositoryTransaction(ctx, r.txStarter, func(repo *ArtifactPersistenceRepository) (db.ArtifactPromotionDelivery, error) {
+		return repo.EnsureArtifactPromotionDelivery(ctx, workspaceID, promotionID, candidateID, lineageID, payload, requestPayload)
+	})
+}
+
+func (r *DurableArtifactMaterializationRepository) GetArtifactPromotionDelivery(ctx context.Context, workspaceID, promotionID string) (db.ArtifactPromotionDelivery, error) {
+	return artifactRepositoryTransaction(ctx, r.txStarter, func(repo *ArtifactPersistenceRepository) (db.ArtifactPromotionDelivery, error) {
+		workspace, err := artifactPersistenceUUID(workspaceID, "workspace id")
+		if err != nil {
+			return db.ArtifactPromotionDelivery{}, err
+		}
+		return repo.queries.GetArtifactPromotionDelivery(ctx, db.GetArtifactPromotionDeliveryParams{WorkspaceID: workspace, PromotionID: promotionID})
+	})
+}
+
+func (r *DurableArtifactMaterializationRepository) ClaimArtifactPromotionDelivery(ctx context.Context, workspaceID, promotionID, payloadDigest string) (db.ArtifactPromotionDelivery, error) {
+	return artifactRepositoryTransaction(ctx, r.txStarter, func(repo *ArtifactPersistenceRepository) (db.ArtifactPromotionDelivery, error) {
+		return repo.ClaimArtifactPromotionDelivery(ctx, workspaceID, promotionID, payloadDigest)
+	})
+}
+
+func (r *DurableArtifactMaterializationRepository) MarkArtifactPromotionDeliverySucceeded(ctx context.Context, row db.ArtifactPromotionDelivery, response []byte) error {
+	_, err := artifactRepositoryTransaction(ctx, r.txStarter, func(repo *ArtifactPersistenceRepository) (struct{}, error) {
+		return struct{}{}, repo.MarkArtifactPromotionDeliverySucceeded(ctx, row, response)
+	})
+	return err
+}
+
+func (r *DurableArtifactMaterializationRepository) MarkArtifactPromotionDeliveryFailed(ctx context.Context, row db.ArtifactPromotionDelivery, message string) error {
+	_, err := artifactRepositoryTransaction(ctx, r.txStarter, func(repo *ArtifactPersistenceRepository) (struct{}, error) {
+		return struct{}{}, repo.MarkArtifactPromotionDeliveryFailed(ctx, row, message)
+	})
+	return err
+}
+
+func (r *DurableArtifactMaterializationRepository) MarkArtifactPromotionDeliveryDefiniteAbsent(ctx context.Context, row db.ArtifactPromotionDelivery, message string) error {
+	_, err := artifactRepositoryTransaction(ctx, r.txStarter, func(repo *ArtifactPersistenceRepository) (struct{}, error) {
+		return struct{}{}, repo.MarkArtifactPromotionDeliveryDefiniteAbsent(ctx, row, message)
+	})
+	return err
+}
+
+func (r *DurableArtifactMaterializationRepository) MarkArtifactPromotionDeliveryReadbackConfirmed(ctx context.Context, row db.ArtifactPromotionDelivery, readback []byte) error {
+	_, err := artifactRepositoryTransaction(ctx, r.txStarter, func(repo *ArtifactPersistenceRepository) (struct{}, error) {
+		return struct{}{}, repo.MarkArtifactPromotionDeliveryReadbackConfirmed(ctx, row, readback)
+	})
+	return err
+}
+
+func (r *DurableArtifactMaterializationRepository) RecoverArtifactPromotionDeliveryFromReadback(ctx context.Context, row db.ArtifactPromotionDelivery, response, readback []byte) error {
+	_, err := artifactRepositoryTransaction(ctx, r.txStarter, func(repo *ArtifactPersistenceRepository) (struct{}, error) {
+		return struct{}{}, repo.RecoverArtifactPromotionDeliveryFromReadback(ctx, row, response, readback)
 	})
 	return err
 }

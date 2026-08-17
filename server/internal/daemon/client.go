@@ -3,6 +3,8 @@ package daemon
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
@@ -411,7 +414,15 @@ func (c *Client) completeTask(ctx context.Context, taskID, output, branchName, s
 		body["retired_session_id"] = retiredSessionID
 	}
 	if len(writerLeaseProof) > 0 {
-		body["writer_lease_proof"] = writerLeaseProof
+		wireProof := make([]WriterLeaseTerminalProof, len(writerLeaseProof))
+		copy(wireProof, writerLeaseProof)
+		for i := range wireProof {
+			if wireProof[i].LeaseTokenSHA256 == "" && wireProof[i].LeaseToken != uuid.Nil {
+				hash := sha256.Sum256(wireProof[i].LeaseToken[:])
+				wireProof[i].LeaseTokenSHA256 = "sha256:" + hex.EncodeToString(hash[:])
+			}
+		}
+		body["writer_lease_proof"] = wireProof
 	}
 	return c.postJSONWithRetry(ctx, fmt.Sprintf("/api/daemon/tasks/%s/complete", taskID), body, nil, defaultTerminalRetrySchedule)
 }

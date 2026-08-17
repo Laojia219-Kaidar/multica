@@ -1835,8 +1835,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			r.Get("/usage", h.GetProviderPlanUsage)
 			r.Put("/usage/quota", h.PutProviderUsageQuota)
 			r.Post("/assignments", h.CreateCompanyOpsAssignment)
-			r.Post("/artifact-reviews", h.CreateCompanyOpsArtifactReview)
-			r.Post("/formal-artifact-promotions", h.CreateCompanyOpsFormalArtifactPromotion)
+			r.With(middleware.RequireWorkspaceRole(queries, "owner")).Post("/artifact-reviews", h.CreateCompanyOpsArtifactReview)
+			r.With(middleware.RequireWorkspaceRole(queries, "owner")).Post("/formal-artifact-promotions", h.CreateCompanyOpsFormalArtifactPromotion)
 		})
 
 		// Universal Work Registration Kernel. Workspace membership guards tenant

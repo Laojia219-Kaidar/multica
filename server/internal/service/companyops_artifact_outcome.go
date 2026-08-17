@@ -1,11 +1,15 @@
 package service
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -67,14 +71,23 @@ type CompanyOpsFormalArtifactAuthority interface {
 // chain that HiveCosm compares against its current state. The service never
 // invents authority snapshots or promotion ids.
 type CompanyOpsArtifactPromotion struct {
-	CandidateID     string
-	PromotionID     string
-	ActorUserID     pgtype.UUID
-	Lookup          companyops.HiveCosmAuthorityLookup
-	WorkOrder       companyops.AuthoritySnapshot
-	Employee        companyops.AuthoritySnapshot
-	IdentityBinding companyops.AuthoritySnapshot
-	Agent           companyops.AuthoritySnapshot
+	WorkspaceID             string
+	IssueID                 string
+	AssignmentCommandID     string
+	AssignmentLineageID     string
+	AssignmentInitialTaskID string
+	LocalAgentID            string
+	CandidateID             string
+	PromotionID             string
+	ActorUserID             pgtype.UUID
+	Lookup                  companyops.HiveCosmAuthorityLookup
+	WorkOrder               companyops.AuthoritySnapshot
+	Employee                companyops.AuthoritySnapshot
+	IdentityBinding         companyops.AuthoritySnapshot
+	Agent                   companyops.AuthoritySnapshot
+	SourceTaskID            string
+	WriterLeaseTargetDigest string
+	CompletionReceiptDigest string
 }
 
 // CompanyOpsArtifactPromotionReceipt is the durable result of one promotion
@@ -190,7 +203,7 @@ func (s *CompanyOpsArtifactService) MaterializeCompletedTask(
 		revision = projection.CandidateRevision + 1
 		supersedesID = projection.CandidateID
 	} else if !errors.Is(err, companyops.ErrArtifactCandidateNotFound) {
-		return nil, err
+		return nil, wrapArtifactLedgerRestoreConflict(err)
 	}
 
 	body, err := companyOpsArtifactMarkdown(lineage.receipt, task, output, prURL)
@@ -216,6 +229,16 @@ func (s *CompanyOpsArtifactService) MaterializeCompletedTask(
 		return nil, err
 	}
 	return s.GetIssueOutcome(ctx, lineage.workspaceID, lineage.receipt.IssueID)
+}
+
+// wrapArtifactLedgerRestoreConflict exposes persisted ledger corruption as a
+// service conflict while retaining the repository's exact cause for
+// diagnostics and errors.Is callers.
+func wrapArtifactLedgerRestoreConflict(err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("%w: restore persisted artifact ledger: %w", ErrCompanyOpsArtifactConflict, err)
 }
 
 func (s *CompanyOpsArtifactService) GetIssueOutcome(
@@ -255,7 +278,7 @@ func (s *CompanyOpsArtifactService) GetIssueOutcome(
 		return outcome, err
 	}
 	if err != nil {
-		return nil, err
+		return nil, wrapArtifactLedgerRestoreConflict(err)
 	}
 	candidate, err := s.repo.GetArtifactCandidate(ctx, workspace, projection.CandidateID)
 	if err != nil {
@@ -461,6 +484,10 @@ func (s *CompanyOpsArtifactService) ReviewArtifact(
 	if !review.ActorUserID.Valid {
 		return CompanyOpsArtifactReviewReceipt{}, fmt.Errorf("%w: Owner identity is required", ErrCompanyOpsArtifactConflict)
 	}
+	member, memberErr := s.queries.GetMemberByUserAndWorkspace(ctx, db.GetMemberByUserAndWorkspaceParams{UserID: review.ActorUserID, WorkspaceID: workspaceID})
+	if memberErr != nil || member.Role != "owner" {
+		return CompanyOpsArtifactReviewReceipt{}, fmt.Errorf("%w: Owner workspace role is required", ErrCompanyOpsArtifactConflict)
+	}
 	if review.Decision == companyops.ArtifactEventChangesRequested && strings.TrimSpace(review.Feedback) == "" {
 		return CompanyOpsArtifactReviewReceipt{}, fmt.Errorf("%w: rework feedback is required", ErrCompanyOpsArtifactConflict)
 	}
@@ -483,9 +510,31 @@ func (s *CompanyOpsArtifactService) ReviewArtifact(
 		}
 	}()
 	queries := db.New(tx)
+	lockedMember, lockedMemberErr := queries.LockOwnerMemberForArtifactPromotion(ctx, db.LockOwnerMemberForArtifactPromotionParams{
+		UserID:      review.ActorUserID,
+		WorkspaceID: workspaceID,
+	})
+	if lockedMemberErr != nil || lockedMember.Role != "owner" {
+		return CompanyOpsArtifactReviewReceipt{}, fmt.Errorf("%w: Owner role changed or disappeared before review commit", ErrCompanyOpsArtifactConflict)
+	}
 	issue, err := queries.GetIssue(ctx, issueID)
 	if err != nil || issue.WorkspaceID != workspaceID || issue.AssigneeID != outcome.LocalAgentID {
 		return CompanyOpsArtifactReviewReceipt{}, fmt.Errorf("%w: Issue or assignee changed before review", ErrCompanyOpsArtifactConflict)
+	}
+	if review.Decision == companyops.ArtifactEventApproved {
+		candidateUUID, candidateErr := util.ParseUUID(review.CandidateID)
+		if candidateErr != nil {
+			return CompanyOpsArtifactReviewReceipt{}, fmt.Errorf("%w: candidate id is invalid", ErrCompanyOpsArtifactConflict)
+		}
+		events, eventErr := queries.ListArtifactEventsByLineage(ctx, db.ListArtifactEventsByLineageParams{WorkspaceID: workspaceID, LineageID: outcome.CommandID})
+		if eventErr != nil {
+			return CompanyOpsArtifactReviewReceipt{}, fmt.Errorf("read existing Owner decisions: %w", eventErr)
+		}
+		for _, row := range events {
+			if row.CandidateID == candidateUUID && row.EventType == string(companyops.ArtifactEventApproved) {
+				return CompanyOpsArtifactReviewReceipt{}, fmt.Errorf("%w: active candidate already has an Owner approval", ErrCompanyOpsArtifactConflict)
+			}
+		}
 	}
 	event, err := companyops.NewArtifactPersistenceRepository(tx).AppendArtifactEvent(
 		ctx,
@@ -498,6 +547,7 @@ func (s *CompanyOpsArtifactService) ReviewArtifact(
 			CandidateDigest:    candidate.Digest,
 			CandidateObjectRef: candidate.DurableObjectRef,
 			IdempotencyKey:     "owner-review:" + review.IdempotencyID,
+			ActorUserID:        util.UUIDToString(review.ActorUserID),
 		},
 	)
 	if err != nil {
@@ -598,6 +648,10 @@ func (s *CompanyOpsArtifactService) PromoteArtifact(
 	if !promotion.ActorUserID.Valid || promotion.ActorUserID.Bytes == ([16]byte{}) {
 		return CompanyOpsArtifactPromotionReceipt{}, fmt.Errorf("%w: Owner identity is required", ErrCompanyOpsArtifactConflict)
 	}
+	member, memberErr := s.queries.GetMemberByUserAndWorkspace(ctx, db.GetMemberByUserAndWorkspaceParams{UserID: promotion.ActorUserID, WorkspaceID: workspaceID})
+	if memberErr != nil || member.Role != "owner" {
+		return CompanyOpsArtifactPromotionReceipt{}, fmt.Errorf("%w: Owner workspace role is required", ErrCompanyOpsArtifactConflict)
+	}
 	promotionID := strings.TrimSpace(promotion.PromotionID)
 	if parsed, err := util.ParseUUID(promotionID); err != nil || util.UUIDToString(parsed) != promotionID {
 		return CompanyOpsArtifactPromotionReceipt{}, fmt.Errorf("%w: promotion_id must be a canonical UUID", ErrCompanyOpsArtifactConflict)
@@ -620,14 +674,23 @@ func (s *CompanyOpsArtifactService) PromoteArtifact(
 	candidate := *outcome.Candidate
 	projection := *outcome.Projection
 	lineageID := util.UUIDToString(outcome.CommandID)
+	if err := s.bindWriterLeasePromotionEvidence(ctx, workspaceID, outcome, &promotion); err != nil {
+		return CompanyOpsArtifactPromotionReceipt{}, err
+	}
 
 	events, err := s.repo.ListArtifactEvents(ctx, workspace, lineageID)
 	if err != nil {
 		return CompanyOpsArtifactPromotionReceipt{}, err
 	}
+	if err := companyOpsValidateActiveApproval(events, candidate.ID); err != nil {
+		return CompanyOpsArtifactPromotionReceipt{}, err
+	}
 	approvalEvent, lastEvent, hasLast := companyOpsArtifactPromotionAnchor(events, candidate.ID)
 	if approvalEvent.ID == "" {
 		return CompanyOpsArtifactPromotionReceipt{}, fmt.Errorf("%w: approved decision is unavailable for promotion", ErrCompanyOpsArtifactConflict)
+	}
+	if approvalEvent.ActorUserID == "" || approvalEvent.ActorUserID != util.UUIDToString(promotion.ActorUserID) || approvalEvent.CandidateID != candidate.ID || approvalEvent.CandidateRevision != candidate.Revision || approvalEvent.CandidateDigest != candidate.Digest || approvalEvent.CandidateObjectRef != candidate.DurableObjectRef {
+		return CompanyOpsArtifactPromotionReceipt{}, fmt.Errorf("%w: approved Owner event does not exactly bind the active candidate", ErrCompanyOpsArtifactConflict)
 	}
 
 	// The promotion id is anchored by the first approved→requested transition
@@ -651,10 +714,37 @@ func (s *CompanyOpsArtifactService) PromoteArtifact(
 	// approved, requested, failed, succeeded, readback — establishes or
 	// verifies the durable claim before any external authority call or
 	// terminal return.
-	payload := companyOpsArtifactClaimPayload(promotion, candidate, approvalEvent.ID)
+	promotion.WorkspaceID = workspace
+	promotion.IssueID = util.UUIDToString(outcome.IssueID)
+	promotion.AssignmentCommandID = lineageID
+	promotion.AssignmentLineageID = lineageID
+	promotion.AssignmentInitialTaskID = util.UUIDToString(outcome.InitialTaskID)
+	promotion.LocalAgentID = util.UUIDToString(outcome.LocalAgentID)
+	payload := companyOpsArtifactClaimPayload(promotion, candidate, approvalEvent)
+	delivery, deliveryErr := s.repo.GetArtifactPromotionDelivery(ctx, workspace, effectivePromotionID)
+	if deliveryErr != nil {
+		return CompanyOpsArtifactPromotionReceipt{}, fmt.Errorf("%w: durable promotion delivery is unavailable: %v", ErrCompanyOpsArtifactConflict, deliveryErr)
+	}
+	if delivery.PayloadDigest != payload.Digest() {
+		return CompanyOpsArtifactPromotionReceipt{}, fmt.Errorf("%w: durable promotion delivery payload drifted", ErrCompanyOpsArtifactConflict)
+	}
 
 	switch projection.Status {
 	case companyops.ArtifactEventAuthorityReadbackConfirmed:
+		if delivery.State != "readback_confirmed" {
+			return CompanyOpsArtifactPromotionReceipt{}, fmt.Errorf("%w: confirmed lifecycle lacks a confirmed durable delivery", ErrCompanyOpsArtifactConflict)
+		}
+		responseReceipt, responseErr := decodeDurablePromotionResponse(delivery.ResponseReceipt, effectivePromotionID, candidate, approvalEvent.ID)
+		if responseErr != nil {
+			return CompanyOpsArtifactPromotionReceipt{}, responseErr
+		}
+		readbackReceipt, readbackErr := decodeDurablePromotionReadback(delivery.ReadbackReceipt, effectivePromotionID, candidate, approvalEvent.ID)
+		if readbackErr != nil {
+			return CompanyOpsArtifactPromotionReceipt{}, readbackErr
+		}
+		if responseReceipt.WritePerformed != readbackReceipt.WritePerformed || !durablePromotionArtifactsMatch(responseReceipt.Artifact, readbackReceipt.Artifact) {
+			return CompanyOpsArtifactPromotionReceipt{}, fmt.Errorf("%w: durable response/readback receipts disagree", ErrCompanyOpsArtifactConflict)
+		}
 		if err := s.repo.VerifyPromotion(ctx, workspace, effectivePromotionID, candidate.ID, lineageID, payload); err != nil {
 			return CompanyOpsArtifactPromotionReceipt{}, err
 		}
@@ -664,14 +754,22 @@ func (s *CompanyOpsArtifactService) PromoteArtifact(
 			LifecycleStatus:   projection.Status,
 			FormalArtifactRef: projection.FormalArtifactRef,
 			FormalVisible:     projection.FormalVisible,
+			WritePerformed:    readbackReceipt.WritePerformed,
 			TerminalEvent:     lastEvent,
 		}, nil
 	case companyops.ArtifactEventPromotionSucceeded:
+		if delivery.State != "succeeded" && delivery.State != "readback_confirmed" {
+			return CompanyOpsArtifactPromotionReceipt{}, fmt.Errorf("%w: promotion_succeeded lacks a durable response receipt", ErrCompanyOpsArtifactConflict)
+		}
+		responseReceipt, responseErr := decodeDurablePromotionResponse(delivery.ResponseReceipt, effectivePromotionID, candidate, approvalEvent.ID)
+		if responseErr != nil {
+			return CompanyOpsArtifactPromotionReceipt{}, responseErr
+		}
 		if err := s.repo.VerifyPromotion(ctx, workspace, effectivePromotionID, candidate.ID, lineageID, payload); err != nil {
 			return CompanyOpsArtifactPromotionReceipt{}, err
 		}
 		succeededRef := companyOpsArtifactSucceededRef(events, candidate.ID)
-		return s.runArtifactReadback(ctx, workspace, lineageID, effectivePromotionID, candidate, approvalEvent.ID, promotion.Lookup, succeededRef, false)
+		return s.finishArtifactPromotionReadback(ctx, delivery, workspace, lineageID, effectivePromotionID, candidate, approvalEvent.ID, approvalEvent.ActorUserID, promotion.Lookup, promotion.WorkOrder, succeededRef, responseReceipt.WritePerformed)
 	case companyops.ArtifactEventApproved,
 		companyops.ArtifactEventPromotionRequested,
 		companyops.ArtifactEventPromotionFailed:
@@ -719,30 +817,86 @@ func (s *CompanyOpsArtifactService) attemptArtifactPromotion(
 	lastEvent companyops.ArtifactEvent,
 	hasLast bool,
 ) (CompanyOpsArtifactPromotionReceipt, error) {
-	payload := companyOpsArtifactClaimPayload(promotion, candidate, approvalEvent.ID)
+	payload := companyOpsArtifactClaimPayload(promotion, candidate, approvalEvent)
 	if err := s.repo.ClaimPromotion(ctx, workspace, promotionID, candidate.ID, lineageID, payload); err != nil {
 		return CompanyOpsArtifactPromotionReceipt{}, err
 	}
-	requested, err := s.ensureArtifactPromotionRequested(ctx, workspace, lineageID, promotionID, candidate, lastEvent, hasLast)
-	if err != nil {
-		return CompanyOpsArtifactPromotionReceipt{}, err
-	}
-
-	receipt, promoteErr := s.formalAuthority.PromoteFormalArtifact(ctx, companyops.HiveCosmFormalArtifactPromotionRequest{
+	request := companyops.HiveCosmFormalArtifactPromotionRequest{
 		PromotionID:     promotionID,
 		Lookup:          promotion.Lookup,
 		WorkOrder:       promotion.WorkOrder,
 		Employee:        promotion.Employee,
 		IdentityBinding: promotion.IdentityBinding,
-		Candidate: companyops.HiveCosmFormalArtifactCandidate{
-			ID:               candidate.ID,
-			Revision:         candidate.Revision,
-			DurableObjectRef: candidate.DurableObjectRef,
-			ContentDigest:    candidate.Digest,
-			ApprovalEventID:  approvalEvent.ID,
-		},
-	})
+		Candidate:       companyops.HiveCosmFormalArtifactCandidate{ID: candidate.ID, Revision: candidate.Revision, DurableObjectRef: candidate.DurableObjectRef, ContentDigest: candidate.Digest, ApprovalEventID: approvalEvent.ID},
+	}
+	requestPayload, err := json.Marshal(request)
+	if err != nil {
+		return CompanyOpsArtifactPromotionReceipt{}, fmt.Errorf("marshal promotion request: %w", err)
+	}
+	delivery, err := s.repo.EnsureArtifactPromotionDelivery(ctx, workspace, promotionID, candidate.ID, lineageID, payload, requestPayload)
+	if err != nil {
+		return CompanyOpsArtifactPromotionReceipt{}, err
+	}
+	// Re-read the lineage after the durable claim so a concurrent approval or
+	// revocation cannot be used as a stale requested-event anchor.
+	freshEvents, err := s.repo.ListArtifactEvents(ctx, workspace, lineageID)
+	if err != nil {
+		return CompanyOpsArtifactPromotionReceipt{}, err
+	}
+	if err := companyOpsValidateActiveApproval(freshEvents, candidate.ID); err != nil {
+		return CompanyOpsArtifactPromotionReceipt{}, err
+	}
+	_, freshLast, freshHasLast := companyOpsArtifactPromotionAnchor(freshEvents, candidate.ID)
+	requested, err := s.ensureArtifactPromotionRequested(ctx, workspace, lineageID, promotionID, candidate, freshLast, freshHasLast)
+	if err != nil {
+		return CompanyOpsArtifactPromotionReceipt{}, err
+	}
+
+	if delivery.State == "succeeded" {
+		prior, err := decodeDurablePromotionResponse(delivery.ResponseReceipt, promotionID, candidate, approvalEvent.ID)
+		if err != nil {
+			return CompanyOpsArtifactPromotionReceipt{}, err
+		}
+		if err := s.ensureArtifactPromotionSucceeded(ctx, workspace, lineageID, promotionID, candidate, prior.Artifact.FormalArtifactRef); err != nil {
+			return CompanyOpsArtifactPromotionReceipt{}, err
+		}
+		return s.finishArtifactPromotionReadback(ctx, delivery, workspace, lineageID, promotionID, candidate, approvalEvent.ID, approvalEvent.ActorUserID, promotion.Lookup, promotion.WorkOrder, prior.Artifact.FormalArtifactRef, prior.WritePerformed)
+	}
+	if delivery.State == "readback_confirmed" {
+		prior, err := decodeDurablePromotionReadback(delivery.ReadbackReceipt, promotionID, candidate, approvalEvent.ID)
+		if err != nil {
+			return CompanyOpsArtifactPromotionReceipt{}, err
+		}
+		if err := s.ensureArtifactPromotionSucceeded(ctx, workspace, lineageID, promotionID, candidate, prior.Artifact.FormalArtifactRef); err != nil {
+			return CompanyOpsArtifactPromotionReceipt{}, err
+		}
+		return s.runArtifactReadback(ctx, workspace, lineageID, promotionID, candidate, approvalEvent.ID, approvalEvent.ActorUserID, promotion.Lookup, promotion.WorkOrder, prior.Artifact.FormalArtifactRef, prior.WritePerformed)
+	}
+	if delivery.State == "dispatching" {
+		return s.recoverArtifactPromotionFromExactReadback(ctx, delivery, workspace, lineageID, promotionID, candidate, approvalEvent.ID, promotion)
+	}
+	claimed, claimErr := s.repo.ClaimArtifactPromotionDelivery(ctx, workspace, promotionID, payload.Digest())
+	if claimErr != nil {
+		return CompanyOpsArtifactPromotionReceipt{}, claimErr
+	}
+	receipt, promoteErr := s.formalAuthority.PromoteFormalArtifact(ctx, request)
 	if promoteErr != nil {
+		definiteFailure := true
+		var authorityErr *companyops.HiveCosmAuthorityError
+		if errors.As(promoteErr, &authorityErr) {
+			definiteFailure = (authorityErr.Kind == companyops.HiveCosmAuthorityInvalid && (authorityErr.StatusCode == 400 || authorityErr.StatusCode == 404)) ||
+				(authorityErr.Kind == companyops.HiveCosmAuthorityNotFound && authorityErr.StatusCode == 404)
+		}
+		if definiteFailure {
+			if markErr := s.repo.MarkArtifactPromotionDeliveryFailed(ctx, claimed, promoteErr.Error()); markErr != nil {
+				return CompanyOpsArtifactPromotionReceipt{}, markErr
+			}
+		} else {
+			// A conflict, source gap, unsupported response, or ambiguous invalid
+			// response may have been committed remotely. Keep dispatching so the
+			// recovery path performs an exact GET instead of issuing a duplicate POST.
+			return CompanyOpsArtifactPromotionReceipt{}, promoteErr
+		}
 		failedKey := "formal-promotion:" + promotionID + ":failed:after:" + strconv.Itoa(requested.Sequence)
 		if _, appendErr := s.repo.AppendArtifactEvent(ctx, workspace, lineageID, companyops.ArtifactEventInput{
 			Type:               companyops.ArtifactEventPromotionFailed,
@@ -755,6 +909,20 @@ func (s *CompanyOpsArtifactService) attemptArtifactPromotion(
 			return CompanyOpsArtifactPromotionReceipt{}, appendErr
 		}
 		return CompanyOpsArtifactPromotionReceipt{}, promoteErr
+	}
+	responsePayload, err := encodeDurablePromotionResponse(receipt)
+	if err != nil {
+		return CompanyOpsArtifactPromotionReceipt{}, err
+	}
+	if err := validatePromotionAuthorityArtifact(receipt.Artifact, candidate, promotionID, approvalEvent.ID, promotion.WorkOrder, false); err != nil {
+		return CompanyOpsArtifactPromotionReceipt{}, err
+	}
+	if err := s.repo.MarkArtifactPromotionDeliverySucceeded(ctx, claimed, responsePayload); err != nil {
+		return CompanyOpsArtifactPromotionReceipt{}, err
+	}
+	confirmedDelivery, deliveryErr := s.repo.GetArtifactPromotionDelivery(ctx, workspace, promotionID)
+	if deliveryErr != nil {
+		return CompanyOpsArtifactPromotionReceipt{}, deliveryErr
 	}
 
 	if _, err := s.repo.AppendArtifactEvent(ctx, workspace, lineageID, companyops.ArtifactEventInput{
@@ -769,7 +937,259 @@ func (s *CompanyOpsArtifactService) attemptArtifactPromotion(
 		return CompanyOpsArtifactPromotionReceipt{}, err
 	}
 
-	return s.runArtifactReadback(ctx, workspace, lineageID, promotionID, candidate, approvalEvent.ID, promotion.Lookup, receipt.Artifact.FormalArtifactRef, receipt.WritePerformed)
+	return s.finishArtifactPromotionReadback(ctx, confirmedDelivery, workspace, lineageID, promotionID, candidate, approvalEvent.ID, approvalEvent.ActorUserID, promotion.Lookup, promotion.WorkOrder, receipt.Artifact.FormalArtifactRef, receipt.WritePerformed)
+}
+
+func (s *CompanyOpsArtifactService) recoverArtifactPromotionFromExactReadback(ctx context.Context, delivery db.ArtifactPromotionDelivery, workspace, lineageID, promotionID string, candidate companyops.ArtifactCandidate, approvalEventID string, promotion CompanyOpsArtifactPromotion) (CompanyOpsArtifactPromotionReceipt, error) {
+	manifestID, err := companyops.FormalArtifactManifestID(promotionID)
+	if err != nil {
+		return CompanyOpsArtifactPromotionReceipt{}, err
+	}
+	artifact, err := s.formalAuthority.ReadFormalArtifact(ctx, promotion.Lookup, companyops.HiveCosmFormalArtifactCandidate{ID: candidate.ID, Revision: candidate.Revision, DurableObjectRef: candidate.DurableObjectRef, ContentDigest: candidate.Digest, ApprovalEventID: approvalEventID}, manifestID)
+	if err != nil {
+		var authorityErr *companyops.HiveCosmAuthorityError
+		if errors.As(err, &authorityErr) && authorityErr.Kind == companyops.HiveCosmAuthorityNotFound && delivery.LeaseUntil.Valid && time.Now().After(delivery.LeaseUntil.Time) {
+			if markErr := s.repo.MarkArtifactPromotionDeliveryDefiniteAbsent(ctx, delivery, "authority formal artifact absent after dispatch lease expiry"); markErr != nil {
+				return CompanyOpsArtifactPromotionReceipt{}, fmt.Errorf("%w: mark definite authority absence: %v", ErrCompanyOpsArtifactConflict, markErr)
+			}
+		}
+		// Ambiguous/404/409/503 all remain dispatching. No POST is safe without
+		// an exact positive readback or an explicit pending/definite-failure CAS.
+		return CompanyOpsArtifactPromotionReceipt{}, err
+	}
+	if err := validatePromotionAuthorityArtifact(artifact, candidate, promotionID, approvalEventID, promotion.WorkOrder, true); err != nil {
+		return CompanyOpsArtifactPromotionReceipt{}, err
+	}
+	response, responseErr := encodeDurablePromotionResponse(companyops.HiveCosmFormalArtifactPromotionReceipt{PromotionID: promotionID, WritePerformed: false, Artifact: artifact})
+	if responseErr != nil {
+		return CompanyOpsArtifactPromotionReceipt{}, responseErr
+	}
+	readback, readbackErr := encodeDurablePromotionReadback(CompanyOpsArtifactPromotionReceipt{PromotionID: promotionID, CandidateID: candidate.ID, WritePerformed: false}, artifact)
+	if readbackErr != nil {
+		return CompanyOpsArtifactPromotionReceipt{}, readbackErr
+	}
+	if err := s.repo.RecoverArtifactPromotionDeliveryFromReadback(ctx, delivery, response, readback); err != nil {
+		return CompanyOpsArtifactPromotionReceipt{}, companyops.ErrArtifactPromotionInProgress
+	}
+	if _, err := s.repo.AppendArtifactEvent(ctx, workspace, lineageID, companyops.ArtifactEventInput{Type: companyops.ArtifactEventPromotionSucceeded, CandidateID: candidate.ID, CandidateRevision: candidate.Revision, CandidateDigest: candidate.Digest, CandidateObjectRef: candidate.DurableObjectRef, FormalArtifactRef: artifact.FormalArtifactRef, IdempotencyKey: "formal-promotion:" + promotionID + ":succeeded"}); err != nil {
+		return CompanyOpsArtifactPromotionReceipt{}, err
+	}
+	confirmed, err := s.repo.AppendArtifactEvent(ctx, workspace, lineageID, companyops.ArtifactEventInput{Type: companyops.ArtifactEventAuthorityReadbackConfirmed, CandidateID: candidate.ID, CandidateRevision: candidate.Revision, CandidateDigest: candidate.Digest, CandidateObjectRef: candidate.DurableObjectRef, FormalArtifactRef: artifact.FormalArtifactRef, IdempotencyKey: "formal-promotion:" + promotionID + ":readback"})
+	if err != nil {
+		return CompanyOpsArtifactPromotionReceipt{}, err
+	}
+	return CompanyOpsArtifactPromotionReceipt{PromotionID: promotionID, CandidateID: candidate.ID, LifecycleStatus: confirmed.Type, FormalArtifactRef: artifact.FormalArtifactRef, FormalVisible: true, TerminalEvent: confirmed}, nil
+}
+
+func (s *CompanyOpsArtifactService) ensureArtifactPromotionSucceeded(ctx context.Context, workspace, lineageID, promotionID string, candidate companyops.ArtifactCandidate, formalRef string) error {
+	_, err := s.repo.AppendArtifactEvent(ctx, workspace, lineageID, companyops.ArtifactEventInput{
+		Type:               companyops.ArtifactEventPromotionSucceeded,
+		CandidateID:        candidate.ID,
+		CandidateRevision:  candidate.Revision,
+		CandidateDigest:    candidate.Digest,
+		CandidateObjectRef: candidate.DurableObjectRef,
+		FormalArtifactRef:  formalRef,
+		IdempotencyKey:     "formal-promotion:" + promotionID + ":succeeded",
+	})
+	return err
+}
+
+func (s *CompanyOpsArtifactService) finishArtifactPromotionReadback(ctx context.Context, delivery db.ArtifactPromotionDelivery, workspace, lineageID, promotionID string, candidate companyops.ArtifactCandidate, approvalEventID, approvalActorUserID string, lookup companyops.HiveCosmAuthorityLookup, expectedWorkOrder companyops.AuthoritySnapshot, ref string, writePerformed bool) (CompanyOpsArtifactPromotionReceipt, error) {
+	receipt, artifact, err := s.runArtifactReadbackWithArtifact(ctx, workspace, lineageID, promotionID, candidate, approvalEventID, approvalActorUserID, lookup, expectedWorkOrder, ref, writePerformed)
+	if err != nil {
+		return CompanyOpsArtifactPromotionReceipt{}, err
+	}
+	if len(delivery.ResponseReceipt) == 0 {
+		return CompanyOpsArtifactPromotionReceipt{}, fmt.Errorf("%w: durable promotion response is missing before readback confirmation", ErrCompanyOpsArtifactConflict)
+	}
+	response, responseErr := decodeDurablePromotionResponse(delivery.ResponseReceipt, promotionID, candidate, approvalEventID)
+	if responseErr != nil {
+		return CompanyOpsArtifactPromotionReceipt{}, responseErr
+	}
+	if response.WritePerformed != receipt.WritePerformed || !durablePromotionArtifactsMatch(response.Artifact, artifact) {
+		return CompanyOpsArtifactPromotionReceipt{}, fmt.Errorf("%w: durable response and Authority readback disagree", ErrCompanyOpsArtifactConflict)
+	}
+	readback, marshalErr := encodeDurablePromotionReadback(receipt, artifact)
+	if marshalErr != nil {
+		return CompanyOpsArtifactPromotionReceipt{}, marshalErr
+	}
+	if err := s.repo.MarkArtifactPromotionDeliveryReadbackConfirmed(ctx, delivery, readback); err != nil {
+		return CompanyOpsArtifactPromotionReceipt{}, err
+	}
+	return receipt, nil
+}
+
+// Durable promotion receipts are local evidence records, not a second
+// Authority wire contract. They use explicit keys and strict decoding so a
+// replay cannot silently discard write_performed, candidate provenance, or the
+// GET transition proof.
+type durablePromotionReceipt struct {
+	PromotionID    string                            `json:"PromotionID"`
+	WritePerformed bool                              `json:"WritePerformed"`
+	Artifact       companyops.HiveCosmFormalArtifact `json:"Artifact"`
+}
+
+// durablePromotionReceiptWire keeps presence separate from the business
+// values. In particular, a missing WritePerformed must not silently become
+// false during replay; PromotionID and Artifact are equally mandatory.
+type durablePromotionReceiptWire struct {
+	PromotionID    *string                            `json:"PromotionID"`
+	WritePerformed *bool                              `json:"WritePerformed"`
+	Artifact       *companyops.HiveCosmFormalArtifact `json:"Artifact"`
+}
+
+func encodeDurablePromotionResponse(receipt companyops.HiveCosmFormalArtifactPromotionReceipt) ([]byte, error) {
+	return json.Marshal(durablePromotionReceipt{PromotionID: receipt.PromotionID, WritePerformed: receipt.WritePerformed, Artifact: receipt.Artifact})
+}
+
+func decodeDurablePromotionResponse(raw []byte, promotionID string, candidate companyops.ArtifactCandidate, approvalEventID string) (durablePromotionReceipt, error) {
+	receipt, err := decodeDurablePromotionReceipt(raw)
+	if err != nil {
+		return durablePromotionReceipt{}, fmt.Errorf("%w: durable promotion response is invalid: %v", ErrCompanyOpsArtifactConflict, err)
+	}
+	if err := validateDurablePromotionArtifact(receipt.PromotionID, receipt.Artifact, promotionID, candidate, approvalEventID, false); err != nil {
+		return durablePromotionReceipt{}, err
+	}
+	return receipt, nil
+}
+
+func encodeDurablePromotionReadback(receipt CompanyOpsArtifactPromotionReceipt, artifact companyops.HiveCosmFormalArtifact) ([]byte, error) {
+	return json.Marshal(durablePromotionReceipt{PromotionID: receipt.PromotionID, WritePerformed: receipt.WritePerformed, Artifact: artifact})
+}
+
+func decodeDurablePromotionReadback(raw []byte, promotionID string, candidate companyops.ArtifactCandidate, approvalEventID string) (durablePromotionReceipt, error) {
+	receipt, err := decodeDurablePromotionReceipt(raw)
+	if err != nil {
+		return durablePromotionReceipt{}, fmt.Errorf("%w: durable readback receipt is invalid: %v", ErrCompanyOpsArtifactConflict, err)
+	}
+	if err := validateDurablePromotionArtifact(receipt.PromotionID, receipt.Artifact, promotionID, candidate, approvalEventID, true); err != nil {
+		return durablePromotionReceipt{}, err
+	}
+	return receipt, nil
+}
+
+func decodeDurablePromotionReceipt(raw []byte) (durablePromotionReceipt, error) {
+	var wire durablePromotionReceiptWire
+	if err := decodeStrictDurableJSON(raw, &wire); err != nil {
+		return durablePromotionReceipt{}, err
+	}
+	if wire.PromotionID == nil || wire.WritePerformed == nil || wire.Artifact == nil {
+		return durablePromotionReceipt{}, errors.New("PromotionID, WritePerformed, and Artifact are required")
+	}
+	return durablePromotionReceipt{
+		PromotionID:    *wire.PromotionID,
+		WritePerformed: *wire.WritePerformed,
+		Artifact:       *wire.Artifact,
+	}, nil
+}
+
+func decodeStrictDurableJSON(raw []byte, target any) error {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(target); err != nil {
+		return err
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		if err == nil {
+			return errors.New("trailing JSON value")
+		}
+		return err
+	}
+	return nil
+}
+
+func validateDurablePromotionArtifact(receiptPromotionID string, artifact companyops.HiveCosmFormalArtifact, promotionID string, candidate companyops.ArtifactCandidate, approvalEventID string, requireTransition bool) error {
+	manifestID, manifestErr := companyops.FormalArtifactManifestID(promotionID)
+	if manifestErr != nil {
+		return fmt.Errorf("%w: durable promotion manifest id is invalid: %v", ErrCompanyOpsArtifactConflict, manifestErr)
+	}
+	if receiptPromotionID != promotionID || artifact.FormalArtifactRef == "" ||
+		artifact.ArtifactManifestID != manifestID || !strings.HasSuffix(artifact.FormalArtifactRef, "/formal-artifact/"+manifestID) ||
+		artifact.CandidateID != candidate.ID || artifact.CandidateRevision != candidate.Revision ||
+		artifact.CandidateDigest != candidate.Digest || artifact.ContentRef != candidate.DurableObjectRef ||
+		artifact.ApprovalEventID != approvalEventID || artifact.ReviewerID == "" {
+		return fmt.Errorf("%w: durable promotion receipt provenance changed", ErrCompanyOpsArtifactConflict)
+	}
+	if requireTransition && artifact.WorkOrderTransition == nil {
+		return fmt.Errorf("%w: durable readback receipt is missing the WorkOrder transition", ErrCompanyOpsArtifactConflict)
+	}
+	if artifact.WorkOrderTransition != nil && (artifact.WorkOrderTransition.PromotionID != promotionID || artifact.WorkOrderTransition.CandidateID != candidate.ID || artifact.WorkOrderTransition.ApprovalEventID != approvalEventID || artifact.WorkOrderTransition.FormalArtifactRef != artifact.FormalArtifactRef) {
+		return fmt.Errorf("%w: durable transition provenance changed", ErrCompanyOpsArtifactConflict)
+	}
+	return nil
+}
+
+func validatePromotionAuthorityArtifact(artifact companyops.HiveCosmFormalArtifact, candidate companyops.ArtifactCandidate, promotionID, approvalEventID string, expectedWorkOrder companyops.AuthoritySnapshot, requireTransition bool) error {
+	manifestID, err := companyops.FormalArtifactManifestID(promotionID)
+	if err != nil {
+		return fmt.Errorf("%w: promotion manifest id is invalid: %v", ErrCompanyOpsArtifactConflict, err)
+	}
+	expectedFormalRef := expectedWorkOrder.SourceRef + "/formal-artifact/" + manifestID
+	if expectedWorkOrder.SourceRef == "" || artifact.FormalArtifactRef != expectedFormalRef || artifact.ArtifactManifestID != manifestID || artifact.ReviewerID == "" ||
+		artifact.CandidateID != candidate.ID || artifact.CandidateRevision != candidate.Revision || artifact.CandidateDigest != candidate.Digest || artifact.ContentRef != candidate.DurableObjectRef || artifact.ApprovalEventID != approvalEventID {
+		return fmt.Errorf("%w: Authority artifact provenance is incomplete or changed", ErrCompanyOpsArtifactConflict)
+	}
+	if requireTransition && artifact.WorkOrderTransition == nil {
+		return fmt.Errorf("%w: Authority readback transition is missing", ErrCompanyOpsArtifactConflict)
+	}
+	if artifact.WorkOrderTransition != nil {
+		transition := artifact.WorkOrderTransition
+		if transition.PromotionID != promotionID || transition.CandidateID != candidate.ID || transition.ApprovalEventID != approvalEventID || transition.FormalArtifactRef != artifact.FormalArtifactRef || transition.WorkOrderSourceRef == "" || transition.ResultingAuthority.Revision == "" || transition.ResultingAuthority.ContentDigest == "" {
+			return fmt.Errorf("%w: Authority transition provenance is incomplete or changed", ErrCompanyOpsArtifactConflict)
+		}
+		if expectedWorkOrder.Revision != "" && (transition.PreviousAuthority.Revision != expectedWorkOrder.Revision || transition.PreviousAuthority.ContentDigest != expectedWorkOrder.ContentDigest) {
+			return fmt.Errorf("%w: Authority transition previous WorkOrder does not match the assignment snapshot", ErrCompanyOpsArtifactConflict)
+		}
+	}
+	return nil
+}
+
+func durablePromotionArtifactsMatch(left, right companyops.HiveCosmFormalArtifact) bool {
+	return left.FormalArtifactRef == right.FormalArtifactRef &&
+		left.Revision == right.Revision && left.ContentDigest == right.ContentDigest &&
+		left.ProjectID == right.ProjectID && left.WorkOrderID == right.WorkOrderID &&
+		left.AssignmentID == right.AssignmentID && left.EmployeeID == right.EmployeeID &&
+		left.AgentID == right.AgentID && left.IdentityBindingID == right.IdentityBindingID &&
+		left.ArtifactManifestID == right.ArtifactManifestID && left.ContentObjectID == right.ContentObjectID &&
+		left.ContentRef == right.ContentRef && left.CandidateID == right.CandidateID &&
+		left.CandidateRevision == right.CandidateRevision && left.CandidateDigest == right.CandidateDigest &&
+		left.ReviewDecisionID == right.ReviewDecisionID && left.ReviewerID == right.ReviewerID &&
+		left.ApprovalEventID == right.ApprovalEventID
+}
+
+func (s *CompanyOpsArtifactService) bindWriterLeasePromotionEvidence(ctx context.Context, workspaceID pgtype.UUID, outcome *CompanyOpsArtifactOutcome, promotion *CompanyOpsArtifactPromotion) error {
+	if outcome == nil || promotion == nil || !outcome.CurrentTaskID.Valid {
+		return fmt.Errorf("%w: source task is required for C3b2 promotion", ErrCompanyOpsArtifactConflict)
+	}
+	promotion.SourceTaskID = util.UUIDToString(outcome.CurrentTaskID)
+	task, err := s.queries.GetAgentTask(ctx, outcome.CurrentTaskID)
+	if err != nil {
+		return err
+	}
+	runtime, err := s.queries.GetAgentRuntime(ctx, task.RuntimeID)
+	if err != nil {
+		return err
+	}
+	claim, legacy, err := DecodePersistedWriterLeaseClaim(task, runtime.WorkspaceID.String())
+	if err != nil {
+		return err
+	}
+	if legacy || claim.Mode != WriterLeaseModeEnforce {
+		return fmt.Errorf("%w: C3b2 promotion requires a migration-406 enforced writer-lease claim", ErrCompanyOpsArtifactConflict)
+	}
+	promotion.WriterLeaseTargetDigest = claim.Digest
+	receipt, err := s.queries.GetWriterLeaseCompletionReceipt(ctx, db.GetWriterLeaseCompletionReceiptParams{WorkspaceID: workspaceID, TaskID: task.ID})
+	if err != nil {
+		return fmt.Errorf("%w: load completion receipt for promotion: %v", ErrCompanyOpsArtifactConflict, err)
+	}
+	if receipt.WorkspaceID != workspaceID || receipt.TaskID != task.ID || receipt.TargetDigest != claim.Digest {
+		return fmt.Errorf("%w: completion receipt binding drift", ErrCompanyOpsArtifactConflict)
+	}
+	if err := verifyWriterLeaseCompletionReceipt(task.ID.String(), claim.Digest, receipt); err != nil {
+		return fmt.Errorf("%w: %v", ErrCompanyOpsArtifactConflict, err)
+	}
+	promotion.CompletionReceiptDigest = receipt.ReceiptDigest
+	return nil
 }
 
 func (s *CompanyOpsArtifactService) ensureArtifactPromotionRequested(
@@ -811,16 +1231,35 @@ func (s *CompanyOpsArtifactService) runArtifactReadback(
 	promotionID string,
 	candidate companyops.ArtifactCandidate,
 	approvalEventID string,
+	approvalActorUserID string,
 	lookup companyops.HiveCosmAuthorityLookup,
+	expectedWorkOrder companyops.AuthoritySnapshot,
 	formalArtifactRef string,
 	writePerformed bool,
 ) (CompanyOpsArtifactPromotionReceipt, error) {
+	receipt, _, err := s.runArtifactReadbackWithArtifact(ctx, workspace, lineageID, promotionID, candidate, approvalEventID, approvalActorUserID, lookup, expectedWorkOrder, formalArtifactRef, writePerformed)
+	return receipt, err
+}
+
+func (s *CompanyOpsArtifactService) runArtifactReadbackWithArtifact(
+	ctx context.Context,
+	workspace string,
+	lineageID string,
+	promotionID string,
+	candidate companyops.ArtifactCandidate,
+	approvalEventID string,
+	approvalActorUserID string,
+	lookup companyops.HiveCosmAuthorityLookup,
+	expectedWorkOrder companyops.AuthoritySnapshot,
+	formalArtifactRef string,
+	writePerformed bool,
+) (CompanyOpsArtifactPromotionReceipt, companyops.HiveCosmFormalArtifact, error) {
 	if formalArtifactRef == "" {
-		return CompanyOpsArtifactPromotionReceipt{}, fmt.Errorf("%w: formal artifact reference is missing before readback", ErrCompanyOpsArtifactConflict)
+		return CompanyOpsArtifactPromotionReceipt{}, companyops.HiveCosmFormalArtifact{}, fmt.Errorf("%w: formal artifact reference is missing before readback", ErrCompanyOpsArtifactConflict)
 	}
 	manifestID, ok := companyOpsFormalArtifactManifestID(formalArtifactRef, lookup.WorkOrderSourceRef)
 	if !ok {
-		return CompanyOpsArtifactPromotionReceipt{}, fmt.Errorf("%w: formal artifact reference does not match the WorkOrder scope", ErrCompanyOpsArtifactConflict)
+		return CompanyOpsArtifactPromotionReceipt{}, companyops.HiveCosmFormalArtifact{}, fmt.Errorf("%w: formal artifact reference does not match the WorkOrder scope", ErrCompanyOpsArtifactConflict)
 	}
 	expectedCandidate := companyops.HiveCosmFormalArtifactCandidate{
 		ID:               candidate.ID,
@@ -829,8 +1268,12 @@ func (s *CompanyOpsArtifactService) runArtifactReadback(
 		ContentDigest:    candidate.Digest,
 		ApprovalEventID:  approvalEventID,
 	}
-	if _, err := s.formalAuthority.ReadFormalArtifact(ctx, lookup, expectedCandidate, manifestID); err != nil {
-		return CompanyOpsArtifactPromotionReceipt{}, err
+	artifact, err := s.formalAuthority.ReadFormalArtifact(ctx, lookup, expectedCandidate, manifestID)
+	if err != nil {
+		return CompanyOpsArtifactPromotionReceipt{}, companyops.HiveCosmFormalArtifact{}, err
+	}
+	if err := validatePromotionAuthorityArtifact(artifact, candidate, promotionID, approvalEventID, expectedWorkOrder, true); err != nil {
+		return CompanyOpsArtifactPromotionReceipt{}, companyops.HiveCosmFormalArtifact{}, err
 	}
 	confirmed, err := s.repo.AppendArtifactEvent(ctx, workspace, lineageID, companyops.ArtifactEventInput{
 		Type:               companyops.ArtifactEventAuthorityReadbackConfirmed,
@@ -842,7 +1285,7 @@ func (s *CompanyOpsArtifactService) runArtifactReadback(
 		IdempotencyKey:     "formal-promotion:" + promotionID + ":readback",
 	})
 	if err != nil {
-		return CompanyOpsArtifactPromotionReceipt{}, err
+		return CompanyOpsArtifactPromotionReceipt{}, companyops.HiveCosmFormalArtifact{}, err
 	}
 	return CompanyOpsArtifactPromotionReceipt{
 		PromotionID:       promotionID,
@@ -852,7 +1295,7 @@ func (s *CompanyOpsArtifactService) runArtifactReadback(
 		FormalVisible:     true,
 		WritePerformed:    writePerformed,
 		TerminalEvent:     confirmed,
-	}, nil
+	}, artifact, nil
 }
 
 func companyOpsArtifactPromotionAnchor(events []companyops.ArtifactEvent, candidateID string) (companyops.ArtifactEvent, companyops.ArtifactEvent, bool) {
@@ -871,6 +1314,44 @@ func companyOpsArtifactPromotionAnchor(events []companyops.ArtifactEvent, candid
 		hasLast = true
 	}
 	return approval, last, hasLast
+}
+
+// companyOpsValidateActiveApproval is deliberately stricter than the
+// lifecycle transition validator. A promotion may use exactly one approved
+// event for the active candidate; any later review decision or a second
+// approval supersedes that decision and fails closed. Promotion-phase events
+// are allowed only after this immutable approval anchor.
+func companyOpsValidateActiveApproval(events []companyops.ArtifactEvent, candidateID string) error {
+	approvalCount := 0
+	approvalIndex := -1
+	for i := range events {
+		if events[i].CandidateID != candidateID {
+			continue
+		}
+		switch events[i].Type {
+		case companyops.ArtifactEventApproved:
+			approvalCount++
+			if approvalIndex < 0 {
+				approvalIndex = i
+			}
+		}
+	}
+	if approvalCount != 1 || approvalIndex < 0 {
+		return fmt.Errorf("%w: active candidate must have exactly one Owner approval", ErrCompanyOpsArtifactConflict)
+	}
+	for _, event := range events[approvalIndex+1:] {
+		if event.CandidateID != candidateID {
+			continue
+		}
+		switch event.Type {
+		case companyops.ArtifactEventChangesRequested,
+			companyops.ArtifactEventRejected,
+			companyops.ArtifactEventApprovalRevoked,
+			companyops.ArtifactEventApproved:
+			return fmt.Errorf("%w: Owner approval was superseded before promotion", ErrCompanyOpsArtifactConflict)
+		}
+	}
+	return nil
 }
 
 func companyOpsArtifactSucceededRef(events []companyops.ArtifactEvent, candidateID string) string {
@@ -1047,28 +1528,46 @@ func companyOpsResolveAnchoredPromotionID(
 func companyOpsArtifactClaimPayload(
 	promotion CompanyOpsArtifactPromotion,
 	candidate companyops.ArtifactCandidate,
-	approvalEventID string,
+	approvalEvent companyops.ArtifactEvent,
 ) companyops.PromotionClaimPayload {
 	return companyops.PromotionClaimPayload{
-		CommandSchemaVersion:   companyops.HiveCosmFormalArtifactPromotionCommandV1,
-		ActorUserID:            util.UUIDToString(promotion.ActorUserID),
-		LookupWorkOrderRef:     promotion.Lookup.WorkOrderSourceRef,
-		LookupEmployeeID:       promotion.Lookup.EmployeeID,
-		LookupBindingID:        promotion.Lookup.IdentityBindingID,
-		LookupAgentID:          promotion.Lookup.AgentID,
-		WorkOrderRef:           promotion.WorkOrder.SourceRef,
-		WorkOrderRevision:      promotion.WorkOrder.Revision,
-		WorkOrderContentDigest: promotion.WorkOrder.ContentDigest,
-		EmployeeRef:            promotion.Employee.SourceRef,
-		EmployeeRevision:       promotion.Employee.Revision,
-		EmployeeContentDigest:  promotion.Employee.ContentDigest,
-		BindingRef:             promotion.IdentityBinding.SourceRef,
-		BindingRevision:        promotion.IdentityBinding.Revision,
-		BindingContentDigest:   promotion.IdentityBinding.ContentDigest,
-		CandidateRevision:      candidate.Revision,
-		CandidateDigest:        candidate.Digest,
-		CandidateObjectRef:     candidate.DurableObjectRef,
-		CandidateContentType:   companyops.HiveCosmFormalArtifactContentTypeMarkdown,
-		ApprovalEventID:        approvalEventID,
+		WorkspaceID:             promotion.WorkspaceID,
+		PromotionID:             promotion.PromotionID,
+		IssueID:                 promotion.IssueID,
+		AssignmentCommandID:     promotion.AssignmentCommandID,
+		AssignmentLineageID:     promotion.AssignmentLineageID,
+		AssignmentInitialTaskID: promotion.AssignmentInitialTaskID,
+		LocalAgentID:            promotion.LocalAgentID,
+		CommandSchemaVersion:    companyops.HiveCosmFormalArtifactPromotionCommandV1,
+		ActorUserID:             util.UUIDToString(promotion.ActorUserID),
+		LookupWorkOrderRef:      promotion.Lookup.WorkOrderSourceRef,
+		LookupEmployeeID:        promotion.Lookup.EmployeeID,
+		LookupBindingID:         promotion.Lookup.IdentityBindingID,
+		LookupAgentID:           promotion.Lookup.AgentID,
+		WorkOrderRef:            promotion.WorkOrder.SourceRef,
+		WorkOrderRevision:       promotion.WorkOrder.Revision,
+		WorkOrderContentDigest:  promotion.WorkOrder.ContentDigest,
+		EmployeeRef:             promotion.Employee.SourceRef,
+		EmployeeRevision:        promotion.Employee.Revision,
+		EmployeeContentDigest:   promotion.Employee.ContentDigest,
+		AgentRef:                promotion.Agent.SourceRef,
+		AgentRevision:           promotion.Agent.Revision,
+		AgentContentDigest:      promotion.Agent.ContentDigest,
+		BindingRef:              promotion.IdentityBinding.SourceRef,
+		BindingRevision:         promotion.IdentityBinding.Revision,
+		BindingContentDigest:    promotion.IdentityBinding.ContentDigest,
+		CandidateRevision:       candidate.Revision,
+		CandidateID:             candidate.ID,
+		CandidateDigest:         candidate.Digest,
+		CandidateObjectRef:      candidate.DurableObjectRef,
+		CandidateContentType:    companyops.HiveCosmFormalArtifactContentTypeMarkdown,
+		ApprovalActorUserID:     approvalEvent.ActorUserID,
+		ApprovalEventID:         approvalEvent.ID,
+		ApprovalEventSequence:   approvalEvent.Sequence,
+		ApprovalEventType:       string(approvalEvent.Type),
+		ApprovalEventDigest:     companyops.ArtifactEventDigest(approvalEvent),
+		SourceTaskID:            promotion.SourceTaskID,
+		WriterLeaseTargetDigest: promotion.WriterLeaseTargetDigest,
+		CompletionReceiptDigest: promotion.CompletionReceiptDigest,
 	}
 }

@@ -3224,6 +3224,11 @@ func (s *TaskService) CompleteTaskWithWriterLeaseProof(ctx context.Context, task
 			return err
 		}
 		if lockedTask.Status != "running" {
+			if writerLeaseMode == WriterLeaseModeEnforce {
+				if err := s.requireWriterLeaseCompletionReceipt(ctx, qtx, lockedTask); err != nil {
+					return err
+				}
+			}
 			_, replayErr := replayCompanyOpsExecutionCompleted(ctx, qtx, lockedTask, result)
 			if replayErr != nil {
 				return replayErr
@@ -3248,7 +3253,11 @@ func (s *TaskService) CompleteTaskWithWriterLeaseProof(ctx context.Context, task
 			return err
 		}
 		if effectiveWriterLeaseMode == WriterLeaseModeEnforce {
-			if err := s.validateWriterLeaseTerminalProof(ctx, qtx, lockedTask, writerLeaseProof); err != nil {
+			evidence, err := s.validateWriterLeaseTerminalProof(ctx, qtx, lockedTask, writerLeaseProof)
+			if err != nil {
+				return err
+			}
+			if err := s.persistWriterLeaseCompletionReceipt(ctx, qtx, lockedTask, evidence); err != nil {
 				return err
 			}
 		}

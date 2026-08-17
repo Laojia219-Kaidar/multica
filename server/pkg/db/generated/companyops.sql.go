@@ -1056,3 +1056,43 @@ func (q *Queries) LockCompanyOpsAssignmentCommand(ctx context.Context, arg LockC
 	_, err := q.db.Exec(ctx, lockCompanyOpsAssignmentCommand, arg.WorkspaceID, arg.CommandID)
 	return err
 }
+
+const lockLatestAssignmentDispatchReceiptForArtifactPromotion = `-- name: LockLatestAssignmentDispatchReceiptForArtifactPromotion :one
+SELECT command_id, workspace_id, issue_id, local_agent_id, initial_task_id, work_order_ref, work_order_revision, work_order_digest, input_digest, employee_ref, employee_revision, employee_digest, binding_ref, binding_revision, binding_digest, agent_ref, agent_revision, agent_digest, created_at FROM assignment_dispatch_receipt
+WHERE workspace_id = $1 AND issue_id = $2
+ORDER BY created_at DESC, command_id DESC
+LIMIT 1
+FOR SHARE
+`
+
+type LockLatestAssignmentDispatchReceiptForArtifactPromotionParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	IssueID     pgtype.UUID `json:"issue_id"`
+}
+
+func (q *Queries) LockLatestAssignmentDispatchReceiptForArtifactPromotion(ctx context.Context, arg LockLatestAssignmentDispatchReceiptForArtifactPromotionParams) (AssignmentDispatchReceipt, error) {
+	row := q.db.QueryRow(ctx, lockLatestAssignmentDispatchReceiptForArtifactPromotion, arg.WorkspaceID, arg.IssueID)
+	var i AssignmentDispatchReceipt
+	err := row.Scan(
+		&i.CommandID,
+		&i.WorkspaceID,
+		&i.IssueID,
+		&i.LocalAgentID,
+		&i.InitialTaskID,
+		&i.WorkOrderRef,
+		&i.WorkOrderRevision,
+		&i.WorkOrderDigest,
+		&i.InputDigest,
+		&i.EmployeeRef,
+		&i.EmployeeRevision,
+		&i.EmployeeDigest,
+		&i.BindingRef,
+		&i.BindingRevision,
+		&i.BindingDigest,
+		&i.AgentRef,
+		&i.AgentRevision,
+		&i.AgentDigest,
+		&i.CreatedAt,
+	)
+	return i, err
+}

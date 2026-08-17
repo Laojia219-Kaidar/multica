@@ -54,6 +54,13 @@ WHERE workspace_id = @workspace_id AND issue_id = @issue_id
 ORDER BY created_at DESC, command_id DESC
 LIMIT 1;
 
+-- name: LockLatestAssignmentDispatchReceiptForArtifactPromotion :one
+SELECT * FROM assignment_dispatch_receipt
+WHERE workspace_id = @workspace_id AND issue_id = @issue_id
+ORDER BY created_at DESC, command_id DESC
+LIMIT 1
+FOR SHARE;
+
 -- name: GetCompanyOpsTaskByTriggerEvidence :one
 SELECT * FROM agent_task_queue
 WHERE issue_id = @issue_id

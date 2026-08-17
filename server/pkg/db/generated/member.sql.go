@@ -167,6 +167,30 @@ func (q *Queries) ListMembersWithUser(ctx context.Context, workspaceID pgtype.UU
 	return items, nil
 }
 
+const lockOwnerMemberForArtifactPromotion = `-- name: LockOwnerMemberForArtifactPromotion :one
+SELECT id, workspace_id, user_id, role, created_at FROM member
+WHERE user_id = $1 AND workspace_id = $2
+FOR SHARE
+`
+
+type LockOwnerMemberForArtifactPromotionParams struct {
+	UserID      pgtype.UUID `json:"user_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+func (q *Queries) LockOwnerMemberForArtifactPromotion(ctx context.Context, arg LockOwnerMemberForArtifactPromotionParams) (Member, error) {
+	row := q.db.QueryRow(ctx, lockOwnerMemberForArtifactPromotion, arg.UserID, arg.WorkspaceID)
+	var i Member
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.UserID,
+		&i.Role,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const updateMemberRole = `-- name: UpdateMemberRole :one
 UPDATE member SET role = $2
 WHERE id = $1

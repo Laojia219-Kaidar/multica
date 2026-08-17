@@ -502,4 +502,11 @@ func TestCompleteTaskWithWriterLeaseProofSendsOnlyTerminalProof(t *testing.T) {
 	if _, leaked := body["holder"]; leaked {
 		t.Fatal("holder must not cross the terminal transport")
 	}
+	proofObject := proof[0].(map[string]any)
+	if _, leaked := proofObject["lease_token"]; leaked {
+		t.Fatal("plaintext lease_token must not cross the terminal transport")
+	}
+	if digest, ok := proofObject["lease_token_sha256"].(string); !ok || !strings.HasPrefix(digest, "sha256:") {
+		t.Fatalf("lease_token_sha256 = %#v, want sha256 digest", proofObject["lease_token_sha256"])
+	}
 }

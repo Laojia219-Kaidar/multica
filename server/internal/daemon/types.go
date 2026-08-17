@@ -171,9 +171,10 @@ type WriterLeaseTarget struct {
 // from the server-provided target bundle and is sent only on the terminal
 // completion callback; it is never part of TaskResult or the task claim.
 type WriterLeaseTerminalProof struct {
-	ResourceID      string    `json:"resource_id"`
-	LeaseToken      uuid.UUID `json:"lease_token"`
-	FenceGeneration int64     `json:"fence_generation"`
+	ResourceID       string    `json:"resource_id"`
+	LeaseToken       uuid.UUID `json:"-"` // local-only compatibility; never serialized
+	LeaseTokenSHA256 string    `json:"lease_token_sha256,omitempty"`
+	FenceGeneration  int64     `json:"fence_generation"`
 }
 
 // ChatAttachmentMeta is the structured attachment metadata the daemon

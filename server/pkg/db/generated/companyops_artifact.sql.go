@@ -13,20 +13,26 @@ import (
 
 const claimArtifactPromotion = `-- name: ClaimArtifactPromotion :one
 INSERT INTO artifact_promotion_claim (
-    workspace_id, promotion_id, candidate_id, lineage_id, payload_digest
+    workspace_id, promotion_id, candidate_id, lineage_id, payload_digest,
+    source_task_id, writer_lease_target_digest, completion_receipt_digest
 ) VALUES (
-    $1, $2, $3, $4, $5
+    $1, $2, $3, $4, $5,
+    $6, $7,
+    $8
 )
 ON CONFLICT DO NOTHING
-RETURNING workspace_id, promotion_id, candidate_id, lineage_id, created_at, payload_digest
+RETURNING workspace_id, promotion_id, candidate_id, lineage_id, created_at, payload_digest, source_task_id, writer_lease_target_digest, completion_receipt_digest
 `
 
 type ClaimArtifactPromotionParams struct {
-	WorkspaceID   pgtype.UUID `json:"workspace_id"`
-	PromotionID   string      `json:"promotion_id"`
-	CandidateID   pgtype.UUID `json:"candidate_id"`
-	LineageID     pgtype.UUID `json:"lineage_id"`
-	PayloadDigest pgtype.Text `json:"payload_digest"`
+	WorkspaceID             pgtype.UUID `json:"workspace_id"`
+	PromotionID             string      `json:"promotion_id"`
+	CandidateID             pgtype.UUID `json:"candidate_id"`
+	LineageID               pgtype.UUID `json:"lineage_id"`
+	PayloadDigest           pgtype.Text `json:"payload_digest"`
+	SourceTaskID            pgtype.UUID `json:"source_task_id"`
+	WriterLeaseTargetDigest pgtype.Text `json:"writer_lease_target_digest"`
+	CompletionReceiptDigest pgtype.Text `json:"completion_receipt_digest"`
 }
 
 func (q *Queries) ClaimArtifactPromotion(ctx context.Context, arg ClaimArtifactPromotionParams) (ArtifactPromotionClaim, error) {
@@ -36,6 +42,9 @@ func (q *Queries) ClaimArtifactPromotion(ctx context.Context, arg ClaimArtifactP
 		arg.CandidateID,
 		arg.LineageID,
 		arg.PayloadDigest,
+		arg.SourceTaskID,
+		arg.WriterLeaseTargetDigest,
+		arg.CompletionReceiptDigest,
 	)
 	var i ArtifactPromotionClaim
 	err := row.Scan(
@@ -45,6 +54,56 @@ func (q *Queries) ClaimArtifactPromotion(ctx context.Context, arg ClaimArtifactP
 		&i.LineageID,
 		&i.CreatedAt,
 		&i.PayloadDigest,
+		&i.SourceTaskID,
+		&i.WriterLeaseTargetDigest,
+		&i.CompletionReceiptDigest,
+	)
+	return i, err
+}
+
+const claimArtifactPromotionDelivery = `-- name: ClaimArtifactPromotionDelivery :one
+UPDATE artifact_promotion_delivery
+SET state = 'dispatching', attempt = attempt + 1,
+    dispatch_token = gen_random_uuid(), lease_until = now() + interval '5 minutes',
+    claimed_at = now(), updated_at = now(), last_error = NULL
+WHERE workspace_id = $1
+  AND promotion_id = $2
+  AND payload_digest = $3
+  AND state IN ('pending', 'failed')
+RETURNING id, workspace_id, promotion_id, candidate_id, lineage_id, source_task_id, writer_lease_target_digest, completion_receipt_digest, payload_digest, state, request_payload, response_receipt, readback_receipt, attempt, dispatch_token, lease_until, last_error, claimed_at, completed_at, created_at, updated_at
+`
+
+type ClaimArtifactPromotionDeliveryParams struct {
+	WorkspaceID   pgtype.UUID `json:"workspace_id"`
+	PromotionID   string      `json:"promotion_id"`
+	PayloadDigest string      `json:"payload_digest"`
+}
+
+func (q *Queries) ClaimArtifactPromotionDelivery(ctx context.Context, arg ClaimArtifactPromotionDeliveryParams) (ArtifactPromotionDelivery, error) {
+	row := q.db.QueryRow(ctx, claimArtifactPromotionDelivery, arg.WorkspaceID, arg.PromotionID, arg.PayloadDigest)
+	var i ArtifactPromotionDelivery
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.PromotionID,
+		&i.CandidateID,
+		&i.LineageID,
+		&i.SourceTaskID,
+		&i.WriterLeaseTargetDigest,
+		&i.CompletionReceiptDigest,
+		&i.PayloadDigest,
+		&i.State,
+		&i.RequestPayload,
+		&i.ResponseReceipt,
+		&i.ReadbackReceipt,
+		&i.Attempt,
+		&i.DispatchToken,
+		&i.LeaseUntil,
+		&i.LastError,
+		&i.ClaimedAt,
+		&i.CompletedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
 	)
 	return i, err
 }
@@ -151,7 +210,7 @@ func (q *Queries) GetArtifactCandidateByIdempotency(ctx context.Context, arg Get
 }
 
 const getArtifactEvent = `-- name: GetArtifactEvent :one
-SELECT id, workspace_id, lineage_id, sequence, event_type, candidate_id, candidate_revision, candidate_digest, candidate_object_ref, formal_artifact_ref, idempotency_key, created_at FROM artifact_event
+SELECT id, workspace_id, lineage_id, sequence, event_type, candidate_id, candidate_revision, candidate_digest, candidate_object_ref, formal_artifact_ref, idempotency_key, created_at, actor_user_id FROM artifact_event
 WHERE workspace_id = $1 AND id = $2
 `
 
@@ -176,12 +235,13 @@ func (q *Queries) GetArtifactEvent(ctx context.Context, arg GetArtifactEventPara
 		&i.FormalArtifactRef,
 		&i.IdempotencyKey,
 		&i.CreatedAt,
+		&i.ActorUserID,
 	)
 	return i, err
 }
 
 const getArtifactEventByIdempotency = `-- name: GetArtifactEventByIdempotency :one
-SELECT id, workspace_id, lineage_id, sequence, event_type, candidate_id, candidate_revision, candidate_digest, candidate_object_ref, formal_artifact_ref, idempotency_key, created_at FROM artifact_event
+SELECT id, workspace_id, lineage_id, sequence, event_type, candidate_id, candidate_revision, candidate_digest, candidate_object_ref, formal_artifact_ref, idempotency_key, created_at, actor_user_id FROM artifact_event
 WHERE workspace_id = $1 AND idempotency_key = $2
 `
 
@@ -206,6 +266,7 @@ func (q *Queries) GetArtifactEventByIdempotency(ctx context.Context, arg GetArti
 		&i.FormalArtifactRef,
 		&i.IdempotencyKey,
 		&i.CreatedAt,
+		&i.ActorUserID,
 	)
 	return i, err
 }
@@ -245,7 +306,7 @@ func (q *Queries) GetArtifactMaterializationIntent(ctx context.Context, arg GetA
 }
 
 const getArtifactPromotionClaim = `-- name: GetArtifactPromotionClaim :one
-SELECT workspace_id, promotion_id, candidate_id, lineage_id, created_at, payload_digest FROM artifact_promotion_claim
+SELECT workspace_id, promotion_id, candidate_id, lineage_id, created_at, payload_digest, source_task_id, writer_lease_target_digest, completion_receipt_digest FROM artifact_promotion_claim
 WHERE workspace_id = $1 AND promotion_id = $2
 `
 
@@ -264,6 +325,48 @@ func (q *Queries) GetArtifactPromotionClaim(ctx context.Context, arg GetArtifact
 		&i.LineageID,
 		&i.CreatedAt,
 		&i.PayloadDigest,
+		&i.SourceTaskID,
+		&i.WriterLeaseTargetDigest,
+		&i.CompletionReceiptDigest,
+	)
+	return i, err
+}
+
+const getArtifactPromotionDelivery = `-- name: GetArtifactPromotionDelivery :one
+SELECT id, workspace_id, promotion_id, candidate_id, lineage_id, source_task_id, writer_lease_target_digest, completion_receipt_digest, payload_digest, state, request_payload, response_receipt, readback_receipt, attempt, dispatch_token, lease_until, last_error, claimed_at, completed_at, created_at, updated_at FROM artifact_promotion_delivery
+WHERE workspace_id = $1 AND promotion_id = $2
+`
+
+type GetArtifactPromotionDeliveryParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	PromotionID string      `json:"promotion_id"`
+}
+
+func (q *Queries) GetArtifactPromotionDelivery(ctx context.Context, arg GetArtifactPromotionDeliveryParams) (ArtifactPromotionDelivery, error) {
+	row := q.db.QueryRow(ctx, getArtifactPromotionDelivery, arg.WorkspaceID, arg.PromotionID)
+	var i ArtifactPromotionDelivery
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.PromotionID,
+		&i.CandidateID,
+		&i.LineageID,
+		&i.SourceTaskID,
+		&i.WriterLeaseTargetDigest,
+		&i.CompletionReceiptDigest,
+		&i.PayloadDigest,
+		&i.State,
+		&i.RequestPayload,
+		&i.ResponseReceipt,
+		&i.ReadbackReceipt,
+		&i.Attempt,
+		&i.DispatchToken,
+		&i.LeaseUntil,
+		&i.LastError,
+		&i.ClaimedAt,
+		&i.CompletedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
 	)
 	return i, err
 }
@@ -427,14 +530,15 @@ const insertArtifactEvent = `-- name: InsertArtifactEvent :one
 INSERT INTO artifact_event (
     id, workspace_id, lineage_id, sequence, event_type,
     candidate_id, candidate_revision, candidate_digest,
-    candidate_object_ref, formal_artifact_ref, idempotency_key
+    candidate_object_ref, formal_artifact_ref, idempotency_key, actor_user_id
 ) VALUES (
     $1, $2, $3, $4, $5,
     $6, $7, $8,
-    $9, $10, $11
+    $9, $10, $11,
+    $12
 )
 ON CONFLICT DO NOTHING
-RETURNING id, workspace_id, lineage_id, sequence, event_type, candidate_id, candidate_revision, candidate_digest, candidate_object_ref, formal_artifact_ref, idempotency_key, created_at
+RETURNING id, workspace_id, lineage_id, sequence, event_type, candidate_id, candidate_revision, candidate_digest, candidate_object_ref, formal_artifact_ref, idempotency_key, created_at, actor_user_id
 `
 
 type InsertArtifactEventParams struct {
@@ -449,6 +553,7 @@ type InsertArtifactEventParams struct {
 	CandidateObjectRef string      `json:"candidate_object_ref"`
 	FormalArtifactRef  pgtype.Text `json:"formal_artifact_ref"`
 	IdempotencyKey     string      `json:"idempotency_key"`
+	ActorUserID        pgtype.UUID `json:"actor_user_id"`
 }
 
 func (q *Queries) InsertArtifactEvent(ctx context.Context, arg InsertArtifactEventParams) (ArtifactEvent, error) {
@@ -464,6 +569,7 @@ func (q *Queries) InsertArtifactEvent(ctx context.Context, arg InsertArtifactEve
 		arg.CandidateObjectRef,
 		arg.FormalArtifactRef,
 		arg.IdempotencyKey,
+		arg.ActorUserID,
 	)
 	var i ArtifactEvent
 	err := row.Scan(
@@ -479,6 +585,7 @@ func (q *Queries) InsertArtifactEvent(ctx context.Context, arg InsertArtifactEve
 		&i.FormalArtifactRef,
 		&i.IdempotencyKey,
 		&i.CreatedAt,
+		&i.ActorUserID,
 	)
 	return i, err
 }
@@ -545,6 +652,71 @@ func (q *Queries) InsertArtifactMaterializationIntent(ctx context.Context, arg I
 		&i.IdempotencyKey,
 		&i.State,
 		&i.LastError,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const insertArtifactPromotionDelivery = `-- name: InsertArtifactPromotionDelivery :one
+INSERT INTO artifact_promotion_delivery (
+    workspace_id, promotion_id, candidate_id, lineage_id,
+    source_task_id, writer_lease_target_digest, completion_receipt_digest,
+    payload_digest, request_payload
+) VALUES (
+    $1, $2, $3, $4,
+    $5, $6,
+    $7, $8, $9
+)
+ON CONFLICT (workspace_id, promotion_id) DO NOTHING
+RETURNING id, workspace_id, promotion_id, candidate_id, lineage_id, source_task_id, writer_lease_target_digest, completion_receipt_digest, payload_digest, state, request_payload, response_receipt, readback_receipt, attempt, dispatch_token, lease_until, last_error, claimed_at, completed_at, created_at, updated_at
+`
+
+type InsertArtifactPromotionDeliveryParams struct {
+	WorkspaceID             pgtype.UUID `json:"workspace_id"`
+	PromotionID             string      `json:"promotion_id"`
+	CandidateID             pgtype.UUID `json:"candidate_id"`
+	LineageID               pgtype.UUID `json:"lineage_id"`
+	SourceTaskID            pgtype.UUID `json:"source_task_id"`
+	WriterLeaseTargetDigest pgtype.Text `json:"writer_lease_target_digest"`
+	CompletionReceiptDigest pgtype.Text `json:"completion_receipt_digest"`
+	PayloadDigest           string      `json:"payload_digest"`
+	RequestPayload          []byte      `json:"request_payload"`
+}
+
+func (q *Queries) InsertArtifactPromotionDelivery(ctx context.Context, arg InsertArtifactPromotionDeliveryParams) (ArtifactPromotionDelivery, error) {
+	row := q.db.QueryRow(ctx, insertArtifactPromotionDelivery,
+		arg.WorkspaceID,
+		arg.PromotionID,
+		arg.CandidateID,
+		arg.LineageID,
+		arg.SourceTaskID,
+		arg.WriterLeaseTargetDigest,
+		arg.CompletionReceiptDigest,
+		arg.PayloadDigest,
+		arg.RequestPayload,
+	)
+	var i ArtifactPromotionDelivery
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.PromotionID,
+		&i.CandidateID,
+		&i.LineageID,
+		&i.SourceTaskID,
+		&i.WriterLeaseTargetDigest,
+		&i.CompletionReceiptDigest,
+		&i.PayloadDigest,
+		&i.State,
+		&i.RequestPayload,
+		&i.ResponseReceipt,
+		&i.ReadbackReceipt,
+		&i.Attempt,
+		&i.DispatchToken,
+		&i.LeaseUntil,
+		&i.LastError,
+		&i.ClaimedAt,
+		&i.CompletedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -781,7 +953,7 @@ func (q *Queries) ListArtifactCandidatesByLineage(ctx context.Context, arg ListA
 }
 
 const listArtifactEventsByLineage = `-- name: ListArtifactEventsByLineage :many
-SELECT id, workspace_id, lineage_id, sequence, event_type, candidate_id, candidate_revision, candidate_digest, candidate_object_ref, formal_artifact_ref, idempotency_key, created_at FROM artifact_event
+SELECT id, workspace_id, lineage_id, sequence, event_type, candidate_id, candidate_revision, candidate_digest, candidate_object_ref, formal_artifact_ref, idempotency_key, created_at, actor_user_id FROM artifact_event
 WHERE workspace_id = $1 AND lineage_id = $2
 ORDER BY sequence ASC
 `
@@ -813,6 +985,7 @@ func (q *Queries) ListArtifactEventsByLineage(ctx context.Context, arg ListArtif
 			&i.FormalArtifactRef,
 			&i.IdempotencyKey,
 			&i.CreatedAt,
+			&i.ActorUserID,
 		); err != nil {
 			return nil, err
 		}
@@ -924,6 +1097,38 @@ func (q *Queries) ListArtifactReplicaLocationsByOutcome(ctx context.Context, arg
 	return items, nil
 }
 
+const lockArtifactEventForPromotion = `-- name: LockArtifactEventForPromotion :one
+SELECT id, workspace_id, lineage_id, sequence, event_type, candidate_id, candidate_revision, candidate_digest, candidate_object_ref, formal_artifact_ref, idempotency_key, created_at, actor_user_id FROM artifact_event
+WHERE workspace_id = $1 AND id = $2
+FOR SHARE
+`
+
+type LockArtifactEventForPromotionParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	ID          pgtype.UUID `json:"id"`
+}
+
+func (q *Queries) LockArtifactEventForPromotion(ctx context.Context, arg LockArtifactEventForPromotionParams) (ArtifactEvent, error) {
+	row := q.db.QueryRow(ctx, lockArtifactEventForPromotion, arg.WorkspaceID, arg.ID)
+	var i ArtifactEvent
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.LineageID,
+		&i.Sequence,
+		&i.EventType,
+		&i.CandidateID,
+		&i.CandidateRevision,
+		&i.CandidateDigest,
+		&i.CandidateObjectRef,
+		&i.FormalArtifactRef,
+		&i.IdempotencyKey,
+		&i.CreatedAt,
+		&i.ActorUserID,
+	)
+	return i, err
+}
+
 const lockArtifactLineage = `-- name: LockArtifactLineage :exec
 SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))
 `
@@ -990,6 +1195,222 @@ func (q *Queries) MarkArtifactMaterializationIntentCleanupPending(ctx context.Co
 	return i, err
 }
 
+const markArtifactPromotionDeliveryDefiniteAbsent = `-- name: MarkArtifactPromotionDeliveryDefiniteAbsent :one
+UPDATE artifact_promotion_delivery
+SET state = 'failed', last_error = $1, dispatch_token = NULL,
+    lease_until = NULL, updated_at = now()
+WHERE workspace_id = $2 AND promotion_id = $3
+  AND payload_digest = $4 AND dispatch_token = $5
+  AND state = 'dispatching' AND lease_until < now()
+RETURNING id, workspace_id, promotion_id, candidate_id, lineage_id, source_task_id, writer_lease_target_digest, completion_receipt_digest, payload_digest, state, request_payload, response_receipt, readback_receipt, attempt, dispatch_token, lease_until, last_error, claimed_at, completed_at, created_at, updated_at
+`
+
+type MarkArtifactPromotionDeliveryDefiniteAbsentParams struct {
+	LastError     pgtype.Text `json:"last_error"`
+	WorkspaceID   pgtype.UUID `json:"workspace_id"`
+	PromotionID   string      `json:"promotion_id"`
+	PayloadDigest string      `json:"payload_digest"`
+	DispatchToken pgtype.UUID `json:"dispatch_token"`
+}
+
+func (q *Queries) MarkArtifactPromotionDeliveryDefiniteAbsent(ctx context.Context, arg MarkArtifactPromotionDeliveryDefiniteAbsentParams) (ArtifactPromotionDelivery, error) {
+	row := q.db.QueryRow(ctx, markArtifactPromotionDeliveryDefiniteAbsent,
+		arg.LastError,
+		arg.WorkspaceID,
+		arg.PromotionID,
+		arg.PayloadDigest,
+		arg.DispatchToken,
+	)
+	var i ArtifactPromotionDelivery
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.PromotionID,
+		&i.CandidateID,
+		&i.LineageID,
+		&i.SourceTaskID,
+		&i.WriterLeaseTargetDigest,
+		&i.CompletionReceiptDigest,
+		&i.PayloadDigest,
+		&i.State,
+		&i.RequestPayload,
+		&i.ResponseReceipt,
+		&i.ReadbackReceipt,
+		&i.Attempt,
+		&i.DispatchToken,
+		&i.LeaseUntil,
+		&i.LastError,
+		&i.ClaimedAt,
+		&i.CompletedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const markArtifactPromotionDeliveryFailed = `-- name: MarkArtifactPromotionDeliveryFailed :one
+UPDATE artifact_promotion_delivery
+SET state = 'failed', last_error = $1,
+    dispatch_token = NULL, lease_until = NULL, updated_at = now()
+WHERE workspace_id = $2
+  AND promotion_id = $3
+  AND payload_digest = $4
+  AND dispatch_token = $5
+  AND state = 'dispatching'
+RETURNING id, workspace_id, promotion_id, candidate_id, lineage_id, source_task_id, writer_lease_target_digest, completion_receipt_digest, payload_digest, state, request_payload, response_receipt, readback_receipt, attempt, dispatch_token, lease_until, last_error, claimed_at, completed_at, created_at, updated_at
+`
+
+type MarkArtifactPromotionDeliveryFailedParams struct {
+	LastError     pgtype.Text `json:"last_error"`
+	WorkspaceID   pgtype.UUID `json:"workspace_id"`
+	PromotionID   string      `json:"promotion_id"`
+	PayloadDigest string      `json:"payload_digest"`
+	DispatchToken pgtype.UUID `json:"dispatch_token"`
+}
+
+func (q *Queries) MarkArtifactPromotionDeliveryFailed(ctx context.Context, arg MarkArtifactPromotionDeliveryFailedParams) (ArtifactPromotionDelivery, error) {
+	row := q.db.QueryRow(ctx, markArtifactPromotionDeliveryFailed,
+		arg.LastError,
+		arg.WorkspaceID,
+		arg.PromotionID,
+		arg.PayloadDigest,
+		arg.DispatchToken,
+	)
+	var i ArtifactPromotionDelivery
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.PromotionID,
+		&i.CandidateID,
+		&i.LineageID,
+		&i.SourceTaskID,
+		&i.WriterLeaseTargetDigest,
+		&i.CompletionReceiptDigest,
+		&i.PayloadDigest,
+		&i.State,
+		&i.RequestPayload,
+		&i.ResponseReceipt,
+		&i.ReadbackReceipt,
+		&i.Attempt,
+		&i.DispatchToken,
+		&i.LeaseUntil,
+		&i.LastError,
+		&i.ClaimedAt,
+		&i.CompletedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const markArtifactPromotionDeliveryReadbackConfirmed = `-- name: MarkArtifactPromotionDeliveryReadbackConfirmed :one
+UPDATE artifact_promotion_delivery
+SET state = 'readback_confirmed', readback_receipt = $1,
+    completed_at = now(), updated_at = now(), last_error = NULL
+WHERE workspace_id = $2
+  AND promotion_id = $3
+  AND payload_digest = $4
+  AND state = 'succeeded'
+RETURNING id, workspace_id, promotion_id, candidate_id, lineage_id, source_task_id, writer_lease_target_digest, completion_receipt_digest, payload_digest, state, request_payload, response_receipt, readback_receipt, attempt, dispatch_token, lease_until, last_error, claimed_at, completed_at, created_at, updated_at
+`
+
+type MarkArtifactPromotionDeliveryReadbackConfirmedParams struct {
+	ReadbackReceipt []byte      `json:"readback_receipt"`
+	WorkspaceID     pgtype.UUID `json:"workspace_id"`
+	PromotionID     string      `json:"promotion_id"`
+	PayloadDigest   string      `json:"payload_digest"`
+}
+
+func (q *Queries) MarkArtifactPromotionDeliveryReadbackConfirmed(ctx context.Context, arg MarkArtifactPromotionDeliveryReadbackConfirmedParams) (ArtifactPromotionDelivery, error) {
+	row := q.db.QueryRow(ctx, markArtifactPromotionDeliveryReadbackConfirmed,
+		arg.ReadbackReceipt,
+		arg.WorkspaceID,
+		arg.PromotionID,
+		arg.PayloadDigest,
+	)
+	var i ArtifactPromotionDelivery
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.PromotionID,
+		&i.CandidateID,
+		&i.LineageID,
+		&i.SourceTaskID,
+		&i.WriterLeaseTargetDigest,
+		&i.CompletionReceiptDigest,
+		&i.PayloadDigest,
+		&i.State,
+		&i.RequestPayload,
+		&i.ResponseReceipt,
+		&i.ReadbackReceipt,
+		&i.Attempt,
+		&i.DispatchToken,
+		&i.LeaseUntil,
+		&i.LastError,
+		&i.ClaimedAt,
+		&i.CompletedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const markArtifactPromotionDeliverySucceeded = `-- name: MarkArtifactPromotionDeliverySucceeded :one
+UPDATE artifact_promotion_delivery
+SET state = 'succeeded', response_receipt = $1,
+    dispatch_token = NULL, lease_until = NULL,
+    completed_at = now(), updated_at = now(), last_error = NULL
+WHERE workspace_id = $2
+  AND promotion_id = $3
+  AND payload_digest = $4
+  AND dispatch_token = $5
+  AND state = 'dispatching'
+RETURNING id, workspace_id, promotion_id, candidate_id, lineage_id, source_task_id, writer_lease_target_digest, completion_receipt_digest, payload_digest, state, request_payload, response_receipt, readback_receipt, attempt, dispatch_token, lease_until, last_error, claimed_at, completed_at, created_at, updated_at
+`
+
+type MarkArtifactPromotionDeliverySucceededParams struct {
+	ResponseReceipt []byte      `json:"response_receipt"`
+	WorkspaceID     pgtype.UUID `json:"workspace_id"`
+	PromotionID     string      `json:"promotion_id"`
+	PayloadDigest   string      `json:"payload_digest"`
+	DispatchToken   pgtype.UUID `json:"dispatch_token"`
+}
+
+func (q *Queries) MarkArtifactPromotionDeliverySucceeded(ctx context.Context, arg MarkArtifactPromotionDeliverySucceededParams) (ArtifactPromotionDelivery, error) {
+	row := q.db.QueryRow(ctx, markArtifactPromotionDeliverySucceeded,
+		arg.ResponseReceipt,
+		arg.WorkspaceID,
+		arg.PromotionID,
+		arg.PayloadDigest,
+		arg.DispatchToken,
+	)
+	var i ArtifactPromotionDelivery
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.PromotionID,
+		&i.CandidateID,
+		&i.LineageID,
+		&i.SourceTaskID,
+		&i.WriterLeaseTargetDigest,
+		&i.CompletionReceiptDigest,
+		&i.PayloadDigest,
+		&i.State,
+		&i.RequestPayload,
+		&i.ResponseReceipt,
+		&i.ReadbackReceipt,
+		&i.Attempt,
+		&i.DispatchToken,
+		&i.LeaseUntil,
+		&i.LastError,
+		&i.ClaimedAt,
+		&i.CompletedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const nextArtifactEventSequence = `-- name: NextArtifactEventSequence :one
 SELECT (COALESCE(MAX(sequence), 0) + 1)::int AS next_sequence
 FROM artifact_event
@@ -1006,6 +1427,64 @@ func (q *Queries) NextArtifactEventSequence(ctx context.Context, arg NextArtifac
 	var next_sequence int32
 	err := row.Scan(&next_sequence)
 	return next_sequence, err
+}
+
+const recoverArtifactPromotionDeliveryFromReadback = `-- name: RecoverArtifactPromotionDeliveryFromReadback :one
+UPDATE artifact_promotion_delivery
+SET state = 'readback_confirmed', response_receipt = $1,
+    readback_receipt = $2, dispatch_token = NULL,
+    lease_until = NULL, completed_at = now(), updated_at = now(), last_error = NULL
+WHERE workspace_id = $3
+  AND promotion_id = $4
+  AND payload_digest = $5
+  AND dispatch_token = $6
+  AND state = 'dispatching'
+RETURNING id, workspace_id, promotion_id, candidate_id, lineage_id, source_task_id, writer_lease_target_digest, completion_receipt_digest, payload_digest, state, request_payload, response_receipt, readback_receipt, attempt, dispatch_token, lease_until, last_error, claimed_at, completed_at, created_at, updated_at
+`
+
+type RecoverArtifactPromotionDeliveryFromReadbackParams struct {
+	ResponseReceipt []byte      `json:"response_receipt"`
+	ReadbackReceipt []byte      `json:"readback_receipt"`
+	WorkspaceID     pgtype.UUID `json:"workspace_id"`
+	PromotionID     string      `json:"promotion_id"`
+	PayloadDigest   string      `json:"payload_digest"`
+	DispatchToken   pgtype.UUID `json:"dispatch_token"`
+}
+
+func (q *Queries) RecoverArtifactPromotionDeliveryFromReadback(ctx context.Context, arg RecoverArtifactPromotionDeliveryFromReadbackParams) (ArtifactPromotionDelivery, error) {
+	row := q.db.QueryRow(ctx, recoverArtifactPromotionDeliveryFromReadback,
+		arg.ResponseReceipt,
+		arg.ReadbackReceipt,
+		arg.WorkspaceID,
+		arg.PromotionID,
+		arg.PayloadDigest,
+		arg.DispatchToken,
+	)
+	var i ArtifactPromotionDelivery
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.PromotionID,
+		&i.CandidateID,
+		&i.LineageID,
+		&i.SourceTaskID,
+		&i.WriterLeaseTargetDigest,
+		&i.CompletionReceiptDigest,
+		&i.PayloadDigest,
+		&i.State,
+		&i.RequestPayload,
+		&i.ResponseReceipt,
+		&i.ReadbackReceipt,
+		&i.Attempt,
+		&i.DispatchToken,
+		&i.LeaseUntil,
+		&i.LastError,
+		&i.ClaimedAt,
+		&i.CompletedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
 }
 
 const tombstoneArtifactMaterializationIntent = `-- name: TombstoneArtifactMaterializationIntent :one

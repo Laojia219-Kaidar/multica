@@ -177,6 +177,7 @@ func TestWriteCompanyOpsServiceError_ArtifactAndPromotionMappings(t *testing.T) 
 		wantReason string
 	}{
 		{"idempotency required", companyops.ErrArtifactIdempotencyRequired, http.StatusBadRequest, "invalid_request"},
+		{"promotion in progress", companyops.ErrArtifactPromotionInProgress, http.StatusConflict, "artifact_promotion_in_progress"},
 		{"invalid transition", companyops.ErrInvalidArtifactTransition, http.StatusConflict, "artifact_conflict"},
 		{"idempotency conflict", companyops.ErrArtifactIdempotencyConflict, http.StatusConflict, "artifact_conflict"},
 		{"promotion claim conflict", companyops.ErrArtifactPromotionConflict, http.StatusConflict, "artifact_conflict"},

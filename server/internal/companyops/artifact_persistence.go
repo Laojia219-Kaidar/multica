@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -18,6 +19,7 @@ var (
 	ErrArtifactCandidateImmutable          = errors.New("artifact candidate is immutable")
 	ErrArtifactMaterializationIntentAbsent = errors.New("artifact materialization intent not found")
 	ErrArtifactMaterializationConflict     = errors.New("artifact materialization intent conflict")
+	ErrArtifactPromotionInProgress         = errors.New("artifact promotion delivery is already dispatching")
 )
 
 type ArtifactMaterializationState string
@@ -278,6 +280,11 @@ func (r *ArtifactPersistenceRepository) AppendArtifactEvent(
 	if input.IdempotencyKey == "" {
 		return ArtifactEvent{}, ErrArtifactIdempotencyRequired
 	}
+	if input.ActorUserID != "" {
+		if _, err := artifactPersistenceUUID(input.ActorUserID, "actor user id"); err != nil {
+			return ArtifactEvent{}, fmt.Errorf("%w: actor user id must be a canonical UUID", ErrArtifactPromotionConflict)
+		}
+	}
 	if err := r.queries.LockArtifactLineage(ctx, artifactLineageLockKey(workspaceID, lineageID)); err != nil {
 		return ArtifactEvent{}, fmt.Errorf("lock artifact lineage: %w", err)
 	}
@@ -329,26 +336,44 @@ func (r *ArtifactPersistenceRepository) AppendArtifactEvent(
 // is a conflict — the claim digest covers Actor, Lookup, all three authority
 // snapshots, the candidate revision/digest/object_ref, and the approval event.
 type PromotionClaimPayload struct {
-	CommandSchemaVersion   string
-	ActorUserID            string
-	LookupWorkOrderRef     string
-	LookupEmployeeID       string
-	LookupBindingID        string
-	LookupAgentID          string
-	WorkOrderRef           string
-	WorkOrderRevision      string
-	WorkOrderContentDigest string
-	EmployeeRef            string
-	EmployeeRevision       string
-	EmployeeContentDigest  string
-	BindingRef             string
-	BindingRevision        string
-	BindingContentDigest   string
-	CandidateRevision      int
-	CandidateDigest        string
-	CandidateObjectRef     string
-	CandidateContentType   string
-	ApprovalEventID        string
+	WorkspaceID             string
+	PromotionID             string
+	IssueID                 string
+	AssignmentCommandID     string
+	AssignmentLineageID     string
+	AssignmentInitialTaskID string
+	LocalAgentID            string
+	CommandSchemaVersion    string
+	ActorUserID             string
+	LookupWorkOrderRef      string
+	LookupEmployeeID        string
+	LookupBindingID         string
+	LookupAgentID           string
+	WorkOrderRef            string
+	WorkOrderRevision       string
+	WorkOrderContentDigest  string
+	EmployeeRef             string
+	EmployeeRevision        string
+	EmployeeContentDigest   string
+	AgentRef                string
+	AgentRevision           string
+	AgentContentDigest      string
+	BindingRef              string
+	BindingRevision         string
+	BindingContentDigest    string
+	CandidateRevision       int
+	CandidateID             string
+	CandidateDigest         string
+	CandidateObjectRef      string
+	CandidateContentType    string
+	ApprovalActorUserID     string
+	ApprovalEventID         string
+	ApprovalEventSequence   int
+	ApprovalEventType       string
+	ApprovalEventDigest     string
+	SourceTaskID            string
+	WriterLeaseTargetDigest string
+	CompletionReceiptDigest string
 }
 
 // Digest returns the canonical SHA-256 hex digest of the payload. The encoding
@@ -356,26 +381,44 @@ type PromotionClaimPayload struct {
 // produce different digests.
 func (p PromotionClaimPayload) Digest() string {
 	canonical := map[string]any{
-		"command_schema_version":    p.CommandSchemaVersion,
-		"actor_user_id":             p.ActorUserID,
-		"lookup_work_order":         p.LookupWorkOrderRef,
-		"lookup_employee":           p.LookupEmployeeID,
-		"lookup_binding":            p.LookupBindingID,
-		"lookup_agent":              p.LookupAgentID,
-		"work_order_ref":            p.WorkOrderRef,
-		"work_order_revision":       p.WorkOrderRevision,
-		"work_order_content_digest": p.WorkOrderContentDigest,
-		"employee_ref":              p.EmployeeRef,
-		"employee_revision":         p.EmployeeRevision,
-		"employee_content_digest":   p.EmployeeContentDigest,
-		"binding_ref":               p.BindingRef,
-		"binding_revision":          p.BindingRevision,
-		"binding_content_digest":    p.BindingContentDigest,
-		"candidate_revision":        p.CandidateRevision,
-		"candidate_digest":          p.CandidateDigest,
-		"candidate_object_ref":      p.CandidateObjectRef,
-		"candidate_content_type":    p.CandidateContentType,
-		"approval_event_id":         p.ApprovalEventID,
+		"workspace_id":               p.WorkspaceID,
+		"promotion_id":               p.PromotionID,
+		"issue_id":                   p.IssueID,
+		"assignment_command_id":      p.AssignmentCommandID,
+		"assignment_lineage_id":      p.AssignmentLineageID,
+		"assignment_initial_task_id": p.AssignmentInitialTaskID,
+		"local_agent_id":             p.LocalAgentID,
+		"command_schema_version":     p.CommandSchemaVersion,
+		"actor_user_id":              p.ActorUserID,
+		"lookup_work_order":          p.LookupWorkOrderRef,
+		"lookup_employee":            p.LookupEmployeeID,
+		"lookup_binding":             p.LookupBindingID,
+		"lookup_agent":               p.LookupAgentID,
+		"work_order_ref":             p.WorkOrderRef,
+		"work_order_revision":        p.WorkOrderRevision,
+		"work_order_content_digest":  p.WorkOrderContentDigest,
+		"employee_ref":               p.EmployeeRef,
+		"employee_revision":          p.EmployeeRevision,
+		"employee_content_digest":    p.EmployeeContentDigest,
+		"agent_ref":                  p.AgentRef,
+		"agent_revision":             p.AgentRevision,
+		"agent_content_digest":       p.AgentContentDigest,
+		"binding_ref":                p.BindingRef,
+		"binding_revision":           p.BindingRevision,
+		"binding_content_digest":     p.BindingContentDigest,
+		"candidate_revision":         p.CandidateRevision,
+		"candidate_id":               p.CandidateID,
+		"candidate_digest":           p.CandidateDigest,
+		"candidate_object_ref":       p.CandidateObjectRef,
+		"candidate_content_type":     p.CandidateContentType,
+		"approval_actor_user_id":     p.ApprovalActorUserID,
+		"approval_event_id":          p.ApprovalEventID,
+		"approval_event_sequence":    p.ApprovalEventSequence,
+		"approval_event_type":        p.ApprovalEventType,
+		"approval_event_digest":      p.ApprovalEventDigest,
+		"source_task_id":             p.SourceTaskID,
+		"writer_lease_target_digest": p.WriterLeaseTargetDigest,
+		"completion_receipt_digest":  p.CompletionReceiptDigest,
 	}
 	encoded, err := json.Marshal(canonical)
 	if err != nil {
@@ -383,6 +426,86 @@ func (p PromotionClaimPayload) Digest() string {
 	}
 	sum := sha256.Sum256(encoded)
 	return fmt.Sprintf("sha256:%x", sum)
+}
+
+// validateC3b2PromotionClaimPayload rejects partial C3b2 authorization
+// snapshots. Legacy callers may still create an unbound claim, but once any
+// C3b2 field is supplied the complete cross-domain binding is mandatory.
+func validateC3b2PromotionClaimPayload(payload PromotionClaimPayload, workspaceID, promotionID, candidateID, lineageID string) error {
+	bound := payload.WorkspaceID != "" || payload.PromotionID != "" || payload.IssueID != "" ||
+		payload.AssignmentCommandID != "" || payload.AssignmentLineageID != "" || payload.AssignmentInitialTaskID != "" ||
+		payload.LocalAgentID != "" || payload.AgentRef != "" || payload.AgentRevision != "" || payload.AgentContentDigest != "" ||
+		payload.CandidateID != "" || payload.ApprovalActorUserID != "" || payload.ApprovalEventSequence != 0 ||
+		payload.ApprovalEventType != "" || payload.ApprovalEventDigest != "" || payload.SourceTaskID != "" ||
+		payload.WriterLeaseTargetDigest != "" || payload.CompletionReceiptDigest != ""
+	if !bound {
+		return nil
+	}
+	required := map[string]string{
+		"workspace_id":               payload.WorkspaceID,
+		"promotion_id":               payload.PromotionID,
+		"issue_id":                   payload.IssueID,
+		"assignment_command_id":      payload.AssignmentCommandID,
+		"assignment_lineage_id":      payload.AssignmentLineageID,
+		"assignment_initial_task_id": payload.AssignmentInitialTaskID,
+		"local_agent_id":             payload.LocalAgentID,
+		"command_schema_version":     payload.CommandSchemaVersion,
+		"actor_user_id":              payload.ActorUserID,
+		"lookup_work_order":          payload.LookupWorkOrderRef,
+		"lookup_employee":            payload.LookupEmployeeID,
+		"lookup_binding":             payload.LookupBindingID,
+		"lookup_agent":               payload.LookupAgentID,
+		"work_order_ref":             payload.WorkOrderRef,
+		"work_order_revision":        payload.WorkOrderRevision,
+		"work_order_content_digest":  payload.WorkOrderContentDigest,
+		"employee_ref":               payload.EmployeeRef,
+		"employee_revision":          payload.EmployeeRevision,
+		"employee_content_digest":    payload.EmployeeContentDigest,
+		"agent_ref":                  payload.AgentRef,
+		"agent_revision":             payload.AgentRevision,
+		"agent_content_digest":       payload.AgentContentDigest,
+		"binding_ref":                payload.BindingRef,
+		"binding_revision":           payload.BindingRevision,
+		"binding_content_digest":     payload.BindingContentDigest,
+		"candidate_id":               payload.CandidateID,
+		"candidate_content_type":     payload.CandidateContentType,
+		"candidate_digest":           payload.CandidateDigest,
+		"candidate_object_ref":       payload.CandidateObjectRef,
+		"approval_actor_user_id":     payload.ApprovalActorUserID,
+		"approval_event_id":          payload.ApprovalEventID,
+		"approval_event_type":        payload.ApprovalEventType,
+		"approval_event_digest":      payload.ApprovalEventDigest,
+		"source_task_id":             payload.SourceTaskID,
+		"writer_lease_target_digest": payload.WriterLeaseTargetDigest,
+		"completion_receipt_digest":  payload.CompletionReceiptDigest,
+	}
+	for field, value := range required {
+		if strings.TrimSpace(value) == "" {
+			return fmt.Errorf("%w: C3b2 claim field %s is required", ErrArtifactPromotionConflict, field)
+		}
+	}
+	if payload.WorkspaceID != workspaceID || payload.PromotionID != promotionID || payload.CandidateID != candidateID ||
+		payload.AssignmentLineageID != lineageID {
+		return fmt.Errorf("%w: C3b2 claim identity binding drifted", ErrArtifactPromotionConflict)
+	}
+	if payload.CandidateRevision <= 0 {
+		return fmt.Errorf("%w: C3b2 candidate revision must be positive", ErrArtifactPromotionConflict)
+	}
+	if payload.ApprovalEventType != string(ArtifactEventApproved) || payload.ApprovalEventSequence <= 0 {
+		return fmt.Errorf("%w: C3b2 approval event must be a positive approved event", ErrArtifactPromotionConflict)
+	}
+	for field, value := range map[string]string{
+		"workspace_id": payload.WorkspaceID, "promotion_id": payload.PromotionID, "issue_id": payload.IssueID,
+		"assignment_command_id": payload.AssignmentCommandID, "assignment_lineage_id": payload.AssignmentLineageID,
+		"assignment_initial_task_id": payload.AssignmentInitialTaskID, "local_agent_id": payload.LocalAgentID,
+		"candidate_id": payload.CandidateID, "approval_actor_user_id": payload.ApprovalActorUserID,
+		"approval_event_id": payload.ApprovalEventID, "source_task_id": payload.SourceTaskID,
+	} {
+		if _, err := artifactOptionalUUID(value, field); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // ClaimPromotion atomically binds a stable promotion_id to exactly one
@@ -416,16 +539,119 @@ func (r *ArtifactPersistenceRepository) ClaimPromotion(
 	if parsed, parseErr := util.ParseUUID(promotionID); parseErr != nil || util.UUIDToString(parsed) != promotionID {
 		return fmt.Errorf("%w: promotion_id must be a canonical UUID", ErrArtifactPromotionConflict)
 	}
+	if payload.PromotionID != "" && payload.PromotionID != promotionID {
+		return fmt.Errorf("%w: payload promotion_id does not match claim", ErrArtifactPromotionConflict)
+	}
+	if payload.WorkspaceID != "" && payload.WorkspaceID != workspaceID {
+		return fmt.Errorf("%w: payload workspace_id does not match claim", ErrArtifactPromotionConflict)
+	}
+	if (payload.IssueID == "") != (payload.AssignmentCommandID == "") {
+		return fmt.Errorf("%w: issue and assignment command bindings must be all-or-none", ErrArtifactPromotionConflict)
+	}
+	if payload.AssignmentLineageID != "" && payload.AssignmentLineageID != lineageID {
+		return fmt.Errorf("%w: payload assignment lineage does not match claim", ErrArtifactPromotionConflict)
+	}
+	if payload.CandidateID != "" && payload.CandidateID != candidateID {
+		return fmt.Errorf("%w: payload candidate does not match claim", ErrArtifactPromotionConflict)
+	}
+	if payload.ApprovalActorUserID == "" {
+		payload.ApprovalActorUserID = payload.ActorUserID
+	}
+	if err := validateC3b2PromotionClaimPayload(payload, workspaceID, promotionID, candidateID, lineageID); err != nil {
+		return err
+	}
+	if payload.ApprovalActorUserID != "" {
+		if _, err := artifactOptionalUUID(payload.ApprovalActorUserID, "approval actor user id"); err != nil {
+			return err
+		}
+	}
 	payloadDigest := payload.Digest()
+	bindingCount := 0
+	if payload.SourceTaskID != "" {
+		bindingCount++
+	}
+	if payload.WriterLeaseTargetDigest != "" {
+		bindingCount++
+	}
+	if payload.CompletionReceiptDigest != "" {
+		bindingCount++
+	}
+	if bindingCount != 0 && bindingCount != 3 {
+		return fmt.Errorf("%w: promotion evidence binding must be all-or-none", ErrArtifactPromotionConflict)
+	}
+	sourceTaskID, err := artifactOptionalUUID(payload.SourceTaskID, "source task id")
+	if err != nil {
+		return err
+	}
 	if err := r.queries.LockArtifactLineage(ctx, artifactLineageLockKey(workspaceID, lineageID)); err != nil {
 		return fmt.Errorf("lock artifact lineage for promotion claim: %w", err)
 	}
+	// The claim transaction is the authorization acceptance point. Lock the
+	// current Owner membership and latest assignment receipt here, then commit
+	// before any Authority HTTP call so no database lock spans external I/O.
+	if payload.IssueID != "" && payload.AssignmentCommandID != "" {
+		issueUUID, issueErr := artifactPersistenceUUID(payload.IssueID, "issue id")
+		if issueErr != nil {
+			return issueErr
+		}
+		actorUUID, actorErr := artifactPersistenceUUID(payload.ApprovalActorUserID, "approval actor user id")
+		if actorErr != nil {
+			return actorErr
+		}
+		member, memberErr := r.queries.LockOwnerMemberForArtifactPromotion(ctx, db.LockOwnerMemberForArtifactPromotionParams{
+			WorkspaceID: workspaceUUID,
+			UserID:      actorUUID,
+		})
+		if memberErr != nil || member.Role != "owner" {
+			return fmt.Errorf("%w: Owner role changed or disappeared during promotion claim", ErrArtifactPromotionConflict)
+		}
+		assignmentCommandUUID, commandErr := artifactPersistenceUUID(payload.AssignmentCommandID, "assignment command id")
+		if commandErr != nil {
+			return commandErr
+		}
+		receipt, receiptErr := r.queries.LockLatestAssignmentDispatchReceiptForArtifactPromotion(ctx, db.LockLatestAssignmentDispatchReceiptForArtifactPromotionParams{
+			WorkspaceID: workspaceUUID,
+			IssueID:     issueUUID,
+		})
+		if receiptErr != nil {
+			return fmt.Errorf("%w: latest assignment receipt unavailable during promotion claim: %v", ErrArtifactPromotionConflict, receiptErr)
+		}
+		if receipt.CommandID != assignmentCommandUUID ||
+			(payload.AssignmentInitialTaskID != "" && util.UUIDToString(receipt.InitialTaskID) != payload.AssignmentInitialTaskID) ||
+			(payload.LocalAgentID != "" && util.UUIDToString(receipt.LocalAgentID) != payload.LocalAgentID) ||
+			receipt.WorkOrderRef != payload.WorkOrderRef || receipt.WorkOrderRevision != payload.WorkOrderRevision || receipt.WorkOrderDigest != payload.WorkOrderContentDigest ||
+			receipt.EmployeeRef != payload.EmployeeRef || receipt.EmployeeRevision != payload.EmployeeRevision || receipt.EmployeeDigest != payload.EmployeeContentDigest ||
+			receipt.BindingRef != payload.BindingRef || receipt.BindingRevision != payload.BindingRevision || receipt.BindingDigest != payload.BindingContentDigest ||
+			receipt.AgentRef != payload.AgentRef || receipt.AgentRevision != payload.AgentRevision || receipt.AgentDigest != payload.AgentContentDigest {
+			return fmt.Errorf("%w: latest assignment receipt drifted before promotion claim", ErrArtifactPromotionConflict)
+		}
+	}
+	if payload.ApprovalEventID != "" && payload.ApprovalEventSequence > 0 {
+		approvalID, approvalErr := artifactPersistenceUUID(payload.ApprovalEventID, "approval event id")
+		if approvalErr != nil {
+			return approvalErr
+		}
+		approvalRow, approvalErr := r.queries.LockArtifactEventForPromotion(ctx, db.LockArtifactEventForPromotionParams{WorkspaceID: workspaceUUID, ID: approvalID})
+		if approvalErr != nil {
+			return fmt.Errorf("%w: approval event disappeared during promotion claim: %v", ErrArtifactPromotionConflict, approvalErr)
+		}
+		approval := artifactEventFromDB(approvalRow)
+		if util.UUIDToString(approvalRow.LineageID) != lineageID ||
+			approval.Sequence != payload.ApprovalEventSequence || string(approval.Type) != payload.ApprovalEventType || approval.Type != ArtifactEventApproved ||
+			approval.CandidateID != candidateID || approval.CandidateRevision != payload.CandidateRevision || approval.CandidateDigest != payload.CandidateDigest || approval.CandidateObjectRef != payload.CandidateObjectRef ||
+			approval.ActorUserID != payload.ApprovalActorUserID || payload.ApprovalEventDigest == "" || ArtifactEventDigest(approval) != payload.ApprovalEventDigest {
+			return fmt.Errorf("%w: approval event drifted before promotion claim", ErrArtifactPromotionConflict)
+		}
+	}
 	if _, err := r.queries.ClaimArtifactPromotion(ctx, db.ClaimArtifactPromotionParams{
-		WorkspaceID:   workspaceUUID,
-		PromotionID:   promotionID,
-		CandidateID:   candidateUUID,
-		LineageID:     lineageUUID,
-		PayloadDigest: pgtype.Text{String: payloadDigest, Valid: true},
+		WorkspaceID:             workspaceUUID,
+		PromotionID:             promotionID,
+		CandidateID:             candidateUUID,
+		LineageID:               lineageUUID,
+		PayloadDigest:           pgtype.Text{String: payloadDigest, Valid: true},
+		SourceTaskID:            sourceTaskID,
+		WriterLeaseTargetDigest: pgtype.Text{String: payload.WriterLeaseTargetDigest, Valid: payload.WriterLeaseTargetDigest != ""},
+		CompletionReceiptDigest: pgtype.Text{String: payload.CompletionReceiptDigest, Valid: payload.CompletionReceiptDigest != ""},
 	}); err == nil {
 		return nil
 	} else if !errors.Is(err, pgx.ErrNoRows) {
@@ -440,7 +666,8 @@ func (r *ArtifactPersistenceRepository) ClaimPromotion(
 		if util.UUIDToString(existing.CandidateID) == candidateID &&
 			util.UUIDToString(existing.LineageID) == lineageID &&
 			existing.PayloadDigest.Valid &&
-			existing.PayloadDigest.String == payloadDigest {
+			existing.PayloadDigest.String == payloadDigest &&
+			artifactPromotionClaimBindingMatches(existing, payload) {
 			return nil
 		}
 		return ErrArtifactPromotionConflict
@@ -449,6 +676,40 @@ func (r *ArtifactPersistenceRepository) ClaimPromotion(
 		return fmt.Errorf("read existing promotion claim: %w", getErr)
 	}
 	return ErrArtifactPromotionConflict
+}
+
+func nullableArtifactUUID(value string) pgtype.UUID {
+	if value == "" {
+		return pgtype.UUID{}
+	}
+	parsed, err := util.ParseUUID(value)
+	if err != nil || !parsed.Valid {
+		return pgtype.UUID{}
+	}
+	return parsed
+}
+
+func artifactOptionalUUID(value, label string) (pgtype.UUID, error) {
+	if value == "" {
+		return pgtype.UUID{}, nil
+	}
+	parsed, err := util.ParseUUID(value)
+	if err != nil || !parsed.Valid || util.UUIDToString(parsed) != value {
+		return pgtype.UUID{}, fmt.Errorf("%w: %s must be a canonical UUID", ErrArtifactPromotionConflict, label)
+	}
+	return parsed, nil
+}
+
+func artifactPromotionClaimBindingMatches(existing db.ArtifactPromotionClaim, payload PromotionClaimPayload) bool {
+	if nullable := nullableArtifactUUID(payload.SourceTaskID); nullable.Valid != existing.SourceTaskID.Valid {
+		return false
+	} else if nullable.Valid && nullable != existing.SourceTaskID {
+		return false
+	}
+	return existing.WriterLeaseTargetDigest.String == payload.WriterLeaseTargetDigest &&
+		existing.WriterLeaseTargetDigest.Valid == (payload.WriterLeaseTargetDigest != "") &&
+		existing.CompletionReceiptDigest.String == payload.CompletionReceiptDigest &&
+		existing.CompletionReceiptDigest.Valid == (payload.CompletionReceiptDigest != "")
 }
 
 // VerifyPromotion requires a previously established, fully verifiable claim.
@@ -492,7 +753,8 @@ func (r *ArtifactPersistenceRepository) VerifyPromotion(
 	if util.UUIDToString(existing.CandidateID) != candidateID ||
 		util.UUIDToString(existing.LineageID) != lineageID ||
 		!existing.PayloadDigest.Valid ||
-		existing.PayloadDigest.String != payload.Digest() {
+		existing.PayloadDigest.String != payload.Digest() ||
+		!artifactPromotionClaimBindingMatches(existing, payload) {
 		return ErrArtifactPromotionConflict
 	}
 	return nil
@@ -828,6 +1090,7 @@ func artifactEventInsertParams(
 		CandidateObjectRef: input.CandidateObjectRef,
 		FormalArtifactRef:  artifactPersistenceText(input.FormalArtifactRef),
 		IdempotencyKey:     input.IdempotencyKey,
+		ActorUserID:        nullableArtifactUUID(input.ActorUserID),
 	}
 }
 
@@ -927,6 +1190,7 @@ func artifactEventFromDB(row db.ArtifactEvent) ArtifactEvent {
 		CandidateObjectRef: row.CandidateObjectRef,
 		FormalArtifactRef:  artifactPersistenceTextValue(row.FormalArtifactRef),
 		IdempotencyKey:     row.IdempotencyKey,
+		ActorUserID:        util.UUIDToString(row.ActorUserID),
 	}
 }
 
@@ -939,6 +1203,7 @@ func artifactEventInputFromEvent(event ArtifactEvent) ArtifactEventInput {
 		CandidateObjectRef: event.CandidateObjectRef,
 		FormalArtifactRef:  event.FormalArtifactRef,
 		IdempotencyKey:     event.IdempotencyKey,
+		ActorUserID:        event.ActorUserID,
 	}
 }
 

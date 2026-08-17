@@ -1,7 +1,9 @@
 package service
 
 import (
+	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -39,6 +41,31 @@ func TestValidateWriterLeaseProofRowsAcceptsExactCurrentProof(t *testing.T) {
 	targets, runtime, task, rows, proof := terminalProofFixture(t, 2)
 	if err := validateWriterLeaseProofRows(targets, runtime, task, proof, rows); err != nil {
 		t.Fatalf("valid proof rejected: %v", err)
+	}
+}
+
+func TestWriterLeaseCompletionEvidenceIsCanonicalAndHashOnly(t *testing.T) {
+	targets, _, task, _, proof := terminalProofFixture(t, 2)
+	evidence := finishWriterLeaseCompletionEvidence(task, writerLeaseCompletionEvidence{targetDigest: strings.Repeat("a", 64)}, writerLeaseProofSnapshot(targets, proof))
+	if strings.Contains(string(evidence.proofSnapshot), proof[0].LeaseToken.String()) || strings.Contains(string(evidence.proofSnapshot), proof[1].LeaseToken.String()) {
+		t.Fatal("completion receipt snapshot leaked plaintext lease token")
+	}
+	var snapshot []writerLeaseProofSnapshotItem
+	if err := json.Unmarshal(evidence.proofSnapshot, &snapshot); err != nil {
+		t.Fatalf("decode proof snapshot: %v", err)
+	}
+	if len(snapshot) != 2 || snapshot[0].ResourceID > snapshot[1].ResourceID {
+		t.Fatalf("proof snapshot is not resource-id canonical: %+v", snapshot)
+	}
+	if !strings.HasPrefix(snapshot[0].LeaseTokenSHA256, "sha256:") || len(snapshot[0].LeaseTokenSHA256) != len("sha256:")+64 {
+		t.Fatalf("token digest = %q", snapshot[0].LeaseTokenSHA256)
+	}
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(`{"task_id":"`+task.ID.String()+`","target_digest":"`+strings.Repeat("a", 64)+`","proof_digest":"`+evidence.proofDigest+`","proof_snapshot":`+string(evidence.proofSnapshot)+`}`), &envelope); err != nil {
+		t.Fatalf("decode receipt envelope: %v", err)
+	}
+	if string(envelope["proof_snapshot"]) == "null" {
+		t.Fatal("proof snapshot was encoded as JSON null")
 	}
 }
 

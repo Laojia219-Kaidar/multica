@@ -199,6 +199,7 @@ type ArtifactEvent struct {
 	FormalArtifactRef  pgtype.Text        `json:"formal_artifact_ref"`
 	IdempotencyKey     string             `json:"idempotency_key"`
 	CreatedAt          pgtype.Timestamptz `json:"created_at"`
+	ActorUserID        pgtype.UUID        `json:"actor_user_id"`
 }
 
 type ArtifactMaterializationIntent struct {
@@ -221,12 +222,39 @@ type ArtifactMaterializationIntent struct {
 }
 
 type ArtifactPromotionClaim struct {
-	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
-	PromotionID   string             `json:"promotion_id"`
-	CandidateID   pgtype.UUID        `json:"candidate_id"`
-	LineageID     pgtype.UUID        `json:"lineage_id"`
-	CreatedAt     pgtype.Timestamptz `json:"created_at"`
-	PayloadDigest pgtype.Text        `json:"payload_digest"`
+	WorkspaceID             pgtype.UUID        `json:"workspace_id"`
+	PromotionID             string             `json:"promotion_id"`
+	CandidateID             pgtype.UUID        `json:"candidate_id"`
+	LineageID               pgtype.UUID        `json:"lineage_id"`
+	CreatedAt               pgtype.Timestamptz `json:"created_at"`
+	PayloadDigest           pgtype.Text        `json:"payload_digest"`
+	SourceTaskID            pgtype.UUID        `json:"source_task_id"`
+	WriterLeaseTargetDigest pgtype.Text        `json:"writer_lease_target_digest"`
+	CompletionReceiptDigest pgtype.Text        `json:"completion_receipt_digest"`
+}
+
+type ArtifactPromotionDelivery struct {
+	ID                      pgtype.UUID        `json:"id"`
+	WorkspaceID             pgtype.UUID        `json:"workspace_id"`
+	PromotionID             string             `json:"promotion_id"`
+	CandidateID             pgtype.UUID        `json:"candidate_id"`
+	LineageID               pgtype.UUID        `json:"lineage_id"`
+	SourceTaskID            pgtype.UUID        `json:"source_task_id"`
+	WriterLeaseTargetDigest pgtype.Text        `json:"writer_lease_target_digest"`
+	CompletionReceiptDigest pgtype.Text        `json:"completion_receipt_digest"`
+	PayloadDigest           string             `json:"payload_digest"`
+	State                   string             `json:"state"`
+	RequestPayload          []byte             `json:"request_payload"`
+	ResponseReceipt         []byte             `json:"response_receipt"`
+	ReadbackReceipt         []byte             `json:"readback_receipt"`
+	Attempt                 int32              `json:"attempt"`
+	DispatchToken           pgtype.UUID        `json:"dispatch_token"`
+	LeaseUntil              pgtype.Timestamptz `json:"lease_until"`
+	LastError               pgtype.Text        `json:"last_error"`
+	ClaimedAt               pgtype.Timestamptz `json:"claimed_at"`
+	CompletedAt             pgtype.Timestamptz `json:"completed_at"`
+	CreatedAt               pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt               pgtype.Timestamptz `json:"updated_at"`
 }
 
 type ArtifactReplicaLocation struct {
@@ -1658,4 +1686,15 @@ type WriteLease struct {
 	LastCancelledAt  pgtype.Timestamptz `json:"last_cancelled_at"`
 	CreatedAt        pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
+}
+
+type WriterLeaseCompletionReceipt struct {
+	ID            pgtype.UUID        `json:"id"`
+	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
+	TaskID        pgtype.UUID        `json:"task_id"`
+	TargetDigest  string             `json:"target_digest"`
+	ProofSnapshot []byte             `json:"proof_snapshot"`
+	ProofDigest   string             `json:"proof_digest"`
+	ReceiptDigest string             `json:"receipt_digest"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
 }

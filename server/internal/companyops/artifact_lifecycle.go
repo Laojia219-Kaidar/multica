@@ -1,10 +1,37 @@
 package companyops
 
 import (
+	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
 )
+
+// ArtifactEventDigest is the canonical digest of the immutable event fields
+// that make an Owner approval binding auditable. It intentionally excludes
+// storage timestamps and the database UUID so an event can be verified from a
+// readback without copying mutable metadata.
+func ArtifactEventDigest(event ArtifactEvent) string {
+	canonical := map[string]any{
+		"id":                   event.ID,
+		"sequence":             event.Sequence,
+		"type":                 string(event.Type),
+		"candidate_id":         event.CandidateID,
+		"candidate_revision":   event.CandidateRevision,
+		"candidate_digest":     event.CandidateDigest,
+		"candidate_object_ref": event.CandidateObjectRef,
+		"formal_artifact_ref":  event.FormalArtifactRef,
+		"idempotency_key":      event.IdempotencyKey,
+		"actor_user_id":        event.ActorUserID,
+	}
+	encoded, err := json.Marshal(canonical)
+	if err != nil {
+		panic(fmt.Sprintf("artifact event digest: %v", err))
+	}
+	sum := sha256.Sum256(encoded)
+	return fmt.Sprintf("sha256:%x", sum)
+}
 
 var (
 	ErrInvalidArtifactCandidate    = errors.New("invalid artifact candidate")
@@ -122,6 +149,8 @@ const (
 	ArtifactEventSubmitted                  ArtifactEventType = "submitted"
 	ArtifactEventChangesRequested           ArtifactEventType = "changes_requested"
 	ArtifactEventApproved                   ArtifactEventType = "approved"
+	ArtifactEventRejected                   ArtifactEventType = "rejected"
+	ArtifactEventApprovalRevoked            ArtifactEventType = "approval_revoked"
 	ArtifactEventPromotionRequested         ArtifactEventType = "promotion_requested"
 	ArtifactEventPromotionSucceeded         ArtifactEventType = "promotion_succeeded"
 	ArtifactEventPromotionFailed            ArtifactEventType = "promotion_failed"
@@ -136,6 +165,7 @@ type ArtifactEventInput struct {
 	CandidateObjectRef string
 	FormalArtifactRef  string
 	IdempotencyKey     string
+	ActorUserID        string
 }
 
 type ArtifactEvent struct {
@@ -148,6 +178,7 @@ type ArtifactEvent struct {
 	CandidateObjectRef string
 	FormalArtifactRef  string
 	IdempotencyKey     string
+	ActorUserID        string
 }
 
 type ArtifactLifecycleProjection struct {
@@ -251,6 +282,7 @@ func (l *ArtifactLifecycle) Append(input ArtifactEventInput) (ArtifactEvent, err
 		CandidateObjectRef: input.CandidateObjectRef,
 		FormalArtifactRef:  input.FormalArtifactRef,
 		IdempotencyKey:     input.IdempotencyKey,
+		ActorUserID:        input.ActorUserID,
 	}
 	l.events = append(l.events, event)
 	l.idempotentEvents[input.IdempotencyKey] = event
@@ -272,9 +304,17 @@ func (l *ArtifactLifecycle) validateTransitionLocked(candidate ArtifactCandidate
 	allowed := false
 	switch last.Type {
 	case ArtifactEventSubmitted:
-		allowed = input.Type == ArtifactEventChangesRequested || input.Type == ArtifactEventApproved
+		allowed = input.Type == ArtifactEventChangesRequested || input.Type == ArtifactEventApproved || input.Type == ArtifactEventRejected
 	case ArtifactEventApproved:
-		allowed = input.Type == ArtifactEventPromotionRequested
+		allowed = input.Type == ArtifactEventPromotionRequested ||
+			input.Type == ArtifactEventChangesRequested ||
+			input.Type == ArtifactEventRejected ||
+			input.Type == ArtifactEventApprovalRevoked ||
+			input.Type == ArtifactEventApproved
+	case ArtifactEventChangesRequested:
+		allowed = input.Type == ArtifactEventRejected || input.Type == ArtifactEventChangesRequested
+	case ArtifactEventRejected, ArtifactEventApprovalRevoked:
+		allowed = false
 	case ArtifactEventPromotionRequested:
 		allowed = input.Type == ArtifactEventPromotionSucceeded || input.Type == ArtifactEventPromotionFailed
 	case ArtifactEventPromotionFailed:
@@ -348,5 +388,6 @@ func artifactEventMatchesInput(event ArtifactEvent, input ArtifactEventInput) bo
 		event.CandidateRevision == input.CandidateRevision &&
 		event.CandidateDigest == input.CandidateDigest &&
 		event.CandidateObjectRef == input.CandidateObjectRef &&
-		event.FormalArtifactRef == input.FormalArtifactRef
+		event.FormalArtifactRef == input.FormalArtifactRef &&
+		event.ActorUserID == input.ActorUserID
 }

@@ -756,6 +756,8 @@ func writeCompanyOpsServiceError(w http.ResponseWriter, err error) {
 		writeCompanyOpsError(w, http.StatusConflict, "conflict", err.Error())
 	case errors.Is(err, service.ErrCompanyOpsIssueNotAssignable):
 		writeCompanyOpsError(w, http.StatusConflict, "not_assignable", err.Error())
+	case errors.Is(err, companyops.ErrArtifactPromotionInProgress):
+		writeCompanyOpsError(w, http.StatusConflict, "artifact_promotion_in_progress", err.Error())
 	case errors.Is(err, service.ErrCompanyOpsArtifactConflict),
 		errors.Is(err, companyops.ErrInvalidArtifactTransition),
 		errors.Is(err, companyops.ErrInvalidArtifactCandidate),

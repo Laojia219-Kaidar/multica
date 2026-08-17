@@ -11,6 +11,11 @@ WHERE id = $1;
 SELECT * FROM member
 WHERE user_id = $1 AND workspace_id = $2;
 
+-- name: LockOwnerMemberForArtifactPromotion :one
+SELECT * FROM member
+WHERE user_id = @user_id AND workspace_id = @workspace_id
+FOR SHARE;
+
 -- name: CreateMember :one
 INSERT INTO member (workspace_id, user_id, role)
 VALUES ($1, $2, $3)

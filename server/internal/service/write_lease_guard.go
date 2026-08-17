@@ -49,9 +49,10 @@ type WriterLeaseStore interface {
 // runtime, and project resource relationship; neither value crosses this
 // boundary.
 type WriterLeaseTerminalProof struct {
-	ResourceID      uuid.UUID `json:"resource_id"`
-	LeaseToken      uuid.UUID `json:"lease_token"`
-	FenceGeneration int64     `json:"fence_generation"`
+	ResourceID       uuid.UUID `json:"resource_id"`
+	LeaseToken       uuid.UUID `json:"-"` // in-process legacy compatibility only
+	LeaseTokenSHA256 string    `json:"lease_token_sha256,omitempty"`
+	FenceGeneration  int64     `json:"fence_generation"`
 }
 
 // WriterLeaseGuard owns policy around one execution lease. It deliberately

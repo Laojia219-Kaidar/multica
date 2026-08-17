@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -46,19 +48,48 @@ func validateWriterLeaseTaskKind(kind string) error {
 // validateWriterLeaseTerminalProof is the server-side half of the daemon
 // terminal fence. It must run after the task row is locked and before any
 // terminal mutation in the same transaction.
-func (s *TaskService) validateWriterLeaseTerminalProof(ctx context.Context, qtx *db.Queries, task db.AgentTaskQueue, proof []WriterLeaseTerminalProof) error {
+type writerLeaseCompletionEvidence struct {
+	workspaceID   pgtype.UUID
+	targetDigest  string
+	proofSnapshot []byte
+	proofDigest   string
+	receiptDigest string
+}
+
+type writerLeaseProofSnapshotItem struct {
+	ResourceID       string `json:"resource_id"`
+	MutexKey         string `json:"mutex_key"`
+	FenceGeneration  int64  `json:"fence_generation"`
+	LeaseTokenSHA256 string `json:"lease_token_sha256"`
+}
+
+// validateWriterLeaseTerminalProof returns the canonical evidence that is
+// committed beside the task terminal mutation. The token is hashed in memory;
+// it is never serialized into the receipt.
+func (s *TaskService) validateWriterLeaseTerminalProof(ctx context.Context, qtx *db.Queries, task db.AgentTaskQueue, proof []WriterLeaseTerminalProof) (writerLeaseCompletionEvidence, error) {
+	var evidence writerLeaseCompletionEvidence
 	if err := validateWriterLeaseTaskKind(task.TaskKind); err != nil {
-		return err
+		return evidence, err
 	}
 	targets, runtime, err := s.authoritativeWriterLeaseTargets(ctx, qtx, task)
 	if err != nil {
-		return err
+		return evidence, err
+	}
+	evidence.workspaceID = runtime.WorkspaceID
+	if persisted, legacy, decodeErr := DecodePersistedWriterLeaseClaim(task, runtime.WorkspaceID.String()); decodeErr != nil {
+		return evidence, decodeErr
+	} else if !legacy {
+		evidence.targetDigest = persisted.Digest
+	} else if _, digest, digestErr := CanonicalWriterLeaseClaim(WriterLeaseModeEnforce, runtime.WorkspaceID.String(), targets); digestErr != nil {
+		return evidence, digestErr
+	} else {
+		evidence.targetDigest = digest
 	}
 	if len(targets) == 0 {
 		if len(proof) != 0 {
-			return fmt.Errorf("%w: proof supplied for task without github targets", ErrWriterLeaseFenceRejected)
+			return evidence, fmt.Errorf("%w: proof supplied for task without github targets", ErrWriterLeaseFenceRejected)
 		}
-		return nil
+		return finishWriterLeaseCompletionEvidence(task, evidence, nil), nil
 	}
 	keys := make([]string, 0, len(targets))
 	for _, target := range targets {
@@ -68,12 +99,64 @@ func (s *TaskService) validateWriterLeaseTerminalProof(ctx context.Context, qtx 
 
 	rows, err := qtx.LockWriterLeasesForCompletion(ctx, keys)
 	if err != nil {
-		return fmt.Errorf("lock writer leases for completion: %w", err)
+		return evidence, fmt.Errorf("lock writer leases for completion: %w", err)
 	}
 	if len(rows) != len(targets) {
-		return fmt.Errorf("%w: authoritative lease row is missing", ErrWriterLeaseFenceRejected)
+		return evidence, fmt.Errorf("%w: authoritative lease row is missing", ErrWriterLeaseFenceRejected)
 	}
-	return validateWriterLeaseProofRows(targets, runtime, task, proof, rows)
+	if err := validateWriterLeaseProofRows(targets, runtime, task, proof, rows); err != nil {
+		return evidence, err
+	}
+	return finishWriterLeaseCompletionEvidence(task, evidence, writerLeaseProofSnapshot(targets, proof)), nil
+}
+
+func writerLeaseProofSnapshot(targets []WriterLeaseTarget, proof []WriterLeaseTerminalProof) []writerLeaseProofSnapshotItem {
+	targetByResource := make(map[string]WriterLeaseTarget, len(targets))
+	for _, target := range targets {
+		targetByResource[target.ResourceID] = target
+	}
+	items := make([]writerLeaseProofSnapshotItem, 0, len(proof))
+	for _, item := range proof {
+		digest := item.LeaseTokenSHA256
+		if digest == "" {
+			hash := sha256.Sum256(item.LeaseToken[:])
+			digest = "sha256:" + hex.EncodeToString(hash[:])
+		}
+		target := targetByResource[item.ResourceID.String()]
+		items = append(items, writerLeaseProofSnapshotItem{
+			ResourceID:       item.ResourceID.String(),
+			MutexKey:         target.MutexKey,
+			FenceGeneration:  item.FenceGeneration,
+			LeaseTokenSHA256: digest,
+		})
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].ResourceID < items[j].ResourceID })
+	return items
+}
+
+func finishWriterLeaseCompletionEvidence(task db.AgentTaskQueue, evidence writerLeaseCompletionEvidence, items []writerLeaseProofSnapshotItem) writerLeaseCompletionEvidence {
+	if items == nil {
+		items = []writerLeaseProofSnapshotItem{}
+	}
+	snapshot, err := json.Marshal(items)
+	if err != nil {
+		panic(fmt.Sprintf("marshal writer lease proof snapshot: %v", err))
+	}
+	evidence.proofSnapshot = snapshot
+	proofSum := sha256.Sum256(snapshot)
+	evidence.proofDigest = "sha256:" + hex.EncodeToString(proofSum[:])
+	receiptEnvelope, err := json.Marshal(struct {
+		TaskID       string          `json:"task_id"`
+		TargetDigest string          `json:"target_digest"`
+		ProofDigest  string          `json:"proof_digest"`
+		Snapshot     json.RawMessage `json:"proof_snapshot"`
+	}{task.ID.String(), evidence.targetDigest, evidence.proofDigest, json.RawMessage(snapshot)})
+	if err != nil {
+		panic(fmt.Sprintf("marshal writer lease completion receipt: %v", err))
+	}
+	receiptSum := sha256.Sum256(receiptEnvelope)
+	evidence.receiptDigest = "sha256:" + hex.EncodeToString(receiptSum[:])
+	return evidence
 }
 
 func validateWriterLeaseProofRows(targets []WriterLeaseTarget, runtime db.AgentRuntime, task db.AgentTaskQueue, proof []WriterLeaseTerminalProof, rows []db.LockWriterLeasesForCompletionRow) error {
@@ -90,7 +173,7 @@ func validateWriterLeaseProofRows(targets []WriterLeaseTarget, runtime db.AgentR
 	proofByResource := make(map[string]WriterLeaseTerminalProof, len(proof))
 	for _, item := range proof {
 		resourceID := item.ResourceID.String()
-		if item.ResourceID == uuid.Nil || item.LeaseToken == uuid.Nil || item.FenceGeneration <= 0 {
+		if item.ResourceID == uuid.Nil || (item.LeaseToken == uuid.Nil && strings.TrimSpace(item.LeaseTokenSHA256) == "") || item.FenceGeneration <= 0 {
 			return fmt.Errorf("%w: malformed terminal proof", ErrWriterLeaseFenceRejected)
 		}
 		if _, duplicate := proofByResource[resourceID]; duplicate {
@@ -115,7 +198,17 @@ func validateWriterLeaseProofRows(targets []WriterLeaseTarget, runtime db.AgentR
 	for resourceID, target := range targetByResource {
 		item := proofByResource[resourceID]
 		row, ok := rowsByKey[target.MutexKey]
-		if !ok || !row.HolderID.Valid || row.HolderID.String != holder || row.Status != string(WriteLeaseHeld) || !row.LeaseToken.Valid || row.LeaseToken.Bytes != item.LeaseToken || row.FenceGeneration != item.FenceGeneration || !row.NotExpired {
+		rowDigest := ""
+		if row.LeaseToken.Valid {
+			hash := sha256.Sum256(row.LeaseToken.Bytes[:])
+			rowDigest = "sha256:" + hex.EncodeToString(hash[:])
+		}
+		itemDigest := item.LeaseTokenSHA256
+		if itemDigest == "" {
+			hash := sha256.Sum256(item.LeaseToken[:])
+			itemDigest = "sha256:" + hex.EncodeToString(hash[:])
+		}
+		if !ok || !row.HolderID.Valid || row.HolderID.String != holder || row.Status != string(WriteLeaseHeld) || !row.LeaseToken.Valid || rowDigest != itemDigest || row.FenceGeneration != item.FenceGeneration || !row.NotExpired {
 			return fmt.Errorf("%w: resource %s lease token or generation is stale", ErrWriterLeaseFenceRejected, resourceID)
 		}
 	}

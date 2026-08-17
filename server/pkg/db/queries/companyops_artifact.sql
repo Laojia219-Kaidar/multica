@@ -38,11 +38,12 @@ WHERE workspace_id = @workspace_id AND lineage_id = @lineage_id;
 INSERT INTO artifact_event (
     id, workspace_id, lineage_id, sequence, event_type,
     candidate_id, candidate_revision, candidate_digest,
-    candidate_object_ref, formal_artifact_ref, idempotency_key
+    candidate_object_ref, formal_artifact_ref, idempotency_key, actor_user_id
 ) VALUES (
     @id, @workspace_id, @lineage_id, @sequence, @event_type,
     @candidate_id, @candidate_revision, @candidate_digest,
-    @candidate_object_ref, sqlc.narg('formal_artifact_ref'), @idempotency_key
+    @candidate_object_ref, sqlc.narg('formal_artifact_ref'), @idempotency_key,
+    sqlc.narg('actor_user_id')
 )
 ON CONFLICT DO NOTHING
 RETURNING *;
@@ -54,6 +55,11 @@ WHERE workspace_id = @workspace_id AND idempotency_key = @idempotency_key;
 -- name: GetArtifactEvent :one
 SELECT * FROM artifact_event
 WHERE workspace_id = @workspace_id AND id = @id;
+
+-- name: LockArtifactEventForPromotion :one
+SELECT * FROM artifact_event
+WHERE workspace_id = @workspace_id AND id = @id
+FOR SHARE;
 
 -- name: ListArtifactEventsByLineage :many
 SELECT * FROM artifact_event
@@ -125,9 +131,12 @@ SELECT EXISTS (
 
 -- name: ClaimArtifactPromotion :one
 INSERT INTO artifact_promotion_claim (
-    workspace_id, promotion_id, candidate_id, lineage_id, payload_digest
+    workspace_id, promotion_id, candidate_id, lineage_id, payload_digest,
+    source_task_id, writer_lease_target_digest, completion_receipt_digest
 ) VALUES (
-    @workspace_id, @promotion_id, @candidate_id, @lineage_id, @payload_digest
+    @workspace_id, @promotion_id, @candidate_id, @lineage_id, @payload_digest,
+    sqlc.narg('source_task_id'), sqlc.narg('writer_lease_target_digest'),
+    sqlc.narg('completion_receipt_digest')
 )
 ON CONFLICT DO NOTHING
 RETURNING *;
@@ -135,6 +144,88 @@ RETURNING *;
 -- name: GetArtifactPromotionClaim :one
 SELECT * FROM artifact_promotion_claim
 WHERE workspace_id = @workspace_id AND promotion_id = @promotion_id;
+
+-- name: InsertArtifactPromotionDelivery :one
+INSERT INTO artifact_promotion_delivery (
+    workspace_id, promotion_id, candidate_id, lineage_id,
+    source_task_id, writer_lease_target_digest, completion_receipt_digest,
+    payload_digest, request_payload
+) VALUES (
+    @workspace_id, @promotion_id, @candidate_id, @lineage_id,
+    sqlc.narg('source_task_id'), sqlc.narg('writer_lease_target_digest'),
+    sqlc.narg('completion_receipt_digest'), @payload_digest, @request_payload
+)
+ON CONFLICT (workspace_id, promotion_id) DO NOTHING
+RETURNING *;
+
+-- name: GetArtifactPromotionDelivery :one
+SELECT * FROM artifact_promotion_delivery
+WHERE workspace_id = @workspace_id AND promotion_id = @promotion_id;
+
+-- name: ClaimArtifactPromotionDelivery :one
+UPDATE artifact_promotion_delivery
+SET state = 'dispatching', attempt = attempt + 1,
+    dispatch_token = gen_random_uuid(), lease_until = now() + interval '5 minutes',
+    claimed_at = now(), updated_at = now(), last_error = NULL
+WHERE workspace_id = @workspace_id
+  AND promotion_id = @promotion_id
+  AND payload_digest = @payload_digest
+  AND state IN ('pending', 'failed')
+RETURNING *;
+
+-- name: MarkArtifactPromotionDeliverySucceeded :one
+UPDATE artifact_promotion_delivery
+SET state = 'succeeded', response_receipt = @response_receipt,
+    dispatch_token = NULL, lease_until = NULL,
+    completed_at = now(), updated_at = now(), last_error = NULL
+WHERE workspace_id = @workspace_id
+  AND promotion_id = @promotion_id
+  AND payload_digest = @payload_digest
+  AND dispatch_token = @dispatch_token
+  AND state = 'dispatching'
+RETURNING *;
+
+-- name: MarkArtifactPromotionDeliveryReadbackConfirmed :one
+UPDATE artifact_promotion_delivery
+SET state = 'readback_confirmed', readback_receipt = @readback_receipt,
+    completed_at = now(), updated_at = now(), last_error = NULL
+WHERE workspace_id = @workspace_id
+  AND promotion_id = @promotion_id
+  AND payload_digest = @payload_digest
+  AND state = 'succeeded'
+RETURNING *;
+
+-- name: RecoverArtifactPromotionDeliveryFromReadback :one
+UPDATE artifact_promotion_delivery
+SET state = 'readback_confirmed', response_receipt = @response_receipt,
+    readback_receipt = @readback_receipt, dispatch_token = NULL,
+    lease_until = NULL, completed_at = now(), updated_at = now(), last_error = NULL
+WHERE workspace_id = @workspace_id
+  AND promotion_id = @promotion_id
+  AND payload_digest = @payload_digest
+  AND dispatch_token = @dispatch_token
+  AND state = 'dispatching'
+RETURNING *;
+
+-- name: MarkArtifactPromotionDeliveryFailed :one
+UPDATE artifact_promotion_delivery
+SET state = 'failed', last_error = @last_error,
+    dispatch_token = NULL, lease_until = NULL, updated_at = now()
+WHERE workspace_id = @workspace_id
+  AND promotion_id = @promotion_id
+  AND payload_digest = @payload_digest
+  AND dispatch_token = @dispatch_token
+  AND state = 'dispatching'
+RETURNING *;
+
+-- name: MarkArtifactPromotionDeliveryDefiniteAbsent :one
+UPDATE artifact_promotion_delivery
+SET state = 'failed', last_error = @last_error, dispatch_token = NULL,
+    lease_until = NULL, updated_at = now()
+WHERE workspace_id = @workspace_id AND promotion_id = @promotion_id
+  AND payload_digest = @payload_digest AND dispatch_token = @dispatch_token
+  AND state = 'dispatching' AND lease_until < now()
+RETURNING *;
 
 -- Storage-location rows are a replica placement ledger, not Artifact lifecycle
 -- events. Every read is explicitly workspace-scoped and can be addressed by

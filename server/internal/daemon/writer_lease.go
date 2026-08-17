@@ -2,6 +2,8 @@ package daemon
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -171,7 +173,8 @@ func (d *Daemon) writerLeaseTerminalProof(ctx context.Context, taskID string) ([
 		if err != nil {
 			return nil, err
 		}
-		proof = append(proof, WriterLeaseTerminalProof{ResourceID: resourceID, LeaseToken: token, FenceGeneration: generation})
+		tokenDigest := sha256.Sum256(token[:])
+		proof = append(proof, WriterLeaseTerminalProof{ResourceID: resourceID, LeaseTokenSHA256: "sha256:" + hex.EncodeToString(tokenDigest[:]), FenceGeneration: generation})
 	}
 	return proof, nil
 }

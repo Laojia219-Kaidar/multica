@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS writer_lease_completion_receipt_task_uidx;

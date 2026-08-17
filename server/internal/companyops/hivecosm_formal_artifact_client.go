@@ -31,6 +31,15 @@ var (
 	)
 )
 
+// FormalArtifactManifestID returns Authority v1's stable manifest identity.
+func FormalArtifactManifestID(promotionID string) (string, error) {
+	parsed, err := uuid.Parse(promotionID)
+	if err != nil || parsed.String() != promotionID {
+		return "", errors.New("promotion_id must be a canonical UUID")
+	}
+	return "FA-HCW-" + strings.ToUpper(promotionID), nil
+}
+
 type HiveCosmFormalArtifactCandidate struct {
 	ID               string
 	Revision         int
@@ -230,7 +239,11 @@ func (c *HiveCosmAuthorityClient) PromoteFormalArtifact(
 	if envelope.SchemaVersion != HiveCosmFormalArtifactPromotionReceiptV1 || envelope.PromotionID != input.PromotionID || envelope.Error != nil {
 		return HiveCosmFormalArtifactPromotionReceipt{}, authorityFailure(HiveCosmAuthorityInvalid, status, errors.New("formal Artifact Promotion receipt identity is invalid"))
 	}
-	artifact, err := validateFormalArtifactAuthority(envelope.Artifact, input.Lookup, input.Candidate, "")
+	expectedManifestID, manifestErr := FormalArtifactManifestID(input.PromotionID)
+	if manifestErr != nil {
+		return HiveCosmFormalArtifactPromotionReceipt{}, authorityFailure(HiveCosmAuthorityInvalid, status, manifestErr)
+	}
+	artifact, err := validateFormalArtifactAuthority(envelope.Artifact, input.Lookup, input.Candidate, expectedManifestID)
 	if err != nil {
 		return HiveCosmFormalArtifactPromotionReceipt{}, authorityFailure(HiveCosmAuthorityInvalid, status, err)
 	}

@@ -79,6 +79,20 @@ fi
 
 cd "$repo_root/server"
 DATABASE_URL="$database_url" go run ./cmd/migrate up
+
+echo "== C3b2 migration rehearsal evidence =="
+DATABASE_URL="$database_url" HIVECREW_ISOLATED_TEST_PORT="$test_port" \
+  go test -race ./internal/migrations -run '^TestC3b2DurableReceiptMigrationsUpDownUp$' -count=1 -v
+
+echo "== C3b2 Owner gate evidence =="
+DATABASE_URL="$database_url" HIVECREW_ISOLATED_TEST_PORT="$test_port" \
+  go test -race ./internal/service -run '^(TestCompanyOpsArtifactOwnerGateRejectsNonOwnersBeforeAuthority|TestCompanyOpsArtifactPromotionRejectsApprovalActorAndCandidateDrift|TestCompanyOpsArtifactPromotionRejectsLegacyApprovalWithoutActor|TestCompanyOpsArtifactPromotionRejectsDuplicateAndSupersedingApprovalStates)$' -count=1 -v
+
+echo "== C3b2 artifact delivery repository/SQL evidence =="
+DATABASE_URL="$database_url" HIVECREW_ISOLATED_TEST_PORT="$test_port" \
+  go test -race ./internal/companyops -run '^TestArtifactPromotionDeliveryPostgres' -count=1 -v
+
+echo "== mediated Linux handler E2E evidence (explicitly required) =="
 DATABASE_URL="$database_url" HIVECREW_ISOLATED_TEST_PORT="$test_port" \
   go test -race ./internal/service -run 'Test(ContinuousDispatchReceiptRepositoryExactReplayAndConflict|ContinuousDispatchReceiptRepositoryConcurrentExactReplayCreatesOneRow|WriteLease_|FinalizeTaskClaimFailureRollsBackTokenThenRequeue)' -count=1 -v
 DATABASE_URL="$database_url" HIVECREW_ISOLATED_TEST_PORT="$test_port" HIVECREW_ISOLATED_TEST_REQUIRED=1 \
