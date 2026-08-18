@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -136,6 +137,12 @@ func seedProductionCompanyOpsFixture(
 	).Scan(&fixture.issueID); err != nil {
 		t.Fatalf("seed CompanyOps issue: %v", err)
 	}
+	if _, err := pool.Exec(ctx,
+		`UPDATE workspace SET issue_counter = GREATEST(issue_counter, 1) WHERE id = $1`,
+		fixture.workspaceID,
+	); err != nil {
+		t.Fatalf("synchronize CompanyOps workspace issue counter: %v", err)
+	}
 	return fixture
 }
 
@@ -188,6 +195,7 @@ func productionCompanyOpsRequest(
 	req.ActorUserID = fixture.userID
 	req.Bindings[0].AgentRef = req.LocalAgentSourceRef
 	req.Agents[0].SourceRef = req.LocalAgentSourceRef
+	req.WorkOrder.DisplayName = "CompanyOps production assignment"
 	return req
 }
 
@@ -376,4 +384,131 @@ func TestProductionCompanyOpsAssignmentBackend_CanonicalTransactionAndReplay(t *
 	if receiptCount != 0 || len(effects) != 2 {
 		t.Fatalf("rollback receipt/effects = %d/%v, want 0/original effects", receiptCount, effects)
 	}
+}
+
+func TestProductionCompanyOpsAssignmentBackend_ProjectBoundIssueTaskAtomic(t *testing.T) {
+	pool := newProductionCompanyOpsPool(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	fixture := seedProductionCompanyOpsFixture(t, ctx, pool)
+	queries := db.New(pool)
+
+	var projectID pgtype.UUID
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO project (workspace_id, title, status, priority) VALUES ($1, $2, 'planned', 'none') RETURNING id`,
+		fixture.workspaceID,
+		"CompanyOps atomic project "+uuid.NewString(),
+	).Scan(&projectID); err != nil {
+		t.Fatalf("seed project: %v", err)
+	}
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cleanupCancel()
+		cleanupProductionCompanyOps(t, cleanupCtx, pool, `DELETE FROM project WHERE id = $1 AND workspace_id = $2`, projectID, fixture.workspaceID)
+	})
+
+	bus := events.New()
+	var issueCreated int
+	bus.Subscribe(protocol.EventIssueCreated, func(event events.Event) {
+		if event.WorkspaceID == util.UUIDToString(fixture.workspaceID) {
+			issueCreated++
+		}
+	})
+	wakeup := &productionCompanyOpsWakeup{effects: new([]string)}
+	taskService := &TaskService{Queries: queries, TxStarter: pool, Bus: bus, Wakeup: wakeup}
+	projectionService := newWorkOrderProjectionService(t, queries, pool, bus)
+	backend, err := NewProductionCompanyOpsAssignmentBackend(queries, pool, taskService, projectionService)
+	if err != nil {
+		t.Fatalf("NewProductionCompanyOpsAssignmentBackend: %v", err)
+	}
+	req := productionCompanyOpsRequest(fixture, pgtype.UUID{}, util.MustParseUUID(uuid.NewString()))
+	req.ProjectID = projectID
+	req.IssueID = pgtype.UUID{}
+
+	receipt, err := NewCompanyOpsAssignmentService(backend).Dispatch(ctx, req)
+	if err != nil {
+		t.Fatalf("project-bound Dispatch: %v", err)
+	}
+	var issueProjectID pgtype.UUID
+	if err := pool.QueryRow(ctx, `SELECT project_id FROM issue WHERE workspace_id = $1 AND id = $2`, fixture.workspaceID, receipt.IssueID).Scan(&issueProjectID); err != nil {
+		t.Fatalf("read project-bound issue: %v", err)
+	}
+	if issueProjectID != projectID {
+		t.Fatalf("issue project_id = %v, want %v", issueProjectID, projectID)
+	}
+	var taskIssueID pgtype.UUID
+	if err := pool.QueryRow(ctx, `SELECT issue_id FROM agent_task_queue WHERE id = $1`, receipt.InitialTaskID).Scan(&taskIssueID); err != nil {
+		t.Fatalf("read project-bound task: %v", err)
+	}
+	if taskIssueID != receipt.IssueID || issueCreated != 1 {
+		t.Fatalf("task/issue-created side effects = %v/%d, want %v/1", taskIssueID, issueCreated, receipt.IssueID)
+	}
+	var taskCount, receiptCount int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1`, receipt.IssueID).Scan(&taskCount); err != nil {
+		t.Fatalf("count project-bound tasks: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM assignment_dispatch_receipt WHERE workspace_id = $1 AND command_id = $2`, fixture.workspaceID, req.CommandID).Scan(&receiptCount); err != nil {
+		t.Fatalf("count project-bound receipts: %v", err)
+	}
+	if taskCount != 1 || receiptCount != 1 {
+		t.Fatalf("project-bound task/receipt count = %d/%d, want 1/1", taskCount, receiptCount)
+	}
+	assertNoPartialWrite := func(label string, failedReq CompanyOpsAssignmentRequest) {
+		t.Helper()
+		var issueCount, linkCount, failedTaskCount, failedReceiptCount int
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM issue WHERE workspace_id = $1 AND title = $2`, failedReq.WorkspaceID, strings.TrimSpace(failedReq.WorkOrder.DisplayName)).Scan(&issueCount); err != nil {
+			t.Fatalf("%s count projected issues: %v", label, err)
+		}
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM external_work_order_link WHERE workspace_id = $1 AND work_order_ref = $2`, failedReq.WorkspaceID, failedReq.WorkOrder.SourceRef).Scan(&linkCount); err != nil {
+			t.Fatalf("%s count WorkOrder links: %v", label, err)
+		}
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM agent_task_queue WHERE trigger_evidence_kind = $1 AND trigger_evidence_ref_id = $2`, assignmentDispatchEvidenceKind, failedReq.CommandID).Scan(&failedTaskCount); err != nil {
+			t.Fatalf("%s count assignment tasks: %v", label, err)
+		}
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM assignment_dispatch_receipt WHERE workspace_id = $1 AND command_id = $2`, failedReq.WorkspaceID, failedReq.CommandID).Scan(&failedReceiptCount); err != nil {
+			t.Fatalf("%s count assignment receipts: %v", label, err)
+		}
+		if issueCount != 0 || linkCount != 0 || failedTaskCount != 0 || failedReceiptCount != 0 {
+			t.Fatalf("%s partial writes = issue:%d link:%d task:%d receipt:%d, want all zero", label, issueCount, linkCount, failedTaskCount, failedReceiptCount)
+		}
+	}
+
+	missing := productionCompanyOpsRequest(fixture, pgtype.UUID{}, util.MustParseUUID(uuid.NewString()))
+	missing.ProjectID = util.MustParseUUID(uuid.NewString())
+	missing.WorkOrder.SourceRef = "hive://hivecosm/delivery/project/PRJ-HIVECREW-P2/work-order/WO-MISSING-" + uuid.NewString()
+	missing.WorkOrder.DisplayName = "CompanyOps missing project " + uuid.NewString()
+	if _, err := NewCompanyOpsAssignmentService(backend).Dispatch(ctx, missing); !errors.Is(err, ErrProjectNotFound) {
+		t.Fatalf("missing project error = %v, want %v", err, ErrProjectNotFound)
+	}
+	assertNoPartialWrite("missing project", missing)
+	var foreignWorkspaceID pgtype.UUID
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO workspace (name, slug) VALUES ($1, $2) RETURNING id`,
+		"CompanyOps foreign workspace",
+		"companyops-foreign-"+uuid.NewString(),
+	).Scan(&foreignWorkspaceID); err != nil {
+		t.Fatalf("seed foreign workspace: %v", err)
+	}
+	var foreignProjectID pgtype.UUID
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO project (workspace_id, title, status, priority) VALUES ($1, $2, 'planned', 'none') RETURNING id`,
+		foreignWorkspaceID,
+		"CompanyOps foreign project "+uuid.NewString(),
+	).Scan(&foreignProjectID); err != nil {
+		t.Fatalf("seed foreign project: %v", err)
+	}
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cleanupCancel()
+		cleanupProductionCompanyOps(t, cleanupCtx, pool, `DELETE FROM project WHERE id = $1`, foreignProjectID)
+		cleanupProductionCompanyOps(t, cleanupCtx, pool, `DELETE FROM workspace WHERE id = $1`, foreignWorkspaceID)
+	})
+	crossWorkspace := productionCompanyOpsRequest(fixture, pgtype.UUID{}, util.MustParseUUID(uuid.NewString()))
+	crossWorkspace.ProjectID = foreignProjectID
+	crossWorkspace.WorkOrder.SourceRef = "hive://hivecosm/delivery/project/PRJ-HIVECREW-P2/work-order/WO-CROSS-" + uuid.NewString()
+	crossWorkspace.WorkOrder.DisplayName = "CompanyOps cross-workspace project " + uuid.NewString()
+	if _, err := NewCompanyOpsAssignmentService(backend).Dispatch(ctx, crossWorkspace); !errors.Is(err, ErrProjectNotFound) {
+		t.Fatalf("cross-workspace project error = %v, want %v", err, ErrProjectNotFound)
+	}
+	assertNoPartialWrite("cross-workspace project", crossWorkspace)
 }

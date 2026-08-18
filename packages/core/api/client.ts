@@ -285,6 +285,7 @@ const CompanyOpsOwnerWorkContextSchema = z.object({
       title: z.string(),
       status: z.string().min(1),
       assignee_id: z.string().uuid().nullable().optional(),
+      project_id: z.string().uuid().optional(),
     })
     .nullable(),
   projection_state: z.enum(["not_projected", "projected"]),
@@ -324,6 +325,7 @@ const CompanyOpsAssignmentDispatchReceiptSchema = z.object({
   command_id: z.string().uuid(),
   issue_id: z.string().uuid(),
   initial_task_id: z.string().uuid(),
+  project_id: z.string().uuid().optional(),
   execution_receipt: z.object({
     state: z.literal("awaiting_claim"),
     task_id: z.string().uuid(),

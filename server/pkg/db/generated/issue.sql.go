@@ -96,6 +96,7 @@ WHERE workspace_id = $2
   AND assignee_type IS NULL
   AND assignee_id IS NULL
   AND status NOT IN ('done', 'cancelled')
+  AND ($4::uuid IS NULL OR project_id = $4)
 RETURNING id, workspace_id, title, description, status, priority, assignee_type, assignee_id, creator_type, creator_id, parent_issue_id, acceptance_criteria, context_refs, position, due_date, created_at, updated_at, number, project_id, origin_type, origin_id, first_executed_at, start_date, metadata, stage, properties, review_state, review_state_reason
 `
 
@@ -103,6 +104,7 @@ type AssignIssueAgentExactParams struct {
 	AgentID     pgtype.UUID `json:"agent_id"`
 	WorkspaceID pgtype.UUID `json:"workspace_id"`
 	IssueID     pgtype.UUID `json:"issue_id"`
+	ProjectID   pgtype.UUID `json:"project_id"`
 }
 
 // CompanyOps assignment is a compare-and-swap, not a partial UpdateIssue.
@@ -110,7 +112,12 @@ type AssignIssueAgentExactParams struct {
 // a missing/cross-workspace/terminal/already-assigned row returns no rows so
 // the caller fails closed without overwriting a concurrent human decision.
 func (q *Queries) AssignIssueAgentExact(ctx context.Context, arg AssignIssueAgentExactParams) (Issue, error) {
-	row := q.db.QueryRow(ctx, assignIssueAgentExact, arg.AgentID, arg.WorkspaceID, arg.IssueID)
+	row := q.db.QueryRow(ctx, assignIssueAgentExact,
+		arg.AgentID,
+		arg.WorkspaceID,
+		arg.IssueID,
+		arg.ProjectID,
+	)
 	var i Issue
 	err := row.Scan(
 		&i.ID,

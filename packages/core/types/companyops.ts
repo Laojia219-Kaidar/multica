@@ -67,6 +67,7 @@ export interface CompanyOpsIssueProjection {
   title: string;
   status: string;
   assignee_id?: string | null;
+  project_id?: string;
 }
 
 export interface CompanyOpsOwnerWorkContext {
@@ -104,6 +105,7 @@ export interface CompanyOpsAssignmentCommand
   extends CompanyOpsWorkContextRequest {
   command_id: string;
   handoff_note: string;
+  project_id?: string;
 }
 
 export interface CompanyOpsAssignmentDispatchReceipt {
@@ -111,6 +113,7 @@ export interface CompanyOpsAssignmentDispatchReceipt {
   command_id: string;
   issue_id: string;
   initial_task_id: string;
+  project_id?: string;
   execution_receipt: {
     state: "awaiting_claim";
     task_id: string;

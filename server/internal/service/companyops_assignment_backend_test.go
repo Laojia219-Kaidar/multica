@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/companyops"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -59,14 +60,14 @@ func newCanonicalAssignmentBackendSpy(req CompanyOpsAssignmentRequest) *canonica
 
 func (s *canonicalAssignmentBackendSpy) withQTx(
 	_ context.Context,
-	fn func(*db.Queries) error,
+	fn func(pgx.Tx, *db.Queries) error,
 ) error {
 	s.log = append(s.log, "begin")
 	stage := &canonicalAssignmentStage{qtx: db.New(nil)}
 	s.active = stage
 	defer func() { s.active = nil }()
 
-	if err := fn(stage.qtx); err != nil {
+	if err := fn(nil, stage.qtx); err != nil {
 		s.log = append(s.log, "rollback")
 		return err
 	}
@@ -133,6 +134,26 @@ func (s *canonicalAssignmentBackendSpy) getAssignmentDispatchReceipt(
 		return AssignmentDispatchReceipt{}, false, errCanonicalBackendRead
 	}
 	return *s.committedReceipt, true, nil
+}
+
+func (s *canonicalAssignmentBackendSpy) ensureWorkOrderIssue(
+	_ context.Context,
+	_ pgx.Tx,
+	qtx *db.Queries,
+	req CompanyOpsAssignmentRequest,
+) (CompanyOpsWorkOrderProjection, error) {
+	if err := s.requireQTx(qtx); err != nil {
+		return CompanyOpsWorkOrderProjection{}, err
+	}
+	issue := s.issue
+	issue.ID = req.IssueID
+	issue.WorkspaceID = req.WorkspaceID
+	issue.ProjectID = req.ProjectID
+	return CompanyOpsWorkOrderProjection{Issue: issue, Created: true}, nil
+}
+
+func (s *canonicalAssignmentBackendSpy) createdWorkOrderProjection() *CompanyOpsWorkOrderProjection {
+	return nil
 }
 
 func (s *canonicalAssignmentBackendSpy) assignIssueExact(
@@ -243,6 +264,7 @@ func newCanonicalAssignmentServiceUnderTest(
 		WithQTx:                         spy.withQTx,
 		LockAssignmentCommand:           spy.lockAssignmentCommand,
 		GetAssignmentDispatchReceipt:    spy.getAssignmentDispatchReceipt,
+		EnsureWorkOrderIssue:            spy.ensureWorkOrderIssue,
 		AssignIssueExact:                spy.assignIssueExact,
 		PrepareAssignmentTask:           spy.prepareAssignmentTask,
 		AppendAssignmentDispatchReceipt: spy.appendAssignmentDispatchReceipt,
@@ -398,7 +420,7 @@ func TestCompanyOpsAssignmentBackend_DoesNotCopyWorkOrderLifecycle(t *testing.T)
 		reflect.TypeOf(AssignmentDispatchReceipt{}),
 		reflect.TypeOf(companyops.ExecutionTargetSnapshot{}),
 	} {
-		for _, forbidden := range []string{"WorkOrderTitle", "WorkOrderStatus", "ProjectID", "ProjectStatus"} {
+		for _, forbidden := range []string{"WorkOrderTitle", "WorkOrderStatus", "ProjectStatus"} {
 			if field, found := typ.FieldByName(forbidden); found {
 				t.Fatalf("%s contains forbidden copied lifecycle field %s (%s)", typ, field.Name, field.Type)
 			}

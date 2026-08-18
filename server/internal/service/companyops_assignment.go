@@ -37,6 +37,7 @@ type CompanyOpsAssignmentRequest struct {
 	CommandID           pgtype.UUID
 	WorkspaceID         pgtype.UUID
 	IssueID             pgtype.UUID
+	ProjectID           pgtype.UUID
 	LocalAgentID        pgtype.UUID
 	LocalAgentSourceRef string
 	ActorUserID         pgtype.UUID
@@ -74,6 +75,8 @@ type AssignmentDispatchReceipt struct {
 type CompanyOpsAssignmentTx interface {
 	LockAssignmentCommand(ctx context.Context, workspaceID, commandID pgtype.UUID) error
 	GetAssignmentDispatchReceipt(ctx context.Context, workspaceID, commandID pgtype.UUID) (AssignmentDispatchReceipt, bool, error)
+	EnsureWorkOrderIssue(ctx context.Context, req CompanyOpsAssignmentRequest) (CompanyOpsWorkOrderProjection, error)
+	CreatedWorkOrderProjection() *CompanyOpsWorkOrderProjection
 	AssignIssueExact(ctx context.Context, req CompanyOpsAssignmentRequest, target companyops.ExecutionTargetSnapshot) error
 	EnqueueAssignmentTask(
 		ctx context.Context,
@@ -90,6 +93,7 @@ type CompanyOpsAssignmentTx interface {
 // transaction seam to existing canonical IssueService/TaskService helpers.
 type CompanyOpsAssignmentBackend interface {
 	RunInCompanyOpsAssignmentTx(ctx context.Context, fn func(CompanyOpsAssignmentTx) error) error
+	FinishWorkOrderProjection(ctx context.Context, projection CompanyOpsWorkOrderProjection)
 	PublishAssignmentDispatched(ctx context.Context, receipt AssignmentDispatchReceipt)
 	NotifyAssignmentTaskAvailable(ctx context.Context, task db.AgentTaskQueue)
 }
@@ -171,9 +175,10 @@ func (s *CompanyOpsAssignmentService) Dispatch(
 	}
 
 	var (
-		receipt AssignmentDispatchReceipt
-		task    db.AgentTaskQueue
-		created bool
+		receipt           AssignmentDispatchReceipt
+		task              db.AgentTaskQueue
+		created           bool
+		createdProjection *CompanyOpsWorkOrderProjection
 	)
 	err = s.backend.RunInCompanyOpsAssignmentTx(ctx, func(tx CompanyOpsAssignmentTx) error {
 		if tx == nil {
@@ -188,11 +193,40 @@ func (s *CompanyOpsAssignmentService) Dispatch(
 			return fmt.Errorf("get assignment dispatch receipt: %w", err)
 		}
 		if found {
+			// A project-bound request may omit IssueID on the wire because the
+			// Issue is created in this transaction. Re-observe the WorkOrder
+			// projection before accepting a replay so the command cannot be
+			// reused with a different project.
+			if req.ProjectID.Valid {
+				projection, err := tx.EnsureWorkOrderIssue(ctx, req)
+				if err != nil {
+					return fmt.Errorf("verify project-bound WorkOrder replay: %w", err)
+				}
+				issue := projection.Issue
+				if issue.ID != existing.IssueID || issue.WorkspaceID != req.WorkspaceID || issue.ProjectID != req.ProjectID {
+					return ErrCompanyOpsAssignmentConflict
+				}
+				req.IssueID = issue.ID
+			}
 			if !assignmentReceiptMatches(existing, req, target) {
 				return ErrCompanyOpsAssignmentConflict
 			}
 			receipt = existing
 			return nil
+		}
+		if !req.IssueID.Valid {
+			if !req.ProjectID.Valid {
+				return fmt.Errorf("issue_id or project_id is required")
+			}
+			projection, err := tx.EnsureWorkOrderIssue(ctx, req)
+			if err != nil {
+				return fmt.Errorf("ensure project-bound WorkOrder issue: %w", err)
+			}
+			issue := projection.Issue
+			if !issue.ID.Valid || issue.WorkspaceID != req.WorkspaceID || issue.ProjectID != req.ProjectID {
+				return fmt.Errorf("project-bound WorkOrder issue does not match exact workspace and project")
+			}
+			req.IssueID = issue.ID
 		}
 
 		if err := tx.AssignIssueExact(ctx, req, target); err != nil {
@@ -224,6 +258,9 @@ func (s *CompanyOpsAssignmentService) Dispatch(
 			return fmt.Errorf("append assignment dispatch receipt: %w", err)
 		}
 		created = true
+		if projection := tx.CreatedWorkOrderProjection(); projection != nil {
+			createdProjection = projection
+		}
 		return nil
 	})
 	if err != nil {
@@ -231,6 +268,9 @@ func (s *CompanyOpsAssignmentService) Dispatch(
 	}
 
 	if created {
+		if createdProjection != nil {
+			s.backend.FinishWorkOrderProjection(ctx, *createdProjection)
+		}
 		s.backend.PublishAssignmentDispatched(ctx, receipt)
 		s.backend.NotifyAssignmentTaskAvailable(ctx, task)
 	}
@@ -249,12 +289,17 @@ func validateCompanyOpsAssignmentIDs(req CompanyOpsAssignmentRequest) error {
 	for name, value := range map[string]pgtype.UUID{
 		"command_id":     req.CommandID,
 		"workspace_id":   req.WorkspaceID,
-		"issue_id":       req.IssueID,
 		"local_agent_id": req.LocalAgentID,
 	} {
 		if !value.Valid || value.Bytes == ([16]byte{}) {
 			return fmt.Errorf("%s is required", name)
 		}
+	}
+	if !req.IssueID.Valid && !req.ProjectID.Valid {
+		return fmt.Errorf("issue_id or project_id is required")
+	}
+	if req.ProjectID.Valid && req.ProjectID.Bytes == ([16]byte{}) {
+		return fmt.Errorf("project_id is invalid")
 	}
 	return nil
 }
@@ -266,7 +311,7 @@ func assignmentReceiptMatches(
 ) bool {
 	return receipt.CommandID == req.CommandID &&
 		receipt.WorkspaceID == req.WorkspaceID &&
-		receipt.IssueID == req.IssueID &&
+		(!req.IssueID.Valid || receipt.IssueID == req.IssueID) &&
 		receipt.LocalAgentID == req.LocalAgentID &&
 		receipt.InitialTaskID.Valid &&
 		receipt.Target == target

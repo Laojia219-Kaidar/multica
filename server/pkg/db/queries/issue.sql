@@ -127,6 +127,7 @@ WHERE workspace_id = @workspace_id
   AND assignee_type IS NULL
   AND assignee_id IS NULL
   AND status NOT IN ('done', 'cancelled')
+  AND (@project_id::uuid IS NULL OR project_id = @project_id)
 RETURNING *;
 
 -- name: UpdateIssueStatus :one

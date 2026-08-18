@@ -109,6 +109,9 @@ type fakeCompanyOpsAssignmentBackend struct {
 	notifyCount       int
 	lastEvidenceKind  string
 	lastEvidenceRefID pgtype.UUID
+	ensureIssue       db.Issue
+	ensureErr         error
+	finishCount       int
 }
 
 func newFakeCompanyOpsAssignmentBackend() *fakeCompanyOpsAssignmentBackend {
@@ -156,13 +159,18 @@ func (b *fakeCompanyOpsAssignmentBackend) NotifyAssignmentTaskAvailable(_ contex
 	b.log = append(b.log, "notify")
 }
 
+func (b *fakeCompanyOpsAssignmentBackend) FinishWorkOrderProjection(_ context.Context, _ CompanyOpsWorkOrderProjection) {
+	b.finishCount++
+}
+
 type fakeCompanyOpsAssignmentTx struct {
-	backend      *fakeCompanyOpsAssignmentBackend
-	receipts     map[[16]byte]AssignmentDispatchReceipt
-	tasks        map[[16]byte]db.AgentTaskQueue
-	assignCount  int
-	enqueueCount int
-	appendCount  int
+	backend           *fakeCompanyOpsAssignmentBackend
+	receipts          map[[16]byte]AssignmentDispatchReceipt
+	tasks             map[[16]byte]db.AgentTaskQueue
+	assignCount       int
+	enqueueCount      int
+	appendCount       int
+	createdProjection *CompanyOpsWorkOrderProjection
 }
 
 func (tx *fakeCompanyOpsAssignmentTx) LockAssignmentCommand(
@@ -186,6 +194,121 @@ func (tx *fakeCompanyOpsAssignmentTx) GetAssignmentDispatchReceipt(
 	}
 	receipt, ok := tx.backend.committedReceipts[commandID.Bytes]
 	return receipt, ok, nil
+}
+
+func (tx *fakeCompanyOpsAssignmentTx) EnsureWorkOrderIssue(
+	_ context.Context,
+	req CompanyOpsAssignmentRequest,
+) (CompanyOpsWorkOrderProjection, error) {
+	tx.backend.log = append(tx.backend.log, "ensure_issue")
+	if tx.backend.failAt == "ensure" {
+		return CompanyOpsWorkOrderProjection{}, errAssignmentWrite
+	}
+	if tx.backend.ensureErr != nil {
+		return CompanyOpsWorkOrderProjection{}, tx.backend.ensureErr
+	}
+	var issue db.Issue
+	if tx.backend.ensureIssue.ID.Valid {
+		issue = tx.backend.ensureIssue
+	} else {
+		issue = db.Issue{ID: assignmentUUID(6), WorkspaceID: req.WorkspaceID, ProjectID: req.ProjectID}
+	}
+	projection := CompanyOpsWorkOrderProjection{Issue: issue, Created: true}
+	tx.createdProjection = &projection
+	return projection, nil
+}
+
+func (tx *fakeCompanyOpsAssignmentTx) CreatedWorkOrderProjection() *CompanyOpsWorkOrderProjection {
+	return tx.createdProjection
+}
+
+func TestCompanyOpsAssignment_ProjectBoundIssueIsCreatedBeforeTaskInOneTx(t *testing.T) {
+	backend := newFakeCompanyOpsAssignmentBackend()
+	service := NewCompanyOpsAssignmentService(backend)
+	req := validCompanyOpsAssignmentRequest()
+	req.IssueID = pgtype.UUID{}
+	req.ProjectID = assignmentUUID(8)
+
+	receipt, err := service.Dispatch(t.Context(), req)
+	if err != nil {
+		t.Fatalf("project-bound Dispatch: %v", err)
+	}
+	if receipt.IssueID != assignmentUUID(6) || backend.lastEvidenceRefID != req.CommandID {
+		t.Fatalf("receipt/task lineage = %+v/%v, want generated Issue and command evidence", receipt, backend.lastEvidenceRefID)
+	}
+	if backend.finishCount != 1 {
+		t.Fatalf("project-bound post-commit projection finish count = %d, want 1", backend.finishCount)
+	}
+	replay, err := service.Dispatch(t.Context(), req)
+	if err != nil || replay != receipt {
+		t.Fatalf("project-bound replay = %+v/%v, want original receipt", replay, err)
+	}
+	if backend.finishCount != 1 || backend.enqueueCount != 1 || backend.appendCount != 1 {
+		t.Fatalf("project-bound replay effects = finish:%d task:%d receipt:%d, want 1/1/1", backend.finishCount, backend.enqueueCount, backend.appendCount)
+	}
+	if got := backend.log[:5]; !reflect.DeepEqual(got, []string{"begin", "lock", "get_receipt", "ensure_issue", "assign_exact"}) {
+		t.Fatalf("project-bound transaction order = %v", got)
+	}
+}
+
+func TestCompanyOpsAssignment_ProjectBoundaryAndMissingProjectFailClosed(t *testing.T) {
+	tests := []struct {
+		name  string
+		setup func(*fakeCompanyOpsAssignmentBackend, CompanyOpsAssignmentRequest)
+	}{
+		{
+			name: "cross workspace projected issue",
+			setup: func(backend *fakeCompanyOpsAssignmentBackend, req CompanyOpsAssignmentRequest) {
+				backend.ensureIssue = db.Issue{ID: assignmentUUID(6), WorkspaceID: assignmentUUID(99), ProjectID: req.ProjectID}
+			},
+		},
+		{
+			name: "missing project",
+			setup: func(backend *fakeCompanyOpsAssignmentBackend, _ CompanyOpsAssignmentRequest) {
+				backend.ensureErr = ErrProjectNotFound
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			backend := newFakeCompanyOpsAssignmentBackend()
+			req := validCompanyOpsAssignmentRequest()
+			req.IssueID = pgtype.UUID{}
+			req.ProjectID = assignmentUUID(8)
+			tt.setup(backend, req)
+			if _, err := NewCompanyOpsAssignmentService(backend).Dispatch(t.Context(), req); err == nil {
+				t.Fatal("project-bound Dispatch succeeded across a project boundary")
+			}
+			if backend.assignCount != 0 || backend.enqueueCount != 0 || len(backend.committedReceipts) != 0 {
+				t.Fatalf("failed project-bound Dispatch committed partial state: %+v", backend)
+			}
+		})
+	}
+}
+
+func TestCompanyOpsAssignment_ProjectBoundReplayRejectsDifferentProject(t *testing.T) {
+	backend := newFakeCompanyOpsAssignmentBackend()
+	service := NewCompanyOpsAssignmentService(backend)
+	req := validCompanyOpsAssignmentRequest()
+	req.IssueID = pgtype.UUID{}
+	req.ProjectID = assignmentUUID(8)
+	backend.ensureIssue = db.Issue{ID: assignmentUUID(6), WorkspaceID: req.WorkspaceID, ProjectID: req.ProjectID}
+	if _, err := service.Dispatch(t.Context(), req); err != nil {
+		t.Fatalf("first project-bound Dispatch: %v", err)
+	}
+	replay := req
+	replay.ProjectID = assignmentUUID(9)
+	if _, err := service.Dispatch(t.Context(), replay); !errors.Is(err, ErrCompanyOpsAssignmentConflict) {
+		t.Fatalf("different-project replay error = %v, want %v", err, ErrCompanyOpsAssignmentConflict)
+	}
+	replayWithIssue := replay
+	replayWithIssue.IssueID = assignmentUUID(6)
+	if _, err := service.Dispatch(t.Context(), replayWithIssue); !errors.Is(err, ErrCompanyOpsAssignmentConflict) {
+		t.Fatalf("different-project replay with IssueID error = %v, want %v", err, ErrCompanyOpsAssignmentConflict)
+	}
+	if backend.assignCount != 1 || backend.enqueueCount != 1 || backend.appendCount != 1 || backend.publishCount != 1 || backend.notifyCount != 1 {
+		t.Fatalf("different-project replay changed durable/effect counts: %+v", backend)
+	}
 }
 
 func (tx *fakeCompanyOpsAssignmentTx) AssignIssueExact(

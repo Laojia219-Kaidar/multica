@@ -33,8 +33,12 @@ var (
 // Issue title comes only from WorkOrder.DisplayName; it is presentation data,
 // not an identity selector, and is never copied into the provenance link.
 type CompanyOpsWorkOrderProjectionRequest struct {
-	WorkspaceID      pgtype.UUID
-	ActorUserID      pgtype.UUID
+	WorkspaceID pgtype.UUID
+	ActorUserID pgtype.UUID
+	// ProjectID is optional for backwards-compatible WorkOrder projections.
+	// When present, the Issue is validated against this workspace and created
+	// with the project in the same transaction as the provenance link.
+	ProjectID        pgtype.UUID
 	WorkOrder        companyops.AuthoritySnapshot
 	SourceObservedAt time.Time
 }
@@ -45,6 +49,11 @@ type CompanyOpsWorkOrderProjection struct {
 	Issue   db.Issue
 	Link    ExternalWorkOrderLink
 	Created bool
+	// These post-commit inputs let both the standalone and assignment-composed
+	// paths publish IssueCreated only after their surrounding transaction has
+	// committed. No event or analytics side effect may escape a rollback.
+	createParams *IssueCreateParams
+	createResult *IssueCreateResult
 }
 
 // CompanyOpsWorkOrderProjectionService composes the canonical Issue writer and
@@ -79,12 +88,6 @@ func (s *CompanyOpsWorkOrderProjectionService) Project(
 	if err := validateCompanyOpsWorkOrderProjectionRequest(req); err != nil {
 		return CompanyOpsWorkOrderProjection{}, err
 	}
-	// PostgreSQL TIMESTAMPTZ stores microseconds. Canonicalize the initial
-	// evidence timestamp before writing it. A replay deliberately does not
-	// compare observed_at because each HTTP authority read is a new observation
-	// even when source_ref/revision/digest are unchanged.
-	req.SourceObservedAt = req.SourceObservedAt.UTC().Truncate(time.Microsecond)
-
 	tx, err := s.issueService.TxStarter.Begin(ctx)
 	if err != nil {
 		return CompanyOpsWorkOrderProjection{}, fmt.Errorf("begin companyops WorkOrder projection transaction: %w", err)
@@ -96,6 +99,39 @@ func (s *CompanyOpsWorkOrderProjectionService) Project(
 		}
 	}()
 	qtx := s.issueService.Queries.WithTx(tx)
+	projection, err := s.ProjectInTransaction(ctx, tx, qtx, req)
+	if err != nil {
+		return CompanyOpsWorkOrderProjection{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return CompanyOpsWorkOrderProjection{}, fmt.Errorf("commit companyops WorkOrder projection: %w", err)
+	}
+	committed = true
+	s.FinishCreatedProjection(ctx, projection)
+	return projection, nil
+}
+
+// ProjectInTransaction composes the canonical Issue writer and the
+// external WorkOrder link on the caller's transaction. It deliberately does
+// not commit, publish events, or emit analytics; assignment dispatch can use
+// it to create the project-bound Issue and its Task atomically.
+func (s *CompanyOpsWorkOrderProjectionService) ProjectInTransaction(
+	ctx context.Context,
+	tx pgx.Tx,
+	qtx *db.Queries,
+	req CompanyOpsWorkOrderProjectionRequest,
+) (CompanyOpsWorkOrderProjection, error) {
+	if s == nil || s.issueService == nil || tx == nil || qtx == nil {
+		return CompanyOpsWorkOrderProjection{}, fmt.Errorf("companyops WorkOrder projection transaction is required")
+	}
+	if err := validateCompanyOpsWorkOrderProjectionRequest(req); err != nil {
+		return CompanyOpsWorkOrderProjection{}, err
+	}
+	// PostgreSQL TIMESTAMPTZ stores microseconds. Canonicalize the initial
+	// evidence timestamp before writing it. A replay deliberately does not
+	// compare observed_at because each HTTP authority read is a new observation
+	// even when source_ref/revision/digest are unchanged.
+	req.SourceObservedAt = req.SourceObservedAt.UTC().Truncate(time.Microsecond)
 
 	if err := qtx.LockCompanyOpsAssignmentCommand(ctx, db.LockCompanyOpsAssignmentCommandParams{
 		WorkspaceID: req.WorkspaceID,
@@ -133,10 +169,9 @@ func (s *CompanyOpsWorkOrderProjectionService) Project(
 		if err != nil {
 			return CompanyOpsWorkOrderProjection{}, fmt.Errorf("read companyops WorkOrder Issue projection: %w", err)
 		}
-		if err := tx.Commit(ctx); err != nil {
-			return CompanyOpsWorkOrderProjection{}, fmt.Errorf("commit companyops WorkOrder projection replay: %w", err)
+		if issue.ProjectID != req.ProjectID {
+			return CompanyOpsWorkOrderProjection{}, ErrCompanyOpsWorkOrderProjectionConflict
 		}
-		committed = true
 		return CompanyOpsWorkOrderProjection{Issue: issue, Link: link, Created: false}, nil
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
@@ -151,6 +186,7 @@ func (s *CompanyOpsWorkOrderProjectionService) Project(
 		CreatorType:    "member",
 		CreatorID:      req.ActorUserID,
 		AllowDuplicate: true,
+		ProjectID:      req.ProjectID,
 	}
 	issueResult, err := s.issueService.createInTransaction(ctx, tx, qtx, issueParams)
 	if err != nil {
@@ -178,16 +214,28 @@ func (s *CompanyOpsWorkOrderProjectionService) Project(
 		return CompanyOpsWorkOrderProjection{}, ErrCompanyOpsWorkOrderProjectionConflict
 	}
 
-	if err := tx.Commit(ctx); err != nil {
-		return CompanyOpsWorkOrderProjection{}, fmt.Errorf("commit companyops WorkOrder projection: %w", err)
-	}
-	committed = true
-	issueResult = s.issueService.finishCreate(ctx, issueParams, IssueCreateOpts{
-		ActorID:  util.UUIDToString(req.ActorUserID),
-		Platform: "companyops",
-	}, issueResult)
+	return CompanyOpsWorkOrderProjection{
+		Issue:        issueResult.Issue,
+		Link:         link,
+		Created:      true,
+		createParams: &issueParams,
+		createResult: &issueResult,
+	}, nil
+}
 
-	return CompanyOpsWorkOrderProjection{Issue: issueResult.Issue, Link: link, Created: true}, nil
+// FinishCreatedProjection emits the normal IssueService post-commit effects.
+// Callers must invoke it only after the surrounding transaction commits.
+func (s *CompanyOpsWorkOrderProjectionService) FinishCreatedProjection(
+	ctx context.Context,
+	projection CompanyOpsWorkOrderProjection,
+) {
+	if s == nil || s.issueService == nil || !projection.Created || projection.createParams == nil || projection.createResult == nil {
+		return
+	}
+	s.issueService.finishCreate(ctx, *projection.createParams, IssueCreateOpts{
+		ActorID:  util.UUIDToString(projection.Issue.CreatorID),
+		Platform: "companyops",
+	}, *projection.createResult)
 }
 
 func validateCompanyOpsWorkOrderProjectionRequest(req CompanyOpsWorkOrderProjectionRequest) error {

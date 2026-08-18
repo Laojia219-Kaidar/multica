@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/multica-ai/multica/server/internal/companyops"
+	"github.com/multica-ai/multica/server/internal/service"
 )
 
 func TestCompanyOpsFormalArtifactPromotionResponseSerialization(t *testing.T) {
@@ -143,6 +144,7 @@ func TestDecodeCompanyOpsAssignmentRequestStrictJSON(t *testing.T) {
 		"identity_binding_id":"BIND-P2-001",
 		"agent_id":"22222222-2222-4222-8222-222222222222",
 		"session_id":"33333333-3333-4333-8333-333333333333",
+		"project_id":"44444444-4444-4444-8444-444444444444",
 		"handoff_note":"Produce one exact receipt."
 	}`
 	request := httptest.NewRequest("POST", "/api/company-ops/assignments", strings.NewReader(valid))
@@ -153,12 +155,16 @@ func TestDecodeCompanyOpsAssignmentRequestStrictJSON(t *testing.T) {
 	if decoded.HandoffNote != "Produce one exact receipt." {
 		t.Fatalf("handoff_note = %q", decoded.HandoffNote)
 	}
+	if decoded.ProjectID != "44444444-4444-4444-8444-444444444444" {
+		t.Fatalf("project_id = %q", decoded.ProjectID)
+	}
 
 	for name, body := range map[string]string{
-		"unknown field":  strings.Replace(valid, "\n\t}", ",\n\t\t\"revision\":\"browser-forged\"\n\t}", 1),
-		"trailing JSON":  valid + `{}`,
-		"missing target": strings.Replace(valid, `"employee_id":"EMP-P2-001",`, `"employee_id":"",`, 1),
-		"blank handoff":  strings.Replace(valid, `"handoff_note":"Produce one exact receipt."`, `"handoff_note":"   "`, 1),
+		"unknown field":         strings.Replace(valid, "\n\t}", ",\n\t\t\"revision\":\"browser-forged\"\n\t}", 1),
+		"trailing JSON":         valid + `{}`,
+		"missing target":        strings.Replace(valid, `"employee_id":"EMP-P2-001",`, `"employee_id":"",`, 1),
+		"blank handoff":         strings.Replace(valid, `"handoff_note":"Produce one exact receipt."`, `"handoff_note":"   "`, 1),
+		"non-canonical project": strings.Replace(valid, `"project_id":"44444444-4444-4444-8444-444444444444"`, `"project_id":"44444444-4444-4444-8444-44444444444"`, 1),
 	} {
 		t.Run(name, func(t *testing.T) {
 			request := httptest.NewRequest("POST", "/api/company-ops/assignments", strings.NewReader(body))
@@ -177,6 +183,7 @@ func TestWriteCompanyOpsServiceError_ArtifactAndPromotionMappings(t *testing.T) 
 		wantReason string
 	}{
 		{"idempotency required", companyops.ErrArtifactIdempotencyRequired, http.StatusBadRequest, "invalid_request"},
+		{"project not found", service.ErrProjectNotFound, http.StatusBadRequest, "invalid_request"},
 		{"promotion in progress", companyops.ErrArtifactPromotionInProgress, http.StatusConflict, "artifact_promotion_in_progress"},
 		{"invalid transition", companyops.ErrInvalidArtifactTransition, http.StatusConflict, "artifact_conflict"},
 		{"idempotency conflict", companyops.ErrArtifactIdempotencyConflict, http.StatusConflict, "artifact_conflict"},

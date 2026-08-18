@@ -86,6 +86,7 @@ type companyOpsIssueResponse struct {
 	Title      string `json:"title"`
 	Status     string `json:"status"`
 	AssigneeID string `json:"assignee_id,omitempty"`
+	ProjectID  string `json:"project_id,omitempty"`
 }
 
 type companyOpsWorkContextResponse struct {
@@ -128,6 +129,7 @@ type createCompanyOpsAssignmentRequest struct {
 	IdentityBindingID  string `json:"identity_binding_id"`
 	AgentID            string `json:"agent_id"`
 	SessionID          string `json:"session_id"`
+	ProjectID          string `json:"project_id,omitempty"`
 	HandoffNote        string `json:"handoff_note"`
 }
 
@@ -136,6 +138,7 @@ type companyOpsAssignmentResponse struct {
 	CommandID        string                             `json:"command_id"`
 	IssueID          string                             `json:"issue_id"`
 	InitialTaskID    string                             `json:"initial_task_id"`
+	ProjectID        string                             `json:"project_id,omitempty"`
 	ExecutionReceipt companyOpsExecutionReceiptResponse `json:"execution_receipt"`
 }
 
@@ -269,7 +272,7 @@ func (h *Handler) CreateCompanyOpsAssignment(w http.ResponseWriter, r *http.Requ
 	if !ok {
 		return
 	}
-	if h.CompanyOpsEnsureWorkOrderIssue == nil || h.CompanyOpsAssignment == nil {
+	if h.CompanyOpsAssignment == nil || (request.ProjectID == "" && h.CompanyOpsEnsureWorkOrderIssue == nil) {
 		writeCompanyOpsError(w, http.StatusServiceUnavailable, "source_gap", "CompanyOps writer is not configured")
 		return
 	}
@@ -279,19 +282,33 @@ func (h *Handler) CreateCompanyOpsAssignment(w http.ResponseWriter, r *http.Requ
 		writeCompanyOpsError(w, http.StatusBadRequest, "invalid_request", "command_id must be a canonical UUID")
 		return
 	}
-	issue, err := h.CompanyOpsEnsureWorkOrderIssue(r.Context(), workspaceID, actorUserID, resolved.WorkOrder)
-	if err != nil {
-		writeCompanyOpsServiceError(w, err)
-		return
+	projectID := pgtype.UUID{}
+	if request.ProjectID != "" {
+		projectID, err = util.ParseUUID(request.ProjectID)
+		if err != nil || util.UUIDToString(projectID) != request.ProjectID {
+			writeCompanyOpsError(w, http.StatusBadRequest, "invalid_request", "project_id must be a canonical UUID")
+			return
+		}
+	}
+	issueID := pgtype.UUID{}
+	if !projectID.Valid {
+		issue, err := h.CompanyOpsEnsureWorkOrderIssue(r.Context(), workspaceID, actorUserID, resolved.WorkOrder)
+		if err != nil {
+			writeCompanyOpsServiceError(w, err)
+			return
+		}
+		issueID = issue.ID
 	}
 
-	receipt, err := h.CompanyOpsAssignment.Dispatch(r.Context(), resolved.AssignmentRequest(
+	assignmentRequest := resolved.AssignmentRequest(
 		commandID,
 		workspaceID,
-		issue.ID,
+		issueID,
 		actorUserID,
 		request.HandoffNote,
-	))
+	)
+	assignmentRequest.ProjectID = projectID
+	receipt, err := h.CompanyOpsAssignment.Dispatch(r.Context(), assignmentRequest)
 	if err != nil {
 		writeCompanyOpsServiceError(w, err)
 		return
@@ -301,6 +318,7 @@ func (h *Handler) CreateCompanyOpsAssignment(w http.ResponseWriter, r *http.Requ
 		CommandID:     util.UUIDToString(receipt.CommandID),
 		IssueID:       util.UUIDToString(receipt.IssueID),
 		InitialTaskID: util.UUIDToString(receipt.InitialTaskID),
+		ProjectID:     request.ProjectID,
 		ExecutionReceipt: companyOpsExecutionReceiptResponse{
 			State:  "awaiting_claim",
 			TaskID: util.UUIDToString(receipt.InitialTaskID),
@@ -666,6 +684,15 @@ func decodeCompanyOpsAssignmentRequest(r *http.Request) (createCompanyOpsAssignm
 			return createCompanyOpsAssignmentRequest{}, fmt.Errorf("%s must be canonical and must not contain surrounding whitespace", name)
 		}
 	}
+	if request.ProjectID != "" {
+		if strings.TrimSpace(request.ProjectID) != request.ProjectID {
+			return createCompanyOpsAssignmentRequest{}, errors.New("project_id must be canonical and must not contain surrounding whitespace")
+		}
+		projectID, err := util.ParseUUID(request.ProjectID)
+		if err != nil || util.UUIDToString(projectID) != request.ProjectID {
+			return createCompanyOpsAssignmentRequest{}, errors.New("project_id must be a canonical UUID")
+		}
+	}
 	if strings.TrimSpace(request.HandoffNote) == "" {
 		return createCompanyOpsAssignmentRequest{}, errors.New("handoff_note must describe the work to dispatch")
 	}
@@ -697,6 +724,7 @@ func companyOpsIssueWire(issue db.Issue) *companyOpsIssueResponse {
 		Title:      issue.Title,
 		Status:     issue.Status,
 		AssigneeID: util.UUIDToString(issue.AssigneeID),
+		ProjectID:  util.UUIDToString(issue.ProjectID),
 	}
 }
 
@@ -748,6 +776,8 @@ func writeCompanyOpsAuthorityError(w http.ResponseWriter, err error) {
 func writeCompanyOpsServiceError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, companyops.ErrArtifactIdempotencyRequired):
+		writeCompanyOpsError(w, http.StatusBadRequest, "invalid_request", err.Error())
+	case errors.Is(err, service.ErrProjectNotFound):
 		writeCompanyOpsError(w, http.StatusBadRequest, "invalid_request", err.Error())
 	case errors.Is(err, service.ErrCompanyOpsAssignmentConflict),
 		errors.Is(err, service.ErrExternalWorkOrderLinkConflict),

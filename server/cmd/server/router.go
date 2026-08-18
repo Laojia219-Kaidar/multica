@@ -208,7 +208,7 @@ func configureCompanyOps(h *handler.Handler, queries *db.Queries, pool *pgxpool.
 		return projection.Issue, nil
 	}
 
-	assignmentBackend, err := service.NewProductionCompanyOpsAssignmentBackend(queries, pool, h.TaskService)
+	assignmentBackend, err := service.NewProductionCompanyOpsAssignmentBackend(queries, pool, h.TaskService, projectionService)
 	if err != nil {
 		slog.Warn("companyops assignment writer disabled", "error", err)
 		return runtimeSources
