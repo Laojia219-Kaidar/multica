@@ -448,7 +448,7 @@ func workEmployeeDecision(employee WorkConservingEmployee, issue WorkConservingI
 		d.Reasons = []Reason{ReasonEmployeeWritePathConflict}
 		return d
 	}
-	if issue.WritePath.Key != "" && employee.WritePath.Key != issue.WritePath.Key {
+	if issue.WritePath.Key != "" && employee.WritePath.Key != "" && employee.WritePath.Key != issue.WritePath.Key {
 		d.Reasons = []Reason{ReasonEmployeeWritePathMismatch}
 		return d
 	}

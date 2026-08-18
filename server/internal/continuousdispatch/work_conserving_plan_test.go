@@ -259,6 +259,93 @@ func TestPlanWorkConservingEmployeePathCollisionWhenIssuePathIsEmpty(t *testing.
 	}
 }
 
+func TestPlanWorkConservingIssuePathCollisionWithUnboundEmployees(t *testing.T) {
+	a := workIssue("issue-a")
+	b := workIssue("issue-b")
+	b.WritePath.Key = a.WritePath.Key
+	employees := []WorkConservingEmployee{
+		workEmployee("worker-a", "00000000-0000-0000-0000-000000000073", true, true),
+		workEmployee("worker-b", "00000000-0000-0000-0000-000000000074", true, true),
+	}
+	got := planner().PlanWorkConserving(WorkConservingInput{
+		GoalID: workGoal, Issues: []WorkConservingIssue{b, a}, Employees: employees,
+	})
+	if len(got.Suggestions) != 1 || got.Suggestions[0].IssueID != "issue-a" || len(got.BlockedBacklog) != 1 {
+		t.Fatalf("path collision plan = %+v, want one deterministic suggestion", got)
+	}
+	if got.BlockedBacklog[0].Reasons[0] != ReasonWorkPathAlreadyPlanned {
+		t.Fatalf("blocked = %+v, want work path already planned", got.BlockedBacklog[0])
+	}
+}
+
+func TestPlanWorkConservingEmployeeWritePathEvidenceSemantics(t *testing.T) {
+	tests := []struct {
+		name           string
+		mutate         func(*WorkConservingIssue, *WorkConservingEmployee)
+		wantSuggestion bool
+		wantReason     Reason
+	}{
+		{
+			name: "known empty employee path can use known issue path",
+			mutate: func(issue *WorkConservingIssue, employee *WorkConservingEmployee) {
+				employee.WritePath.Key = ""
+			},
+			wantSuggestion: true,
+		},
+		{
+			name: "different nonempty paths mismatch",
+			mutate: func(issue *WorkConservingIssue, employee *WorkConservingEmployee) {
+				employee.WritePath.Key = "other-worktree"
+			},
+			wantReason: ReasonEmployeeWritePathMismatch,
+		},
+		{
+			name: "same nonempty paths match",
+			mutate: func(issue *WorkConservingIssue, employee *WorkConservingEmployee) {
+				employee.WritePath.Key = issue.WritePath.Key
+			},
+			wantSuggestion: true,
+		},
+		{
+			name: "unknown employee path remains fail closed",
+			mutate: func(issue *WorkConservingIssue, employee *WorkConservingEmployee) {
+				employee.WritePath.Known = false
+			},
+			wantReason: ReasonEmployeeWritePathEvidence,
+		},
+		{
+			name: "conflicting employee path remains fail closed",
+			mutate: func(issue *WorkConservingIssue, employee *WorkConservingEmployee) {
+				employee.WritePath.Conflict = true
+			},
+			wantReason: ReasonEmployeeWritePathConflict,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			issue := workIssue("issue-write-path-" + tc.name)
+			employee := workEmployee("worker", "00000000-0000-0000-0000-0000000000a4", true, true)
+			tc.mutate(&issue, &employee)
+			got := planner().PlanWorkConserving(WorkConservingInput{
+				GoalID: workGoal, Issues: []WorkConservingIssue{issue}, Employees: []WorkConservingEmployee{employee},
+			})
+			if tc.wantSuggestion {
+				if len(got.Suggestions) != 1 || len(got.BlockedBacklog) != 0 {
+					t.Fatalf("plan = %+v, want one suggestion and no blocked issue", got)
+				}
+				return
+			}
+			if len(got.Suggestions) != 0 || len(got.BlockedBacklog) != 1 {
+				t.Fatalf("plan = %+v, want one blocked issue", got)
+			}
+			if got.BlockedBacklog[0].Reasons[0] != tc.wantReason {
+				t.Fatalf("blocked reasons = %+v, want %q", got.BlockedBacklog[0].Reasons, tc.wantReason)
+			}
+		})
+	}
+}
+
 func TestPlanWorkConservingGoalMissingMetrics(t *testing.T) {
 	issue := workIssue("issue-a")
 	issue.GoalID = ""
