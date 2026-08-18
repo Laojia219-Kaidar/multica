@@ -154,6 +154,29 @@ func TestClassifyIssue_SupersededReviewStateWins(t *testing.T) {
 	}
 }
 
+// TestClassifyIssue_TerminalStatusWinsLatestFailedTask pins the current
+// semantic distinction between two histories: a non-terminal Issue whose
+// current Run failed is blocked, while an Issue already marked terminal stays
+// historical even if a separately-triggered later Run failed. Runtime ordering
+// is intentionally unchanged; callers still supply the latest Run as HasTask.
+func TestClassifyIssue_TerminalStatusWinsLatestFailedTask(t *testing.T) {
+	for _, status := range []string{"done", "cancelled"} {
+		t.Run(status, func(t *testing.T) {
+			got := ClassifyIssue(IssueInput{
+				Status:     status,
+				HasTask:    true,
+				TaskStatus: "failed",
+			})
+			if got.State != StateSuperseded || !hasReason(got, ReasonTerminal) {
+				t.Fatalf("terminal Issue + latest failed task: expected superseded/terminal, got %q (%v)", got.State, got.Reasons)
+			}
+			if hasReason(got, ReasonFailed) {
+				t.Fatalf("terminal Issue must not be re-projected as a failed runnable Issue: %v", got.Reasons)
+			}
+		})
+	}
+}
+
 func TestClassifyTask(t *testing.T) {
 	cases := []struct {
 		name   string

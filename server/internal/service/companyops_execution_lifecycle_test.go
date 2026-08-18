@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/multica-ai/multica/server/internal/events"
+	"github.com/multica-ai/multica/server/internal/readyfrontier"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
@@ -450,6 +451,129 @@ func TestCompanyOpsExecutionLifecycle_FailReplayConflictAndRetryLineage(t *testi
 	if retryReceipt.Claim.AssignmentCommandID != fixture.assignment.CommandID ||
 		retryReceipt.Claim.Target != fixture.assignment.Target {
 		t.Fatalf("retry receipt lost assignment target: %+v", retryReceipt.Claim)
+	}
+}
+
+func TestCompanyOpsExecutionLifecycle_Provider429StaysFailedThroughReceiptAndProjection(t *testing.T) {
+	ctx, fixture := newCompanyOpsExecutionTestFixture(t)
+	task := claimAndFinalizeCompanyOpsExecutionTestTask(t, ctx, fixture)
+	if _, err := fixture.service.StartTask(ctx, task.ID); err != nil {
+		t.Fatalf("StartTask: %v", err)
+	}
+
+	const (
+		rawError      = "API Error: 429 Too Many Requests"
+		refinedReason = "agent_error.provider_capacity_or_rate_limit"
+	)
+	failed, err := fixture.service.FailTask(ctx, task.ID, rawError, "", "", "", false, "")
+	if err != nil {
+		t.Fatalf("FailTask raw 429: %v", err)
+	}
+	if failed.Status != "failed" || !failed.CompletedAt.Valid {
+		t.Fatalf("failed task terminal = %+v", failed)
+	}
+	if !failed.Error.Valid || failed.Error.String != rawError {
+		t.Fatalf("failed task error = %+v, want %q", failed.Error, rawError)
+	}
+	if !failed.FailureReason.Valid || failed.FailureReason.String != refinedReason {
+		t.Fatalf("failed task failure_reason = %+v, want %q", failed.FailureReason, refinedReason)
+	}
+	if len(failed.Result) != 0 {
+		t.Fatalf("failed task unexpectedly persisted a completion result: %s", failed.Result)
+	}
+
+	repository := NewCompanyOpsPersistenceRepositoryWithQueries(fixture.queries)
+	receipt, err := repository.GetExecutionReceipt(ctx, task.ID)
+	if err != nil {
+		t.Fatalf("GetExecutionReceipt after raw 429: %v", err)
+	}
+	if receipt.Terminal == nil || receipt.Terminal.Status != "failed" || receipt.Terminal.Error != rawError {
+		t.Fatalf("failed receipt terminal = %+v", receipt.Terminal)
+	}
+	if !receipt.Terminal.CompletedAt.Equal(failed.CompletedAt.Time.UTC()) {
+		t.Fatalf("receipt completed_at = %s, task completed_at = %s", receipt.Terminal.CompletedAt, failed.CompletedAt.Time)
+	}
+	var snapshot companyOpsFailedSnapshot
+	if err := json.Unmarshal(receipt.Terminal.ResultSnapshot, &snapshot); err != nil {
+		t.Fatalf("unmarshal failed receipt snapshot: %v", err)
+	}
+	if snapshot.SchemaVersion != companyOpsTerminalSnapshotSchema || snapshot.Status != "failed" ||
+		snapshot.Error != rawError || snapshot.FailureReason != refinedReason {
+		t.Fatalf("failed receipt snapshot = %+v", snapshot)
+	}
+	originalTerminal := *receipt.Terminal
+
+	if _, err := fixture.service.CompleteTask(ctx, task.ID, []byte(`{"output":"late success"}`), "", "", false, ""); !errors.Is(err, ErrExecutionReceiptConflict) {
+		t.Fatalf("late CompleteTask error = %v, want ErrExecutionReceiptConflict", err)
+	}
+	stored, err := fixture.queries.GetAgentTask(ctx, task.ID)
+	if err != nil {
+		t.Fatalf("GetAgentTask after late complete: %v", err)
+	}
+	if stored.Status != "failed" || !stored.FailureReason.Valid || stored.FailureReason.String != refinedReason || len(stored.Result) != 0 {
+		t.Fatalf("late complete changed failed task: %+v", stored)
+	}
+	receipt, err = repository.GetExecutionReceipt(ctx, task.ID)
+	if err != nil {
+		t.Fatalf("GetExecutionReceipt after late complete: %v", err)
+	}
+	if receipt.Terminal == nil || !executionTerminalsEqual(*receipt.Terminal, originalTerminal) {
+		t.Fatalf("late complete changed failed receipt: before=%+v after=%+v", originalTerminal, receipt.Terminal)
+	}
+
+	issue, err := fixture.queries.GetIssue(ctx, fixture.company.issueID)
+	if err != nil {
+		t.Fatalf("GetIssue after raw 429: %v", err)
+	}
+	if issue.Status != "todo" {
+		t.Fatalf("FailTask changed non-terminal Issue status to %q, want todo", issue.Status)
+	}
+
+	// Reproduce a same-created_at tie with an older completed Run. The fixed
+	// all-zero UUID is strictly lower than the v4 UUID assigned to the real
+	// failed Run, so ListTasksByIssue must use id DESC as its deterministic
+	// tie-breaker and keep the failed Run at the projection head.
+	historicalTaskID := pgtype.UUID{Valid: true}
+	if task.ID == historicalTaskID {
+		t.Fatal("random task unexpectedly used the all-zero UUID")
+	}
+	if _, err := fixture.pool.Exec(ctx, `
+		INSERT INTO agent_task_queue (
+			id, agent_id, runtime_id, issue_id, status, priority, completed_at, created_at
+		)
+		SELECT $2, agent_id, runtime_id, issue_id, 'completed', priority, completed_at, created_at
+		FROM agent_task_queue WHERE id = $1`, task.ID, historicalTaskID); err != nil {
+		t.Fatalf("seed tied historical completed task: %v", err)
+	}
+	tasks, err := fixture.queries.ListTasksByIssue(ctx, fixture.company.issueID)
+	if err != nil {
+		t.Fatalf("ListTasksByIssue: %v", err)
+	}
+	if len(tasks) != 2 || tasks[0].ID != task.ID || tasks[0].Status != "failed" {
+		t.Fatalf("deterministic latest task ordering = %+v, want failed task %v first", tasks, task.ID)
+	}
+	frontier := composeFrontier(db.ListIssuesRow{
+		ID:           issue.ID,
+		Status:       issue.Status,
+		AssigneeType: issue.AssigneeType,
+		AssigneeID:   issue.AssigneeID,
+		Metadata:     issue.Metadata,
+	}, tasks, nil, nil, nil, time.Now())
+	classification := readyfrontier.ClassifyIssue(frontier)
+	if classification.State != readyfrontier.StateBlocked || len(classification.Reasons) != 1 ||
+		classification.Reasons[0] != readyfrontier.ReasonFailed {
+		t.Fatalf("raw 429 Issue projection = %q (%v), want blocked/failed", classification.State, classification.Reasons)
+	}
+
+	var retryChildren int
+	if err := fixture.pool.QueryRow(ctx,
+		`SELECT count(*) FROM agent_task_queue WHERE retry_of_task_id = $1`,
+		task.ID,
+	).Scan(&retryChildren); err != nil {
+		t.Fatalf("count raw 429 retry children: %v", err)
+	}
+	if retryChildren != 0 {
+		t.Fatalf("raw 429 created %d retry children, want 0", retryChildren)
 	}
 }
 

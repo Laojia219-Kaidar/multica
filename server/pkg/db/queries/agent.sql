@@ -1615,7 +1615,7 @@ ORDER BY a.created_at ASC;
 -- name: ListTasksByIssue :many
 SELECT * FROM agent_task_queue
 WHERE issue_id = $1
-ORDER BY created_at DESC;
+ORDER BY created_at DESC, id DESC;
 
 -- name: UpdateAgentStatus :one
 UPDATE agent SET status = $2, updated_at = now()
