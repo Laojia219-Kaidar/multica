@@ -19,14 +19,16 @@ export function useCurrentMember(wsId: string): {
   role: MemberRole | null;
   member: MemberWithUser | null;
   isLoading: boolean;
+  isError: boolean;
 } {
   const userId = useAuthStore((s) => s.user?.id ?? null);
-  const { data: members, isLoading } = useQuery(memberListOptions(wsId));
+  const { data: members, isLoading, isError } = useQuery(memberListOptions(wsId));
   const member = members?.find((m) => m.user_id === userId) ?? null;
   return {
     userId,
     role: member?.role ?? null,
     member,
     isLoading,
+    isError,
   };
 }

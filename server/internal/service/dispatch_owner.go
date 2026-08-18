@@ -6,12 +6,15 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
 // OwnerDispatchService implements the two Owner explicit-dispatch commands
@@ -53,6 +56,7 @@ const (
 	BlockReasonTerminalStatus        DispatchBlockReason = "terminal_status"
 	BlockReasonIdempotencyConflict   DispatchBlockReason = "idempotency_conflict"
 	BlockReasonExpectedStateMismatch DispatchBlockReason = "expected_state_mismatch"
+	BlockReasonActiveTargetAmbiguous DispatchBlockReason = "active_target_ambiguous"
 )
 
 // PreviewResult is the read-only outcome of dispatch-preview.
@@ -99,6 +103,7 @@ func (s *OwnerDispatchService) Preview(ctx context.Context, p DispatchPreviewPar
 	result := &PreviewResult{
 		IssueStatus:    issue.Status,
 		IssueUpdatedAt: issue.UpdatedAt.Time.UTC().Format("2006-01-02T15:04:05.000000Z"),
+		ActiveTasks:    make([]PreviewTask, 0),
 	}
 
 	// Terminal statuses: done / cancelled → blocked.
@@ -203,14 +208,20 @@ type DispatchParams struct {
 	ExpectedUpdatedAt string
 	ActiveTasks       []db.AgentTaskQueue
 	ActorUserID       pgtype.UUID
+	// HandoffNote is retained for the legacy client contract. New clients do
+	// not need it; when present it is carried into the canonical task handoff
+	// field rather than being silently discarded.
+	HandoffNote string
 }
 
 // DispatchResult is the write outcome.
 type DispatchResult struct {
-	Decision DispatchDecision    `json:"decision"`
-	Reason   DispatchBlockReason `json:"reason,omitempty"`
-	TaskIDs  []string            `json:"task_ids,omitempty"`
-	Replayed bool                `json:"replayed,omitempty"`
+	Decision      DispatchDecision    `json:"decision"`
+	Reason        DispatchBlockReason `json:"reason,omitempty"`
+	TaskIDs       []string            `json:"task_ids,omitempty"`
+	Replayed      bool                `json:"replayed,omitempty"`
+	TargetAgentID string              `json:"-"`
+	AssigneeType  string              `json:"-"`
 }
 
 var (
@@ -223,61 +234,109 @@ var (
 // If the idempotency key was used before with the same digest, it replays.
 // If the digest differs, it returns ErrIdempotencyConflict.
 func (s *OwnerDispatchService) Dispatch(ctx context.Context, p DispatchParams) (*DispatchResult, error) {
-	issue := p.Issue
+	if s.TxStarter == nil || s.TaskService == nil {
+		return nil, fmt.Errorf("dispatch transaction dependencies are unavailable")
+	}
 
-	// 1. Terminal status guard.
+	// The lock makes the absent-row idempotency case serializable too. A
+	// unique constraint alone is too late: the losing transaction could have
+	// inserted a task before its idempotency insert failed. Both the task and
+	// the idempotency record are now created on the same transaction-bound
+	// Queries instance.
+	tx, err := s.TxStarter.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin dispatch transaction: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	txQueries := s.Queries.WithTx(tx)
+
+	// Every owner dispatch takes the issue row first. This serializes different
+	// idempotency keys for one issue and ensures all admission checks observe
+	// the same latest Issue snapshot. The fixed order is issue row, then key
+	// advisory lock; no later path takes these locks in reverse order.
+	issue, err := txQueries.GetIssueForUpdate(ctx, p.Issue.ID)
+	if err != nil {
+		return nil, fmt.Errorf("load issue for dispatch: %w", err)
+	}
 	if issue.Status == "done" || issue.Status == "cancelled" {
 		return &DispatchResult{Decision: DecisionBlocked, Reason: BlockReasonTerminalStatus}, nil
 	}
-
-	// 2. Expected-state check.
 	if p.ExpectedStatus != "" && issue.Status != p.ExpectedStatus {
 		return &DispatchResult{Decision: DecisionBlocked, Reason: BlockReasonExpectedStateMismatch}, ErrExpectedStateMismatch
 	}
 	if p.ExpectedUpdatedAt != "" {
-		currentUpdatedAt := issue.UpdatedAt.Time.UTC().Format("2006-01-02T15:04:05.000000Z")
-		if currentUpdatedAt != p.ExpectedUpdatedAt {
+		expectedAt, parseErr := time.Parse(time.RFC3339Nano, p.ExpectedUpdatedAt)
+		if parseErr != nil || !issue.UpdatedAt.Time.Equal(expectedAt) {
 			return &DispatchResult{Decision: DecisionBlocked, Reason: BlockReasonExpectedStateMismatch}, ErrExpectedStateMismatch
 		}
 	}
-
-	// 3. No assignee guard.
 	if issue.AssigneeType.String == "" || !issue.AssigneeID.Valid {
 		return &DispatchResult{Decision: DecisionNeedsAssignment, Reason: BlockReasonNoAssignee}, nil
 	}
 
-	// 4. Idempotency lookup.
-	existing, err := s.Queries.GetDispatchIdempotency(ctx, db.GetDispatchIdempotencyParams{
-		WorkspaceID:    p.WorkspaceID,
-		IdempotencyKey: p.IdempotencyKey,
+	// PostgreSQL text parameters cannot carry NUL bytes; the workspace UUID
+	// prefix still keeps keys from different workspaces in separate lock
+	// domains, while the user key is already UTF-8 validated by JSON decoding.
+	lockKey := util.UUIDToString(p.WorkspaceID) + ":" + p.IdempotencyKey
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, lockKey); err != nil {
+		return nil, fmt.Errorf("lock dispatch idempotency key: %w", err)
+	}
+
+	// 4. Idempotency lookup, now serialized with every writer for this key.
+	existing, err := txQueries.GetDispatchIdempotency(ctx, db.GetDispatchIdempotencyParams{
+		WorkspaceID: p.WorkspaceID, IdempotencyKey: p.IdempotencyKey,
 	})
 	if err == nil {
-		// Key exists.
 		if existing.RequestDigest != p.RequestDigest {
 			return &DispatchResult{Decision: DecisionBlocked, Reason: BlockReasonIdempotencyConflict}, ErrIdempotencyConflict
 		}
-		// Same digest → replay.
 		ids := make([]string, 0, len(existing.TaskIds))
 		for _, id := range existing.TaskIds {
 			ids = append(ids, util.UUIDToString(id))
 		}
-		return &DispatchResult{Decision: DecisionWouldEnqueue, TaskIDs: ids, Replayed: true}, nil
+		targetAgentID, assigneeType, authorityKnown, authorityErr := dispatchTaskAuthority(ctx, txQueries, existing.TaskIds)
+		if authorityErr != nil {
+			return nil, fmt.Errorf("resolve replay dispatch authority: %w", authorityErr)
+		}
+		if !authorityKnown {
+			targetAgentID, assigneeType = "", ""
+		}
+		return &DispatchResult{
+			Decision: DecisionWouldEnqueue, TaskIDs: ids, Replayed: true,
+			TargetAgentID: targetAgentID, AssigneeType: assigneeType,
+		}, nil
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return nil, fmt.Errorf("dispatch idempotency lookup: %w", err)
 	}
 
-	// 5. Active tasks check — never cancel, just report.
-	activeIDs := make([]string, 0)
-	for _, t := range p.ActiveTasks {
+	// 5. Read active tasks inside the same transaction as the write. The
+	// handler's read remains useful for preview, but must not define this
+	// write's concurrency behavior.
+	activeTasks, err := txQueries.ListActiveTasksByIssue(ctx, issue.ID)
+	if err != nil {
+		return nil, fmt.Errorf("list active tasks: %w", err)
+	}
+	activeIDs := make([]string, 0, len(activeTasks))
+	for _, t := range activeTasks {
 		activeIDs = append(activeIDs, util.UUIDToString(t.ID))
 	}
 	if len(activeIDs) > 0 {
-		return &DispatchResult{Decision: DecisionAlreadyActive, TaskIDs: activeIDs}, nil
+		targetAgentID, assigneeType, authorityErr := dispatchTaskAuthorityFromTasks(activeTasks)
+		if authorityErr != nil {
+			return &DispatchResult{
+				Decision: DecisionBlocked, Reason: BlockReasonActiveTargetAmbiguous,
+				TaskIDs: activeIDs,
+			}, nil
+		}
+		return &DispatchResult{
+			Decision: DecisionAlreadyActive, TaskIDs: activeIDs,
+			TargetAgentID: targetAgentID, AssigneeType: assigneeType,
+		}, nil
 	}
 
-	// 6. Resolve target agent and validate.
-	agent, err := s.resolveTargetAgent(ctx, issue)
+	// 6. Resolve target agent and validate using the transaction-bound reads.
+	agent, err := resolveTargetAgentWithQueries(ctx, txQueries, issue)
 	if err != nil {
 		return &DispatchResult{Decision: DecisionBlocked, Reason: BlockReasonNoAssignee}, nil
 	}
@@ -285,7 +344,7 @@ func (s *OwnerDispatchService) Dispatch(ctx context.Context, p DispatchParams) (
 		return &DispatchResult{Decision: DecisionBlocked, Reason: BlockReasonAgentArchived}, nil
 	}
 	if agent.RuntimeID.Valid {
-		rt, rtErr := s.Queries.GetAgentRuntime(ctx, agent.RuntimeID)
+		rt, rtErr := txQueries.GetAgentRuntime(ctx, agent.RuntimeID)
 		if rtErr != nil || rt.Status != "online" {
 			return &DispatchResult{Decision: DecisionBlocked, Reason: BlockReasonRuntimeOffline}, nil
 		}
@@ -293,86 +352,146 @@ func (s *OwnerDispatchService) Dispatch(ctx context.Context, p DispatchParams) (
 		return &DispatchResult{Decision: DecisionBlocked, Reason: BlockReasonRuntimeOffline}, nil
 	}
 
-	// 7. Enqueue the task via existing TaskService.
+	// 7. Prepare the task through the existing canonical TaskService logic,
+	// without publishing until the surrounding transaction commits. The
+	// prepare helpers use a query-bound TaskService view; the live service's
+	// synchronization state is never copied or mutated here.
 	var task db.AgentTaskQueue
 	switch issue.AssigneeType.String {
 	case "agent":
-		task, err = s.TaskService.EnqueueTaskForIssueWithHandoff(ctx, issue, "", p.ActorUserID)
-		if err != nil {
-			return nil, fmt.Errorf("enqueue agent task: %w", err)
-		}
+		task, err = s.TaskService.prepareIssueTaskWithCommentPlan(ctx, txQueries, issue, pgtype.UUID{}, nil, false, p.HandoffNote, p.ActorUserID, pgtype.UUID{}, nil)
 	case "squad":
-		squad, sqErr := s.Queries.GetSquad(ctx, issue.AssigneeID)
+		squad, sqErr := txQueries.GetSquad(ctx, issue.AssigneeID)
 		if sqErr != nil {
 			return nil, fmt.Errorf("load squad: %w", sqErr)
 		}
-		task, err = s.TaskService.EnqueueTaskForSquadLeaderWithHandoff(ctx, issue, squad.LeaderID, issue.AssigneeID, "", p.ActorUserID)
-		if err != nil {
-			return nil, fmt.Errorf("enqueue squad leader task: %w", err)
-		}
+		task, err = s.TaskService.prepareMentionTaskWithCommentPlan(ctx, txQueries, issue, squad.LeaderID, pgtype.UUID{}, nil, true, issue.AssigneeID, false, p.HandoffNote, p.ActorUserID, pgtype.UUID{})
 	default:
 		return &DispatchResult{Decision: DecisionBlocked, Reason: BlockReasonNoAssignee}, nil
 	}
-
+	if err != nil {
+		return nil, fmt.Errorf("prepare dispatch task: %w", err)
+	}
+	targetAgentID, assigneeType, authorityErr := dispatchTaskAuthorityFromTasks([]db.AgentTaskQueue{task})
+	if authorityErr != nil {
+		return nil, fmt.Errorf("resolve fresh dispatch authority: %w", authorityErr)
+	}
 	taskIDs := []string{util.UUIDToString(task.ID)}
-
-	// 8. Record idempotency.
-	taskUUIDs := make([]pgtype.UUID, 0, len(taskIDs))
-	for _, tid := range taskIDs {
-		taskUUIDs = append(taskUUIDs, util.MustParseUUID(tid))
+	taskUUIDs := []pgtype.UUID{task.ID}
+	if _, err := txQueries.InsertDispatchIdempotency(ctx, db.InsertDispatchIdempotencyParams{
+		WorkspaceID: p.WorkspaceID, IdempotencyKey: p.IdempotencyKey,
+		RequestDigest: p.RequestDigest, TaskIds: taskUUIDs,
+	}); err != nil {
+		return nil, fmt.Errorf("record dispatch idempotency: %w", err)
 	}
-	_, idemErr := s.Queries.InsertDispatchIdempotency(ctx, db.InsertDispatchIdempotencyParams{
-		WorkspaceID:    p.WorkspaceID,
-		IdempotencyKey: p.IdempotencyKey,
-		RequestDigest:  p.RequestDigest,
-		TaskIds:        taskUUIDs,
-	})
-	if idemErr != nil {
-		// Unique violation → another request with same key won the race.
-		// Look up the winner and replay if digests match.
-		if isUniqueViolation(idemErr) {
-			winner, lookupErr := s.Queries.GetDispatchIdempotency(ctx, db.GetDispatchIdempotencyParams{
-				WorkspaceID:    p.WorkspaceID,
-				IdempotencyKey: p.IdempotencyKey,
-			})
-			if lookupErr == nil && winner.RequestDigest == p.RequestDigest {
-				replayIDs := make([]string, 0, len(winner.TaskIds))
-				for _, id := range winner.TaskIds {
-					replayIDs = append(replayIDs, util.UUIDToString(id))
-				}
-				return &DispatchResult{Decision: DecisionWouldEnqueue, TaskIDs: replayIDs, Replayed: true}, nil
-			}
-			return &DispatchResult{Decision: DecisionBlocked, Reason: BlockReasonIdempotencyConflict}, ErrIdempotencyConflict
-		}
-		// Non-unique errors: the task was already enqueued, log and continue.
-		// The task is valid even without the idempotency record.
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit dispatch transaction: %w", err)
 	}
 
-	return &DispatchResult{Decision: DecisionWouldEnqueue, TaskIDs: taskIDs}, nil
+	// External notifications happen only after the DB commit, so a rollback
+	// cannot advertise a task that does not exist.
+	slog.Info("owner dispatch task enqueued", "task_id", taskIDs[0], "issue_id", util.UUIDToString(issue.ID))
+	s.TaskService.broadcastTaskEvent(ctx, protocol.EventTaskQueued, task)
+	s.TaskService.NotifyTaskEnqueued(ctx, task)
+	return &DispatchResult{
+		Decision: DecisionWouldEnqueue, TaskIDs: taskIDs,
+		TargetAgentID: targetAgentID, AssigneeType: assigneeType,
+	}, nil
 }
 
 // resolveTargetAgent finds the runnable agent for an issue.
 // For agent assignees, returns the agent directly.
 // For squad assignees, returns the squad leader.
 func (s *OwnerDispatchService) resolveTargetAgent(ctx context.Context, issue db.Issue) (db.Agent, error) {
+	return resolveTargetAgentWithQueries(ctx, s.Queries, issue)
+}
+
+func resolveTargetAgentWithQueries(ctx context.Context, q *db.Queries, issue db.Issue) (db.Agent, error) {
 	switch issue.AssigneeType.String {
 	case "agent":
-		return s.Queries.GetAgent(ctx, issue.AssigneeID)
+		return q.GetAgent(ctx, issue.AssigneeID)
 	case "squad":
-		squad, err := s.Queries.GetSquad(ctx, issue.AssigneeID)
+		squad, err := q.GetSquad(ctx, issue.AssigneeID)
 		if err != nil {
 			return db.Agent{}, fmt.Errorf("load squad: %w", err)
 		}
-		return s.Queries.GetAgent(ctx, squad.LeaderID)
+		return q.GetAgent(ctx, squad.LeaderID)
 	default:
 		return db.Agent{}, fmt.Errorf("unsupported assignee type: %s", issue.AssigneeType.String)
 	}
 }
 
-// ComputeDigest returns a hex-encoded SHA-256 of the request body bytes.
+// ComputeDigest returns a hex-encoded SHA-256 of the request body bytes. It is
+// retained for other workspace-scoped idempotency contracts; owner issue
+// dispatch must use ComputeIssueDispatchDigest below.
 func ComputeDigest(body []byte) string {
 	h := sha256.Sum256(body)
 	return hex.EncodeToString(h[:])
+}
+
+// ComputeIssueDispatchDigest binds the raw request to the canonical resource
+// identity. The database key remains (workspace_id, idempotency_key), so a key
+// reused for another Issue deterministically becomes a 409 digest conflict
+// instead of replaying the first Issue's task.
+func ComputeIssueDispatchDigest(issueID pgtype.UUID, body []byte) string {
+	h := sha256.New()
+	h.Write([]byte("hivecrew.owner-issue-dispatch.v1\x00"))
+	h.Write([]byte(util.UUIDToString(issueID)))
+	h.Write([]byte{0})
+	h.Write(body)
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+var errAmbiguousDispatchTarget = errors.New("dispatch: task authority targets are ambiguous")
+
+func dispatchTaskAuthority(ctx context.Context, q *db.Queries, taskIDs []pgtype.UUID) (string, string, bool, error) {
+	if len(taskIDs) == 0 {
+		return "", "", false, nil
+	}
+	tasks := make([]db.AgentTaskQueue, 0, len(taskIDs))
+	for _, taskID := range taskIDs {
+		task, err := q.GetAgentTask(ctx, taskID)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				// Idempotency rows outlive task retention. Preserve the durable
+				// replay decision and task IDs, but never invent a historical
+				// target from the current Issue snapshot.
+				return "", "", false, nil
+			}
+			return "", "", false, err
+		}
+		tasks = append(tasks, task)
+	}
+	targetAgentID, assigneeType, err := dispatchTaskAuthorityFromTasks(tasks)
+	if err != nil {
+		return "", "", false, err
+	}
+	return targetAgentID, assigneeType, true, nil
+}
+
+func dispatchTaskAuthorityFromTasks(tasks []db.AgentTaskQueue) (string, string, error) {
+	if len(tasks) == 0 {
+		return "", "", nil
+	}
+	targetAgentID := util.UUIDToString(tasks[0].AgentID)
+	assigneeType := "agent"
+	if tasks[0].SquadID.Valid {
+		assigneeType = "squad"
+	}
+	for _, task := range tasks[1:] {
+		candidateAgentID := util.UUIDToString(task.AgentID)
+		candidateType := "agent"
+		if task.SquadID.Valid {
+			candidateType = "squad"
+		}
+		if candidateAgentID != targetAgentID || candidateType != assigneeType {
+			return "", "", errAmbiguousDispatchTarget
+		}
+	}
+	if targetAgentID == "" {
+		return "", "", errAmbiguousDispatchTarget
+	}
+	return targetAgentID, assigneeType, nil
 }
 
 func isUniqueViolation(err error) bool {

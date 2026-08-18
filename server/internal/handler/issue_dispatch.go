@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/multica-ai/multica/server/internal/service"
@@ -28,6 +30,90 @@ type DispatchRequest struct {
 	IdempotencyKey    string `json:"idempotency_key"`
 	ExpectedStatus    string `json:"expected_status"`
 	ExpectedUpdatedAt string `json:"expected_updated_at"`
+	// HandoffNote is a compatibility field used by the pre-Gate frontend. It
+	// maps to the canonical task handoff note; no client-selected agent or
+	// workspace is accepted from this legacy shape.
+	HandoffNote string `json:"handoff_note"`
+}
+
+func rejectTrailingJSON(dec *json.Decoder) error {
+	var extra any
+	if err := dec.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return errors.New("trailing content after JSON object")
+		}
+		return fmt.Errorf("trailing content after JSON object: %w", err)
+	}
+	return nil
+}
+
+func legacyDispatchPreview(issue db.Issue, result *service.PreviewResult) IssueDispatchPreview {
+	targetAgentID := ""
+	assigneeType := issue.AssigneeType.String
+	if result.Assignee != nil {
+		targetAgentID = result.Assignee.ID
+		assigneeType = result.Assignee.Type
+	}
+	dispatchable := result.Decision == service.DecisionWouldEnqueue || result.Decision == service.DecisionAlreadyActive
+	return IssueDispatchPreview{
+		Dispatchable:     dispatchable,
+		AlreadyPending:   result.Decision == service.DecisionAlreadyActive,
+		TargetAgentID:    targetAgentID,
+		AssigneeType:     assigneeType,
+		Reason:           string(result.Reason),
+		HandoffSupported: dispatchable,
+	}
+}
+
+func legacyDispatchReceipt(issue db.Issue, workspaceID, actorType, actorID, idemKey string, result *service.DispatchResult) IssueDispatchReceipt {
+	receipt := IssueDispatchReceipt{
+		Operation:      "dispatch",
+		IssueID:        util.UUIDToString(issue.ID),
+		WorkspaceID:    workspaceID,
+		AlreadyPending: result.Decision == service.DecisionAlreadyActive || result.Replayed,
+		TargetAgentID:  result.TargetAgentID,
+		AssigneeType:   result.AssigneeType,
+		IdempotencyKey: idemKey,
+		PerformedAt:    time.Now().UTC().Format(time.RFC3339Nano),
+		ActorType:      actorType,
+		ActorID:        actorID,
+	}
+	if len(result.TaskIDs) > 0 {
+		taskID := result.TaskIDs[0]
+		receipt.TaskID = &taskID
+	}
+	return receipt
+}
+
+func dispatchPreviewResponse(issue db.Issue, result *service.PreviewResult) map[string]any {
+	response := map[string]any{
+		"decision":         result.Decision,
+		"reason":           result.Reason,
+		"issue_status":     result.IssueStatus,
+		"issue_updated_at": result.IssueUpdatedAt,
+		"active_tasks":     result.ActiveTasks,
+		// Compatibility wrapper for the pre-Gate frontend image.
+		"issue_id": util.UUIDToString(issue.ID),
+		"preview":  legacyDispatchPreview(issue, result),
+	}
+	if result.Assignee != nil {
+		response["assignee"] = result.Assignee
+	}
+	return response
+}
+
+func dispatchResultResponse(issue db.Issue, workspaceID, actorType, actorID, idemKey string, result *service.DispatchResult) map[string]any {
+	response := map[string]any{
+		"decision": result.Decision,
+		"reason":   result.Reason,
+		"replayed": result.Replayed,
+		// Compatibility wrapper for the pre-Gate frontend image.
+		"receipt": legacyDispatchReceipt(issue, workspaceID, actorType, actorID, idemKey, result),
+	}
+	if result.TaskIDs != nil {
+		response["task_ids"] = result.TaskIDs
+	}
+	return response
 }
 
 // DispatchPreview runs the read-only dispatch preview. Owner/admin only.
@@ -62,14 +148,19 @@ func (h *Handler) DispatchPreview(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// Reject trailing JSON tokens.
-		if dec.More() {
-			writeError(w, http.StatusBadRequest, "trailing content after JSON object")
+		if err := rejectTrailingJSON(dec); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
 	}
 
 	// Load active tasks.
-	activeTasks, _ := h.Queries.ListActiveTasksByIssue(r.Context(), issue.ID)
+	activeTasks, err := h.Queries.ListActiveTasksByIssue(r.Context(), issue.ID)
+	if err != nil {
+		slog.Warn("dispatch-preview active task lookup failed", "issue_id", id, "error", err)
+		writeError(w, http.StatusInternalServerError, "dispatch preview unavailable")
+		return
+	}
 
 	// Build the permission probe.
 	actorType, actorID := h.resolveActor(r, userID, workspaceID)
@@ -90,7 +181,7 @@ func (h *Handler) DispatchPreview(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Cache-Control", "private, no-store")
-	writeJSON(w, http.StatusOK, result)
+	writeJSON(w, http.StatusOK, dispatchPreviewResponse(issue, result))
 }
 
 // Dispatch runs the idempotent dispatch write. Owner/admin only.
@@ -129,8 +220,8 @@ func (h *Handler) Dispatch(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
 		return
 	}
-	if dec.More() {
-		writeError(w, http.StatusBadRequest, "trailing content after JSON object")
+	if err := rejectTrailingJSON(dec); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -150,13 +241,19 @@ func (h *Handler) Dispatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	digest := service.ComputeDigest(body)
+	digest := service.ComputeIssueDispatchDigest(issue.ID, body)
 
 	// Load active tasks.
-	activeTasks, _ := h.Queries.ListActiveTasksByIssue(r.Context(), issue.ID)
+	activeTasks, err := h.Queries.ListActiveTasksByIssue(r.Context(), issue.ID)
+	if err != nil {
+		slog.Warn("dispatch active task lookup failed", "issue_id", id, "error", err)
+		writeError(w, http.StatusInternalServerError, "dispatch unavailable")
+		return
+	}
 
 	userUUID, _ := util.ParseUUID(userID)
 	wsUUID, _ := util.ParseUUID(workspaceID)
+	actorType, actorID := h.resolveActor(r, userID, workspaceID)
 
 	result, err := h.OwnerDispatchService.Dispatch(r.Context(), service.DispatchParams{
 		Issue:             issue,
@@ -167,16 +264,17 @@ func (h *Handler) Dispatch(w http.ResponseWriter, r *http.Request) {
 		ExpectedUpdatedAt: req.ExpectedUpdatedAt,
 		ActiveTasks:       activeTasks,
 		ActorUserID:       userUUID,
+		HandoffNote:       req.HandoffNote,
 	})
 	if err != nil {
 		if errors.Is(err, service.ErrIdempotencyConflict) {
 			w.Header().Set("Cache-Control", "private, no-store")
-			writeJSON(w, http.StatusConflict, result)
+			writeJSON(w, http.StatusConflict, dispatchResultResponse(issue, workspaceID, actorType, actorID, idemKey, result))
 			return
 		}
 		if errors.Is(err, service.ErrExpectedStateMismatch) {
 			w.Header().Set("Cache-Control", "private, no-store")
-			writeJSON(w, http.StatusPreconditionFailed, result)
+			writeJSON(w, http.StatusPreconditionFailed, dispatchResultResponse(issue, workspaceID, actorType, actorID, idemKey, result))
 			return
 		}
 		slog.Warn("dispatch failed", "issue_id", id, "error", err)
@@ -185,5 +283,17 @@ func (h *Handler) Dispatch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Cache-Control", "private, no-store")
-	writeJSON(w, http.StatusAccepted, result)
+	status := http.StatusConflict
+	switch result.Decision {
+	case service.DecisionWouldEnqueue:
+		status = http.StatusAccepted
+		if result.Replayed {
+			status = http.StatusOK
+		}
+	case service.DecisionAlreadyActive:
+		status = http.StatusOK
+	case service.DecisionBlocked, service.DecisionNeedsAssignment:
+		status = http.StatusConflict
+	}
+	writeJSON(w, status, dispatchResultResponse(issue, workspaceID, actorType, actorID, idemKey, result))
 }

@@ -68,6 +68,29 @@ type TaskService struct {
 	analyticsContextOrder []string
 }
 
+// queryPreparer returns the narrow, query-bound view needed while preparing a
+// task inside a caller-owned transaction. TaskService owns synchronization
+// state for analytics caching. Bind only operational dependencies and leave
+// the live service's synchronization state untouched.
+func (s *TaskService) queryPreparer(queries *db.Queries) *TaskService {
+	if s == nil {
+		return nil
+	}
+	return &TaskService{
+		Queries:      queries,
+		TxStarter:    s.TxStarter,
+		nonTxDB:      s.nonTxDB,
+		Hub:          s.Hub,
+		Bus:          s.Bus,
+		Analytics:    s.Analytics,
+		Metrics:      s.Metrics,
+		Wakeup:       s.Wakeup,
+		FeatureFlags: s.FeatureFlags,
+		EmptyClaim:   s.EmptyClaim,
+		Composio:     s.Composio,
+	}
+}
+
 // ComposioOverlayBuilder is the seam TaskService uses to build the per-task
 // MCP overlay at enqueue time. Implemented by
 // internal/integrations/composio.Service.BuildTaskOverlay; tests provide an
@@ -1101,8 +1124,7 @@ func (s *TaskService) prepareIssueTaskWithCommentPlan(
 		return db.AgentTaskQueue{}, fmt.Errorf("task trigger evidence override requires kind and ref id")
 	}
 
-	preparer := *s
-	preparer.Queries = queries
+	preparer := s.queryPreparer(queries)
 
 	if !issue.AssigneeID.Valid {
 		slog.Error("task enqueue failed", "issue_id", util.UUIDToString(issue.ID), "error", "issue has no assignee")
@@ -1254,8 +1276,7 @@ func (s *TaskService) prepareMentionTaskWithCommentPlan(
 	if err := s.rejectPausedProjectDispatch(ctx, queries, issue); err != nil {
 		return db.AgentTaskQueue{}, err
 	}
-	preparer := *s
-	preparer.Queries = queries
+	preparer := s.queryPreparer(queries)
 
 	agent, err := preparer.Queries.GetAgent(ctx, agentID)
 	if err != nil {

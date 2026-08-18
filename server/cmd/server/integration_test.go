@@ -21,6 +21,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/auth"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/realtime"
+	"github.com/multica-ai/multica/server/internal/service"
 )
 
 var (
@@ -563,6 +564,182 @@ func TestIssuesCRUDThroughRouter(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != 404 {
 		t.Fatalf("GetIssue after delete: expected 404, got %d", resp.StatusCode)
+	}
+}
+
+// TestIssueDispatchRoutesUseStrictOwnerDispatchService proves the effective
+// HTTP route, rather than calling either handler directly. The strict handler
+// rejects unknown preview fields, enforces the idempotency/CAS contract, and
+// returns service result shapes instead of the legacy receipt wrapper.
+func TestIssueDispatchRoutesUseStrictOwnerDispatchService(t *testing.T) {
+	ctx := context.Background()
+	var agentID string
+	if err := testPool.QueryRow(ctx, `
+		SELECT id FROM agent
+		WHERE workspace_id = $1 AND archived_at IS NULL
+		ORDER BY created_at ASC LIMIT 1
+	`, testWorkspaceID).Scan(&agentID); err != nil {
+		t.Fatalf("load integration agent: %v", err)
+	}
+
+	var issueID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO issue (
+			workspace_id, title, status, priority, creator_type, creator_id,
+			number, assignee_type, assignee_id
+		) VALUES (
+			$1, 'strict router dispatch contract', 'todo', 'high', 'member', $2,
+			COALESCE((SELECT MAX(number) FROM issue WHERE workspace_id = $1), 0) + 1,
+			'agent', $3
+		)
+		RETURNING id
+	`, testWorkspaceID, testUserID, agentID).Scan(&issueID); err != nil {
+		t.Fatalf("create strict router issue: %v", err)
+	}
+	t.Cleanup(func() { _, _ = testPool.Exec(context.Background(), `DELETE FROM issue WHERE id = $1`, issueID) })
+
+	// The legacy preview handler ignores unknown fields. A 400 proves the
+	// request reached the strict OwnerDispatchService route.
+	resp := authRequest(t, http.MethodPost, "/api/issues/"+issueID+"/dispatch-preview", map[string]any{
+		"unknown_field": true,
+	})
+	if resp.StatusCode != http.StatusBadRequest {
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		t.Fatalf("strict preview unknown field: got %d: %s", resp.StatusCode, body)
+	}
+	resp.Body.Close()
+
+	resp = authRequest(t, http.MethodPost, "/api/issues/"+issueID+"/dispatch-preview", map[string]any{})
+	var preview service.PreviewResult
+	readJSON(t, resp, &preview)
+	if preview.Decision != service.DecisionWouldEnqueue || preview.IssueStatus != "todo" {
+		t.Fatalf("strict preview = %#v, want would_enqueue/todo", preview)
+	}
+	if preview.Assignee == nil || preview.Assignee.ID != agentID {
+		t.Fatalf("strict preview assignee = %#v, want agent %s", preview.Assignee, agentID)
+	}
+
+	// The legacy dispatch handler accepts an empty/missing idempotency key. The
+	// strict route must reject it before any task is enqueued.
+	resp = authRequest(t, http.MethodPost, "/api/issues/"+issueID+"/dispatch", map[string]any{
+		"expected_status": "todo",
+	})
+	if resp.StatusCode != http.StatusBadRequest {
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		t.Fatalf("strict dispatch missing idempotency key: got %d: %s", resp.StatusCode, body)
+	}
+	resp.Body.Close()
+
+	// expected_status is the route's optimistic CAS guard.
+	resp = authRequest(t, http.MethodPost, "/api/issues/"+issueID+"/dispatch", map[string]any{
+		"idempotency_key": "router-strict-cas-mismatch",
+		"expected_status": "in_progress",
+	})
+	if resp.StatusCode != http.StatusPreconditionFailed {
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		t.Fatalf("strict dispatch CAS mismatch: got %d: %s", resp.StatusCode, body)
+	}
+	resp.Body.Close()
+
+	body := map[string]any{
+		"idempotency_key": "router-strict-dispatch-v1",
+		"expected_status": "todo",
+		// Legacy frontend envelope remains accepted and is mapped into the
+		// canonical task handoff note.
+		"handoff_note": "router compatibility handoff",
+	}
+	resp = authRequest(t, http.MethodPost, "/api/issues/"+issueID+"/dispatch", body)
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("strict dispatch: got %d", resp.StatusCode)
+	}
+	var first service.DispatchResult
+	readJSON(t, resp, &first)
+	if first.Decision != service.DecisionWouldEnqueue || len(first.TaskIDs) != 1 || first.Replayed {
+		t.Fatalf("strict first dispatch = %#v, want one fresh task", first)
+	}
+
+	resp = authRequest(t, http.MethodPost, "/api/issues/"+issueID+"/dispatch", body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("strict dispatch replay: got %d", resp.StatusCode)
+	}
+	var replay service.DispatchResult
+	readJSON(t, resp, &replay)
+	if !replay.Replayed || len(replay.TaskIDs) != 1 || replay.TaskIDs[0] != first.TaskIDs[0] {
+		t.Fatalf("strict replay = %#v, want same task and replayed=true", replay)
+	}
+
+	resp = authRequest(t, http.MethodPost, "/api/issues/"+issueID+"/dispatch", map[string]any{
+		"idempotency_key": "router-strict-dispatch-v1",
+	})
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("strict digest conflict: got %d", resp.StatusCode)
+	}
+	var conflict service.DispatchResult
+	readJSON(t, resp, &conflict)
+	if conflict.Reason != service.BlockReasonIdempotencyConflict {
+		t.Fatalf("strict digest conflict = %#v, want idempotency_conflict", conflict)
+	}
+
+	resp = authRequest(t, http.MethodPost, "/api/issues/"+issueID+"/stop", map[string]any{})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("strict route cleanup stop: got %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	resp = authRequest(t, http.MethodPost, "/api/issues/"+issueID+"/send-to-review", nil)
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		t.Fatalf("send-to-review route after dispatch: got %d: %s", resp.StatusCode, body)
+	}
+	resp.Body.Close()
+}
+
+func TestIssueDispatchRoutesPreserveNullBlockedAndNeedsAssignmentShapes(t *testing.T) {
+	ctx := context.Background()
+	var issueID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO issue (
+			workspace_id, title, status, priority, creator_type, creator_id, number
+		) VALUES (
+			$1, 'strict route compatibility shapes', 'todo', 'medium', 'member', $2,
+			COALESCE((SELECT MAX(number) FROM issue WHERE workspace_id = $1), 0) + 1
+		)
+		RETURNING id
+	`, testWorkspaceID, testUserID).Scan(&issueID); err != nil {
+		t.Fatalf("create compatibility issue: %v", err)
+	}
+	t.Cleanup(func() { _, _ = testPool.Exec(context.Background(), `DELETE FROM issue WHERE id = $1`, issueID) })
+
+	// JSON null is a valid empty preview envelope and must still reach the
+	// strict handler, which truthfully reports needs_assignment.
+	resp := authRequest(t, http.MethodPost, "/api/issues/"+issueID+"/dispatch-preview", json.RawMessage("null"))
+	var needsAssignment service.PreviewResult
+	readJSON(t, resp, &needsAssignment)
+	if resp.StatusCode != http.StatusOK || needsAssignment.Decision != service.DecisionNeedsAssignment {
+		t.Fatalf("null preview status=%d result=%#v, want 200/needs_assignment", resp.StatusCode, needsAssignment)
+	}
+
+	resp = authRequest(t, http.MethodPost, "/api/issues/"+issueID+"/dispatch", map[string]any{
+		"idempotency_key": "needs-assignment-route-shape",
+	})
+	var needsDispatch service.DispatchResult
+	readJSON(t, resp, &needsDispatch)
+	if resp.StatusCode != http.StatusConflict || needsDispatch.Decision != service.DecisionNeedsAssignment {
+		t.Fatalf("needs-assignment dispatch status=%d result=%#v, want 409/needs_assignment", resp.StatusCode, needsDispatch)
+	}
+
+	if _, err := testPool.Exec(ctx, `UPDATE issue SET status = 'done' WHERE id = $1`, issueID); err != nil {
+		t.Fatalf("make compatibility issue terminal: %v", err)
+	}
+	resp = authRequest(t, http.MethodPost, "/api/issues/"+issueID+"/dispatch-preview", json.RawMessage("null"))
+	var blocked service.PreviewResult
+	readJSON(t, resp, &blocked)
+	if resp.StatusCode != http.StatusOK || blocked.Decision != service.DecisionBlocked || blocked.Reason != service.BlockReasonTerminalStatus {
+		t.Fatalf("terminal preview status=%d result=%#v, want 200/blocked terminal_status", resp.StatusCode, blocked)
 	}
 }
 

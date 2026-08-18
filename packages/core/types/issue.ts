@@ -71,26 +71,33 @@ export interface Issue {
 // Owner issue control plane (Lane A dispatch view) wire shapes.
 
 export interface IssueDispatchPreview {
-  dispatchable: boolean;
-  already_pending: boolean;
-  target_agent_id: string;
-  assignee_type: string;
+  issue_id: string;
+  decision: "would_enqueue" | "already_active" | "blocked" | "needs_assignment";
   reason?: string;
-  handoff_supported: boolean;
+  issue_status: string;
+  issue_updated_at: string;
+  assignee?: {
+    type: string;
+    id: string;
+    name?: string;
+    archived?: boolean;
+    runtime_online?: boolean;
+    can_invoke: boolean;
+  };
+  active_tasks: Array<{
+    id: string;
+    agent_id: string;
+    status: string;
+    originator_user_id?: string;
+    accountable_user_id?: string;
+  }>;
 }
 
-export interface IssueDispatchReceipt {
-  operation: "dispatch";
-  issue_id: string;
-  workspace_id: string;
-  task_id?: string;
-  already_pending: boolean;
-  target_agent_id: string;
-  assignee_type: string;
-  idempotency_key?: string;
-  performed_at: string;
-  actor_type: string;
-  actor_id: string;
+export interface IssueDispatchResult {
+  decision: "would_enqueue" | "already_active" | "blocked" | "needs_assignment";
+  reason?: string;
+  task_ids?: string[];
+  replayed?: boolean;
 }
 
 export interface IssueStopReceipt {

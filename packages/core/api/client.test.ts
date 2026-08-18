@@ -5,6 +5,67 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+describe("ApiClient owner dispatch dual-shape contract", () => {
+  it("parses strict fields while retaining legacy preview and receipt wrappers", async () => {
+    const preview = {
+      issue_id: "issue-1",
+      decision: "would_enqueue",
+      issue_status: "todo",
+      issue_updated_at: "2026-08-18T00:00:00.000000Z",
+      assignee: { type: "agent", id: "agent-1", can_invoke: true },
+      active_tasks: [],
+      preview: {
+        dispatchable: true,
+        already_pending: false,
+        target_agent_id: "agent-1",
+        assignee_type: "agent",
+        handoff_supported: true,
+      },
+    };
+    const receipt = {
+      decision: "would_enqueue",
+      task_ids: ["task-1"],
+      replayed: false,
+      receipt: {
+        operation: "dispatch",
+        issue_id: "issue-1",
+        workspace_id: "workspace-1",
+        task_id: "task-1",
+        already_pending: false,
+        target_agent_id: "agent-1",
+        assignee_type: "agent",
+        performed_at: "2026-08-18T00:00:00Z",
+        actor_type: "member",
+        actor_id: "member-1",
+      },
+    };
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(preview), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(receipt), { status: 200 })));
+
+    const client = new ApiClient("https://api.example.test");
+    await expect(client.previewIssueDispatch("issue-1")).resolves.toMatchObject({
+      decision: "would_enqueue",
+      active_tasks: [],
+      preview: { dispatchable: true },
+    });
+    await expect(client.dispatchIssue("issue-1", { idempotency_key: "k" })).resolves.toMatchObject({
+      task_ids: ["task-1"],
+      receipt: { already_pending: false },
+    });
+  });
+
+  it("fails closed on malformed dispatch responses", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ decision: "would_enqueue", active_tasks: null }), { status: 200 }),
+    ));
+
+    await expect(
+      new ApiClient("https://api.example.test").previewIssueDispatch("issue-1"),
+    ).resolves.toMatchObject({ decision: "blocked", reason: "malformed_response", active_tasks: [] });
+  });
+});
+
 describe("ApiClient work-conserving projection", () => {
   const authority = {
     workspace_id: "00000000-0000-0000-0000-000000000001",

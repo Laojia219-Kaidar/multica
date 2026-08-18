@@ -3,7 +3,7 @@ import { api } from "../api";
 import { issueKeys } from "./queries";
 import type {
   IssueDispatchPreview,
-  IssueDispatchReceipt,
+  IssueDispatchResult,
   IssueStopReceipt,
   IssueReviewReceipt,
 } from "../types";
@@ -18,7 +18,7 @@ export function useIssueDispatchPreview(issueId: string | null | undefined) {
     queryKey: ["issue-dispatch-preview", issueId ?? ""],
     queryFn: async () => {
       const res = await api.previewIssueDispatch(issueId as string);
-      return res.preview;
+      return res;
     },
     enabled: !!issueId,
   });
@@ -34,7 +34,7 @@ function invalidateIssue(issueId: string) {
 export function useIssueDispatch(issueId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (data?: { idempotency_key?: string; handoff_note?: string }) =>
+    mutationFn: (data?: { idempotency_key?: string; expected_status?: string; expected_updated_at?: string; handoff_note?: string }) =>
       api.dispatchIssue(issueId, data),
     onSettled: () => invalidateIssue(issueId)(qc),
   });
@@ -58,7 +58,7 @@ export function useIssueSendToReview(issueId: string) {
 
 export type {
   IssueDispatchPreview,
-  IssueDispatchReceipt,
+  IssueDispatchResult,
   IssueStopReceipt,
   IssueReviewReceipt,
 };

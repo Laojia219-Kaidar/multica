@@ -67,7 +67,7 @@ import type {
   RuntimeUsage,
   IssueUsageSummary,
   IssueDispatchPreview,
-  IssueDispatchReceipt,
+  IssueDispatchResult,
   IssueStopReceipt,
   IssueReviewReceipt,
   RuntimeHourlyActivity,
@@ -1168,6 +1168,10 @@ import {
   EMPTY_LIST_GITHUB_REPOSITORIES_RESPONSE,
   RuntimeModelListRequestSchema,
   MALFORMED_RUNTIME_MODEL_LIST_REQUEST,
+  IssueDispatchPreviewSchema,
+  IssueDispatchResultSchema,
+  EMPTY_ISSUE_DISPATCH_PREVIEW,
+  EMPTY_ISSUE_DISPATCH_RESULT,
   WorkConservingProjectionResponseSchema,
   EMPTY_WORK_CONSERVING_PROJECTION,
 } from "./schemas";
@@ -2819,19 +2823,25 @@ export class ApiClient {
   // Owner issue control plane (Lane A dispatch view).
   async previewIssueDispatch(
     issueId: string,
-  ): Promise<{ issue_id: string; preview: IssueDispatchPreview }> {
-    return this.fetch(`/api/issues/${issueId}/dispatch-preview`, {
+  ): Promise<IssueDispatchPreview> {
+    const raw = await this.fetch<unknown>(`/api/issues/${issueId}/dispatch-preview`, {
       method: "POST",
+    });
+    return parseWithFallback(raw, IssueDispatchPreviewSchema, EMPTY_ISSUE_DISPATCH_PREVIEW, {
+      endpoint: "POST /api/issues/:id/dispatch-preview",
     });
   }
 
   async dispatchIssue(
     issueId: string,
-    data?: { idempotency_key?: string; handoff_note?: string },
-  ): Promise<{ receipt: IssueDispatchReceipt }> {
-    return this.fetch(`/api/issues/${issueId}/dispatch`, {
+    data?: { idempotency_key?: string; expected_status?: string; expected_updated_at?: string; handoff_note?: string },
+  ): Promise<IssueDispatchResult> {
+    const raw = await this.fetch<unknown>(`/api/issues/${issueId}/dispatch`, {
       method: "POST",
       body: JSON.stringify(data ?? {}),
+    });
+    return parseWithFallback(raw, IssueDispatchResultSchema, EMPTY_ISSUE_DISPATCH_RESULT, {
+      endpoint: "POST /api/issues/:id/dispatch",
     });
   }
 

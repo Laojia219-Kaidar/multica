@@ -47,9 +47,82 @@ import type {
   User,
   WebhookDelivery,
   WorkConservingProjection,
+  IssueDispatchPreview,
+  IssueDispatchResult,
 } from "../types";
 import type { CloudRuntimeNode } from "../runtimes/cloud-runtime";
 import type { CreateFeedbackResponse } from "../feedback/types";
+
+const LegacyIssueDispatchPreviewSchema = z.object({
+  dispatchable: z.boolean(),
+  already_pending: z.boolean(),
+  target_agent_id: z.string(),
+  assignee_type: z.string(),
+  reason: z.string().optional(),
+  handoff_supported: z.boolean(),
+}).strict();
+
+const LegacyIssueDispatchReceiptSchema = z.object({
+  operation: z.literal("dispatch"),
+  issue_id: z.string(),
+  workspace_id: z.string(),
+  task_id: z.string().optional(),
+  already_pending: z.boolean(),
+  target_agent_id: z.string(),
+  assignee_type: z.string(),
+  idempotency_key: z.string().optional(),
+  performed_at: z.string(),
+  actor_type: z.string(),
+  actor_id: z.string(),
+}).strict();
+
+export const IssueDispatchPreviewSchema = z.object({
+  issue_id: z.string(),
+  decision: z.enum(["would_enqueue", "already_active", "blocked", "needs_assignment"]),
+  reason: z.string().optional(),
+  issue_status: z.string(),
+  issue_updated_at: z.string(),
+  assignee: z.object({
+    type: z.string(),
+    id: z.string(),
+    name: z.string().optional(),
+    archived: z.boolean().optional(),
+    runtime_online: z.boolean().optional(),
+    can_invoke: z.boolean(),
+  }).strict().optional(),
+  active_tasks: z.array(z.object({
+    id: z.string(),
+    agent_id: z.string(),
+    status: z.string(),
+    originator_user_id: z.string().optional(),
+    accountable_user_id: z.string().optional(),
+  }).strict()).default([]),
+  preview: LegacyIssueDispatchPreviewSchema.optional(),
+}).strict();
+
+export const IssueDispatchResultSchema = z.object({
+  decision: z.enum(["would_enqueue", "already_active", "blocked", "needs_assignment"]),
+  reason: z.string().optional(),
+  task_ids: z.array(z.string()).default([]),
+  replayed: z.boolean().default(false),
+  receipt: LegacyIssueDispatchReceiptSchema.optional(),
+}).strict();
+
+export const EMPTY_ISSUE_DISPATCH_PREVIEW: IssueDispatchPreview = {
+  issue_id: "",
+  decision: "blocked",
+  reason: "malformed_response",
+  issue_status: "",
+  issue_updated_at: "",
+  active_tasks: [],
+};
+
+export const EMPTY_ISSUE_DISPATCH_RESULT: IssueDispatchResult = {
+  decision: "blocked",
+  reason: "malformed_response",
+  task_ids: [],
+  replayed: false,
+};
 
 const WorkConservingAuthoritySnapshotSchema = z.object({
   workspace_id: z.string().default(""),
