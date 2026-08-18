@@ -63,6 +63,14 @@ the project's repo set authoritative: attached `github_repo` resources are
 still delivered, but an empty set stays empty and never inherits workspace
 repos. Use `project_only` for deliberately repo-free execution contexts.
 
+Project updates are optimistic-concurrency protected. The API returns a numeric
+`revision` on project create/get/update; direct `PUT /api/projects/:id`
+callers must send that revision in the JSON body.
+Missing revision returns `428`, invalid revision returns `400`, and a stale revision
+returns `412` without changing the project. The CLI reads the current project before
+`project update` and `project status`, then sends the revision automatically; it
+fails clearly when connected to a backend that predates the revision contract.
+
 ## When to add a resource
 
 Add/update a project resource when the user asks for durable project context: "把这个 GitHub repo 绑到项目上", "以后都用这个 repo", "agent 总是拿不到这个项目的仓库", or "这个项目要在我的本地目录里跑".

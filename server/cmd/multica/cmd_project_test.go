@@ -7,6 +7,26 @@ import (
 	"github.com/spf13/cobra"
 )
 
+func TestProjectRevisionFromResponse(t *testing.T) {
+	got, err := projectRevisionFromResponse(map[string]any{"revision": float64(7)})
+	if err != nil || got != 7 {
+		t.Fatalf("valid revision = %d, err=%v; want 7", got, err)
+	}
+	for name, payload := range map[string]map[string]any{
+		"missing":  {},
+		"zero":     {"revision": float64(0)},
+		"fraction": {"revision": 1.5},
+		"string":   {"revision": "7"},
+		"negative": {"revision": float64(-1)},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := projectRevisionFromResponse(payload); err == nil {
+				t.Fatal("expected invalid project revision to fail")
+			}
+		})
+	}
+}
+
 // validateProjectStatus must accept the five DB-backed statuses and reject
 // anything else with a message that lists the valid values. `project create`,
 // `project update`, and `project status` all share it (#3925: `--status active`

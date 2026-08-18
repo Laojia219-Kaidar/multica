@@ -85,7 +85,7 @@ func TestUpdateProjectInvalidStatusReturns400(t *testing.T) {
 	})
 
 	w = httptest.NewRecorder()
-	req = newRequest("PUT", "/api/projects/"+project.ID, map[string]any{"status": "active"})
+	req = newRequest("PUT", "/api/projects/"+project.ID, map[string]any{"status": "active", "revision": currentProjectRevision(t, project.ID)})
 	req = withURLParam(req, "id", project.ID)
 	testHandler.UpdateProject(w, req)
 	if w.Code != http.StatusBadRequest {

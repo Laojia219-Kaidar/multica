@@ -68,7 +68,7 @@ INSERT INTO project (
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
     COALESCE($11, 'workspace_fallback')
-) RETURNING id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, repo_inheritance_policy
+) RETURNING id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, repo_inheritance_policy, revision
 `
 
 type CreateProjectParams struct {
@@ -115,6 +115,7 @@ func (q *Queries) CreateProject(ctx context.Context, arg CreateProjectParams) (P
 		&i.StartDate,
 		&i.DueDate,
 		&i.RepoInheritancePolicy,
+		&i.Revision,
 	)
 	return i, err
 }
@@ -135,7 +136,7 @@ func (q *Queries) DeleteProject(ctx context.Context, arg DeleteProjectParams) er
 }
 
 const getProject = `-- name: GetProject :one
-SELECT id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, repo_inheritance_policy FROM project
+SELECT id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, repo_inheritance_policy, revision FROM project
 WHERE id = $1
 `
 
@@ -157,12 +158,13 @@ func (q *Queries) GetProject(ctx context.Context, id pgtype.UUID) (Project, erro
 		&i.StartDate,
 		&i.DueDate,
 		&i.RepoInheritancePolicy,
+		&i.Revision,
 	)
 	return i, err
 }
 
 const getProjectInWorkspace = `-- name: GetProjectInWorkspace :one
-SELECT id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, repo_inheritance_policy FROM project
+SELECT id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, repo_inheritance_policy, revision FROM project
 WHERE id = $1 AND workspace_id = $2
 `
 
@@ -189,12 +191,13 @@ func (q *Queries) GetProjectInWorkspace(ctx context.Context, arg GetProjectInWor
 		&i.StartDate,
 		&i.DueDate,
 		&i.RepoInheritancePolicy,
+		&i.Revision,
 	)
 	return i, err
 }
 
 const getProjectInWorkspaceForUpdate = `-- name: GetProjectInWorkspaceForUpdate :one
-SELECT id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, repo_inheritance_policy FROM project
+SELECT id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, repo_inheritance_policy, revision FROM project
 WHERE id = $1 AND workspace_id = $2
 FOR UPDATE
 `
@@ -225,6 +228,7 @@ func (q *Queries) GetProjectInWorkspaceForUpdate(ctx context.Context, arg GetPro
 		&i.StartDate,
 		&i.DueDate,
 		&i.RepoInheritancePolicy,
+		&i.Revision,
 	)
 	return i, err
 }
@@ -265,7 +269,7 @@ func (q *Queries) GetProjectIssueStats(ctx context.Context, projectIds []pgtype.
 }
 
 const listProjects = `-- name: ListProjects :many
-SELECT id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, repo_inheritance_policy FROM project
+SELECT id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, repo_inheritance_policy, revision FROM project
 WHERE workspace_id = $1
   AND ($2::text IS NULL OR status = $2)
   AND ($3::text IS NULL OR priority = $3)
@@ -311,6 +315,7 @@ func (q *Queries) ListProjects(ctx context.Context, arg ListProjectsParams) ([]P
 			&i.StartDate,
 			&i.DueDate,
 			&i.RepoInheritancePolicy,
+			&i.Revision,
 		); err != nil {
 			return nil, err
 		}
@@ -374,9 +379,10 @@ UPDATE project SET
     start_date = $9,
     due_date = $10,
     repo_inheritance_policy = COALESCE($11, repo_inheritance_policy),
+    revision = revision + 1,
     updated_at = now()
-WHERE id = $1
-RETURNING id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, repo_inheritance_policy
+WHERE id = $1 AND workspace_id = $12 AND revision = $13
+RETURNING id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, repo_inheritance_policy, revision
 `
 
 type UpdateProjectParams struct {
@@ -391,6 +397,8 @@ type UpdateProjectParams struct {
 	StartDate             pgtype.Date `json:"start_date"`
 	DueDate               pgtype.Date `json:"due_date"`
 	RepoInheritancePolicy pgtype.Text `json:"repo_inheritance_policy"`
+	WorkspaceID           pgtype.UUID `json:"workspace_id"`
+	Revision              int64       `json:"revision"`
 }
 
 func (q *Queries) UpdateProject(ctx context.Context, arg UpdateProjectParams) (Project, error) {
@@ -406,6 +414,8 @@ func (q *Queries) UpdateProject(ctx context.Context, arg UpdateProjectParams) (P
 		arg.StartDate,
 		arg.DueDate,
 		arg.RepoInheritancePolicy,
+		arg.WorkspaceID,
+		arg.Revision,
 	)
 	var i Project
 	err := row.Scan(
@@ -423,6 +433,7 @@ func (q *Queries) UpdateProject(ctx context.Context, arg UpdateProjectParams) (P
 		&i.StartDate,
 		&i.DueDate,
 		&i.RepoInheritancePolicy,
+		&i.Revision,
 	)
 	return i, err
 }

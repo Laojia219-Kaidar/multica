@@ -604,7 +604,8 @@ func TestProjectResourceCountBreadcrumb(t *testing.T) {
 	// reset derived counts to 0 because UpdateProject didn't reload them.
 	w = httptest.NewRecorder()
 	req = newRequest("PUT", "/api/projects/"+project.ID, map[string]any{
-		"title": "Resource count breadcrumb (updated)",
+		"title":    "Resource count breadcrumb (updated)",
+		"revision": currentProjectRevision(t, project.ID),
 	})
 	req = withURLParam(req, "id", project.ID)
 	testHandler.UpdateProject(w, req)

@@ -167,6 +167,12 @@ export const ProjectSchema = z.object({
   // parses to null instead of degrading the batch to the empty fallback.
   start_date: z.string().nullable().default(null),
   due_date: z.string().nullable().default(null),
+  // Older backends retain the historical workspace fallback behavior.
+  repo_inheritance_policy: z.enum(["workspace_fallback", "project_only"]).default("workspace_fallback"),
+  // Older backends predate Project CAS. Preserve read compatibility but mark
+  // the token unavailable so mutations fail closed instead of sending an
+  // unprotected update to a backend that ignores the new field.
+  revision: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).nullable().default(null),
   created_at: z.string(),
   updated_at: z.string(),
   issue_count: z.number().default(0),
@@ -202,6 +208,8 @@ export const EMPTY_PROJECT: Project = {
   lead_id: null,
   start_date: null,
   due_date: null,
+  repo_inheritance_policy: "workspace_fallback",
+  revision: null,
   created_at: "",
   updated_at: "",
   issue_count: 0,

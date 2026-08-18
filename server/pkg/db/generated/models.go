@@ -1143,6 +1143,7 @@ type Project struct {
 	StartDate             pgtype.Date        `json:"start_date"`
 	DueDate               pgtype.Date        `json:"due_date"`
 	RepoInheritancePolicy string             `json:"repo_inheritance_policy"`
+	Revision              int64              `json:"revision"`
 }
 
 type ProjectLifecycleReceipt struct {

@@ -523,6 +523,8 @@ describe("ChatInput project context", () => {
     lead_id: null,
     start_date: null,
     due_date: null,
+    repo_inheritance_policy: "workspace_fallback",
+    revision: 1,
     created_at: new Date(0).toISOString(),
     updated_at: new Date(0).toISOString(),
     issue_count: 0,

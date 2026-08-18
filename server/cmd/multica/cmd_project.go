@@ -416,8 +416,16 @@ func runProjectUpdate(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("resolve project: %w", err)
 	}
+	var current map[string]any
+	if err := client.GetJSON(ctx, "/api/projects/"+projectRef.ID, &current); err != nil {
+		return fmt.Errorf("read project revision: %w", err)
+	}
+	revision, err := projectRevisionFromResponse(current)
+	if err != nil {
+		return err
+	}
 
-	body := map[string]any{}
+	body := map[string]any{"revision": int64(revision)}
 	if cmd.Flags().Changed("title") {
 		v, _ := cmd.Flags().GetString("title")
 		body["title"] = v
@@ -464,7 +472,7 @@ func runProjectUpdate(cmd *cobra.Command, args []string) error {
 		body["repo_inheritance_policy"] = v
 	}
 
-	if len(body) == 0 {
+	if len(body) == 1 {
 		return fmt.Errorf("no fields to update; use flags like --title, --status, --description, --icon, --lead, --start-date, --due-date, --repo-inheritance-policy")
 	}
 
@@ -530,8 +538,16 @@ func runProjectStatus(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("resolve project: %w", err)
 	}
+	var current map[string]any
+	if err := client.GetJSON(ctx, "/api/projects/"+projectRef.ID, &current); err != nil {
+		return fmt.Errorf("read project revision: %w", err)
+	}
+	revision, err := projectRevisionFromResponse(current)
+	if err != nil {
+		return err
+	}
 
-	body := map[string]any{"status": status}
+	body := map[string]any{"status": status, "revision": int64(revision)}
 	var result map[string]any
 	if err := client.PutJSON(ctx, "/api/projects/"+projectRef.ID, body, &result); err != nil {
 		return fmt.Errorf("update status: %w", err)
@@ -544,6 +560,14 @@ func runProjectStatus(cmd *cobra.Command, args []string) error {
 		return cli.PrintJSON(os.Stdout, result)
 	}
 	return nil
+}
+
+func projectRevisionFromResponse(project map[string]any) (int64, error) {
+	revision, ok := project["revision"].(float64)
+	if !ok || revision < 1 || revision > float64(1<<53-1) || revision != float64(int64(revision)) {
+		return 0, fmt.Errorf("server response is missing a valid project revision; upgrade the HiveCrew backend")
+	}
+	return int64(revision), nil
 }
 
 // ---------------------------------------------------------------------------

@@ -52,8 +52,16 @@ export function useUpdateProject(projectId: string) {
 
   return useMutation({
     mutationKey: ["updateProject", projectId] as const,
-    mutationFn: (patch: UpdateProjectRequest) =>
-      api.updateProject(projectId, patch),
+    mutationFn: (patch: UpdateProjectRequest) => {
+      const cached =
+        qc.getQueryData<Project>(projectKeys.detail(wsId, projectId)) ??
+        qc.getQueryData<Project[]>(projectKeys.list(wsId))?.find((p) => p.id === projectId);
+      const revision = patch.revision ?? cached?.revision;
+      if (revision == null || !Number.isSafeInteger(revision) || revision <= 0) {
+        throw new Error("project revision unavailable; refresh the project before updating");
+      }
+      return api.updateProject(projectId, { ...patch, revision });
+    },
     onMutate: async (patch) => {
       const detailKey = projectKeys.detail(wsId, projectId);
       const listKey = projectKeys.list(wsId);

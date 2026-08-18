@@ -29,8 +29,16 @@ export function useUpdateProject() {
   const qc = useQueryClient();
   const wsId = useWorkspaceId();
   return useMutation({
-    mutationFn: ({ id, ...data }: { id: string } & UpdateProjectRequest) =>
-      api.updateProject(id, data),
+    mutationFn: ({ id, ...data }: { id: string } & UpdateProjectRequest) => {
+      const cached =
+        qc.getQueryData<Project>(projectKeys.detail(wsId, id)) ??
+        qc.getQueryData<ListProjectsResponse>(projectKeys.list(wsId))?.projects.find((p) => p.id === id);
+      const revision = data.revision ?? cached?.revision;
+      if (revision == null || !Number.isSafeInteger(revision) || revision <= 0) {
+        throw new Error("project revision unavailable; refresh the project before updating");
+      }
+      return api.updateProject(id, { ...data, revision });
+    },
     onMutate: ({ id, ...data }) => {
       qc.cancelQueries({ queryKey: projectKeys.list(wsId) });
       const prevList = qc.getQueryData<ListProjectsResponse>(projectKeys.list(wsId));

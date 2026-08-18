@@ -816,6 +816,10 @@ const ProjectSchema = z.object({
   // Older backends predate repository inheritance policy and retain the
   // historical workspace fallback behavior.
   repo_inheritance_policy: z.enum(["workspace_fallback", "project_only"]).default("workspace_fallback"),
+  // Older backends predate Project CAS. Preserve read compatibility but mark
+  // the token unavailable; mutation hooks reject null instead of sending an
+  // unprotected update to a backend that would ignore the new field.
+  revision: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).nullable().default(null),
   created_at: z.string(),
   updated_at: z.string(),
   issue_count: z.number().default(0),

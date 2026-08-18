@@ -5,6 +5,7 @@
 - `project create --repo` attaches `github_repo` resources during project creation.
 - `project create` / `project update` accept `--start-date` / `--due-date` (calendar days, `YYYY-MM-DD`), mapping to the project `start_date` / `due_date` columns (migration `166_project_dates`); an empty `--start-date ""`/`--due-date ""` on update clears the date, mirroring the issue date flags in `cmd_issue.go`.
 - `project create` / `project update` accept `--repo-inheritance-policy workspace_fallback|project_only`, mapping to `project.repo_inheritance_policy` (migration `414_project_repo_inheritance_policy`). The default preserves workspace repo inheritance; `project_only` keeps an empty project repo set authoritative.
+- Project update/status writes use `project.revision` (migration `415_project_revision`) as an atomic CAS token. The handler requires JSON `revision`; `428`/`400`/`412` are fail-closed outcomes for missing/invalid/stale tokens. The CLI performs a GET first and supplies the current revision.
 - `project resource add` supports shortcuts for `github_repo` (`--url`, non-JSON `--ref` for checkout ref, `--default-branch-hint`) and `local_directory` (`--local-path`, `--daemon-id`, `--ref-label`), or generic JSON `--ref '<json>'`.
 - `project resource update` merges shortcut edits with existing `resource_ref` so a partial edit does not clobber required fields; non-JSON `--ref` updates `github_repo.resource_ref.ref`.
 - `server/cmd/server/router.go` exposes `/api/projects` plus `/api/projects/{projectId}/resources` routes.

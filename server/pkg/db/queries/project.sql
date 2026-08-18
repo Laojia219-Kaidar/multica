@@ -63,8 +63,9 @@ UPDATE project SET
     start_date = sqlc.narg('start_date'),
     due_date = sqlc.narg('due_date'),
     repo_inheritance_policy = COALESCE(sqlc.narg('repo_inheritance_policy'), repo_inheritance_policy),
+    revision = revision + 1,
     updated_at = now()
-WHERE id = $1
+WHERE id = $1 AND workspace_id = sqlc.arg('workspace_id') AND revision = sqlc.arg('revision')
 RETURNING *;
 
 -- name: DeleteProject :exec

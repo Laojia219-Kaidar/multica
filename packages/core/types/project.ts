@@ -19,6 +19,9 @@ export interface Project {
   start_date: string | null;
   due_date: string | null;
   repo_inheritance_policy: ProjectRepoInheritancePolicy;
+  // Null only when reading from a pre-CAS backend. Mutations must fail closed
+  // until a revision-bearing backend response has been read.
+  revision: number | null;
   created_at: string;
   updated_at: string;
   issue_count: number;
@@ -54,6 +57,8 @@ export interface UpdateProjectRequest {
   start_date?: string | null;
   due_date?: string | null;
   repo_inheritance_policy?: ProjectRepoInheritancePolicy;
+  /** Required by the server; the mutation hook fills it from cached Project state. */
+  revision?: number;
 }
 
 export interface ListProjectsResponse {

@@ -57,6 +57,7 @@ func TestProjectStartDueDateLifecycle(t *testing.T) {
 	w = httptest.NewRecorder()
 	putReq := withURLParam(newRequest("PUT", "/api/projects/"+created.ID, map[string]any{
 		"due_date": "2026-04-15",
+		"revision": currentProjectRevision(t, created.ID),
 	}), "id", created.ID)
 	testHandler.UpdateProject(w, putReq)
 	updated := decodeProject(t, w, http.StatusOK)
@@ -71,6 +72,7 @@ func TestProjectStartDueDateLifecycle(t *testing.T) {
 	w = httptest.NewRecorder()
 	clearReq := withURLParam(newRequest("PUT", "/api/projects/"+created.ID, map[string]any{
 		"start_date": "",
+		"revision":   currentProjectRevision(t, created.ID),
 	}), "id", created.ID)
 	testHandler.UpdateProject(w, clearReq)
 	cleared := decodeProject(t, w, http.StatusOK)
@@ -88,9 +90,10 @@ func TestProjectStartDueDateLifecycle(t *testing.T) {
 func TestSearchProjectsCarriesDates(t *testing.T) {
 	w := httptest.NewRecorder()
 	testHandler.CreateProject(w, newRequest("POST", "/api/projects?workspace_id="+testWorkspaceID, map[string]any{
-		"title":      "zzsearchdated project",
-		"start_date": "2026-05-01",
-		"due_date":   "2026-05-31",
+		"title":                   "zzsearchdated project",
+		"start_date":              "2026-05-01",
+		"due_date":                "2026-05-31",
+		"repo_inheritance_policy": projectRepoInheritancePolicyProjectOnly,
 	}))
 	created := decodeProject(t, w, http.StatusCreated)
 	t.Cleanup(func() {
@@ -121,6 +124,9 @@ func TestSearchProjectsCarriesDates(t *testing.T) {
 	if found.StartDate == nil || *found.StartDate != "2026-05-01" || found.DueDate == nil || *found.DueDate != "2026-05-31" {
 		t.Fatalf("search dates = (%v, %v), want (2026-05-01, 2026-05-31)", found.StartDate, found.DueDate)
 	}
+	if found.RepoInheritancePolicy != projectRepoInheritancePolicyProjectOnly || found.Revision != created.Revision {
+		t.Fatalf("search policy/revision = %q/%d, want %q/%d", found.RepoInheritancePolicy, found.Revision, projectRepoInheritancePolicyProjectOnly, created.Revision)
+	}
 }
 
 // A malformed calendar day is a 400 on both create and update, never a 500.
@@ -147,6 +153,7 @@ func TestProjectInvalidDateReturns400(t *testing.T) {
 	w = httptest.NewRecorder()
 	putReq := withURLParam(newRequest("PUT", "/api/projects/"+project.ID, map[string]any{
 		"due_date": "not-a-date",
+		"revision": currentProjectRevision(t, project.ID),
 	}), "id", project.ID)
 	testHandler.UpdateProject(w, putReq)
 	if w.Code != http.StatusBadRequest {

@@ -39,6 +39,7 @@ type ProjectResponse struct {
 	// workspace fallback; project_only makes an empty project repo set
 	// authoritative so daemon claims never inherit workspace repos.
 	RepoInheritancePolicy string `json:"repo_inheritance_policy"`
+	Revision              int64  `json:"revision"`
 	CreatedAt             string `json:"created_at"`
 	UpdatedAt             string `json:"updated_at"`
 	IssueCount            int64  `json:"issue_count"`
@@ -64,6 +65,7 @@ func projectToResponse(p db.Project) ProjectResponse {
 		StartDate:             dateToPtr(p.StartDate),
 		DueDate:               dateToPtr(p.DueDate),
 		RepoInheritancePolicy: p.RepoInheritancePolicy,
+		Revision:              p.Revision,
 		CreatedAt:             timestampToString(p.CreatedAt),
 		UpdatedAt:             timestampToString(p.UpdatedAt),
 	}
@@ -120,7 +122,21 @@ type UpdateProjectRequest struct {
 	StartDate             *string `json:"start_date"`
 	DueDate               *string `json:"due_date"`
 	RepoInheritancePolicy *string `json:"repo_inheritance_policy"`
+	// Revision is the optimistic-concurrency token returned by create/get/update.
+	Revision *int64 `json:"revision"`
 }
+
+func parseProjectRevision(req UpdateProjectRequest) (int64, int, string) {
+	if req.Revision == nil {
+		return 0, http.StatusPreconditionRequired, "project revision is required"
+	}
+	if *req.Revision <= 0 || *req.Revision > maxSafeProjectRevision {
+		return 0, http.StatusBadRequest, "project revision must be a positive safe integer"
+	}
+	return *req.Revision, 0, ""
+}
+
+const maxSafeProjectRevision int64 = 1<<53 - 1
 
 func (h *Handler) ListProjects(w http.ResponseWriter, r *http.Request) {
 	workspaceID := h.resolveWorkspaceID(r)
@@ -520,11 +536,21 @@ func (h *Handler) UpdateProject(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
+	revision, revisionStatus, revisionError := parseProjectRevision(req)
+	if revisionStatus != 0 {
+		writeError(w, revisionStatus, revisionError)
+		return
+	}
 	var rawFields map[string]json.RawMessage
-	json.Unmarshal(bodyBytes, &rawFields)
+	if err := json.Unmarshal(bodyBytes, &rawFields); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
 
 	params := db.UpdateProjectParams{
 		ID:          prevProject.ID,
+		WorkspaceID: prevProject.WorkspaceID,
+		Revision:    revision,
 		Description: prevProject.Description,
 		Icon:        prevProject.Icon,
 		LeadType:    prevProject.LeadType,
@@ -613,6 +639,10 @@ func (h *Handler) UpdateProject(w http.ResponseWriter, r *http.Request) {
 	}
 	project, err := h.Queries.UpdateProject(r.Context(), params)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusPreconditionFailed, "project revision is stale")
+			return
+		}
 		h.writeProjectWriteError(w, r, err, "update")
 		return
 	}
@@ -812,7 +842,7 @@ func buildProjectSearchQuery(phrase string, terms []string, includeClosed bool) 
 
 	query := fmt.Sprintf(`SELECT p.id, p.workspace_id, p.title, p.description, p.icon,
 		p.status, p.priority, p.lead_type, p.lead_id,
-		p.start_date, p.due_date,
+		p.start_date, p.due_date, p.repo_inheritance_policy, p.revision,
 		p.created_at, p.updated_at,
 		COUNT(*) OVER() AS total_count,
 		%s AS match_source
@@ -892,6 +922,8 @@ func (h *Handler) SearchProjects(w http.ResponseWriter, r *http.Request) {
 				&row.project.LeadID,
 				&row.project.StartDate,
 				&row.project.DueDate,
+				&row.project.RepoInheritancePolicy,
+				&row.project.Revision,
 				&row.project.CreatedAt,
 				&row.project.UpdatedAt,
 				&row.totalCount,

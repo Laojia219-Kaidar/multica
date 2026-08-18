@@ -214,6 +214,8 @@ const PROJECT: Project = {
   lead_id: null,
   start_date: null,
   due_date: null,
+  repo_inheritance_policy: "workspace_fallback",
+  revision: 1,
   created_at: "2026-06-01T00:00:00Z",
   updated_at: "2026-06-01T00:00:00Z",
   issue_count: 3,

@@ -62,6 +62,8 @@ function makeProject(id: string, title: string): Project {
     description: null,
     start_date: null,
     due_date: null,
+    repo_inheritance_policy: "workspace_fallback",
+    revision: 1,
     created_at: new Date(0).toISOString(),
     updated_at: new Date(0).toISOString(),
   };

@@ -626,16 +626,19 @@ func (s *ProjectLifecycleControlService) setProjectStatus(ctx context.Context, p
 
 func setProjectStatusWithQueries(ctx context.Context, queries *db.Queries, proj db.Project, status string) error {
 	_, err := queries.UpdateProject(ctx, db.UpdateProjectParams{
-		ID:          proj.ID,
-		Title:       textValue(proj.Title),
-		Description: proj.Description,
-		Icon:        proj.Icon,
-		Status:      textValue(status),
-		Priority:    textValue(proj.Priority),
-		LeadType:    proj.LeadType,
-		LeadID:      proj.LeadID,
-		StartDate:   proj.StartDate,
-		DueDate:     proj.DueDate,
+		ID:                    proj.ID,
+		WorkspaceID:           proj.WorkspaceID,
+		Revision:              proj.Revision,
+		Title:                 textValue(proj.Title),
+		Description:           proj.Description,
+		Icon:                  proj.Icon,
+		Status:                textValue(status),
+		Priority:              textValue(proj.Priority),
+		LeadType:              proj.LeadType,
+		LeadID:                proj.LeadID,
+		StartDate:             proj.StartDate,
+		DueDate:               proj.DueDate,
+		RepoInheritancePolicy: pgtype.Text{String: proj.RepoInheritancePolicy, Valid: proj.RepoInheritancePolicy != ""},
 	})
 	return err
 }
