@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
@@ -27,6 +28,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/featureflag"
+	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
 // TestWriterLeaseHandlerRemoteTerminalE2E is the C2a control-plane fixture.
@@ -59,7 +61,7 @@ func TestWriterLeaseHandlerRemoteTerminalE2E(t *testing.T) {
 	r.Post("/api/daemon/runtimes/{runtimeId}/tasks/{taskId}/writer-lease/{action}", h.WriterLease)
 	r.Post("/api/daemon/tasks/{taskId}/start", h.StartTask)
 	r.Post("/api/daemon/tasks/{taskId}/complete", h.CompleteTask)
-	server := httptest.NewServer(r)
+	server := httptest.NewServer(mediatedLinuxDaemonHandler(r))
 	defer server.Close()
 
 	clientA := daemon.NewClient(server.URL)
@@ -464,6 +466,23 @@ func seedWriterLeaseE2EFixture(t *testing.T, ctx context.Context, pool *pgxpool.
 		}
 	}
 	return f
+}
+
+func mediatedLinuxDaemonHandler(next http.Handler) http.Handler {
+	// Keep the control-plane fixture host-independent while explicitly modeling
+	// the only runtime allowed to claim writer-lease enforce tasks.
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.Header.Set("X-Client-OS", "linux")
+		capabilities := strings.TrimSpace(r.Header.Get("X-Client-Capabilities"))
+		if !strings.Contains(","+capabilities+",", ","+protocol.DaemonCapabilityMediatedOverlayV1+",") {
+			if capabilities != "" {
+				capabilities += ","
+			}
+			capabilities += protocol.DaemonCapabilityMediatedOverlayV1
+			r.Header.Set("X-Client-Capabilities", capabilities)
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func assertTaskStatus(t *testing.T, ctx context.Context, pool *pgxpool.Pool, taskID, want string) {

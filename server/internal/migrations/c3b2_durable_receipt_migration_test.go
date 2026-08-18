@@ -409,8 +409,9 @@ func assertC3b2IndexExists(t *testing.T, ctx context.Context, conn *pgx.Conn, sc
 	var valid bool
 	if err := conn.QueryRow(ctx, `
 		SELECT COALESCE((
-			SELECT c.indisvalid
+			SELECT i.indisvalid AND i.indisready
 			FROM pg_class c
+			JOIN pg_index i ON i.indexrelid = c.oid
 			JOIN pg_namespace n ON n.oid = c.relnamespace
 			WHERE n.nspname = $1 AND c.relname = $2 AND c.relkind = 'i'
 		), false)`, schema, index).Scan(&valid); err != nil {
