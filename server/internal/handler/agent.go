@@ -299,32 +299,34 @@ type AgentTaskResponse struct {
 	// daemon renders them into the runtime brief as `## Employee Memories`
 	// so past lessons directly shape future runs. Empty for agents with no
 	// promoted memories.
-	EmployeeMemories   []EmployeeMemoryData        `json:"employee_memories,omitempty"`
-	ThreadName         string                      `json:"thread_name,omitempty"` // semantic title for provider-native session/thread history
-	Status             string                      `json:"status"`
-	Priority           int32                       `json:"priority"`
-	DispatchedAt       *string                     `json:"dispatched_at"`
-	StartedAt          *string                     `json:"started_at"`
-	CompletedAt        *string                     `json:"completed_at"`
-	Result             any                         `json:"result"`
-	Error              *string                     `json:"error"`
-	FailureReason      string                      `json:"failure_reason,omitempty"` // see TaskService.MaybeRetryFailedTask
-	Attempt            int32                       `json:"attempt"`
-	MaxAttempts        int32                       `json:"max_attempts"`
-	ParentTaskID       *string                     `json:"parent_task_id,omitempty"`
-	IsLeaderTask       bool                        `json:"is_leader_task,omitempty"`
-	Agent              *TaskAgentData              `json:"agent,omitempty"`
-	ConnectedApps      []ConnectedAppData          `json:"connected_apps,omitempty"` // daemon-claim only: per-run app capabilities mounted through runtime MCP overlays
-	Repos              []RepoData                  `json:"repos,omitempty"`
-	ProjectID          string                      `json:"project_id,omitempty"`          // issue's project, when present
-	ProjectTitle       string                      `json:"project_title,omitempty"`       // for surfacing in agent context
-	ProjectDescription string                      `json:"project_description,omitempty"` // durable project-level context injected into the brief
-	ProjectResources   []ProjectResourceData       `json:"project_resources,omitempty"`   // resources attached to the project
-	WriterLeaseMode    string                      `json:"writer_lease_mode,omitempty"`
-	WriterLeaseTargets []service.WriterLeaseTarget `json:"writer_lease_targets,omitempty"`
-	CreatedAt          string                      `json:"created_at"`
-	PriorSessionID     string                      `json:"prior_session_id,omitempty"` // session ID from a previous task on same issue
-	PriorWorkDir       string                      `json:"prior_work_dir,omitempty"`   // work_dir from a previous task on same issue
+	EmployeeMemories      []EmployeeMemoryData        `json:"employee_memories,omitempty"`
+	ThreadName            string                      `json:"thread_name,omitempty"` // semantic title for provider-native session/thread history
+	Status                string                      `json:"status"`
+	Priority              int32                       `json:"priority"`
+	DispatchedAt          *string                     `json:"dispatched_at"`
+	StartedAt             *string                     `json:"started_at"`
+	CompletedAt           *string                     `json:"completed_at"`
+	Result                any                         `json:"result"`
+	Error                 *string                     `json:"error"`
+	FailureReason         string                      `json:"failure_reason,omitempty"` // see TaskService.MaybeRetryFailedTask
+	Attempt               int32                       `json:"attempt"`
+	MaxAttempts           int32                       `json:"max_attempts"`
+	ParentTaskID          *string                     `json:"parent_task_id,omitempty"`
+	IsLeaderTask          bool                        `json:"is_leader_task,omitempty"`
+	Agent                 *TaskAgentData              `json:"agent,omitempty"`
+	ConnectedApps         []ConnectedAppData          `json:"connected_apps,omitempty"` // daemon-claim only: per-run app capabilities mounted through runtime MCP overlays
+	Repos                 []RepoData                  `json:"repos"`
+	RepoInheritancePolicy string                      `json:"repo_inheritance_policy,omitempty"`
+	RepoSource            string                      `json:"repo_source,omitempty"`
+	ProjectID             string                      `json:"project_id,omitempty"`          // issue's project, when present
+	ProjectTitle          string                      `json:"project_title,omitempty"`       // for surfacing in agent context
+	ProjectDescription    string                      `json:"project_description,omitempty"` // durable project-level context injected into the brief
+	ProjectResources      []ProjectResourceData       `json:"project_resources,omitempty"`   // resources attached to the project
+	WriterLeaseMode       string                      `json:"writer_lease_mode,omitempty"`
+	WriterLeaseTargets    []service.WriterLeaseTarget `json:"writer_lease_targets,omitempty"`
+	CreatedAt             string                      `json:"created_at"`
+	PriorSessionID        string                      `json:"prior_session_id,omitempty"` // session ID from a previous task on same issue
+	PriorWorkDir          string                      `json:"prior_work_dir,omitempty"`   // work_dir from a previous task on same issue
 	// PriorSessionResumeUnavailable is set when a more recent Codex session was
 	// withheld because its rollout was missing (MUL-5305); PriorSessionID (if
 	// any) is then an older fallback. The daemon surfaces the continuity gap in
@@ -650,6 +652,7 @@ func taskToResponse(t db.AgentTaskQueue, workspaceID string) AgentTaskResponse {
 		MaxAttempts:         t.MaxAttempts,
 		ParentTaskID:        uuidToPtr(t.ParentTaskID),
 		IsLeaderTask:        t.IsLeaderTask,
+		Repos:               []RepoData{},
 		CreatedAt:           timestampToString(t.CreatedAt),
 		TriggerCommentID:    uuidToPtr(t.TriggerCommentID),
 		CoalescedCommentIDs: uuidsToStrings(t.CoalescedCommentIds),

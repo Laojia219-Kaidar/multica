@@ -37,6 +37,7 @@ func TestClient_IdentityHeaders_PostJSON(t *testing.T) {
 		for _, want := range []string{
 			protocol.DaemonCapabilitySkillBundlesV1,
 			protocol.DaemonCapabilityCoalescedCommentsV1,
+			protocol.DaemonCapabilityProjectRepoScopeV1,
 		} {
 			if !capabilities[want] {
 				t.Errorf("X-Client-Capabilities missing %q: %v", want, capabilities)

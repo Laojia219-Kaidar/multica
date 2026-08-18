@@ -119,6 +119,7 @@ export type {
   Project,
   ProjectStatus,
   ProjectPriority,
+  ProjectRepoInheritancePolicy,
   CreateProjectRequest,
   UpdateProjectRequest,
   ListProjectsResponse,

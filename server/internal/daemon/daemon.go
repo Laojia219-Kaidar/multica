@@ -229,6 +229,7 @@ type workspaceState struct {
 	allowedRepoURLs map[string]struct{}
 	taskRepoURLs    map[string]struct{}
 	taskRepoRefs    map[string]map[string]string // taskID -> repo URL -> checkout ref
+	taskRepoScopes  map[string]taskRepoScope     // taskID -> immutable checkout authorization scope
 	settings        json.RawMessage              // workspace settings (JSONB)
 	lastRepoSyncErr string
 	repoRefreshMu   sync.Mutex
@@ -240,6 +241,11 @@ type workspaceState struct {
 	// successful profile fetch (older server / network blip); guarded by
 	// Daemon.mu like every other field on this struct.
 	profileSetSig string
+}
+
+type taskRepoScope struct {
+	allowWorkspace bool
+	repos          map[string]struct{}
 }
 
 type repoCacheBackend interface {
@@ -1922,6 +1928,60 @@ func (d *Daemon) workspaceRepoAllowed(workspaceID, repoURL string) bool {
 	return false
 }
 
+// repoAllowedForTask is the checkout authorization boundary. Task-scoped
+// project repos remain independent even though taskRepoURLs is a workspace-wide
+// cache/sync union. A real checkout with a task ID but no active scope fails
+// closed; only legacy internal callers with an empty task ID use the historical
+// workspace union.
+func (d *Daemon) repoAllowedForTask(workspaceID, taskID, repoURL string) bool {
+	taskID = strings.TrimSpace(taskID)
+	repoURL = strings.TrimSpace(repoURL)
+	if taskID == "" {
+		return d.workspaceRepoAllowed(workspaceID, repoURL)
+	}
+
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	ws, ok := d.workspaces[workspaceID]
+	if !ok || ws.taskRepoScopes == nil {
+		return false
+	}
+	scope, ok := ws.taskRepoScopes[taskID]
+	if !ok {
+		return false
+	}
+	if _, allowed := scope.repos[repoURL]; allowed {
+		return true
+	}
+	if !scope.allowWorkspace {
+		return false
+	}
+	_, allowed := ws.allowedRepoURLs[repoURL]
+	return allowed
+}
+
+func (d *Daemon) taskScopeRejectsRepo(workspaceID, taskID, repoURL string) bool {
+	taskID = strings.TrimSpace(taskID)
+	if taskID == "" {
+		return false
+	}
+	repoURL = strings.TrimSpace(repoURL)
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	ws, ok := d.workspaces[workspaceID]
+	if !ok || ws.taskRepoScopes == nil {
+		return true
+	}
+	scope, ok := ws.taskRepoScopes[taskID]
+	if !ok {
+		return true
+	}
+	if _, allowed := scope.repos[repoURL]; allowed {
+		return false
+	}
+	return !scope.allowWorkspace
+}
+
 func (d *Daemon) workspaceLastRepoSyncErr(workspaceID string) string {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -2040,6 +2100,61 @@ func (d *Daemon) registerTaskRepos(workspaceID, taskID string, repos []RepoData)
 	}
 }
 
+func (d *Daemon) registerTaskRepoScope(workspaceID, taskID, policy, source string, repos []RepoData) error {
+	taskID = strings.TrimSpace(taskID)
+	if taskID == "" {
+		return errors.New("task repository scope requires task id")
+	}
+	allowWorkspace := false
+	switch strings.TrimSpace(policy) {
+	case "", "workspace_fallback":
+		allowWorkspace = true
+	case "project_only":
+		allowWorkspace = false
+	default:
+		return fmt.Errorf("unknown repository inheritance policy %q", policy)
+	}
+	switch strings.TrimSpace(source) {
+	case "", "workspace_fallback", "none":
+	case "project":
+		// Project resources replace workspace repos in the claim payload even
+		// under the legacy-compatible policy. Preserve that same boundary in
+		// daemon authorization rather than relying only on mutation targets.
+		allowWorkspace = false
+	default:
+		return fmt.Errorf("unknown repository source %q", source)
+	}
+
+	scope := taskRepoScope{allowWorkspace: allowWorkspace, repos: make(map[string]struct{}, len(repos))}
+	for _, repo := range repos {
+		if url := strings.TrimSpace(repo.URL); url != "" {
+			scope.repos[url] = struct{}{}
+		}
+	}
+
+	d.mu.Lock()
+	ws, ok := d.workspaces[workspaceID]
+	if !ok {
+		d.mu.Unlock()
+		// Some non-checkout execution paths (and their focused tests) do not
+		// register a watched workspace. An empty repo set cannot grant checkout
+		// authority, so it is safe to continue without a scope; any later real
+		// checkout with this task ID still fails closed because no scope exists.
+		if len(repos) == 0 {
+			return nil
+		}
+		return fmt.Errorf("workspace is not watched by this daemon: %s", workspaceID)
+	}
+	if ws.taskRepoScopes == nil {
+		ws.taskRepoScopes = make(map[string]taskRepoScope)
+	}
+	ws.taskRepoScopes[taskID] = scope
+	d.mu.Unlock()
+
+	d.registerTaskRepos(workspaceID, taskID, repos)
+	return nil
+}
+
 func (d *Daemon) taskRepoDefaultRef(workspaceID, taskID, repoURL string) string {
 	taskID = strings.TrimSpace(taskID)
 	repoURL = strings.TrimSpace(repoURL)
@@ -2062,8 +2177,13 @@ func (d *Daemon) clearTaskRepoRefs(workspaceID, taskID string) {
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if ws, ok := d.workspaces[workspaceID]; ok && ws.taskRepoRefs != nil {
-		delete(ws.taskRepoRefs, taskID)
+	if ws, ok := d.workspaces[workspaceID]; ok {
+		if ws.taskRepoRefs != nil {
+			delete(ws.taskRepoRefs, taskID)
+		}
+		if ws.taskRepoScopes != nil {
+			delete(ws.taskRepoScopes, taskID)
+		}
 	}
 }
 
@@ -2282,6 +2402,10 @@ func (d *Daemon) convergeWorkspaceRuntimesToZero(ctx context.Context, workspaceI
 }
 
 func (d *Daemon) ensureRepoReady(ctx context.Context, workspaceID, repoURL string) error {
+	return d.ensureRepoReadyForTask(ctx, workspaceID, "", repoURL)
+}
+
+func (d *Daemon) ensureRepoReadyForTask(ctx context.Context, workspaceID, taskID, repoURL string) error {
 	if d.repoCache == nil {
 		return fmt.Errorf("repo cache not initialized")
 	}
@@ -2293,6 +2417,9 @@ func (d *Daemon) ensureRepoReady(ctx context.Context, workspaceID, repoURL strin
 	d.mu.Unlock()
 	if !ok {
 		return fmt.Errorf("workspace is not watched by this daemon: %s", workspaceID)
+	}
+	if d.taskScopeRejectsRepo(workspaceID, taskID, repoURL) {
+		return ErrRepoNotConfigured
 	}
 
 	// Record whether the cache already had this repo before we took the
@@ -2309,12 +2436,12 @@ func (d *Daemon) ensureRepoReady(ctx context.Context, workspaceID, repoURL strin
 	//     a sibling goroutine on a concurrent cold-miss already refreshed
 	//     and populated the cache. We can skip the duplicate refresh — the
 	//     sibling's refresh is fresh enough for our gate read.
-	cacheHitOnEntry := d.workspaceRepoAllowed(workspaceID, repoURL) && d.repoCache.Lookup(workspaceID, repoURL) != ""
+	cacheHitOnEntry := d.repoAllowedForTask(workspaceID, taskID, repoURL) && d.repoCache.Lookup(workspaceID, repoURL) != ""
 
 	ws.repoRefreshMu.Lock()
 	defer ws.repoRefreshMu.Unlock()
 
-	if !cacheHitOnEntry && d.workspaceRepoAllowed(workspaceID, repoURL) && d.repoCache.Lookup(workspaceID, repoURL) != "" {
+	if !cacheHitOnEntry && d.repoAllowedForTask(workspaceID, taskID, repoURL) && d.repoCache.Lookup(workspaceID, repoURL) != "" {
 		return nil
 	}
 
@@ -2323,7 +2450,7 @@ func (d *Daemon) ensureRepoReady(ctx context.Context, workspaceID, repoURL strin
 		return fmt.Errorf("refresh workspace repos: %w", err)
 	}
 
-	if !d.workspaceRepoAllowed(workspaceID, repoURL) {
+	if !d.repoAllowedForTask(workspaceID, taskID, repoURL) {
 		return ErrRepoNotConfigured
 	}
 
@@ -2331,7 +2458,18 @@ func (d *Daemon) ensureRepoReady(ctx context.Context, workspaceID, repoURL strin
 		return nil
 	}
 
-	if err := d.syncWorkspaceReposContext(ctx, workspaceID, resp.Repos); err != nil && ctx.Err() != nil {
+	reposToSync := append([]RepoData(nil), resp.Repos...)
+	configured := false
+	for _, repo := range reposToSync {
+		if strings.TrimSpace(repo.URL) == repoURL {
+			configured = true
+			break
+		}
+	}
+	if !configured {
+		reposToSync = append(reposToSync, RepoData{URL: repoURL})
+	}
+	if err := d.syncWorkspaceReposContext(ctx, workspaceID, reposToSync); err != nil && ctx.Err() != nil {
 		return ctx.Err()
 	}
 
@@ -4759,7 +4897,9 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// in the per-workspace allowlist and the local cache, otherwise
 	// `multica repo checkout` would reject project-only URLs that aren't also
 	// bound at the workspace level.
-	d.registerTaskRepos(task.WorkspaceID, task.ID, task.Repos)
+	if err := d.registerTaskRepoScope(task.WorkspaceID, task.ID, task.RepoInheritancePolicy, task.RepoSource, task.Repos); err != nil {
+		return TaskResult{}, fmt.Errorf("register task repository scope: %w", err)
+	}
 	defer d.clearTaskRepoRefs(task.WorkspaceID, task.ID)
 
 	entry, ok := d.agents()[provider]

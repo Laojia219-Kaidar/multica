@@ -1607,6 +1607,7 @@ type claimBuildFailure struct {
 func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQueue, runtime db.AgentRuntime, runtimeID, runtimeWorkspaceID string) (resp AgentTaskResponse, deliveredCommentIDs []pgtype.UUID, agentSkillCount, builtinSkillCount int, claim *service.WriterLeaseClaim, failure *claimBuildFailure) {
 	// Build response with fresh agent data (name + skills + custom_env + custom_args).
 	resp = taskToResponse(*task, runtimeWorkspaceID)
+	invalidProjectContext := false
 	supportsCoalescedComments := requestHasClientCapability(r, protocol.DaemonCapabilityCoalescedCommentsV1)
 	// Empty-but-non-nil so pgx persists '{}' rather than NULL for tasks without
 	// comment input. Comment tasks replace this with the ids actually embedded
@@ -1797,8 +1798,14 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			}
 
 			var projectRepos []RepoData
+			allowWorkspaceRepoFallback := !issue.ProjectID.Valid
 			if issue.ProjectID.Valid {
 				if proj, err := h.Queries.GetProjectInWorkspace(r.Context(), db.GetProjectInWorkspaceParams{ID: issue.ProjectID, WorkspaceID: issue.WorkspaceID}); err == nil {
+					allowWorkspaceRepoFallback = projectAllowsWorkspaceRepoFallback(proj.RepoInheritancePolicy)
+					if proj.RepoInheritancePolicy != projectRepoInheritancePolicyWorkspaceFallback && proj.RepoInheritancePolicy != projectRepoInheritancePolicyProjectOnly {
+						invalidProjectContext = true
+					}
+					resp.RepoInheritancePolicy = proj.RepoInheritancePolicy
 					resp.ProjectID = uuidToString(proj.ID)
 					resp.ProjectTitle = proj.Title
 					resp.ProjectDescription = proj.Description.String
@@ -1834,16 +1841,24 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 						}
 						resp.ProjectResources = out
 					}
+				} else {
+					invalidProjectContext = true
 				}
 			}
 
 			if len(projectRepos) > 0 {
 				resp.Repos = projectRepos
-			} else if ws, err := h.Queries.GetWorkspace(r.Context(), issue.WorkspaceID); err == nil && ws.Repos != nil {
-				var repos []RepoData
-				if json.Unmarshal(ws.Repos, &repos) == nil && len(repos) > 0 {
-					resp.Repos = repos
+				resp.RepoSource = "project"
+			} else if allowWorkspaceRepoFallback {
+				resp.RepoSource = projectRepoInheritancePolicyWorkspaceFallback
+				if ws, err := h.Queries.GetWorkspace(r.Context(), issue.WorkspaceID); err == nil && ws.Repos != nil {
+					var repos []RepoData
+					if json.Unmarshal(ws.Repos, &repos) == nil && len(repos) > 0 {
+						resp.Repos = repos
+					}
 				}
+			} else {
+				resp.RepoSource = "none"
 			}
 		}
 
@@ -2129,11 +2144,17 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			// claim time: a deleted/stale project degrades to workspace context and
 			// can never leak a project from another tenant.
 			var projectRepos []RepoData
+			allowWorkspaceRepoFallback := !cs.ProjectID.Valid
 			if cs.ProjectID.Valid {
 				if project, err := h.Queries.GetProjectInWorkspace(r.Context(), db.GetProjectInWorkspaceParams{
 					ID:          cs.ProjectID,
 					WorkspaceID: cs.WorkspaceID,
 				}); err == nil {
+					allowWorkspaceRepoFallback = projectAllowsWorkspaceRepoFallback(project.RepoInheritancePolicy)
+					if project.RepoInheritancePolicy != projectRepoInheritancePolicyWorkspaceFallback && project.RepoInheritancePolicy != projectRepoInheritancePolicyProjectOnly {
+						invalidProjectContext = true
+					}
+					resp.RepoInheritancePolicy = project.RepoInheritancePolicy
 					resp.ProjectID = uuidToString(project.ID)
 					resp.ProjectTitle = project.Title
 					resp.ProjectDescription = project.Description.String
@@ -2166,15 +2187,23 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 						}
 						resp.ProjectResources = resources
 					}
+				} else {
+					invalidProjectContext = true
 				}
 			}
 			if len(projectRepos) > 0 {
 				resp.Repos = projectRepos
-			} else if ws, err := h.Queries.GetWorkspace(r.Context(), cs.WorkspaceID); err == nil && ws.Repos != nil {
-				var repos []RepoData
-				if json.Unmarshal(ws.Repos, &repos) == nil && len(repos) > 0 {
-					resp.Repos = repos
+				resp.RepoSource = "project"
+			} else if allowWorkspaceRepoFallback {
+				resp.RepoSource = projectRepoInheritancePolicyWorkspaceFallback
+				if ws, err := h.Queries.GetWorkspace(r.Context(), cs.WorkspaceID); err == nil && ws.Repos != nil {
+					var repos []RepoData
+					if json.Unmarshal(ws.Repos, &repos) == nil && len(repos) > 0 {
+						resp.Repos = repos
+					}
 				}
+			} else {
+				resp.RepoSource = "none"
 			}
 			if !task.ForceFreshSession {
 				// Resume chat sessions only when the stored pointer was produced
@@ -2351,11 +2380,17 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			// the project, and `multica repo checkout` sees the project's
 			// github_repo resources instead of the workspace fallback.
 			var projectRepos []RepoData
+			allowWorkspaceRepoFallback := qc.ProjectID == ""
 			if qc.ProjectID != "" {
 				projectUUID, projectErr := util.ParseUUID(qc.ProjectID)
 				workspaceUUID, workspaceErr := util.ParseUUID(qc.WorkspaceID)
 				if projectErr == nil && workspaceErr == nil {
 					if proj, err := h.Queries.GetProjectInWorkspace(r.Context(), db.GetProjectInWorkspaceParams{ID: projectUUID, WorkspaceID: workspaceUUID}); err == nil {
+						allowWorkspaceRepoFallback = projectAllowsWorkspaceRepoFallback(proj.RepoInheritancePolicy)
+						if proj.RepoInheritancePolicy != projectRepoInheritancePolicyWorkspaceFallback && proj.RepoInheritancePolicy != projectRepoInheritancePolicyProjectOnly {
+							invalidProjectContext = true
+						}
+						resp.RepoInheritancePolicy = proj.RepoInheritancePolicy
 						resp.ProjectID = uuidToString(proj.ID)
 						resp.ProjectTitle = proj.Title
 						resp.ProjectDescription = proj.Description.String
@@ -2388,17 +2423,27 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 							}
 							resp.ProjectResources = out
 						}
+					} else {
+						invalidProjectContext = true
 					}
+				} else {
+					invalidProjectContext = true
 				}
 			}
 
 			if len(projectRepos) > 0 {
 				resp.Repos = projectRepos
-			} else if ws, err := h.Queries.GetWorkspace(r.Context(), parseUUID(qc.WorkspaceID)); err == nil && ws.Repos != nil {
-				var repos []RepoData
-				if json.Unmarshal(ws.Repos, &repos) == nil && len(repos) > 0 {
-					resp.Repos = repos
+				resp.RepoSource = "project"
+			} else if allowWorkspaceRepoFallback {
+				resp.RepoSource = projectRepoInheritancePolicyWorkspaceFallback
+				if ws, err := h.Queries.GetWorkspace(r.Context(), parseUUID(qc.WorkspaceID)); err == nil && ws.Repos != nil {
+					var repos []RepoData
+					if json.Unmarshal(ws.Repos, &repos) == nil && len(repos) > 0 {
+						resp.Repos = repos
+					}
 				}
+			} else {
+				resp.RepoSource = "none"
 			}
 
 			// Parent-issue resolution for quick-create tasks opened from
@@ -2494,6 +2539,38 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			outcome: "error_workspace",
 			status:  http.StatusInternalServerError,
 			message: "task workspace isolation check failed",
+		}
+	}
+	if invalidProjectContext {
+		if _, err := h.TaskService.RequeueTaskAfterClaimFailure(r.Context(), *task); err != nil {
+			slog.Error("task claim: failed to requeue task with invalid project context",
+				"task_id", uuidToString(task.ID), "error", err)
+			return resp, deliveredCommentIDs, agentSkillCount, builtinSkillCount, nil, &claimBuildFailure{
+				outcome: "error_project_context_requeue",
+				status:  http.StatusInternalServerError,
+				message: "failed to requeue task with invalid project context",
+			}
+		}
+		return resp, deliveredCommentIDs, agentSkillCount, builtinSkillCount, nil, &claimBuildFailure{
+			outcome: "error_project_context",
+			status:  http.StatusConflict,
+			message: "task project context is unavailable",
+		}
+	}
+	if resp.RepoInheritancePolicy == projectRepoInheritancePolicyProjectOnly && !requestHasClientCapability(r, protocol.DaemonCapabilityProjectRepoScopeV1) {
+		if _, err := h.TaskService.RequeueTaskAfterClaimFailure(r.Context(), *task); err != nil {
+			slog.Error("task claim: failed to requeue project-only task for incompatible daemon",
+				"task_id", uuidToString(task.ID), "error", err)
+			return resp, deliveredCommentIDs, agentSkillCount, builtinSkillCount, nil, &claimBuildFailure{
+				outcome: "error_project_repo_scope_requeue",
+				status:  http.StatusInternalServerError,
+				message: "failed to requeue task requiring project repository scope",
+			}
+		}
+		return resp, deliveredCommentIDs, agentSkillCount, builtinSkillCount, nil, &claimBuildFailure{
+			outcome: "error_project_repo_scope_capability",
+			status:  http.StatusConflict,
+			message: "daemon project repository scope capability required",
 		}
 	}
 

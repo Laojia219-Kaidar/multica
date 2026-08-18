@@ -354,7 +354,7 @@ func (d *Daemon) executeAuthorizedCheckout(ctx context.Context, req mutationbrok
 		if d.writerLeaseMode(req.TaskID) == "enforce" && req.CheckoutMode != "isolated" {
 			return nil, errors.New("enforce checkout requires mediated isolated mode")
 		}
-		if err := d.ensureRepoReady(mutationCtx, req.WorkspaceID, req.URL); err != nil {
+		if err := d.ensureRepoReadyForTask(mutationCtx, req.WorkspaceID, req.TaskID, req.URL); err != nil {
 			return nil, err
 		}
 		params := repocache.WorktreeParams{

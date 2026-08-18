@@ -206,6 +206,7 @@ func daemonClientCapabilities() string {
 		protocol.DaemonCapabilityCoalescedCommentsV1,
 		protocol.DaemonCapabilityRPCV1,
 		protocol.DaemonCapabilityWriterLeaseV1,
+		protocol.DaemonCapabilityProjectRepoScopeV1,
 	}
 	if runtime.GOOS == "linux" {
 		capabilities = append(capabilities, protocol.DaemonCapabilityMediatedOverlayV1)

@@ -45,9 +45,10 @@ FOR UPDATE;
 -- name: CreateProject :one
 INSERT INTO project (
     workspace_id, title, description, icon, status,
-    lead_type, lead_id, priority, start_date, due_date
+    lead_type, lead_id, priority, start_date, due_date, repo_inheritance_policy
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10
+    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+    COALESCE(sqlc.narg('repo_inheritance_policy'), 'workspace_fallback')
 ) RETURNING *;
 
 -- name: UpdateProject :one
@@ -61,6 +62,7 @@ UPDATE project SET
     lead_id = sqlc.narg('lead_id'),
     start_date = sqlc.narg('start_date'),
     due_date = sqlc.narg('due_date'),
+    repo_inheritance_policy = COALESCE(sqlc.narg('repo_inheritance_policy'), repo_inheritance_policy),
     updated_at = now()
 WHERE id = $1
 RETURNING *;

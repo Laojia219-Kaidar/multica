@@ -1599,11 +1599,12 @@ func TestCancelTask_TaskBelongsToDifferentIssue_Returns404(t *testing.T) {
 
 	ctx := context.Background()
 
-	var agentID, runtimeID string
+	var agentID string
+	runtimeID := testRuntimeID
 	if err := testPool.QueryRow(ctx,
-		`SELECT id, runtime_id FROM agent WHERE workspace_id = $1 LIMIT 1`,
-		testWorkspaceID,
-	).Scan(&agentID, &runtimeID); err != nil {
+		`SELECT id FROM agent WHERE workspace_id = $1 AND runtime_id = $2 LIMIT 1`,
+		testWorkspaceID, runtimeID,
+	).Scan(&agentID); err != nil {
 		t.Fatalf("setup: get agent: %v", err)
 	}
 
@@ -2362,7 +2363,7 @@ func TestClaimTask_ProjectGithubReposOverrideWorkspaceRepos(t *testing.T) {
 	// workspace's repos list.
 	var projectID string
 	if err := testPool.QueryRow(ctx, `
-		INSERT INTO project (workspace_id, title) VALUES ($1, $2) RETURNING id
+		INSERT INTO project (workspace_id, title, repo_inheritance_policy) VALUES ($1, $2, 'project_only') RETURNING id
 	`, testWorkspaceID, "Claim project repo override").Scan(&projectID); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
@@ -2378,14 +2379,9 @@ func TestClaimTask_ProjectGithubReposOverrideWorkspaceRepos(t *testing.T) {
 		t.Fatalf("create project_resource: %v", err)
 	}
 
-	// Agent + runtime + queued task in this project.
-	var agentID, runtimeID string
-	if err := testPool.QueryRow(ctx,
-		`SELECT id, runtime_id FROM agent WHERE workspace_id = $1 LIMIT 1`,
-		testWorkspaceID,
-	).Scan(&agentID, &runtimeID); err != nil {
-		t.Fatalf("get agent: %v", err)
-	}
+	// Agent + runtime + queued task in this project. Register an exact daemon
+	// identity instead of selecting an arbitrary workspace runtime.
+	agentID, runtimeID, daemonID := createRuntimeGuardAgent(t, ctx)
 
 	var issueID string
 	if err := testPool.QueryRow(ctx, `
@@ -2410,7 +2406,8 @@ func TestClaimTask_ProjectGithubReposOverrideWorkspaceRepos(t *testing.T) {
 	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE id = $1`, taskID) })
 
 	w := httptest.NewRecorder()
-	req := newDaemonTokenRequest("POST", "/api/daemon/runtimes/"+runtimeID+"/claim", nil, testWorkspaceID, "test-claim-project-repos")
+	req := newDaemonTokenRequest("POST", "/api/daemon/runtimes/"+runtimeID+"/claim", nil, testWorkspaceID, daemonID)
+	req.Header.Set("X-Client-Capabilities", protocol.DaemonCapabilityProjectRepoScopeV1)
 	req = withURLParam(req, "runtimeId", runtimeID)
 	testHandler.ClaimTaskByRuntime(w, req)
 	if w.Code != http.StatusOK {
@@ -3146,15 +3143,18 @@ func TestCompleteTask_AssignmentTriggered_DoesNotSuppressTrivialDoneOutput(t *te
 }
 
 type claimRuntimeGuardTask struct {
-	PriorSessionID           string   `json:"prior_session_id"`
-	PriorWorkDir             string   `json:"prior_work_dir"`
-	ChatMessage              string   `json:"chat_message"`
-	ThreadName               string   `json:"thread_name"`
-	QuickCreateAttachmentIDs []string `json:"quick_create_attachment_ids"`
-	QuickCreatePriority      string   `json:"quick_create_priority"`
-	QuickCreateDueDate       string   `json:"quick_create_due_date"`
-	ProjectID                string   `json:"project_id"`
-	ProjectDescription       string   `json:"project_description"`
+	PriorSessionID           string     `json:"prior_session_id"`
+	PriorWorkDir             string     `json:"prior_work_dir"`
+	ChatMessage              string     `json:"chat_message"`
+	ThreadName               string     `json:"thread_name"`
+	QuickCreateAttachmentIDs []string   `json:"quick_create_attachment_ids"`
+	QuickCreatePriority      string     `json:"quick_create_priority"`
+	QuickCreateDueDate       string     `json:"quick_create_due_date"`
+	ProjectID                string     `json:"project_id"`
+	ProjectDescription       string     `json:"project_description"`
+	Repos                    []RepoData `json:"repos"`
+	RepoInheritancePolicy    string     `json:"repo_inheritance_policy"`
+	RepoSource               string     `json:"repo_source"`
 }
 
 func claimTaskForRuntimeGuard(t *testing.T, runtimeID, daemonID string) *claimRuntimeGuardTask {
@@ -3163,6 +3163,7 @@ func claimTaskForRuntimeGuard(t *testing.T, runtimeID, daemonID string) *claimRu
 	w := httptest.NewRecorder()
 	req := newDaemonTokenRequest("POST", "/api/daemon/runtimes/"+runtimeID+"/claim", nil,
 		testWorkspaceID, daemonID)
+	req.Header.Set("X-Client-Capabilities", protocol.DaemonCapabilityProjectRepoScopeV1)
 	rctx := chi.NewRouteContext()
 	rctx.URLParams.Add("runtimeId", runtimeID)
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))

@@ -813,6 +813,9 @@ const ProjectSchema = z.object({
   // object — which would degrade a search/list batch to the empty fallback.
   start_date: z.string().nullable().default(null),
   due_date: z.string().nullable().default(null),
+  // Older backends predate repository inheritance policy and retain the
+  // historical workspace fallback behavior.
+  repo_inheritance_policy: z.enum(["workspace_fallback", "project_only"]).default("workspace_fallback"),
   created_at: z.string(),
   updated_at: z.string(),
   issue_count: z.number().default(0),

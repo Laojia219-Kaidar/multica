@@ -26,6 +26,21 @@ func TestValidateProjectStatus(t *testing.T) {
 	}
 }
 
+func TestValidateProjectRepoInheritancePolicy(t *testing.T) {
+	for _, policy := range validProjectRepoInheritancePolicies {
+		if err := validateProjectRepoInheritancePolicy(policy); err != nil {
+			t.Errorf("repo policy %q should be valid, got: %v", policy, err)
+		}
+	}
+	err := validateProjectRepoInheritancePolicy("workspace_and_project")
+	if err == nil {
+		t.Fatal("unknown repo policy should be rejected")
+	}
+	if !strings.Contains(err.Error(), "workspace_fallback") || !strings.Contains(err.Error(), "project_only") {
+		t.Fatalf("error should list valid repo policies, got: %v", err)
+	}
+}
+
 // newProjectResourceUpdateTestCmd mirrors the flag surface of
 // projectResourceUpdateCmd so unit tests can exercise the shortcut-flag plumbing
 // without spinning up a server.

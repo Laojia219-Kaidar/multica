@@ -2,6 +2,8 @@ export type ProjectStatus = "planned" | "in_progress" | "paused" | "completed" |
 
 export type ProjectPriority = "urgent" | "high" | "medium" | "low" | "none";
 
+export type ProjectRepoInheritancePolicy = "workspace_fallback" | "project_only";
+
 export interface Project {
   id: string;
   workspace_id: string;
@@ -16,6 +18,7 @@ export interface Project {
   // issue.start_date / issue.due_date.
   start_date: string | null;
   due_date: string | null;
+  repo_inheritance_policy: ProjectRepoInheritancePolicy;
   created_at: string;
   updated_at: string;
   issue_count: number;
@@ -33,6 +36,7 @@ export interface CreateProjectRequest {
   lead_id?: string;
   start_date?: string;
   due_date?: string;
+  repo_inheritance_policy?: ProjectRepoInheritancePolicy;
   // Resources to attach in the same transaction as the project. Server returns
   // 4xx (and rolls back) if any one is invalid or duplicate.
   resources?: CreateProjectResourceRequest[];
@@ -49,6 +53,7 @@ export interface UpdateProjectRequest {
   // Omit the key to leave the date untouched; send null (or "") to clear it.
   start_date?: string | null;
   due_date?: string | null;
+  repo_inheritance_policy?: ProjectRepoInheritancePolicy;
 }
 
 export interface ListProjectsResponse {

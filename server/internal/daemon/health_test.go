@@ -241,7 +241,9 @@ func TestRepoCheckoutUsesTaskScopedProjectRefByDefault(t *testing.T) {
 	const repoURL = "https://github.com/org/repo.git"
 	cache := &recordingRepoCache{lookupPath: "/cache/org/repo.git"}
 	d := newRepoCheckoutTestDaemon(t, workspaceID, repoURL, cache)
-	d.registerTaskRepos(workspaceID, "task-1", []RepoData{{URL: repoURL, Ref: "release/v2"}})
+	if err := d.registerTaskRepoScope(workspaceID, "task-1", "project_only", "project", []RepoData{{URL: repoURL, Ref: "release/v2"}}); err != nil {
+		t.Fatalf("register task repo scope: %v", err)
+	}
 
 	rec := httptest.NewRecorder()
 	body := `{"url":"` + repoURL + `","workspace_id":"` + workspaceID + `","workdir":"` + t.TempDir() + `","task_id":"task-1","runtime_id":"rt-1"}`
@@ -262,7 +264,9 @@ func TestRepoCheckoutExplicitRefOverridesProjectDefault(t *testing.T) {
 	const repoURL = "https://github.com/org/repo.git"
 	cache := &recordingRepoCache{lookupPath: "/cache/org/repo.git"}
 	d := newRepoCheckoutTestDaemon(t, workspaceID, repoURL, cache)
-	d.registerTaskRepos(workspaceID, "task-1", []RepoData{{URL: repoURL, Ref: "release/v2"}})
+	if err := d.registerTaskRepoScope(workspaceID, "task-1", "project_only", "project", []RepoData{{URL: repoURL, Ref: "release/v2"}}); err != nil {
+		t.Fatalf("register task repo scope: %v", err)
+	}
 
 	rec := httptest.NewRecorder()
 	body := `{"url":"` + repoURL + `","workspace_id":"` + workspaceID + `","workdir":"` + t.TempDir() + `","task_id":"task-1","runtime_id":"rt-1","ref":"hotfix"}`
@@ -283,6 +287,9 @@ func TestRepoCheckoutForwardsIsolatedMode(t *testing.T) {
 	const repoURL = "https://github.com/org/repo.git"
 	cache := &recordingRepoCache{lookupPath: "/cache/org/repo.git"}
 	d := newRepoCheckoutTestDaemon(t, workspaceID, repoURL, cache)
+	if err := d.registerTaskRepoScope(workspaceID, "task-1", "workspace_fallback", "workspace_fallback", nil); err != nil {
+		t.Fatalf("register task repo scope: %v", err)
+	}
 
 	rec := httptest.NewRecorder()
 	body := `{"url":"` + repoURL + `","workspace_id":"` + workspaceID + `","workdir":"` + t.TempDir() + `","task_id":"task-1","runtime_id":"rt-1","checkout_mode":"isolated"}`
@@ -293,6 +300,35 @@ func TestRepoCheckoutForwardsIsolatedMode(t *testing.T) {
 	}
 	if !cache.lastCreateParams().IsolatedGitMetadata {
 		t.Fatal("isolated checkout_mode was not forwarded to repo cache")
+	}
+}
+
+func TestRepoCheckoutProjectScopeRejectsWorkspaceRepoEvenWithCapabilityTarget(t *testing.T) {
+	t.Parallel()
+
+	const workspaceID = "ws-checkout"
+	const workspaceRepo = "https://github.com/org/workspace.git"
+	const projectRepo = "https://github.com/org/project.git"
+	cache := &recordingRepoCache{lookupPath: "/cache/org/workspace.git"}
+	d := newRepoCheckoutTestDaemon(t, workspaceID, workspaceRepo, cache)
+	if err := d.registerTaskRepoScope(workspaceID, "task-1", "workspace_fallback", "project", []RepoData{{URL: projectRepo}}); err != nil {
+		t.Fatalf("register project task scope: %v", err)
+	}
+	d.waitBackgroundSyncs()
+	callbacksBeforeCheckout := cache.callbackCalls()
+
+	rec := httptest.NewRecorder()
+	body := `{"url":"` + workspaceRepo + `","workspace_id":"` + workspaceID + `","workdir":"` + t.TempDir() + `","task_id":"task-1","runtime_id":"rt-1"}`
+	// authorizedCheckoutRequest deliberately grants the mutation broker an
+	// exact target for workspaceRepo. The request must still fail at the
+	// independent task repository scope before any repo-cache callback.
+	d.repoCheckoutHandler().ServeHTTP(rec, authorizedCheckoutRequest(t, d, body))
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected task scope rejection, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if got := cache.callbackCalls(); got != callbacksBeforeCheckout {
+		t.Fatalf("rejected workspace repo added repo cache callbacks: before=%d after=%d", callbacksBeforeCheckout, got)
 	}
 }
 

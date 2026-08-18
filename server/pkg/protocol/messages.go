@@ -17,6 +17,10 @@ const (
 	// through the daemon capability broker. Enforce claims fail closed when an
 	// older daemon has not negotiated this capability.
 	DaemonCapabilityMediatedOverlayV1 = "mediated-overlay-v1"
+	// DaemonCapabilityProjectRepoScopeV1 advertises that checkout authorization
+	// is evaluated against the active task's project repository scope. A
+	// project_only claim must not be dispatched to a daemon without this gate.
+	DaemonCapabilityProjectRepoScopeV1 = "project-repo-scope-v1"
 
 	// AppCapabilityChatDraftRestoreV1 is advertised (X-Client-Capabilities) by
 	// app clients that understand the durable draft-restore recovery path:

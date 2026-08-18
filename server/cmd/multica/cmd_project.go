@@ -95,6 +95,8 @@ var validProjectStatuses = []string{
 	"planned", "in_progress", "paused", "completed", "cancelled",
 }
 
+var validProjectRepoInheritancePolicies = []string{"workspace_fallback", "project_only"}
+
 // validateProjectStatus rejects unknown statuses client-side so a typo fails
 // fast with the valid list instead of a server round-trip and a 400. Shared by
 // `project create`, `project update`, and `project status`.
@@ -105,6 +107,15 @@ func validateProjectStatus(status string) error {
 		}
 	}
 	return fmt.Errorf("invalid status %q; valid values: %s", status, strings.Join(validProjectStatuses, ", "))
+}
+
+func validateProjectRepoInheritancePolicy(policy string) error {
+	for _, allowed := range validProjectRepoInheritancePolicies {
+		if allowed == policy {
+			return nil
+		}
+	}
+	return fmt.Errorf("invalid repo inheritance policy %q; valid values: %s", policy, strings.Join(validProjectRepoInheritancePolicies, ", "))
 }
 
 func init() {
@@ -137,6 +148,7 @@ func init() {
 	projectCreateCmd.Flags().String("lead", "", "Lead name (member or agent)")
 	projectCreateCmd.Flags().String("start-date", "", "Start date (calendar day, YYYY-MM-DD)")
 	projectCreateCmd.Flags().String("due-date", "", "Due date (calendar day, YYYY-MM-DD)")
+	projectCreateCmd.Flags().String("repo-inheritance-policy", "", "Repository inheritance policy: workspace_fallback or project_only")
 	projectCreateCmd.Flags().StringArray("repo", nil, "Attach a github_repo resource by URL (may be repeated)")
 	projectCreateCmd.Flags().String("output", "json", "Output format: table or json")
 
@@ -182,6 +194,7 @@ func init() {
 	projectUpdateCmd.Flags().String("lead", "", "New lead name (member or agent)")
 	projectUpdateCmd.Flags().String("start-date", "", "New start date (calendar day, YYYY-MM-DD; pass empty string to clear)")
 	projectUpdateCmd.Flags().String("due-date", "", "New due date (calendar day, YYYY-MM-DD; pass empty string to clear)")
+	projectUpdateCmd.Flags().String("repo-inheritance-policy", "", "Repository inheritance policy: workspace_fallback or project_only")
 	projectUpdateCmd.Flags().String("output", "json", "Output format: table or json")
 
 	// project delete
@@ -342,6 +355,12 @@ func runProjectCreate(cmd *cobra.Command, _ []string) error {
 	if v, _ := cmd.Flags().GetString("due-date"); v != "" {
 		body["due_date"] = v
 	}
+	if v, _ := cmd.Flags().GetString("repo-inheritance-policy"); v != "" {
+		if err := validateProjectRepoInheritancePolicy(v); err != nil {
+			return err
+		}
+		body["repo_inheritance_policy"] = v
+	}
 
 	// Bundle resources into the create payload so the server attaches them in
 	// the same transaction; this avoids leaving a half-attached project on
@@ -437,9 +456,16 @@ func runProjectUpdate(cmd *cobra.Command, args []string) error {
 		v, _ := cmd.Flags().GetString("due-date")
 		body["due_date"] = v
 	}
+	if cmd.Flags().Changed("repo-inheritance-policy") {
+		v, _ := cmd.Flags().GetString("repo-inheritance-policy")
+		if err := validateProjectRepoInheritancePolicy(v); err != nil {
+			return err
+		}
+		body["repo_inheritance_policy"] = v
+	}
 
 	if len(body) == 0 {
-		return fmt.Errorf("no fields to update; use flags like --title, --status, --description, --icon, --lead, --start-date, --due-date")
+		return fmt.Errorf("no fields to update; use flags like --title, --status, --description, --icon, --lead, --start-date, --due-date, --repo-inheritance-policy")
 	}
 
 	var result map[string]any

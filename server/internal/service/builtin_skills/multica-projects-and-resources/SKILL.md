@@ -37,9 +37,11 @@ Common resource types:
 multica project list --output json
 multica project get <project-id> --output json
 multica project create --title "<title>" --repo <github-url> --output json
+multica project create --title "<title>" --repo-inheritance-policy project_only --output json
 multica project create --title "<title>" --start-date 2026-03-01 --due-date 2026-03-31 --output json
 multica project update <project-id> --title "<title>" --output json
 multica project update <project-id> --due-date 2026-04-15 --output json
+multica project update <project-id> --repo-inheritance-policy workspace_fallback --output json
 multica project update <project-id> --start-date "" --output json   # clear the start date
 multica project status <project-id> in_progress --output json
 multica project resource list <project-id> --output json
@@ -55,6 +57,12 @@ For `github_repo`, non-JSON `--ref` sets `resource_ref.ref`, the default checkou
 
 `--start-date` / `--due-date` are optional calendar days (`YYYY-MM-DD`, like issue dates). On `project update`, pass an empty string (`--start-date ""`) to clear a date; an unset flag leaves it untouched.
 
+`--repo-inheritance-policy` controls the no-project-repository case. `workspace_fallback`
+is the default and preserves the workspace repo fallback. `project_only` makes
+the project's repo set authoritative: attached `github_repo` resources are
+still delivered, but an empty set stays empty and never inherits workspace
+repos. Use `project_only` for deliberately repo-free execution contexts.
+
 ## When to add a resource
 
 Add/update a project resource when the user asks for durable project context: "把这个 GitHub repo 绑到项目上", "以后都用这个 repo", "agent 总是拿不到这个项目的仓库", or "这个项目要在我的本地目录里跑".
@@ -67,9 +75,10 @@ is task-local checkout state.
 1. `multica project get <project-id> --output json`.
 2. `multica project resource list <project-id> --output json`.
 3. Check `github_repo.resource_ref.url`, optional `ref`, `default_branch_hint`, and `local_directory.resource_ref.daemon_id`.
-4. Updating resources is a durable mutation. After an update, listing the
+4. Check the parent project's `repo_inheritance_policy`: `project_only` intentionally suppresses workspace fallback when no `github_repo` is attached.
+5. Updating resources is a durable mutation. After an update, listing the
    resource is the verification path.
-5. If resources match the expected task context, inspect runtime/repo checkout
+6. If resources match the expected task context, inspect runtime/repo checkout
    path next.
 
 ## Side effects

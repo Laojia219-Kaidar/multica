@@ -32,12 +32,17 @@ type ProjectResponse struct {
 	LeadID      *string `json:"lead_id"`
 	// StartDate / DueDate are calendar days ("YYYY-MM-DD"), no time-of-day or
 	// timezone — same contract as issue.start_date / issue.due_date.
-	StartDate  *string `json:"start_date"`
-	DueDate    *string `json:"due_date"`
-	CreatedAt  string  `json:"created_at"`
-	UpdatedAt  string  `json:"updated_at"`
-	IssueCount int64   `json:"issue_count"`
-	DoneCount  int64   `json:"done_count"`
+	StartDate *string `json:"start_date"`
+	DueDate   *string `json:"due_date"`
+	// RepoInheritancePolicy controls repository resolution when this project has no
+	// github_repo resource. workspace_fallback preserves the historical
+	// workspace fallback; project_only makes an empty project repo set
+	// authoritative so daemon claims never inherit workspace repos.
+	RepoInheritancePolicy string `json:"repo_inheritance_policy"`
+	CreatedAt             string `json:"created_at"`
+	UpdatedAt             string `json:"updated_at"`
+	IssueCount            int64  `json:"issue_count"`
+	DoneCount             int64  `json:"done_count"`
 	// ResourceCount is a breadcrumb pointing at the sub-collection at
 	// /api/projects/{id}/resources. Resources themselves stay out of this
 	// payload to keep parent metadata and child collections separate; clients
@@ -47,19 +52,20 @@ type ProjectResponse struct {
 
 func projectToResponse(p db.Project) ProjectResponse {
 	return ProjectResponse{
-		ID:          uuidToString(p.ID),
-		WorkspaceID: uuidToString(p.WorkspaceID),
-		Title:       p.Title,
-		Description: textToPtr(p.Description),
-		Icon:        textToPtr(p.Icon),
-		Status:      p.Status,
-		Priority:    p.Priority,
-		LeadType:    textToPtr(p.LeadType),
-		LeadID:      uuidToPtr(p.LeadID),
-		StartDate:   dateToPtr(p.StartDate),
-		DueDate:     dateToPtr(p.DueDate),
-		CreatedAt:   timestampToString(p.CreatedAt),
-		UpdatedAt:   timestampToString(p.UpdatedAt),
+		ID:                    uuidToString(p.ID),
+		WorkspaceID:           uuidToString(p.WorkspaceID),
+		Title:                 p.Title,
+		Description:           textToPtr(p.Description),
+		Icon:                  textToPtr(p.Icon),
+		Status:                p.Status,
+		Priority:              p.Priority,
+		LeadType:              textToPtr(p.LeadType),
+		LeadID:                uuidToPtr(p.LeadID),
+		StartDate:             dateToPtr(p.StartDate),
+		DueDate:               dateToPtr(p.DueDate),
+		RepoInheritancePolicy: p.RepoInheritancePolicy,
+		CreatedAt:             timestampToString(p.CreatedAt),
+		UpdatedAt:             timestampToString(p.UpdatedAt),
 	}
 }
 
@@ -80,16 +86,17 @@ func (h *Handler) loadProjectResourceCount(ctx context.Context, projectID pgtype
 }
 
 type CreateProjectRequest struct {
-	Title       string                                `json:"title"`
-	Description *string                               `json:"description"`
-	Icon        *string                               `json:"icon"`
-	Status      string                                `json:"status"`
-	Priority    string                                `json:"priority"`
-	LeadType    *string                               `json:"lead_type"`
-	LeadID      *string                               `json:"lead_id"`
-	StartDate   *string                               `json:"start_date"`
-	DueDate     *string                               `json:"due_date"`
-	Resources   []CreateProjectResourceRequestPayload `json:"resources,omitempty"`
+	Title                 string                                `json:"title"`
+	Description           *string                               `json:"description"`
+	Icon                  *string                               `json:"icon"`
+	Status                string                                `json:"status"`
+	Priority              string                                `json:"priority"`
+	LeadType              *string                               `json:"lead_type"`
+	LeadID                *string                               `json:"lead_id"`
+	StartDate             *string                               `json:"start_date"`
+	DueDate               *string                               `json:"due_date"`
+	RepoInheritancePolicy string                                `json:"repo_inheritance_policy"`
+	Resources             []CreateProjectResourceRequestPayload `json:"resources,omitempty"`
 }
 
 // CreateProjectResourceRequestPayload mirrors CreateProjectResourceRequest but
@@ -103,15 +110,16 @@ type CreateProjectResourceRequestPayload struct {
 }
 
 type UpdateProjectRequest struct {
-	Title       *string `json:"title"`
-	Description *string `json:"description"`
-	Icon        *string `json:"icon"`
-	Status      *string `json:"status"`
-	Priority    *string `json:"priority"`
-	LeadType    *string `json:"lead_type"`
-	LeadID      *string `json:"lead_id"`
-	StartDate   *string `json:"start_date"`
-	DueDate     *string `json:"due_date"`
+	Title                 *string `json:"title"`
+	Description           *string `json:"description"`
+	Icon                  *string `json:"icon"`
+	Status                *string `json:"status"`
+	Priority              *string `json:"priority"`
+	LeadType              *string `json:"lead_type"`
+	LeadID                *string `json:"lead_id"`
+	StartDate             *string `json:"start_date"`
+	DueDate               *string `json:"due_date"`
+	RepoInheritancePolicy *string `json:"repo_inheritance_policy"`
 }
 
 func (h *Handler) ListProjects(w http.ResponseWriter, r *http.Request) {
@@ -227,6 +235,19 @@ func (h *Handler) GetProject(w http.ResponseWriter, r *http.Request) {
 // exact mismatch reported in #3925 (`--status active`).
 var validProjectStatuses = []string{"planned", "in_progress", "paused", "completed", "cancelled"}
 var validProjectPriorities = []string{"urgent", "high", "medium", "low", "none"}
+var validProjectRepoInheritancePolicies = []string{projectRepoInheritancePolicyWorkspaceFallback, projectRepoInheritancePolicyProjectOnly}
+
+const (
+	projectRepoInheritancePolicyWorkspaceFallback = "workspace_fallback"
+	projectRepoInheritancePolicyProjectOnly       = "project_only"
+)
+
+// projectAllowsWorkspaceRepoFallback deliberately accepts only the explicit
+// legacy-compatible value. A future binary seeing an unknown database value
+// fails closed instead of silently exposing workspace repositories.
+func projectAllowsWorkspaceRepoFallback(policy string) bool {
+	return policy == projectRepoInheritancePolicyWorkspaceFallback
+}
 
 // validateProjectEnum writes a 400 and returns false when value is not in
 // allowed; the caller returns immediately on false.
@@ -282,6 +303,13 @@ func (h *Handler) CreateProject(w http.ResponseWriter, r *http.Request) {
 		priority = "none"
 	}
 	if !validateProjectEnum(w, "priority", priority, validProjectPriorities) {
+		return
+	}
+	repoPolicy := req.RepoInheritancePolicy
+	if repoPolicy == "" {
+		repoPolicy = projectRepoInheritancePolicyWorkspaceFallback
+	}
+	if !validateProjectEnum(w, "repo_inheritance_policy", repoPolicy, validProjectRepoInheritancePolicies) {
 		return
 	}
 	var leadType pgtype.Text
@@ -359,16 +387,17 @@ func (h *Handler) CreateProject(w http.ResponseWriter, r *http.Request) {
 	}
 
 	createParams := db.CreateProjectParams{
-		WorkspaceID: wsUUID,
-		Title:       req.Title,
-		Description: ptrToText(req.Description),
-		Icon:        ptrToText(req.Icon),
-		Status:      status,
-		LeadType:    leadType,
-		LeadID:      leadID,
-		Priority:    priority,
-		StartDate:   startDate,
-		DueDate:     dueDate,
+		WorkspaceID:           wsUUID,
+		Title:                 req.Title,
+		Description:           ptrToText(req.Description),
+		Icon:                  ptrToText(req.Icon),
+		Status:                status,
+		LeadType:              leadType,
+		LeadID:                leadID,
+		Priority:              priority,
+		StartDate:             startDate,
+		DueDate:               dueDate,
+		RepoInheritancePolicy: pgtype.Text{String: repoPolicy, Valid: true},
 	}
 
 	// Without resources, keep the simple non-tx path.
@@ -517,6 +546,12 @@ func (h *Handler) UpdateProject(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		params.Priority = pgtype.Text{String: *req.Priority, Valid: true}
+	}
+	if req.RepoInheritancePolicy != nil {
+		if !validateProjectEnum(w, "repo_inheritance_policy", *req.RepoInheritancePolicy, validProjectRepoInheritancePolicies) {
+			return
+		}
+		params.RepoInheritancePolicy = pgtype.Text{String: *req.RepoInheritancePolicy, Valid: true}
 	}
 	if _, ok := rawFields["description"]; ok {
 		if req.Description != nil {

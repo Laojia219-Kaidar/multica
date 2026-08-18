@@ -914,6 +914,17 @@ describe("SearchProjectsResponseSchema date drift", () => {
     expect(parsed.projects).toHaveLength(1);
     expect(parsed.projects[0]?.start_date).toBeNull();
     expect(parsed.projects[0]?.due_date).toBeNull();
+    expect(parsed.projects[0]?.repo_inheritance_policy).toBe("workspace_fallback");
+  });
+
+  it("parses an explicit project_only repository inheritance policy", () => {
+    const parsed = parseWithFallback(
+      { projects: [{ ...baseProject, repo_inheritance_policy: "project_only" }], total: 1 },
+      SearchProjectsResponseSchema,
+      EMPTY_SEARCH_PROJECTS_RESPONSE,
+      ENDPOINT,
+    );
+    expect(parsed.projects[0]?.repo_inheritance_policy).toBe("project_only");
   });
 });
 
