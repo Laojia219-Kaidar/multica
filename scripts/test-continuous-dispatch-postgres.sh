@@ -101,5 +101,9 @@ DATABASE_URL="$database_url" HIVECREW_ISOLATED_TEST_PORT="$test_port" \
   go test -race ./internal/service -run '^TestProductionContinuousDispatch' -count=1 -v
 DATABASE_URL="$database_url" HIVECREW_ISOLATED_TEST_PORT="$test_port" \
   go test -race ./internal/service -run '^TestProductionCompanyOps' -count=1 -v
+echo "== VC03 provider 429 terminal truth evidence =="
+DATABASE_URL="$database_url" HIVECREW_ISOLATED_TEST_PORT="$test_port" \
+  go test -race ./internal/service -run '^TestCompanyOpsExecutionLifecycle_Provider429StaysFailedThroughReceiptAndProjection$' -count=1 -v
+go test -race ./internal/readyfrontier -run '^TestClassifyIssue_TerminalStatusWinsLatestFailedTask$' -count=1 -v
 DATABASE_URL="$database_url" HIVECREW_ISOLATED_TEST_PORT="$test_port" \
   go test -race ./internal/service -run '^TestWriterLeaseTerminalPostgresAtomicFence$' -count=1 -v
