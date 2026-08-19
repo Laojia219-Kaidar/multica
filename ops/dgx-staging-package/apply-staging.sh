@@ -22,21 +22,46 @@ env_file=$(resolve_deploy_env_file)
 docker_bin=$(resolve_executable "${DOCKER_BIN:-docker}")
 curl_bin=$(resolve_executable "${CURL_BIN:-curl}")
 counts_bin=$(resolve_executable "${COUNTS_BIN:-$root/collect-readonly-counts.sh}")
+readiness_attempts=${HIVECREW_READINESS_ATTEMPTS:-30}
+readiness_delay_seconds=${HIVECREW_READINESS_DELAY_SECONDS:-1}
+[[ "$readiness_attempts" =~ ^[1-9][0-9]*$ && "$readiness_attempts" -le 120 &&
+   "$readiness_delay_seconds" =~ ^[0-9]+$ && "$readiness_delay_seconds" -le 30 ]] || {
+  echo invalid-readiness-policy >&2
+  exit 78
+}
 $docker_bin compose --env-file "$env_file" -f "$pkg/compose.yaml" -p "$project" config --quiet
 mkdir -p "$out"
 rm -f -- "$receipt"
 
-applied=false
+wait_for_health() {
+  local attempt health_status
+  for ((attempt = 1; attempt <= readiness_attempts; attempt++)); do
+    if health_status=$($curl_bin -sS -o /dev/null -w '%{http_code}' --max-time 8 \
+        http://127.0.0.1:8080/health); then
+      if [[ "$health_status" == 200 ]]; then
+        printf '%s\n' "$health_status"
+        return 0
+      fi
+    fi
+    if (( attempt < readiness_attempts )); then
+      sleep "$readiness_delay_seconds"
+    fi
+  done
+  echo health-readback-mismatch >&2
+  return 79
+}
+
+OPERATOR_ROLLBACK_STATE=pre_mutation
 rollback_on_exit() {
-  local rc=$?
+  local exit_rc=$?
   trap - EXIT
-  if [[ "$rc" -ne 0 && "$applied" == true ]]; then
+  if [[ "$exit_rc" -ne 0 && "${OPERATOR_ROLLBACK_STATE:-uninitialized}" == mutation_started ]]; then
     if ! DOCKER_BIN="$docker_bin" CURL_BIN="$curl_bin" COUNTS_BIN="$counts_bin" \
-      "$root/rollback-staging.sh" "$pkg" "automatic-apply-failure-$rc"; then
+      "$root/rollback-staging.sh" "$pkg" "automatic-apply-failure-$exit_rc"; then
       exit 80
     fi
   fi
-  exit "$rc"
+  exit "$exit_rc"
 }
 trap rollback_on_exit EXIT
 
@@ -81,14 +106,13 @@ web_id=$(jq -r .web_image.id "$id")
 web_digest=$(jq -r .web_image.digest "$id")
 write_image_override "$backend_ref" "$web_ref" "$override"
 
-applied=true
+OPERATOR_ROLLBACK_STATE=mutation_started
 $docker_bin compose --env-file "$env_file" -f "$pkg/compose.yaml" -f "$override" -p "$project" \
   up -d --no-deps backend frontend
 assert_container_image "$docker_bin" "$backend_container" "$backend_ref" "$backend_id" "$backend_digest"
 assert_container_image "$docker_bin" "$web_container" "$web_ref" "$web_id" "$web_digest"
 
-health=$($curl_bin -sS -o /dev/null -w '%{http_code}' --max-time 8 http://127.0.0.1:8080/health)
-[[ "$health" == 200 ]] || { echo health-readback-mismatch >&2; exit 79; }
+health=$(wait_for_health)
 config=$($curl_bin -fsS --max-time 8 http://127.0.0.1:8080/api/config)
 actual_version=$(printf '%s\n' "$config" | jq -er .server_version)
 expected_version=$(jq -r .api.server_version "$id")
@@ -108,5 +132,6 @@ jq -n --arg project "$project" --arg revision "$(jq -r .final_revision "$id")" \
     rollback_receipt:"ROLLBACK-RECEIPT.json",
     external_acceptance:"EXTERNAL-ACCEPTANCE.json",
     secret_values_recorded:false, production_applied:false, run_06:false}' > "$receipt"
+OPERATOR_ROLLBACK_STATE=complete
 trap - EXIT
 printf 'apply=pass receipt=%s\n' "$receipt"

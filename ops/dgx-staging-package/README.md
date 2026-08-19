@@ -15,5 +15,10 @@ changes. Env content is never read or copied by the operator package. The
 read-only count collector keeps
 `default_transaction_read_only=on` and converts a textual migration version such
 as `415_project_revision` to the numeric schema top `415`.
+After Compose mutation, backend readiness is bounded to 30 attempts with a
+one-second delay by default, so a startup connection refusal is retried without
+weakening persistent-failure rollback. Test environments may reduce the validated
+attempt/delay bounds. The EXIT trap uses explicit script-level rollback state so
+all post-mutation command, health, and version failures restore the exact predecessor.
 
 The package does not grant Docker access, sudo, operator identity, or staging authorization. A governed `jiawei219` operator must execute the final candidate after independent review and exact Owner authorization.

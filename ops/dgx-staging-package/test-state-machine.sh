@@ -144,6 +144,13 @@ cat > "$tmp/curl" <<'CURL'
 set -Eeuo pipefail
 case "$*" in
   *'/health'*)
+    counter_file=${FAKE_CURL_COUNTER:?}
+    attempt=$(cat "$counter_file")
+    attempt=$((attempt + 1))
+    printf '%s\n' "$attempt" > "$counter_file"
+    if (( attempt <= ${FAKE_HEALTH_REFUSED_COUNT:-0} )); then
+      exit 7
+    fi
     if [[ "${FAKE_HEALTH_FAIL:-0}" == 1 ]]; then printf 503; else printf 200; fi
     ;;
   *'/api/config'*)
@@ -166,12 +173,15 @@ COUNTS
 chmod 755 "$tmp/docker" "$tmp/curl" "$tmp/counts"
 export DOCKER_BIN="$tmp/docker" CURL_BIN="$tmp/curl" COUNTS_BIN="$tmp/counts"
 export FAKE_STATE="$tmp/state" FAKE_DOCKER_LOG="$tmp/docker.log"
+export FAKE_CURL_COUNTER="$tmp/curl.count"
+export HIVECREW_READINESS_ATTEMPTS=3 HIVECREW_READINESS_DELAY_SECONDS=0
 
 reset_fake() {
   local deploy_dir=${1:?deploy directory required}
   export FAKE_EXPECTED_ENV_FILE="$deploy_dir/.env"
   printf predecessor > "$FAKE_STATE"
   : > "$FAKE_DOCKER_LOG"
+  printf '0\n' > "$FAKE_CURL_COUNTER"
 }
 
 deploy=$(new_deploy governed)
@@ -194,6 +204,35 @@ grep -F "compose --env-file $deploy/.env -f $success/compose.yaml -p multica-dgx
 grep -F "compose --env-file $deploy/.env -f $success/compose.yaml -f $success/receipts/candidate-compose.override.yaml -p multica-dgx-ultra up -d --no-deps backend frontend" \
   "$FAKE_DOCKER_LOG" >/dev/null
 echo success=PASS
+
+transient_refused=$(new_candidate transient-refused)
+transient_err="$tmp/transient-refused.err"
+reset_fake "$deploy"
+FAKE_HEALTH_REFUSED_COUNT=2 HIVECREW_READINESS_ATTEMPTS=5 \
+  "$operator_root/apply-staging.sh" "$transient_refused" >/dev/null 2>"$transient_err"
+[[ $(cat "$FAKE_STATE") == candidate ]]
+[[ $(cat "$FAKE_CURL_COUNTER") == 3 ]]
+[[ -e "$transient_refused/receipts/OPERATOR-APPLY-RECEIPT.json" ]]
+[[ ! -e "$transient_refused/receipts/ROLLBACK-RECEIPT.json" ]]
+if grep -F 'unbound variable' "$transient_err" >/dev/null; then exit 1; fi
+echo transient_connection_refused_then_ready_no_rollback=PASS
+
+persistent_refused=$(new_candidate persistent-refused)
+persistent_err="$tmp/persistent-refused.err"
+reset_fake "$deploy"
+if FAKE_HEALTH_REFUSED_COUNT=99 HIVECREW_READINESS_ATTEMPTS=3 \
+    "$operator_root/apply-staging.sh" "$persistent_refused" >/dev/null 2>"$persistent_err"; then
+  exit 1
+fi
+[[ $(cat "$FAKE_STATE") == predecessor ]]
+[[ $(cat "$FAKE_CURL_COUNTER") == 3 ]]
+[[ ! -e "$persistent_refused/receipts/OPERATOR-APPLY-RECEIPT.json" ]]
+jq -e '.exact_predecessor == true and
+  .restored_backend.id == "sha256:f6c5050276263266cf4c08954694d2022f60b942716d12f40f4ef5da2599649a" and
+  .restored_web.id == "sha256:53b41218f7e0fe2ad3dfa63e9e40a30a21a14a7150579471d107fecc4f861d55"' \
+  "$persistent_refused/receipts/ROLLBACK-RECEIPT.json" >/dev/null
+if grep -F 'unbound variable' "$persistent_err" >/dev/null; then exit 1; fi
+echo persistent_connection_refused_exact_autorollback=PASS
 
 health_fail=$(new_candidate health-fail)
 reset_fake "$deploy"
