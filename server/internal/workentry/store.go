@@ -127,19 +127,19 @@ type ReceiptRecord struct {
 
 // EventRecord is the persisted append-only work event.
 type EventRecord struct {
-	ID             string
-	WorkspaceID    string
-	WorkRef        string
-	SessionID      string
-	RunID          string
-	EventType      WorkEventType
-	EventPayload   map[string]any
-	BlockerReason  string
-	Receiver       string
-	IdempotencyKey string
-	OccurredAt     string
-	ObservedAt     string
-	Sequence       int64
+	ID             string        `json:"id"`
+	WorkspaceID    string        `json:"workspace_id"`
+	WorkRef        string        `json:"work_ref"`
+	SessionID      string        `json:"session_id"`
+	RunID          string        `json:"run_id"`
+	EventType      WorkEventType `json:"event_type"`
+	EventPayload   map[string]any `json:"event_payload"`
+	BlockerReason  string        `json:"blocker_reason"`
+	Receiver       string        `json:"receiver"`
+	IdempotencyKey string        `json:"idempotency_key"`
+	OccurredAt     string        `json:"occurred_at"`
+	ObservedAt     string        `json:"observed_at"`
+	Sequence       int64         `json:"sequence"`
 }
 
 // HeartbeatRecord is the presence heartbeat payload.

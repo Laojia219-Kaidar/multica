@@ -593,6 +593,12 @@ func (p *PGStore) GetEvent(ctx context.Context, workspaceID, workRef, idempotenc
 	if receiver != nil {
 		rec.Receiver = *receiver
 	}
+	if occurredAt.Valid {
+		rec.OccurredAt = occurredAt.Time.UTC().Format(time.RFC3339Nano)
+	}
+	if observedAt.Valid {
+		rec.ObservedAt = observedAt.Time.UTC().Format(time.RFC3339Nano)
+	}
 	return &rec, nil
 }
 
