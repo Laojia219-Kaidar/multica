@@ -5,14 +5,14 @@ describe("buildCommandMetrics", () => {
   it("derives the owner command counts from live-domain states", () => {
     expect(
       buildCommandMetrics(
-        [{ status: "todo" }, { status: "in_review" }, { status: "done" }, { status: "cancelled" }],
+        { openWork: 83, inReview: 7 },
         [{ status: "in_progress" }, { status: "paused" }],
         [{ status: "working" }, { status: "idle" }],
         [{ status: "online" }, { status: "offline" }],
       ),
     ).toEqual({
-      openWork: 2,
-      inReview: 1,
+      openWork: 83,
+      inReview: 7,
       activeProjects: 1,
       onlineRuntimes: 1,
       workingAgents: 1,

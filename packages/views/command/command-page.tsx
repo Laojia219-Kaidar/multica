@@ -3,17 +3,19 @@
 import { useQuery } from "@tanstack/react-query";
 import { ArrowRight, Bot, FolderKanban, ListTodo, Monitor, ShieldCheck } from "lucide-react";
 import { useWorkspaceId } from "@multica/core/hooks";
-import { issueListOptions } from "@multica/core/issues/queries";
+import {
+  commandIssueMetricsOptions,
+  type CommandIssueMetrics,
+} from "@multica/core/issues/queries";
 import { projectListOptions } from "@multica/core/projects/queries";
 import { runtimeListOptions } from "@multica/core/runtimes/queries";
 import { useWorkspacePaths } from "@multica/core/paths";
-import type { Agent, AgentRuntime, Issue, Project } from "@multica/core/types";
+import type { Agent, AgentRuntime, Project } from "@multica/core/types";
 import { agentListOptions } from "@multica/core/workspace/queries";
 import { AppLink } from "../navigation";
 import { PageHeader } from "../layout/page-header";
 import { useT } from "../i18n";
 
-type CommandIssue = Pick<Issue, "status">;
 type CommandProject = Pick<Project, "status">;
 type CommandAgent = Pick<Agent, "status">;
 type CommandRuntime = Pick<AgentRuntime, "status">;
@@ -27,21 +29,21 @@ export interface CommandMetrics {
 }
 
 export function buildCommandMetrics(
-  issues: readonly CommandIssue[],
+  issueMetrics: CommandIssueMetrics,
   projects: readonly CommandProject[],
   agents: readonly CommandAgent[],
   runtimes: readonly CommandRuntime[],
 ): CommandMetrics {
   return {
-    openWork: issues.filter((issue) => issue.status !== "done" && issue.status !== "cancelled").length,
-    inReview: issues.filter((issue) => issue.status === "in_review").length,
+    openWork: issueMetrics.openWork,
+    inReview: issueMetrics.inReview,
     activeProjects: projects.filter((project) => project.status === "in_progress").length,
     onlineRuntimes: runtimes.filter((runtime) => runtime.status === "online").length,
     workingAgents: agents.filter((agent) => agent.status === "working").length,
   };
 }
 
-const EMPTY_ISSUES: Issue[] = [];
+const EMPTY_ISSUE_METRICS: CommandIssueMetrics = { openWork: 0, inReview: 0 };
 const EMPTY_PROJECTS: Project[] = [];
 const EMPTY_AGENTS: Agent[] = [];
 const EMPTY_RUNTIMES: AgentRuntime[] = [];
@@ -50,13 +52,13 @@ export function CommandPage() {
   const { t } = useT("layout");
   const wsId = useWorkspaceId();
   const wsPaths = useWorkspacePaths();
-  const issuesQuery = useQuery(issueListOptions(wsId));
+  const issuesQuery = useQuery(commandIssueMetricsOptions(wsId));
   const projectsQuery = useQuery(projectListOptions(wsId));
   const agentsQuery = useQuery(agentListOptions(wsId));
   const runtimesQuery = useQuery(runtimeListOptions(wsId));
 
   const metrics = buildCommandMetrics(
-    issuesQuery.data ?? EMPTY_ISSUES,
+    issuesQuery.data ?? EMPTY_ISSUE_METRICS,
     projectsQuery.data ?? EMPTY_PROJECTS,
     agentsQuery.data ?? EMPTY_AGENTS,
     runtimesQuery.data ?? EMPTY_RUNTIMES,
