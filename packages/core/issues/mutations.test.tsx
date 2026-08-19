@@ -9,6 +9,7 @@ import type { ReactNode } from "react";
 import { setApiInstance } from "../api";
 import type { ApiClient } from "../api/client";
 import {
+  useBatchDeleteIssues,
   useBatchUpdateIssues,
   useLoadMoreByAssigneeGroup,
   useLoadMoreByStatus,
@@ -97,6 +98,29 @@ function createWrapper(qc: QueryClient) {
     return <QueryClientProvider client={qc}>{children}</QueryClientProvider>;
   };
 }
+
+describe("useBatchDeleteIssues", () => {
+  it("invalidates CEO command totals after a successful batch delete", async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+    const batchDeleteIssues = vi.fn().mockResolvedValue({ deleted: 2 });
+    setApiInstance({ batchDeleteIssues } as unknown as ApiClient);
+    const metricsKey = issueKeys.commandMetrics(WS_ID);
+    qc.setQueryData(metricsKey, { openWork: 10, inReview: 3 });
+    const { result } = renderHook(() => useBatchDeleteIssues(), {
+      wrapper: createWrapper(qc),
+    });
+
+    await act(async () => {
+      await result.current.mutateAsync(["issue-1", "issue-2"]);
+    });
+
+    await waitFor(() => {
+      expect(qc.getQueryState(metricsKey)?.isInvalidated).toBe(true);
+    });
+    expect(batchDeleteIssues).toHaveBeenCalledWith(["issue-1", "issue-2"]);
+    qc.clear();
+  });
+});
 
 describe("useLoadMoreByStatus", () => {
   let qc: QueryClient;

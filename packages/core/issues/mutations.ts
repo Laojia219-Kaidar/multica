@@ -781,6 +781,7 @@ export function useBatchDeleteIssues() {
       qc.invalidateQueries({ queryKey: issueKeys.assigneeGroupsAll(wsId) });
       qc.invalidateQueries({ queryKey: issueKeys.myAssigneeGroupsAll(wsId) });
       qc.invalidateQueries({ queryKey: issueKeys.projectGanttAll(wsId) });
+      qc.invalidateQueries({ queryKey: issueKeys.commandMetrics(wsId) });
       qc.invalidateQueries({ queryKey: projectKeys.all(wsId) });
       if (ctx?.parentIssueIds && ctx.parentIssueIds.size > 0) {
         invalidateDeletedIssueParentCaches(qc, wsId, {
