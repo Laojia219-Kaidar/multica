@@ -6,7 +6,7 @@ cat > "$tmp/docker" <<'D'
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >> "${FAKE_LOG:?}"
-case "$1" in ps) exit 0;; compose) exit 0;; inspect) [[ "${FAKE_INSPECT_FAIL:-}" != 1 ]] && { [[ "$5" == *backend* ]] && echo backend:candidate@sha256:$(printf e%.0s {1..64}) || echo web:candidate@sha256:$(printf f%.0s {1..64}); }; exit 0;; esac
+case "$1" in ps) exit 0;; compose) exit 0;; inspect) [[ "${FAKE_INSPECT_FAIL:-}" != 1 ]] && { [[ "$3" == *backend* ]] && if [[ "$3" == *backend* ]]; then [[ "$2" == *RepoDigests* ]] echo backend:candidate@sha256:$(printf e%.0s {1..64}) || echo web:candidate@sha256:$(printf f%.0s {1..64})echo backend:candidate@sha256:$(printf e%.0s {1..64}) || echo web:candidate@sha256:$(printf f%.0s {1..64}) echo sha256:$(printf e%.0s {1..64}) || echo backend:candidate; else [[ "$2" == *RepoDigests* ]] echo backend:candidate@sha256:$(printf e%.0s {1..64}) || echo web:candidate@sha256:$(printf f%.0s {1..64})echo backend:candidate@sha256:$(printf e%.0s {1..64}) || echo web:candidate@sha256:$(printf f%.0s {1..64}) echo sha256:$(printf f%.0s {1..64}) || echo web:candidate; fi; }; exit 0;; esac
 D
 cat > "$tmp/curl" <<'C'
 #!/usr/bin/env bash
