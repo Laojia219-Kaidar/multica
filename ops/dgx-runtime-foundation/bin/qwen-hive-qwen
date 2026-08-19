@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+profile=${HIVECREW_QWEN_PROFILE_ID:-qwen-hive-qwen}
+model_seen=0
+approval_seen=0
+max_tools_seen=0
+sandbox_seen=0
+forward=()
+
+while (( $# > 0 )); do
+  case "$1" in
+    --model)
+      [[ $# -ge 2 && "$2" == qwen3.7-plus && "$model_seen" == 0 ]] || exit 77
+      model_seen=1
+      shift 2
+      ;;
+    --model=qwen3.7-plus)
+      [[ "$model_seen" == 0 ]] || exit 77
+      model_seen=1
+      shift
+      ;;
+    --approval-mode)
+      [[ $# -ge 2 && "$2" == plan && "$approval_seen" == 0 ]] || exit 77
+      approval_seen=1
+      shift 2
+      ;;
+    --approval-mode=plan)
+      [[ "$approval_seen" == 0 ]] || exit 77
+      approval_seen=1
+      shift
+      ;;
+    --max-tool-calls)
+      [[ $# -ge 2 && "$2" == 0 && "$max_tools_seen" == 0 ]] || exit 77
+      max_tools_seen=1
+      shift 2
+      ;;
+    --max-tool-calls=0)
+      [[ "$max_tools_seen" == 0 ]] || exit 77
+      max_tools_seen=1
+      shift
+      ;;
+    --sandbox)
+      [[ "$sandbox_seen" == 0 ]] || exit 77
+      sandbox_seen=1
+      shift
+      ;;
+    --model=*|--approval-mode=*|--max-tool-calls=*|--sandbox=*|--no-sandbox|--yolo|-y|--allowed-tools|--allowed-tools=*|--include-tools|--include-tools=*|--exclude-tools|--exclude-tools=*)
+      echo governed-qwen-flag-override >&2
+      exit 77
+      ;;
+    *)
+      forward+=("$1")
+      shift
+      ;;
+  esac
+done
+
+[[ "$model_seen" == 1 && "$approval_seen" == 1 && "$max_tools_seen" == 1 && "$sandbox_seen" == 1 ]] || {
+  echo governed-qwen-flags-missing >&2
+  exit 77
+}
+[[ -z "${HIVECREW_QWEN_CHAIN_TRACE:-}" ]] || printf '%s\n' go-entrypoint >> "$HIVECREW_QWEN_CHAIN_TRACE"
+exec "$root/bin/qwen-chain" "$profile" "${forward[@]}"

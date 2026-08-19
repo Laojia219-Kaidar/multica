@@ -11,7 +11,7 @@ secret_file="${HIVECREW_QWEN_SECRET_FILE:-${real_home}/.qwen/.env}"
 [[ "$(readlink -f "$secret_file")" == "$real_home/.qwen/.env" ]] || exit 78
 for arg in "$@"; do
   case "$arg" in
-    --max-tool-calls|--max-tool-calls=*|--sandbox|--no-sandbox|--sandbox=*) echo 'reserved sandbox/tool flag' >&2; exit 77 ;;
+    --model|--model=*|--approval-mode|--approval-mode=*|--max-tool-calls|--max-tool-calls=*|--sandbox|--no-sandbox|--sandbox=*) echo 'reserved model/sandbox/tool flag' >&2; exit 77 ;;
   esac
 done
 [[ -z "${HIVECREW_QWEN_CHAIN_TRACE:-}" ]] || printf '%s\n' landlock-launcher >> "$HIVECREW_QWEN_CHAIN_TRACE"
@@ -23,7 +23,7 @@ ln -s "$secret_file" "$sandbox_home/.qwen/.env"; chmod 700 "$sandbox_root" "$san
 export HOME="$sandbox_home" TMPDIR="$sandbox_root/tmp" XDG_CONFIG_HOME="$sandbox_root/xdg-config" XDG_CACHE_HOME="$sandbox_root/xdg-cache" XDG_DATA_HOME="$sandbox_root/xdg-data"
 unset QWEN_SANDBOX
 set +e
-"$landlock_exec" --write "$(pwd -P)" --write "$sandbox_root" -- "$qwen_bin" --model qwen3.7-plus --max-tool-calls 0 --sandbox "$@"
+"$landlock_exec" --write "$(pwd -P)" --write "$sandbox_root" -- "$qwen_bin" --model qwen3.7-plus --approval-mode plan --max-tool-calls 0 --sandbox "$@"
 status=$?
 set -e
 exit "$status"

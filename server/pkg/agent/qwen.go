@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -76,16 +78,51 @@ func buildQwenArgs(prompt string, opts ExecOptions, logger *slog.Logger) []strin
 	return args
 }
 
+func resolveQwenExecutable(execPath string, opts ExecOptions) (string, error) {
+	if opts.ToolPolicy != "deny" {
+		if execPath == "" {
+			execPath = "qwen"
+		}
+		resolved, err := exec.LookPath(execPath)
+		if err != nil {
+			return "", fmt.Errorf("qwen executable not found at %q: %w", execPath, err)
+		}
+		return resolved, nil
+	}
+	if execPath == "" || !filepath.IsAbs(execPath) {
+		return "", fmt.Errorf("qwen no-tool policy requires an absolute governed wrapper path")
+	}
+	allowedName := func(name string) bool {
+		return name == "qwen-hive-qwen" || name == "qwen-hive-qwen-landlock"
+	}
+	if !allowedName(filepath.Base(execPath)) {
+		return "", fmt.Errorf("qwen no-tool executable %q is not a governed wrapper", execPath)
+	}
+	resolved, err := filepath.EvalSymlinks(execPath)
+	if err != nil {
+		return "", fmt.Errorf("resolve governed qwen wrapper %q: %w", execPath, err)
+	}
+	if !filepath.IsAbs(resolved) || !allowedName(filepath.Base(resolved)) {
+		return "", fmt.Errorf("qwen governed wrapper resolves outside the allowed executable identity: %q", resolved)
+	}
+	info, err := os.Stat(resolved)
+	if err != nil {
+		return "", fmt.Errorf("stat governed qwen wrapper %q: %w", resolved, err)
+	}
+	if !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
+		return "", fmt.Errorf("qwen governed wrapper is not a regular executable: %q", resolved)
+	}
+	return resolved, nil
+}
+
 func (b *qwenBackend) Execute(ctx context.Context, prompt string, opts ExecOptions) (*Session, error) {
 	if opts.ToolPolicy == "deny" && !opts.SandboxRequired {
 		return nil, fmt.Errorf("qwen no-tool policy requires sandbox")
 	}
 	execPath := b.cfg.ExecutablePath
-	if execPath == "" {
-		execPath = "qwen"
-	}
-	if _, err := exec.LookPath(execPath); err != nil {
-		return nil, fmt.Errorf("qwen executable not found at %q: %w", execPath, err)
+	execPath, err := resolveQwenExecutable(execPath, opts)
+	if err != nil {
+		return nil, err
 	}
 	timeout := opts.Timeout
 	runCtx, cancel := runContext(ctx, timeout)
