@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
 set -euo pipefail
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd); prefix=${HIVECREW_RUNTIME_PREFIX:-"$root/.installed"}; mode=${1:---preview}; [[ "$mode" == --preview || "$mode" == --apply ]] || exit 2
-[[ "$mode" == --apply ]] && { rm -f "$prefix/bin/hivecrew-runtime-wrapper" "$prefix/state/manifest"; rmdir "$prefix/bin" "$prefix/state" "$prefix" 2>/dev/null || true; }
+if [[ "$mode" == --preview ]]; then printf "preview rollback_plan=restore_from_receipt prefix=%s\\n" "$prefix"; exit 0; fi
+[[ -f "$prefix/state/install.receipt" ]] || { echo missing-receipt >&2; exit 1; }; printf "rollback receipt=%s\\n" "$prefix/state/install.receipt"; rm -rf "$prefix"
