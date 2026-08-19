@@ -18,6 +18,6 @@ services:
   backend:
     depends_on:
       authority-loopback-bridge:
-        condition: service_started
+        condition: service_healthy
     environment:
       HIVECOSM_AUTHORITY_BASE_URL: "http://${HIVECOSM_AUTHORITY_BRIDGE_BIND_ADDR:?operator must resolve the candidate Docker bridge gateway}:3151"

@@ -16,6 +16,7 @@ id="$pkg/INTEGRATION-IDENTITY.json"
 out="$pkg/receipts"
 receipt="$out/ROLLBACK-RECEIPT.json"
 override="$out/rollback-compose.override.yaml"
+bridge_stop=${AUTHORITY_BRIDGE_STOP:-$root/../../deploy/dgx-authority/authority-bridge-stop.sh}
 
 "$root/precheck.sh" "$pkg" >/dev/null
 env_file=$(resolve_deploy_env_file)
@@ -36,6 +37,7 @@ $docker_bin compose --env-file "$env_file" -f "$pkg/compose.yaml" -f "$override"
   up -d --no-deps backend frontend
 assert_container_image "$docker_bin" "$backend_container" "$backend_ref" "$backend_id" "$backend_digest"
 assert_container_image "$docker_bin" "$web_container" "$web_ref" "$web_id" "$web_digest"
+DOCKER_BIN="$docker_bin" "$bridge_stop" "$project" "$pkg/compose.yaml" "$env_file"
 
 jq -n --arg project "$project" --arg reason "$reason" \
   --arg backend_ref "$backend_ref" --arg backend_id "$backend_id" \

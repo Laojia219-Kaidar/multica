@@ -24,6 +24,8 @@ curl_bin=$(resolve_executable "${CURL_BIN:-curl}")
 counts_bin=$(resolve_executable "${COUNTS_BIN:-$root/collect-readonly-counts.sh}")
 readiness_attempts=${HIVECREW_READINESS_ATTEMPTS:-30}
 readiness_delay_seconds=${HIVECREW_READINESS_DELAY_SECONDS:-1}
+bridge_resolver=${AUTHORITY_BRIDGE_RESOLVER:-$root/../../deploy/dgx-authority/authority-bridge-resolve.sh}
+bridge_compose=${AUTHORITY_BRIDGE_COMPOSE:-$root/../../deploy/dgx-authority/docker-compose.loopback-bridge.yml}
 [[ "$readiness_attempts" =~ ^[1-9][0-9]*$ && "$readiness_attempts" -le 120 &&
    "$readiness_delay_seconds" =~ ^[0-9]+$ && "$readiness_delay_seconds" -le 30 ]] || {
   echo invalid-readiness-policy >&2
@@ -32,6 +34,12 @@ readiness_delay_seconds=${HIVECREW_READINESS_DELAY_SECONDS:-1}
 $docker_bin compose --env-file "$env_file" -f "$pkg/compose.yaml" -p "$project" config --quiet
 mkdir -p "$out"
 rm -f -- "$receipt"
+bridge_gateway=$(DOCKER_BIN="$docker_bin" "$bridge_resolver" "$backend_container" "$project")
+[[ -n "$bridge_gateway" ]] || { echo authority-bridge-gateway-required >&2; exit 78; }
+if "$docker_bin" ps --filter "label=com.docker.compose.project=$project" --format '{{.Ports}}' | grep -Eq "${bridge_gateway}:3151|0.0.0.0:3151"; then
+  echo authority-bridge-port-in-use >&2; exit 78
+fi
+export HIVECOSM_AUTHORITY_BRIDGE_BIND_ADDR="$bridge_gateway"
 
 wait_for_health() {
   local attempt health_status
@@ -107,7 +115,7 @@ web_digest=$(jq -r .web_image.digest "$id")
 write_image_override "$backend_ref" "$web_ref" "$override"
 
 OPERATOR_ROLLBACK_STATE=mutation_started
-$docker_bin compose --env-file "$env_file" -f "$pkg/compose.yaml" -f "$override" -p "$project" \
+$docker_bin compose --env-file "$env_file" -f "$pkg/compose.yaml" -f "$bridge_compose" -f "$override" -p "$project" \
   up -d --no-deps backend frontend
 assert_container_image "$docker_bin" "$backend_container" "$backend_ref" "$backend_id" "$backend_digest"
 assert_container_image "$docker_bin" "$web_container" "$web_ref" "$web_id" "$web_digest"
