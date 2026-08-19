@@ -1,8 +1,7 @@
 services:
   authority-loopback-bridge:
-    build:
-      context: ../..
-      dockerfile: deploy/dgx-authority/Dockerfile.loopback-bridge
+    image: "${HIVECREW_BACKEND_IMAGE:?candidate backend image required}"
+    entrypoint: ["/app/authority-loopback-bridge"]
     network_mode: host
     environment:
       HIVECOSM_AUTHORITY_BRIDGE_BIND_ADDR: "${HIVECOSM_AUTHORITY_BRIDGE_BIND_ADDR:?operator must resolve the candidate Docker bridge gateway}"
