@@ -252,6 +252,39 @@ func TestLayerCustomEnvAndHermesHome(t *testing.T) {
 	}
 }
 
+func TestQwenRuntimePrefixIsDaemonOwned(t *testing.T) {
+	t.Parallel()
+
+	agentEnv := map[string]string{}
+	injectQwenRuntimePrefix(agentEnv, "qwen", true, "/trusted/runtime")
+	layerCustomEnvAndHermesHome(agentEnv, map[string]string{
+		"HIVECREW_RUNTIME_PREFIX": "/attacker/runtime",
+	}, "", nil)
+	if got := agentEnv["HIVECREW_RUNTIME_PREFIX"]; got != "/trusted/runtime" {
+		t.Fatalf("HIVECREW_RUNTIME_PREFIX = %q, want daemon-owned value", got)
+	}
+
+	for _, tc := range []struct {
+		name     string
+		provider string
+		noTools  bool
+		prefix   string
+	}{
+		{name: "other provider", provider: "codex", noTools: true, prefix: "/trusted/runtime"},
+		{name: "tools allowed", provider: "qwen", prefix: "/trusted/runtime"},
+		{name: "relative prefix", provider: "qwen", noTools: true, prefix: "relative/runtime"},
+		{name: "empty prefix", provider: "qwen", noTools: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env := map[string]string{}
+			injectQwenRuntimePrefix(env, tc.provider, tc.noTools, tc.prefix)
+			if _, ok := env["HIVECREW_RUNTIME_PREFIX"]; ok {
+				t.Fatalf("unexpected runtime prefix injection: %#v", env)
+			}
+		})
+	}
+}
+
 func TestRepoCheckoutModeFor(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

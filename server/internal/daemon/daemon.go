@@ -5429,6 +5429,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	if rootsValue, ok := composeOpenclawIncludeRoots(env.OpenclawIncludeRoot, os.Getenv("OPENCLAW_INCLUDE_ROOTS")); ok {
 		agentEnv["OPENCLAW_INCLUDE_ROOTS"] = rootsValue
 	}
+	injectQwenRuntimePrefix(agentEnv, provider, executionPolicy.NoTools, os.Getenv("HIVECREW_RUNTIME_PREFIX"))
 	// Inject user-configured custom environment variables (e.g. ANTHROPIC_API_KEY,
 	// ANTHROPIC_BASE_URL for router/proxy mode, or CLAUDE_CODE_USE_BEDROCK for
 	// Bedrock). These are set per-agent via the agent settings UI.
@@ -6870,6 +6871,18 @@ func isBlockedEnvKey(key string) bool {
 		return true
 	}
 	return false
+}
+
+// injectQwenRuntimePrefix copies the daemon-operator-owned runtime root into
+// the backend environment. Agent custom_env is layered later and the same key
+// is blocklisted, so an Agent cannot repoint the governed Qwen entrypoint.
+// An empty or relative value is intentionally omitted; qwenBackend then fails
+// closed before starting a provider process.
+func injectQwenRuntimePrefix(agentEnv map[string]string, provider string, noTools bool, prefix string) {
+	prefix = strings.TrimSpace(prefix)
+	if provider == "qwen" && noTools && filepath.IsAbs(prefix) {
+		agentEnv["HIVECREW_RUNTIME_PREFIX"] = filepath.Clean(prefix)
+	}
 }
 
 // layerCustomEnvAndHermesHome applies the agent's custom_env onto the child env
