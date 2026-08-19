@@ -1,0 +1,1 @@
+{"schema":"HiveCrewExternalAcceptanceV1","required":["final_revision","backend_digest","web_digest","api","browser","failure_path","production_unchanged","run_06_unchanged"]}
