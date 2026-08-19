@@ -2,13 +2,68 @@
   "schema_version": 1,
   "secret_values_recorded": false,
   "profiles": [
-    {"id":"qwen-hive-qwen","provider":"qwen","model":"qwen","command":"qwen","secret_env":"QWEN_API_KEY"},
-    {"id":"qwen-hive-qwen-landlock","provider":"qwen","model":"qwen-landlock","command":"qwen","secret_env":"QWEN_API_KEY"},
-    {"id":"kimi-hive-kimi","provider":"kimi","model":"kimi","command":"kimi","secret_env":"KIMI_API_KEY"},
-    {"id":"glm-hive-glm","provider":"glm","model":"glm","command":"glm","secret_env":"GLM_API_KEY"},
-    {"id":"zhipu-hive-zhipu","provider":"zhipu","model":"zhipu","command":"zhipu","secret_env":"ZHIPU_API_KEY"},
-    {"id":"mimo-hive-mimo","provider":"mimo","model":"mimo","command":"mimo","secret_env":"MIMO_API_KEY"},
-    {"id":"volcengine-hive-volcengine","provider":"volcengine","model":"volcengine","command":"volcengine","secret_env":"VOLCENGINE_API_KEY"},
-    {"id":"doubao-hive-doubao","provider":"doubao","model":"doubao","command":"doubao","secret_env":"DOUBAO_API_KEY"}
+    {
+      "id": "qwen-hive-qwen",
+      "provider": "qwen",
+      "model": "qwen",
+      "command": "qwen",
+      "secret_env": "QWEN_API_KEY"
+    },
+    {
+      "id": "qwen-hive-qwen-landlock",
+      "provider": "qwen",
+      "model": "qwen-landlock",
+      "command": "qwen",
+      "secret_env": "QWEN_API_KEY"
+    },
+    {
+      "id": "kimi-hive-kimi",
+      "provider": "kimi",
+      "model": "kimi",
+      "command": "kimi",
+      "secret_env": "KIMI_API_KEY"
+    },
+    {
+      "id": "glm-hive-glm",
+      "provider": "glm",
+      "model": "glm",
+      "command": "glm",
+      "secret_env": "GLM_API_KEY"
+    },
+    {
+      "id": "zhipu-hive-zhipu",
+      "provider": "zhipu",
+      "model": "zhipu",
+      "command": "zhipu",
+      "secret_env": "ZHIPU_API_KEY"
+    },
+    {
+      "id": "mimo-hive-mimo",
+      "provider": "mimo",
+      "model": "mimo",
+      "command": "mimo",
+      "secret_env": "MIMO_API_KEY"
+    },
+    {
+      "id": "volcengine-hive-volcengine",
+      "provider": "volcengine",
+      "model": "volcengine",
+      "command": "volcengine",
+      "secret_env": "VOLCENGINE_API_KEY"
+    },
+    {
+      "id": "doubao-hive-doubao",
+      "provider": "doubao",
+      "model": "doubao",
+      "command": "doubao",
+      "secret_env": "DOUBAO_API_KEY"
+    },
+    {
+      "id": "deepseek-hive-deepseek",
+      "provider": "deepseek",
+      "model": "deepseek",
+      "command": "qwen-hive-deepseek",
+      "secret_env": "DEEPSEEK_API_KEY"
+    }
   ]
 }
