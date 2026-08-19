@@ -72,9 +72,13 @@ func (r eventIDRow) Scan(dest ...any) error {
 func TestEventRecordJSONUsesWireFieldNames(t *testing.T) {
 	record := EventRecord{WorkspaceID: "workspace", WorkRef: "work", RunID: "run", EventType: EventProgress, EventPayload: map[string]any{"ok": true}, IdempotencyKey: "key", OccurredAt: "2026-08-19T04:08:30Z", ObservedAt: "2026-08-19T04:08:31Z", Sequence: 7}
 	payload, err := json.Marshal(record)
-	if err != nil { t.Fatalf("marshal EventRecord: %v", err) }
+	if err != nil {
+		t.Fatalf("marshal EventRecord: %v", err)
+	}
 	var fields map[string]any
-	if err := json.Unmarshal(payload, &fields); err != nil { t.Fatalf("unmarshal EventRecord: %v", err) }
+	if err := json.Unmarshal(payload, &fields); err != nil {
+		t.Fatalf("unmarshal EventRecord: %v", err)
+	}
 	for _, field := range []string{"event_id", "workspace_id", "work_ref", "run_id", "event_type", "event_payload", "idempotency_key", "occurred_at", "observed_at", "sequence"} {
 		if _, ok := fields[field]; !ok { t.Fatalf("missing wire field %q in %s", field, payload) }
 	}
@@ -86,7 +90,9 @@ func TestPGStoreGetEventRestoresTimestamps(t *testing.T) {
 	exec := &eventIDExecutor{event: EventRecord{WorkRef: "hivecrew://workspace/work/project/issue", EventType: EventProgress, EventPayload: map[string]any{"ok": true}, IdempotencyKey: "key", SessionID: "session"}}
 	store := &PGStore{exec: exec}
 	record, err := store.GetEvent(context.Background(), "1b105f59-106c-4ea6-aebd-1033e3444377", exec.event.WorkRef, exec.event.IdempotencyKey)
-	if err != nil { t.Fatalf("GetEvent: %v", err) }
+	if err != nil {
+		t.Fatalf("GetEvent: %v", err)
+	}
 	if record.OccurredAt != "2026-08-19T04:08:30Z" || record.ObservedAt != "2026-08-19T04:08:30Z" { t.Fatalf("timestamps not restored: %+v", record) }
 }
 
