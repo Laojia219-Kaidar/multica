@@ -1,1 +1,24 @@
-{"schema":"HiveCrewExternalAcceptanceV1","required":["final_revision","backend_digest","web_digest","api","browser","failure_path","production_unchanged","run_06_unchanged"]}
+{
+  "$schema":"https://json-schema.org/draft/2020-12/schema",
+  "$id":"https://hivecosm.local/schemas/HiveCrewExternalAcceptanceV2.json",
+  "type":"object",
+  "additionalProperties":false,
+  "required":["schema","final_revision","final_tree","backend_digest","web_digest","authority_overlay_sha256","compose_sha256","api","browser","data","degraded","failure_path","accepted","production_unchanged","run_06_unchanged"],
+  "properties":{
+    "schema":{"const":"HiveCrewExternalAcceptanceV2"},
+    "final_revision":{"type":"string","pattern":"^[0-9a-f]{40}$"},
+    "final_tree":{"type":"string","pattern":"^[0-9a-f]{40}$"},
+    "backend_digest":{"type":"string","pattern":"^sha256:[0-9a-f]{64}$"},
+    "web_digest":{"type":"string","pattern":"^sha256:[0-9a-f]{64}$"},
+    "authority_overlay_sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"},
+    "compose_sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"},
+    "api":{"type":"object","required":["health","ready","version"]},
+    "browser":{"type":"object","required":["http","console_clean"]},
+    "data":{"type":"object","required":["schema_top","read_only_counts"]},
+    "degraded":{"type":"object","required":["verified","evidence"]},
+    "failure_path":{"type":"object","required":["verified","evidence"]},
+    "accepted":{"const":false},
+    "production_unchanged":{"const":true},
+    "run_06_unchanged":{"const":true}
+  }
+}
