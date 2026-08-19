@@ -116,7 +116,7 @@ write_image_override "$backend_ref" "$web_ref" "$override"
 
 OPERATOR_ROLLBACK_STATE=mutation_started
 $docker_bin compose --env-file "$env_file" -f "$pkg/compose.yaml" -f "$bridge_compose" -f "$override" -p "$project" \
-  up -d --no-deps backend frontend
+  up -d --no-deps authority-loopback-bridge backend frontend
 assert_container_image "$docker_bin" "$backend_container" "$backend_ref" "$backend_id" "$backend_digest"
 assert_container_image "$docker_bin" "$web_container" "$web_ref" "$web_id" "$web_digest"
 
