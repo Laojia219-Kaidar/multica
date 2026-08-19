@@ -22,12 +22,14 @@
   "changed_files": [
     "deploy/dgx-authority/authority-entrypoint.sh",
     "deploy/dgx-authority/authority-preflight.sh",
+    "deploy/dgx-authority/authority-preflight-test.sh",
     "deploy/dgx-authority/docker-compose.dgx-authority.yml",
     "deploy/dgx-authority/operator-apply-preview.sh",
     "deploy/dgx-authority/authority-wiring-test.sh"
   ],
   "checks": {
     "shell_syntax": "PASS",
+    "authority_preflight_fake_test": "PASS",
     "authority_wiring_test": "PASS",
     "git_diff_check": "PASS",
     "dgx_gate_v6_overlay_and_suites": "PASS",

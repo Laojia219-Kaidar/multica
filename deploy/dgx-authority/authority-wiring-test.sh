@@ -5,6 +5,7 @@ root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 compose_root=$(CDPATH= cd -- "$root/../.." && pwd)
 
 sh -n "$root"/*.sh
+"$root/authority-preflight-test.sh"
 ! grep -Eq 'HIVECOSM_AUTHORITY_BEARER_TOKEN:-|HIVECOSM_AUTHORITY_BEARER_TOKEN:=|\$\{HIVECOSM_AUTHORITY_BEARER_TOKEN\}' "$root/authority-entrypoint.sh"
 grep -F 'HIVECOSM_AUTHORITY_BASE_URL:?Set' "$root/docker-compose.dgx-authority.yml" >/dev/null
 grep -F 'HIVECOSM_TENANT_ID:?Set' "$root/docker-compose.dgx-authority.yml" >/dev/null
