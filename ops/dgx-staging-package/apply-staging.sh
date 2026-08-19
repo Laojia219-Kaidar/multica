@@ -116,7 +116,17 @@ write_image_override "$backend_ref" "$web_ref" "$override"
 
 OPERATOR_ROLLBACK_STATE=mutation_started
 $docker_bin compose --env-file "$env_file" -f "$pkg/compose.yaml" -f "$bridge_compose" -f "$override" -p "$project" \
-  up -d --no-deps authority-loopback-bridge backend frontend
+  up -d --no-deps authority-loopback-bridge
+bridge_container=$($docker_bin ps --filter "label=com.docker.compose.project=$project" --filter "label=com.docker.compose.service=authority-loopback-bridge" --format '{{.ID}}')
+[[ "$bridge_container" =~ ^[a-f0-9]{12,}$ ]] || { echo authority-bridge-container-missing >&2; exit 79; }
+for ((attempt=1; attempt<=readiness_attempts; attempt++)); do
+  health=$($docker_bin inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$bridge_container")
+  [[ "$health" == healthy ]] && break
+  (( attempt < readiness_attempts )) && sleep "$readiness_delay_seconds"
+done
+[[ "$health" == healthy ]] || { echo authority-bridge-health-failed >&2; exit 79; }
+$docker_bin compose --env-file "$env_file" -f "$pkg/compose.yaml" -f "$bridge_compose" -f "$override" -p "$project" \
+  up -d --no-deps backend frontend
 assert_container_image "$docker_bin" "$backend_container" "$backend_ref" "$backend_id" "$backend_digest"
 assert_container_image "$docker_bin" "$web_container" "$web_ref" "$web_id" "$web_digest"
 
