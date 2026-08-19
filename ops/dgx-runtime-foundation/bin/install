@@ -5,3 +5,5 @@ sha=$("$root/bin/package-digest")
 [[ "$mode" == --preview ]] && { printf "preview package_digest=%s\\n" "$sha"; exit 0; }
 if [[ -e "$prefix" ]]; then [[ -f "$prefix/state/install.manifest" ]] || { echo conflict >&2; exit 73; }; mkdir -p "$backup"; cp -a "$prefix/." "$backup/"; fi
 mkdir -p "$prefix/bin" "$prefix/state"; cp "$root/bin/runtime-wrapper" "$prefix/bin/hivecrew-runtime-wrapper"; printf "digest=%s\\nbackup=%s\\n" "$sha" "$backup" > "$prefix/state/install.receipt"; printf "qwen_executor_ready=false\\nagent_ready=false\\ndaemon_ready=false\\ncanary_authorized=false\\nmodel_call_executed=false\\n" > "$prefix/state/readiness.manifest"
+printf "digest=%s
+" "$sha" > "$prefix/state/install.manifest"
