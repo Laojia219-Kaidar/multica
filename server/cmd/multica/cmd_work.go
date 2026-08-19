@@ -169,8 +169,14 @@ func readRequestJSON(cmd *cobra.Command, dst any) error {
 	if !ok {
 		return fmt.Errorf("provide --request '<json>', --request-stdin, or --request-file <path>")
 	}
-	if err := workentry.RejectForbiddenProofFields([]byte(body)); err != nil {
-		return fmt.Errorf("reject forbidden proof field: %w", err)
+	var proofErr error
+	if _, ok := dst.(*workentry.WorkEventV1); ok {
+		proofErr = workentry.RejectForbiddenProofFieldsForEvent([]byte(body))
+	} else {
+		proofErr = workentry.RejectForbiddenProofFields([]byte(body))
+	}
+	if proofErr != nil {
+		return fmt.Errorf("reject forbidden proof field: %w", proofErr)
 	}
 	if err := json.Unmarshal([]byte(body), dst); err != nil {
 		return fmt.Errorf("parse request JSON: %w", err)

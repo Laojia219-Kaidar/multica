@@ -46,8 +46,14 @@ func decodeWorkRequest(w http.ResponseWriter, r *http.Request, dst any) bool {
 		writeJSON(w, http.StatusBadRequest, workEntryErrorResponse{Error: "read body", ReasonCode: "invalid_request"})
 		return false
 	}
-	if err := workentry.RejectForbiddenProofFields(body); err != nil {
-		writeWorkEntryError(w, err)
+	var proofErr error
+	if _, ok := dst.(*workentry.WorkEventV1); ok {
+		proofErr = workentry.RejectForbiddenProofFieldsForEvent(body)
+	} else {
+		proofErr = workentry.RejectForbiddenProofFields(body)
+	}
+	if proofErr != nil {
+		writeWorkEntryError(w, proofErr)
 		return false
 	}
 	if err := json.Unmarshal(body, dst); err != nil {
@@ -609,11 +615,20 @@ func (h *Handler) WorkEntryReplay(w http.ResponseWriter, r *http.Request) {
 	if !h.requireWorkEntry(w) {
 		return
 	}
+	kind := r.URL.Query().Get("kind")
+	workRef := r.URL.Query().Get("work_ref")
+	workspaceID := h.resolveWorkspaceID(r)
+	if kind == "event" {
+		if !h.requireWorkRefTenant(w, r, workRef) {
+			return
+		}
+		workspaceID = workentry.WorkspaceFromWorkRef(workRef)
+	}
 	res, err := h.WorkEntry.Replay(r.Context(), workentry.ReplayRequest{
-		WorkspaceID:    h.resolveWorkspaceID(r),
+		WorkspaceID:    workspaceID,
 		IdempotencyKey: r.URL.Query().Get("key"),
-		Kind:           r.URL.Query().Get("kind"),
-		WorkRef:        r.URL.Query().Get("work_ref"),
+		Kind:           kind,
+		WorkRef:        workRef,
 	})
 	if err != nil {
 		writeWorkEntryError(w, err)

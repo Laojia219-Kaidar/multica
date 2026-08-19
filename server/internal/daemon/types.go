@@ -124,6 +124,7 @@ type Task struct {
 	QuickCreateDueDate            string                 `json:"quick_create_due_date,omitempty"`            // explicit calendar due date selected in quick-create
 	QuickCreateAttachmentIDs      []string               `json:"quick_create_attachment_ids,omitempty"`      // attachments uploaded in the quick-create prompt and bound by issue create
 	HandoffNote                   string                 `json:"handoff_note,omitempty"`                     // assignment handoff instruction; rendered into the opening prompt + issue_context.md
+	ResolvedContext               *ResolvedTaskContext   `json:"resolved_context,omitempty"`
 
 	SquadID               string `json:"squad_id,omitempty"`                // when the picker was a squad, the squad's UUID; Agent is still the resolved leader
 	SquadName             string `json:"squad_name,omitempty"`              // display name for the picker squad, used in prompt text
@@ -158,6 +159,17 @@ type Task struct {
 	// Empty or non-task-scoped values are fatal for writable agent tasks; the
 	// daemon must not fall back to its own token. See MUL-3292.
 	AuthToken string `json:"auth_token,omitempty"`
+}
+
+type ResolvedTaskContext struct {
+	OwnerAuthorization *ResolvedOwnerAuthorization `json:"owner_authorization,omitempty"`
+}
+
+type ResolvedOwnerAuthorization struct {
+	Authorization      string `json:"authorization"`
+	AuthorizedByUserID string `json:"authorized_by_user_id"`
+	EvidenceKind       string `json:"evidence_kind"`
+	EvidenceRefID      string `json:"evidence_ref_id"`
 }
 
 // WriterLeaseTarget is the daemon-safe target descriptor. Lease token and

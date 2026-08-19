@@ -41,3 +41,23 @@ func TestForbiddenProofFieldsList(t *testing.T) {
 		seen[k] = true
 	}
 }
+
+func TestRejectForbiddenProofFieldsForEventAllowsOnlyRootRunID(t *testing.T) {
+	tests := []struct {
+		name    string
+		body    string
+		wantErr bool
+	}{
+		{name: "typed root run id", body: `{"run_id":"run-1","event_payload":{"step":"verify"}}`},
+		{name: "nested run id", body: `{"run_id":"run-1","event_payload":{"run_id":"forged"}}`, wantErr: true},
+		{name: "other proof remains forbidden", body: `{"run_id":"run-1","event_payload":{"task_id":"forged"}}`, wantErr: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := RejectForbiddenProofFieldsForEvent([]byte(tc.body))
+			if got := errors.Is(err, ErrForbiddenProofField); got != tc.wantErr {
+				t.Fatalf("forbidden error = %v, want %v; err=%v", got, tc.wantErr, err)
+			}
+		})
+	}
+}

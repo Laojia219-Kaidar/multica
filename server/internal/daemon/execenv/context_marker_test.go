@@ -135,6 +135,44 @@ func TestPrepare_WritesWorkspacesRootMarker(t *testing.T) {
 	}
 }
 
+func TestPrepare_WritesResolvedOwnerAuthorizationToTaskMarker(t *testing.T) {
+	root := t.TempDir()
+	env, err := Prepare(PrepareParams{
+		WorkspacesRoot: root,
+		WorkspaceID:    "ws-owner-auth",
+		TaskID:         "c3d4e5f6-a7b8-9012-cdef-345678901234",
+		AgentName:      "Owner Auth Agent",
+		Task: TaskContextForEnv{
+			IssueID: "issue-owner-auth",
+			ResolvedContext: &ResolvedTaskContextForEnv{OwnerAuthorization: &ResolvedOwnerAuthorizationForEnv{
+				Authorization:      "Authorize only replacement canary 002; no RUN-06.",
+				AuthorizedByUserID: "00000000-0000-0000-0000-000000000101",
+				EvidenceKind:       "issue_assignment",
+				EvidenceRefID:      "00000000-0000-0000-0000-000000000201",
+			}},
+		},
+	}, testLogger())
+	if err != nil {
+		t.Fatalf("Prepare failed: %v", err)
+	}
+	defer env.Cleanup(true)
+
+	data, err := os.ReadFile(filepath.Join(env.WorkDir, TaskContextMarkerRelPath))
+	if err != nil {
+		t.Fatalf("read task marker: %v", err)
+	}
+	var marker taskContextMarkerFile
+	if err := json.Unmarshal(data, &marker); err != nil {
+		t.Fatalf("decode task marker: %v", err)
+	}
+	if marker.ResolvedContext == nil || marker.ResolvedContext.OwnerAuthorization == nil {
+		t.Fatalf("resolved owner authorization missing: %s", string(data))
+	}
+	if got := marker.ResolvedContext.OwnerAuthorization.Authorization; got != "Authorize only replacement canary 002; no RUN-06." {
+		t.Fatalf("authorization = %q", got)
+	}
+}
+
 // TestReuse_SelfHealsWorkspacesRootMarker verifies the root marker is restored
 // on the reuse path too: a marker deleted while the daemon runs must be back
 // before a reused task spawns, not only after the next fresh Prepare.

@@ -57,6 +57,13 @@ func TestRemainingWorkVerbsUseLiveAPI(t *testing.T) {
 		case "POST /api/work/heartbeat":
 			_ = json.NewEncoder(w).Encode(workentry.HeartbeatResult{Accepted: true})
 		case "POST /api/work/event":
+			var event workentry.WorkEventV1
+			if err := json.NewDecoder(r.Body).Decode(&event); err != nil {
+				t.Fatalf("decode event request: %v", err)
+			}
+			if event.RunID != "run-1" {
+				t.Fatalf("event run_id = %q, want run-1", event.RunID)
+			}
 			_ = json.NewEncoder(w).Encode(workentry.EventResult{EventID: "event-1"})
 		case "POST /api/work/handoff":
 			_ = json.NewEncoder(w).Encode(workentry.HandoffResult{HandoffID: "handoff-1"})
@@ -88,7 +95,7 @@ func TestRemainingWorkVerbsUseLiveAPI(t *testing.T) {
 	}
 
 	event := workentry.WorkEventV1{
-		WorkRef: workRef, SessionID: "session-1", EventType: workentry.EventProgress,
+		WorkRef: workRef, SessionID: "session-1", RunID: "run-1", EventType: workentry.EventProgress,
 		EventPayload: map[string]any{"step": "verify"}, IdempotencyKey: "event-1",
 		OccurredAt: "2026-08-19T04:00:00Z", ObservedAt: "2026-08-19T04:00:00Z",
 	}

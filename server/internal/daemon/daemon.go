@@ -4857,6 +4857,19 @@ func employeeMemoriesForEnv(in []EmployeeMemoryData) []execenv.EmployeeMemoryFor
 	return out
 }
 
+func resolvedContextForEnv(in *ResolvedTaskContext) *execenv.ResolvedTaskContextForEnv {
+	if in == nil || in.OwnerAuthorization == nil {
+		return nil
+	}
+	auth := in.OwnerAuthorization
+	return &execenv.ResolvedTaskContextForEnv{OwnerAuthorization: &execenv.ResolvedOwnerAuthorizationForEnv{
+		Authorization:      auth.Authorization,
+		AuthorizedByUserID: auth.AuthorizedByUserID,
+		EvidenceKind:       auth.EvidenceKind,
+		EvidenceRefID:      auth.EvidenceRefID,
+	}}
+}
+
 func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot int, taskLog *slog.Logger) (taskResult TaskResult, returnErr error) {
 	if d.mutationBroker == nil {
 		// Keep hand-built daemon fixtures and older embedding callers safe while
@@ -4870,6 +4883,10 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// multiple workspaces share a host.
 	if task.WorkspaceID == "" {
 		return TaskResult{}, fmt.Errorf("refusing to spawn agent: task has no workspace_id (task_id=%s)", task.ID)
+	}
+	executionPolicy, err := decodeAgentExecutionPolicy(provider, task.Agent)
+	if err != nil {
+		return TaskResult{}, err
 	}
 	enforceGitTarget := task.WriterLeaseMode == "enforce" && (len(task.WriterLeaseTargets) > 0 || len(task.Repos) > 0)
 	if enforceGitTarget && repoCheckoutModeFor(provider, runtime.GOOS) == "" {
@@ -4989,6 +5006,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		AutopilotTriggerPayload:          strings.TrimSpace(string(task.AutopilotTriggerPayload)),
 		QuickCreatePrompt:                task.QuickCreatePrompt,
 		HandoffNote:                      task.HandoffNote,
+		ResolvedContext:                  resolvedContextForEnv(task.ResolvedContext),
 		IsSquadLeader:                    strings.Contains(instructions, "## Squad Operating Protocol"),
 		RequestingUserName:               task.RequestingUserName,
 		RequestingUserProfileDescription: task.RequestingUserProfileDescription,
@@ -5421,6 +5439,12 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		agentCustomEnv = task.Agent.CustomEnv
 	}
 	layerCustomEnvAndHermesHome(agentEnv, agentCustomEnv, env.HermesHome, d.logger)
+	if executionPolicy.NoTools {
+		// QWEN_SANDBOX has higher precedence than the CLI flag. Reassert it
+		// after custom_env is layered so an Agent cannot turn the sandbox off.
+		agentEnv["QWEN_SANDBOX"] = "true"
+		agentEnv["SANDBOX_FLAGS"] = ""
+	}
 	if enforceGitTarget && provider == "codex" && runtime.GOOS == "linux" {
 		stripMediatedVCSCredentialEnv(agentEnv)
 		agentEnv["MULTICA_MEDIATED_VCS_POLICY"] = "1"
@@ -5480,6 +5504,9 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	if task.Agent != nil {
 		customArgs = task.Agent.CustomArgs
 		mcpConfig = effectiveMcpConfig
+	}
+	if executionPolicy.NoTools {
+		mcpConfig = nil
 	}
 	if provider == "hermes" {
 		customArgs = hermesLaunchArgs(customArgs, env != nil && env.HermesHome != "")
@@ -5583,6 +5610,8 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		McpConfig:          mcpConfig,
 		ThinkingLevel:      thinkingLevel,
 		ServiceTier:        serviceTier,
+		ToolPolicy:         executionPolicy.ToolPolicy,
+		SandboxRequired:    executionPolicy.SandboxRequired,
 		OpenclawMode:       openclawMode,
 		ClaudeSettingsPath: env.ClaudeSettingsPath,
 	}

@@ -21,9 +21,8 @@ type qwenBackend struct {
 // qwenBlockedArgs are owned by Multica. Qwen accepts the task prompt and stream
 // protocol as flags, so custom args must not replace either. Model/session are
 // also selected by Multica, and safe mode disables the QWEN.md context file.
-// --yolo/-y, --approval-mode, and --core-tools are daemon-owned permission
-// flags; users may not disable bypass mode or narrow the core tool registry
-// from custom_args (use --exclude-tools to hard-deny specific tools instead).
+// Permission, sandbox, and tool-selection flags are daemon-owned. An Agent's
+// custom_args cannot widen or narrow the governed execution policy.
 var qwenBlockedArgs = map[string]blockedArgMode{
 	"-p":                   blockedWithValue,
 	"--prompt":             blockedWithValue,
@@ -44,6 +43,12 @@ var qwenBlockedArgs = map[string]blockedArgMode{
 	"-y":                   blockedStandalone,
 	"--approval-mode":      blockedWithValue,
 	"--core-tools":         blockedWithValue,
+	"--sandbox":            blockedStandalone,
+	"-s":                   blockedStandalone,
+	"--max-tool-calls":     blockedWithValue,
+	"--allowed-tools":      blockedWithValue,
+	"--include-tools":      blockedWithValue,
+	"--exclude-tools":      blockedWithValue,
 }
 
 func buildQwenArgs(prompt string, opts ExecOptions, logger *slog.Logger) []string {
@@ -54,17 +59,27 @@ func buildQwenArgs(prompt string, opts ExecOptions, logger *slog.Logger) []strin
 	if opts.ResumeSessionID != "" {
 		args = append(args, "--resume", opts.ResumeSessionID)
 	}
-	// --yolo is daemon-owned: Qwen Code's non-interactive mode filters out
-	// approval-requiring tools (run_shell_command, edit, write_file, etc.)
-	// unless bypass mode is active. All other adapters use an equivalent
-	// mechanism; this keeps Qwen headless runs consistent (MUL-5134).
-	args = append(args, "--yolo")
+	if opts.ToolPolicy == "deny" {
+		// Qwen 0.21's max-tool-calls=0 is an execution gate: the first attempted
+		// tool aborts before execution. Plan mode removes write/shell approval,
+		// and the sandbox is defense in depth around the provider process.
+		args = append(args, "--approval-mode", "plan", "--max-tool-calls", "0")
+		if opts.SandboxRequired {
+			args = append(args, "--sandbox")
+		}
+	} else {
+		// --yolo is daemon-owned for ordinary autonomous runs.
+		args = append(args, "--yolo")
+	}
 	args = append(args, filterCustomArgs(opts.ExtraArgs, qwenBlockedArgs, logger)...)
 	args = append(args, filterCustomArgs(opts.CustomArgs, qwenBlockedArgs, logger)...)
 	return args
 }
 
 func (b *qwenBackend) Execute(ctx context.Context, prompt string, opts ExecOptions) (*Session, error) {
+	if opts.ToolPolicy == "deny" && !opts.SandboxRequired {
+		return nil, fmt.Errorf("qwen no-tool policy requires sandbox")
+	}
 	execPath := b.cfg.ExecutablePath
 	if execPath == "" {
 		execPath = "qwen"

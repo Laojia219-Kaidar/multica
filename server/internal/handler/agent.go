@@ -324,6 +324,7 @@ type AgentTaskResponse struct {
 	ProjectResources      []ProjectResourceData       `json:"project_resources,omitempty"`   // resources attached to the project
 	WriterLeaseMode       string                      `json:"writer_lease_mode,omitempty"`
 	WriterLeaseTargets    []service.WriterLeaseTarget `json:"writer_lease_targets,omitempty"`
+	ResolvedContext       *ResolvedTaskContext        `json:"resolved_context,omitempty"`
 	CreatedAt             string                      `json:"created_at"`
 	PriorSessionID        string                      `json:"prior_session_id,omitempty"` // session ID from a previous task on same issue
 	PriorWorkDir          string                      `json:"prior_work_dir,omitempty"`   // work_dir from a previous task on same issue
@@ -418,6 +419,20 @@ type AgentTaskResponse struct {
 	// owning user; the daemon must not fall back to its own credential. See
 	// MUL-3292.
 	AuthToken string `json:"auth_token,omitempty"`
+}
+
+// ResolvedTaskContext carries server-verified, run-scoped governance facts.
+// It is deliberately separate from free-form Agent instructions: the daemon
+// may present it as authority only after the server proves its provenance.
+type ResolvedTaskContext struct {
+	OwnerAuthorization *ResolvedOwnerAuthorization `json:"owner_authorization,omitempty"`
+}
+
+type ResolvedOwnerAuthorization struct {
+	Authorization      string `json:"authorization"`
+	AuthorizedByUserID string `json:"authorized_by_user_id"`
+	EvidenceKind       string `json:"evidence_kind"`
+	EvidenceRefID      string `json:"evidence_ref_id"`
 }
 
 // TaskAttribution is the wire shape of a run's accountable-human provenance
@@ -671,6 +686,39 @@ func taskToResponse(t db.AgentTaskQueue, workspaceID string) AgentTaskResponse {
 		// hydrated separately on user-facing surfaces (MUL-4302 §9).
 		Attribution: taskAttributionBase(t),
 	}
+}
+
+func (h *Handler) resolvedTaskContext(ctx context.Context, task db.AgentTaskQueue, workspaceID pgtype.UUID) *ResolvedTaskContext {
+	if !task.OriginatorUserID.Valid || !task.OriginatorSource.Valid || task.OriginatorSource.String != "direct_human" ||
+		!task.HandoffNote.Valid || strings.TrimSpace(task.HandoffNote.String) == "" ||
+		!task.TriggerEvidenceKind.Valid || !task.TriggerEvidenceRefID.Valid {
+		return nil
+	}
+	if task.TriggerEvidenceKind.String != "issue_assignment" && task.TriggerEvidenceKind.String != "assignment_dispatch" {
+		return nil
+	}
+	member, err := h.Queries.GetMemberByUserAndWorkspace(ctx, db.GetMemberByUserAndWorkspaceParams{
+		UserID: task.OriginatorUserID, WorkspaceID: workspaceID,
+	})
+	if err != nil {
+		return nil
+	}
+	return resolvedTaskContextForOwner(task, member.Role)
+}
+
+func resolvedTaskContextForOwner(task db.AgentTaskQueue, memberRole string) *ResolvedTaskContext {
+	if memberRole != "owner" || !task.OriginatorUserID.Valid || !task.OriginatorSource.Valid || task.OriginatorSource.String != "direct_human" ||
+		!task.HandoffNote.Valid || strings.TrimSpace(task.HandoffNote.String) == "" ||
+		!task.TriggerEvidenceKind.Valid || !task.TriggerEvidenceRefID.Valid ||
+		(task.TriggerEvidenceKind.String != "issue_assignment" && task.TriggerEvidenceKind.String != "assignment_dispatch") {
+		return nil
+	}
+	return &ResolvedTaskContext{OwnerAuthorization: &ResolvedOwnerAuthorization{
+		Authorization:      strings.TrimSpace(task.HandoffNote.String),
+		AuthorizedByUserID: uuidToString(task.OriginatorUserID),
+		EvidenceKind:       task.TriggerEvidenceKind.String,
+		EvidenceRefID:      uuidToString(task.TriggerEvidenceRefID),
+	}}
 }
 
 // relativeWorkDir produces a privacy-safe display form of the daemon-reported
