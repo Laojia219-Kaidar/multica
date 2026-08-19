@@ -1,3 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
-root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd); find "$root" -type f -not -path "*/.installed/*" -not -path "*/.backups/*" -printf "%P\\n" | sort | while read -r f; do printf "%s  %s\\n" "$(sha256sum "$root/$f"|awk "{print \$1}")" "$f"; done | sha256sum | awk "{print \$1}"
+root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+repo=$(CDPATH= cd -- "$root/../.." && pwd)
+{
+  find "$root" -type f -not -path "*/.installed/*" -not -path "*/.backups/*" -printf 'ops/dgx-runtime-foundation/%P\n'
+  printf '%s\n' scripts/security/qwen-landlock-launcher.sh
+} | sort -u | while read -r f; do
+  printf '%s  %s\n' "$(sha256sum "$repo/$f" | awk '{print $1}')" "$f"
+done | sha256sum | awk '{print $1}'

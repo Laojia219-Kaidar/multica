@@ -1,9 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+[[ -z "${HIVECREW_QWEN_CHAIN_TRACE:-}" ]] || printf '%s\n' runtime-wrapper >> "$HIVECREW_QWEN_CHAIN_TRACE"
 profile=${1:-}; shift || true
 [[ "${HIVECREW_CANARY_MODE:-}" == 1 && -n "${HIVECREW_AUTH_TOKEN_REF:-}" && -n "${HIVECREW_WORK_ORDER:-}" ]] || { echo 'fail-closed: explicit canary, auth reference, and WorkOrder required' >&2; exit 77; }
 command -v jq >/dev/null || exit 127
 row=$(jq -c --arg id "$profile" '.profiles[]|select(.id==$id)' "$root/profiles.json"); [[ -n "$row" ]] || exit 1
 cmd=$(jq -r .command <<<"$row"); path=$(command -v "$cmd" 2>/dev/null || true); [[ -n "$path" ]] || { echo "missing provider CLI: $cmd" >&2; exit 127; }
+if [[ "$(jq -r .provider <<<"$row")" == qwen ]]; then
+  [[ "${HIVECREW_QWEN_LANDLOCK_REQUIRED:-}" == 1 ]] || { echo 'qwen landlock required' >&2; exit 77; }
+  "$root/bin/qwen-preflight"
+  launcher="${HIVECREW_QWEN_LAUNCHER:-$root/bin/qwen-landlock-launcher.sh}"
+  [[ -x "$launcher" ]] || launcher="$root/../../scripts/security/qwen-landlock-launcher.sh"
+  [[ -x "$launcher" ]] || exit 127
+  exec "$launcher" "$@"
+fi
 exec "$path" "$@"

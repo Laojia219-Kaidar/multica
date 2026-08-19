@@ -1,3 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
-trusted=/home/williamdev/.local/bin/qwen; [[ "$trusted" == /* ]] || exit 77; if [[ -x "$trusted" ]]; then ver=$("$trusted" --version 2>&1 || true); [[ "$ver" == *0.21.14* ]] && state=present_verified || state=version_mismatch; else state=missing; fi; printf "qwen_cli=%s path=%s required_version=0.21.14\\nlandlock_preflight=required\\nno_model_call=true\\nsecret_values_recorded=false\\n" "$state" "$trusted"; [[ "$state" == present_verified ]] || exit 77
+real_home=${HIVECREW_QWEN_REAL_HOME:-/home/williamdev}
+trusted=${HIVECREW_QWEN_BIN:-$real_home/.local/bin/qwen}
+secret_file=${HIVECREW_QWEN_SECRET_FILE:-$real_home/.qwen/.env}
+[[ "$trusted" == /* && "$secret_file" == /* ]] || exit 77
+[[ -x "$trusted" ]] || { printf '%s\n' 'qwen_cli=missing' 'runtime_ready=false' 'secret_values_recorded=false' >&2; exit 77; }
+[[ -f "$secret_file" && "$(stat -c '%a' "$secret_file")" == 600 ]] || { printf '%s\n' 'auth_reference=missing_or_unsafe' 'runtime_ready=false' 'secret_values_recorded=false' >&2; exit 77; }
+owner=$(stat -c '%u' "$secret_file"); [[ "$owner" == "$(id -u)" ]] || { printf '%s\n' 'auth_reference=wrong_owner' 'runtime_ready=false' >&2; exit 77; }
+resolved=$(readlink -f "$secret_file"); [[ "$resolved" == "$real_home/.qwen/.env" ]] || { printf '%s\n' 'auth_reference=untrusted_path' 'runtime_ready=false' >&2; exit 77; }
+ver=$($trusted --version 2>&1 || true); [[ "$ver" == *0.21.14* ]] || { printf '%s\n' 'qwen_cli=version_mismatch' 'runtime_ready=false' >&2; exit 77; }
+[[ -z "${HIVECREW_QWEN_CHAIN_TRACE:-}" ]] || printf '%s\n' qwen-preflight >> "$HIVECREW_QWEN_CHAIN_TRACE"
+printf 'qwen_cli=present_verified\nqwen_path=%s\nauth_reference=present_verified\nlandlock_preflight=required\nsandbox_required=true\nmax_tool_calls=0\nno_model_call=true\nsecret_values_recorded=false\n' "$trusted"

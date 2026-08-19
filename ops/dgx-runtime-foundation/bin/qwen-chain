@@ -1,3 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
-root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd); profile=${1:-}; shift || true; "$root/bin/resolve-runtime" "$profile" --dry-run >/dev/null || exit 1; "$root/bin/runtime-wrapper" "$profile" "$@"
+root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+trace_marker(){ [[ -z "${HIVECREW_QWEN_CHAIN_TRACE:-}" ]] || printf '%s\n' "$1" >> "$HIVECREW_QWEN_CHAIN_TRACE"; }
+profile=${1:-}; shift || true
+case "$profile" in
+  qwen-hive-qwen|qwen-hive-qwen-landlock) ;;
+  *) echo 'qwen-chain accepts only Qwen profiles' >&2; exit 1 ;;
+esac
+"$root/bin/resolve-runtime" "$profile" --dry-run >/dev/null
+trace_marker resolver
+export HIVECREW_QWEN_LANDLOCK_REQUIRED=1
+exec "$root/bin/runtime-wrapper" "$profile" "$@"

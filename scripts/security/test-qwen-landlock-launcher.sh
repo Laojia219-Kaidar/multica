@@ -43,7 +43,7 @@ before_count="$(find /tmp -maxdepth 1 -type d -name 'hivecrew-qwen-landlock.*' |
   HIVECREW_QWEN_BIN="${test_root}/bin/fake-qwen" \
   HIVECREW_QWEN_SECRET_FILE="${test_root}/real-home/.qwen/.env" \
   QWEN_SANDBOX=true \
-  "${launcher}" --approval-mode plan --max-tool-calls 0 --sandbox
+    "${launcher}" --approval-mode plan
 )
 after_count="$(find /tmp -maxdepth 1 -type d -name 'hivecrew-qwen-landlock.*' | wc -l)"
 
