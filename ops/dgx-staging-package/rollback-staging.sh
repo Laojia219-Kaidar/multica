@@ -16,7 +16,8 @@ id="$pkg/INTEGRATION-IDENTITY.json"
 out="$pkg/receipts"
 receipt="$out/ROLLBACK-RECEIPT.json"
 override="$out/rollback-compose.override.yaml"
-bridge_stop=${AUTHORITY_BRIDGE_STOP:-$root/../../deploy/dgx-authority/authority-bridge-stop.sh}
+bridge_resolver=$root/authority-bridge-resolve.sh
+bridge_stop=$root/authority-bridge-stop.sh
 
 "$root/precheck.sh" "$pkg" >/dev/null
 env_file=$(resolve_deploy_env_file)
@@ -25,6 +26,11 @@ $docker_bin compose --env-file "$env_file" -f "$pkg/compose.yaml" -p "$project" 
 mkdir -p "$out"
 rm -f -- "$receipt"
 
+bridge_info=$(DOCKER_BIN="$docker_bin" "$bridge_resolver" "$backend_container" "$project")
+bridge_gateway=$(jq -er .gateway <<<"$bridge_info")
+bridge_network_name=$(jq -er .network_name <<<"$bridge_info")
+bridge_network_id=$(jq -er .network_id <<<"$bridge_info")
+
 backend_ref=$(jq -r .rollback_predecessor.backend.ref "$id")
 backend_id=$(jq -r .rollback_predecessor.backend.id "$id")
 backend_digest=$(jq -r .rollback_predecessor.backend.digest "$id")
@@ -32,20 +38,27 @@ web_ref=$(jq -r .rollback_predecessor.web.ref "$id")
 web_id=$(jq -r .rollback_predecessor.web.id "$id")
 web_digest=$(jq -r .rollback_predecessor.web.digest "$id")
 write_image_override "$backend_ref" "$web_ref" "$override"
+export HIVECOSM_AUTHORITY_BRIDGE_BIND_ADDR="$bridge_gateway"
+export HIVECREW_BACKEND_IMAGE="$backend_ref"
+$docker_bin compose --env-file "$env_file" -f "$pkg/compose.yaml" -f "$override" -p "$project" config --quiet
 
 $docker_bin compose --env-file "$env_file" -f "$pkg/compose.yaml" -f "$override" -p "$project" \
   up -d --no-deps backend frontend
 assert_container_image "$docker_bin" "$backend_container" "$backend_ref" "$backend_id" "$backend_digest"
 assert_container_image "$docker_bin" "$web_container" "$web_ref" "$web_id" "$web_digest"
-DOCKER_BIN="$docker_bin" "$bridge_stop" "$project" "$pkg/compose.yaml" "$env_file"
+bridge_stop_result=$(DOCKER_BIN="$docker_bin" "$bridge_stop" "$project" "$bridge_gateway")
 
 jq -n --arg project "$project" --arg reason "$reason" \
   --arg backend_ref "$backend_ref" --arg backend_id "$backend_id" \
   --arg backend_digest "$backend_digest" --arg web_ref "$web_ref" \
   --arg web_id "$web_id" --arg web_digest "$web_digest" \
+  --arg bridge_gateway "$bridge_gateway" --arg bridge_network_name "$bridge_network_name" \
+  --arg bridge_network_id "$bridge_network_id" --argjson bridge_stop "$bridge_stop_result" \
   '{schema:"HiveCrewRollbackReceiptV3", compose_project:$project,
     restored_backend:{ref:$backend_ref,id:$backend_id,digest:$backend_digest},
     restored_web:{ref:$web_ref,id:$web_id,digest:$web_digest},
+    authority_bridge:{network_name:$bridge_network_name,network_id:$bridge_network_id,
+      gateway:$bridge_gateway,stop:$bridge_stop},
     reason:$reason, exact_predecessor:true, external_verification_required:true,
     secret_values_recorded:false}' > "$receipt"
 printf 'rollback=pass receipt=%s\n' "$receipt"

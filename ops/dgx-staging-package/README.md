@@ -2,7 +2,7 @@
 
 This package is a fail-closed, candidate-scoped operator contract for compose project `multica-dgx-ultra`.
 
-Input is one candidate directory containing `INTEGRATION-IDENTITY.json` and `compose.yaml`. The identity must bind final source revision/tree/archive SHA, backend/web image IDs and digests, Authority overlay SHA, compose SHA and rollback predecessor. Missing or mismatched identity exits before mutation.
+Input is one candidate directory containing `INTEGRATION-IDENTITY.json` and `compose.yaml`. The identity must bind final source revision/tree/archive SHA, backend/web image IDs and digests, Authority overlay SHA, compose SHA, rollback predecessor, and the hashes plus locked endpoint contract of every packaged Authority bridge asset. Missing or mismatched identity exits before mutation.
 
 `apply-staging.sh` and `rollback-staging.sh` are intentionally parameter-light and use `DOCKER_BIN`/`CURL_BIN` only for fake tests or an existing governed operator environment. They never print or persist secret values. Receipts are written under the candidate `receipts/` directory. External acceptance is a separate artifact contract and is not faked by the apply script.
 
@@ -21,4 +21,13 @@ weakening persistent-failure rollback. Test environments may reduce the validate
 attempt/delay bounds. The EXIT trap uses explicit script-level rollback state so
 all post-mutation command, health, and version failures restore the exact predecessor.
 
-The package does not grant Docker access, sudo, operator identity, or staging authorization. A governed `jiawei219` operator must execute the final candidate after independent review and exact Owner authorization.
+The Authority bridge is candidate-contained and uses the exact backend image;
+there is no third image or package-external source build. Before mutation, the
+operator verifies the backend's exact Compose project/service, unique Docker
+bridge network ID, dynamic 172.16/12 gateway, and absence of every host listener
+on port 3151. It then starts only the sidecar, waits for Docker health and an
+HTTP 200 at `<gateway>:3151/bff/health`, and only then starts backend/frontend.
+Rollback restores the exact predecessor, removes the unique label-bound sidecar,
+and proves both zero orphan containers and zero port-3151 listeners.
+
+The package does not grant Docker access, sudo, operator identity, or staging authorization. A governed operator may execute only a reviewed candidate under the active Owner/Goal staging authority.

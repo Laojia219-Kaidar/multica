@@ -6,10 +6,10 @@ readonly GOVERNED_STAGING_DEPLOY_DIR=/srv/hivecosm/52-staging/multica-dgx-ultra/
 resolve_executable() {
   local requested=${1:?executable required} resolved
   if [[ "$requested" == */* ]]; then
-    resolved=$(realpath -e -- "$requested")
+    resolved=$(realpath -- "$requested")
   else
     resolved=$(command -v -- "$requested")
-    resolved=$(realpath -e -- "$resolved")
+    resolved=$(realpath -- "$resolved")
   fi
   [[ "$resolved" == /* && -f "$resolved" && -x "$resolved" ]] || {
     echo "untrusted-executable:$requested" >&2
@@ -21,7 +21,7 @@ resolve_executable() {
 resolve_deploy_env_file() {
   local deploy_dir=$GOVERNED_STAGING_DEPLOY_DIR
   local canonical_dir env_file canonical_env
-  canonical_dir=$(realpath -e -- "$deploy_dir") || {
+  canonical_dir=$(realpath -- "$deploy_dir") || {
     echo governed-staging-env-unavailable >&2
     return 78
   }
@@ -35,7 +35,7 @@ resolve_deploy_env_file() {
     echo governed-staging-env-unavailable >&2
     return 78
   }
-  canonical_env=$(realpath -e -- "$env_file") || {
+  canonical_env=$(realpath -- "$env_file") || {
     echo governed-staging-env-unavailable >&2
     return 78
   }
@@ -61,6 +61,8 @@ write_image_override() {
   umask 077
   {
     printf '%s\n' 'services:'
+    printf '%s\n' '  authority-loopback-bridge:'
+    printf '    image: %s\n' "$backend_yaml"
     printf '%s\n' '  backend:'
     printf '    image: %s\n' "$backend_yaml"
     printf '%s\n' '  frontend:'

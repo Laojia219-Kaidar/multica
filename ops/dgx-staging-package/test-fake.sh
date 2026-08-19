@@ -2,6 +2,7 @@
 set -Eeuo pipefail
 root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 for script in common.sh precheck.sh collect-readonly-counts.sh apply-staging.sh rollback-staging.sh \
+  authority-bridge-resolve.sh authority-bridge-port-check.sh authority-bridge-stop.sh \
   package-archive.sh test-collect-readonly-counts.sh test-state-machine.sh; do
   bash -n "$root/$script"
 done

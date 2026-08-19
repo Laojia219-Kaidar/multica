@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-tmp=$(mktemp -d)
+tmp=$(realpath "$(mktemp -d)")
 trap 'rm -rf "$tmp"' EXIT
 governed_live_deploy=/srv/hivecosm/52-staging/multica-dgx-ultra/4ab2c72c27e0ecf38f32cd3f6f1274350a80efca
 governed_test_deploy="$tmp/deploy-governed"
 operator_root="$tmp/operator"
 mkdir -p "$operator_root"
-for script in common.sh precheck.sh apply-staging.sh rollback-staging.sh; do
+for script in common.sh precheck.sh apply-staging.sh rollback-staging.sh \
+  authority-bridge-resolve.sh authority-bridge-port-check.sh authority-bridge-stop.sh; do
   cp -p -- "$root/$script" "$operator_root/$script"
 done
+cp -p -- "$root/docker-compose.loopback-bridge.yml" "$operator_root/docker-compose.loopback-bridge.yml"
 python3 - "$operator_root/common.sh" "$governed_live_deploy" "$governed_test_deploy" <<'PY'
 import pathlib, sys
 path = pathlib.Path(sys.argv[1])
@@ -20,7 +22,7 @@ if source.count(live) != 1:
 path.write_text(source.replace(live, test))
 PY
 grep -F "readonly GOVERNED_STAGING_DEPLOY_DIR=$governed_live_deploy" "$root/common.sh" >/dev/null
-if rg -n 'deploy_dir=.*\$\{|deploy_dir=.*:-|resolve_deploy_env_file "?\$' \
+if rg -n 'deploy_dir=.*\$\{|deploy_dir=.*:-|resolve_deploy_env_file "?\$|AUTHORITY_BRIDGE_(RESOLVER|COMPOSE|STOP)' \
     "$root/common.sh" "$root/apply-staging.sh" "$root/rollback-staging.sh" >/dev/null; then
   echo governed-deploy-path-is-overridable >&2
   exit 1
@@ -34,6 +36,13 @@ previous_backend_ref=multica-backend:dgx-ultra-20260819-353b16c3
 previous_backend_id=sha256:f6c5050276263266cf4c08954694d2022f60b942716d12f40f4ef5da2599649a
 previous_web_ref=multica-web:dgx-ultra-20260819-4ab2c72c2
 previous_web_id=sha256:53b41218f7e0fe2ad3dfa63e9e40a30a21a14a7150579471d107fecc4f861d55
+network_id=${FAKE_NETWORK_ID:-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef}
+network_gateway=${FAKE_GATEWAY:-172.24.0.1}
+network_driver=${FAKE_NETWORK_DRIVER:-bridge}
+network_scope=${FAKE_NETWORK_SCOPE:-local}
+network_project=${FAKE_NETWORK_PROJECT:-multica-dgx-ultra}
+container_project=${FAKE_CONTAINER_PROJECT:-multica-dgx-ultra}
+container_service=${FAKE_CONTAINER_SERVICE:-backend}
 revision=$(printf 'a%.0s' {1..40})
 
 new_candidate() {
@@ -42,7 +51,14 @@ new_candidate() {
   printf '%s\n' 'services:' '  backend: {}' '  frontend: {}' > "$dir/compose.yaml"
   local compose_sha
   compose_sha=$(sha256sum "$dir/compose.yaml" | awk '{print $1}')
+  local resolver_sha port_check_sha stop_sha bridge_compose_sha
+  resolver_sha=$(sha256sum "$operator_root/authority-bridge-resolve.sh" | awk '{print $1}')
+  port_check_sha=$(sha256sum "$operator_root/authority-bridge-port-check.sh" | awk '{print $1}')
+  stop_sha=$(sha256sum "$operator_root/authority-bridge-stop.sh" | awk '{print $1}')
+  bridge_compose_sha=$(sha256sum "$operator_root/docker-compose.loopback-bridge.yml" | awk '{print $1}')
   jq -n --arg compose_sha "$compose_sha" --arg revision "$revision" \
+    --arg resolver_sha "$resolver_sha" --arg port_check_sha "$port_check_sha" \
+    --arg stop_sha "$stop_sha" --arg bridge_compose_sha "$bridge_compose_sha" \
     --arg cbref "$candidate_backend_ref" --arg cbid "$candidate_backend_id" \
     --arg cwref "$candidate_web_ref" --arg cwid "$candidate_web_id" \
     --arg pbref "$previous_backend_ref" --arg pbid "$previous_backend_id" \
@@ -50,6 +66,9 @@ new_candidate() {
     '{schema:"HiveCrewIntegrationIdentityV2", compose_project:"multica-dgx-ultra",
       final_revision:$revision, final_tree:("b"*40), source_archive_sha256:("c"*64),
       authority_overlay_sha256:("d"*64), compose_sha256:$compose_sha,
+      authority_bridge:{resolver_sha256:$resolver_sha,port_check_sha256:$port_check_sha,
+        stop_sha256:$stop_sha,compose_sha256:$bridge_compose_sha,
+        binary_path:"/app/authority-loopback-bridge",bind_port:3151,target:"127.0.0.1:3150"},
       api:{server_version:"candidate-version"},
       backend_image:{ref:$cbref,id:$cbid,digest:$cbid},
       web_image:{ref:$cwref,id:$cwid,digest:$cwid},
@@ -74,12 +93,24 @@ set -Eeuo pipefail
 printf '%q ' "$@" >> "${FAKE_DOCKER_LOG:?}"
 printf '\n' >> "$FAKE_DOCKER_LOG"
 state=$(cat "${FAKE_STATE:?}")
+bridge_state=$(cat "${FAKE_BRIDGE_STATE:?}")
 candidate_backend_id="sha256:$(printf 'e%.0s' {1..64})"
 candidate_web_id="sha256:$(printf 'f%.0s' {1..64})"
 previous_backend_id=sha256:f6c5050276263266cf4c08954694d2022f60b942716d12f40f4ef5da2599649a
 previous_web_id=sha256:53b41218f7e0fe2ad3dfa63e9e40a30a21a14a7150579471d107fecc4f861d55
+network_id=${FAKE_NETWORK_ID:-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef}
+network_gateway=${FAKE_GATEWAY:-172.24.0.1}
+network_driver=${FAKE_NETWORK_DRIVER:-bridge}
+network_scope=${FAKE_NETWORK_SCOPE:-local}
+network_project=${FAKE_NETWORK_PROJECT:-multica-dgx-ultra}
+container_project=${FAKE_CONTAINER_PROJECT:-multica-dgx-ultra}
+container_service=${FAKE_CONTAINER_SERVICE:-backend}
 case "${1:-}" in
   ps)
+    if [[ "$*" == *'com.docker.compose.service=authority-loopback-bridge'* ]]; then
+      [[ "$bridge_state" == present ]] && printf 'abc123def456\n'
+      exit 0
+    fi
     if [[ "$state" == candidate ]]; then
       printf 'multica-dgx-ultra-backend-1\tb1\tbackend:candidate\tUp\t127.0.0.1:8080->8080/tcp\n'
       printf 'multica-dgx-ultra-frontend-1\tw1\tweb:candidate\tUp\t127.0.0.1:3000->3000/tcp\n'
@@ -103,7 +134,9 @@ case "${1:-}" in
     }
     if [[ "$*" == *' config --quiet' ]]; then exit 0; fi
     [[ -n "$override" && -r "$override" ]] || { echo missing-override >&2; exit 90; }
-    if grep -q 'backend:candidate' "$override" && grep -q 'web:candidate' "$override"; then
+    if [[ "$*" == *'up -d --no-deps authority-loopback-bridge'* ]]; then
+      printf present > "$FAKE_BRIDGE_STATE"
+    elif grep -q 'backend:candidate' "$override" && grep -q 'web:candidate' "$override"; then
       printf candidate > "$FAKE_STATE"
     elif grep -q 'multica-backend:dgx-ultra-20260819-353b16c3' "$override" && \
          grep -q 'multica-web:dgx-ultra-20260819-4ab2c72c2' "$override"; then
@@ -124,12 +157,34 @@ case "${1:-}" in
       backend_ref=multica-backend:dgx-ultra-20260819-353b16c3; backend_id=$previous_backend_id
       web_ref=multica-web:dgx-ultra-20260819-4ab2c72c2; web_id=$previous_web_id
     fi
-    if [[ "$target" == *backend* ]]; then ref=$backend_ref; id=$backend_id; else ref=$web_ref; id=$web_id; fi
+    if [[ "$target" == abc123def456 ]]; then ref=backend:candidate; id=$candidate_backend_id
+    elif [[ "$target" == *backend* ]]; then ref=$backend_ref; id=$backend_id
+    else ref=$web_ref; id=$web_id; fi
     case "$format" in
+      *'com.docker.compose.project'*) printf '%s\n' "$container_project" ;;
+      *'com.docker.compose.service'*) printf '%s\n' "$container_service" ;;
+      *NetworkSettings.Networks*)
+        if [[ "${FAKE_MULTIPLE_NETWORKS:-0}" == 1 ]]; then
+          printf '{"multica-dgx-ultra_default":{"NetworkID":"%s","Gateway":"%s"},"unexpected":{"NetworkID":"%s","Gateway":"172.29.0.1"}}\n' "$network_id" "$network_gateway" "$network_id"
+        else
+          printf '{"multica-dgx-ultra_default":{"NetworkID":"%s","Gateway":"%s"}}\n' "$network_id" "$network_gateway"
+        fi
+        ;;
+      *State.Health*) [[ "${FAKE_BRIDGE_HEALTH_FAIL:-0}" == 1 ]] && printf 'unhealthy\n' || printf 'healthy\n' ;;
       *Config.Image*) printf '%s\n' "$ref" ;;
       *'.Image'*) printf '%s\n' "$id" ;;
       *) echo unsupported-inspect-format >&2; exit 91 ;;
     esac
+    ;;
+  network)
+    [[ "${2:-}" == inspect && "${3:-}" == multica-dgx-ultra_default ]] || exit 91
+    printf '[{"Name":"multica-dgx-ultra_default","Id":"%s","Driver":"%s","Scope":"%s","Labels":{"com.docker.compose.project":"%s"},"IPAM":{"Config":[{"Subnet":"172.16.0.0/12","Gateway":"%s"}]}}]\n' \
+      "$network_id" "$network_driver" "$network_scope" "$network_project" "$network_gateway"
+    ;;
+  rm)
+    [[ "${2:-}" == -f && "${3:-}" == abc123def456 ]] || exit 91
+    printf absent > "$FAKE_BRIDGE_STATE"
+    printf 'abc123def456\n'
     ;;
   exec)
     echo unexpected-real-collector >&2
@@ -143,6 +198,9 @@ cat > "$tmp/curl" <<'CURL'
 #!/usr/bin/env bash
 set -Eeuo pipefail
 case "$*" in
+  *'172.24.0.1:3151/bff/health'*)
+    if [[ "${FAKE_BRIDGE_HTTP_FAIL:-0}" == 1 ]]; then printf 503; else printf 200; fi
+    ;;
   *'/health'*)
     counter_file=${FAKE_CURL_COUNTER:?}
     attempt=$(cat "$counter_file")
@@ -164,15 +222,25 @@ case "$*" in
 esac
 CURL
 
+cat > "$tmp/ss" <<'SS'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+if [[ "${FAKE_PORT_CONFLICT:-0}" == 1 ]]; then
+  printf '%s\n' 'LISTEN 0 4096 0.0.0.0:3151 0.0.0.0:*'
+fi
+SS
+
 cat > "$tmp/counts" <<'COUNTS'
 #!/usr/bin/env bash
 set -Eeuo pipefail
 [[ "${FAKE_COUNTS_FAIL:-0}" != 1 ]] || exit 95
 printf '%s\n' '{"schema_top":415,"agent_count":36,"project_count":13,"status":"collected_read_only"}'
 COUNTS
-chmod 755 "$tmp/docker" "$tmp/curl" "$tmp/counts"
+chmod 755 "$tmp/docker" "$tmp/curl" "$tmp/counts" "$tmp/ss"
 export DOCKER_BIN="$tmp/docker" CURL_BIN="$tmp/curl" COUNTS_BIN="$tmp/counts"
+export SS_BIN="$tmp/ss"
 export FAKE_STATE="$tmp/state" FAKE_DOCKER_LOG="$tmp/docker.log"
+export FAKE_BRIDGE_STATE="$tmp/bridge.state"
 export FAKE_CURL_COUNTER="$tmp/curl.count"
 export HIVECREW_READINESS_ATTEMPTS=3 HIVECREW_READINESS_DELAY_SECONDS=0
 
@@ -180,6 +248,7 @@ reset_fake() {
   local deploy_dir=${1:?deploy directory required}
   export FAKE_EXPECTED_ENV_FILE="$deploy_dir/.env"
   printf predecessor > "$FAKE_STATE"
+  printf absent > "$FAKE_BRIDGE_STATE"
   : > "$FAKE_DOCKER_LOG"
   printf '0\n' > "$FAKE_CURL_COUNTER"
 }
@@ -190,6 +259,7 @@ reset_fake "$deploy"
 "$operator_root/apply-staging.sh" "$success" >/dev/null
 [[ $(cat "$FAKE_STATE") == candidate ]]
 jq -e '.schema == "HiveCrewOperatorApplyReceiptV3" and .health_http == 200 and
+  .authority_bridge.health == "healthy" and .authority_bridge.gateway == "172.24.0.1" and
   .schema_read_only_counts.schema_top == 415 and .schema_read_only_counts.agent_count == 36' \
   "$success/receipts/OPERATOR-APPLY-RECEIPT.json" >/dev/null
 jq -e \
@@ -199,11 +269,85 @@ jq -e \
    .rollback_predecessor.web.id == "sha256:53b41218f7e0fe2ad3dfa63e9e40a30a21a14a7150579471d107fecc4f861d55"' \
   "$success/INTEGRATION-IDENTITY.json" >/dev/null
 [[ ! -e "$success/receipts/ROLLBACK-RECEIPT.json" ]]
-grep -F "compose --env-file $deploy/.env -f $success/compose.yaml -p multica-dgx-ultra config --quiet" \
+grep -F "compose --env-file $deploy/.env -f $success/compose.yaml -f $operator_root/docker-compose.loopback-bridge.yml -f $success/receipts/candidate-compose.override.yaml -p multica-dgx-ultra config --quiet" \
   "$FAKE_DOCKER_LOG" >/dev/null
-grep -F "compose --env-file $deploy/.env -f $success/compose.yaml -f $success/receipts/candidate-compose.override.yaml -p multica-dgx-ultra up -d --no-deps backend frontend" \
+grep -F "compose --env-file $deploy/.env -f $success/compose.yaml -f $operator_root/docker-compose.loopback-bridge.yml -f $success/receipts/candidate-compose.override.yaml -p multica-dgx-ultra up -d --no-deps backend frontend" \
   "$FAKE_DOCKER_LOG" >/dev/null
 echo success=PASS
+
+sidecar_line=$(grep -n 'up -d --no-deps authority-loopback-bridge' "$FAKE_DOCKER_LOG" | head -1 | cut -d: -f1)
+backend_line=$(grep -n 'up -d --no-deps backend frontend' "$FAKE_DOCKER_LOG" | head -1 | cut -d: -f1)
+(( sidecar_line < backend_line ))
+echo sidecar_healthy_before_backend_start=PASS
+
+port_conflict=$(new_candidate port-conflict)
+reset_fake "$deploy"
+if FAKE_PORT_CONFLICT=1 "$operator_root/apply-staging.sh" "$port_conflict" >/dev/null 2>&1; then exit 1; fi
+[[ $(cat "$FAKE_STATE") == predecessor && $(cat "$FAKE_BRIDGE_STATE") == absent ]]
+if grep -F 'up -d --no-deps' "$FAKE_DOCKER_LOG" >/dev/null; then exit 1; fi
+echo authority_bridge_port_conflict_zero_mutation=PASS
+
+lan_gateway=$(new_candidate lan-gateway)
+reset_fake "$deploy"
+if FAKE_GATEWAY=192.168.1.108 "$operator_root/apply-staging.sh" "$lan_gateway" >/dev/null 2>&1; then exit 1; fi
+[[ $(cat "$FAKE_STATE") == predecessor && $(cat "$FAKE_BRIDGE_STATE") == absent ]]
+echo authority_bridge_lan_gateway_rejected=PASS
+
+tailnet_gateway=$(new_candidate tailnet-gateway)
+reset_fake "$deploy"
+if FAKE_GATEWAY=100.99.164.115 "$operator_root/apply-staging.sh" "$tailnet_gateway" >/dev/null 2>&1; then exit 1; fi
+[[ $(cat "$FAKE_STATE") == predecessor && $(cat "$FAKE_BRIDGE_STATE") == absent ]]
+echo authority_bridge_tailnet_gateway_rejected=PASS
+
+wrong_driver=$(new_candidate wrong-driver)
+reset_fake "$deploy"
+if FAKE_NETWORK_DRIVER=macvlan "$operator_root/apply-staging.sh" "$wrong_driver" >/dev/null 2>&1; then exit 1; fi
+[[ $(cat "$FAKE_STATE") == predecessor && $(cat "$FAKE_BRIDGE_STATE") == absent ]]
+echo authority_bridge_wrong_driver_rejected=PASS
+
+wrong_project=$(new_candidate wrong-project)
+reset_fake "$deploy"
+if FAKE_CONTAINER_PROJECT=other-project "$operator_root/apply-staging.sh" "$wrong_project" >/dev/null 2>&1; then exit 1; fi
+[[ $(cat "$FAKE_STATE") == predecessor && $(cat "$FAKE_BRIDGE_STATE") == absent ]]
+echo authority_bridge_wrong_project_rejected=PASS
+
+wrong_service=$(new_candidate wrong-service)
+reset_fake "$deploy"
+if FAKE_CONTAINER_SERVICE=frontend "$operator_root/apply-staging.sh" "$wrong_service" >/dev/null 2>&1; then exit 1; fi
+[[ $(cat "$FAKE_STATE") == predecessor && $(cat "$FAKE_BRIDGE_STATE") == absent ]]
+echo authority_bridge_wrong_service_rejected=PASS
+
+wrong_scope=$(new_candidate wrong-scope)
+reset_fake "$deploy"
+if FAKE_NETWORK_SCOPE=swarm "$operator_root/apply-staging.sh" "$wrong_scope" >/dev/null 2>&1; then exit 1; fi
+[[ $(cat "$FAKE_STATE") == predecessor && $(cat "$FAKE_BRIDGE_STATE") == absent ]]
+echo authority_bridge_wrong_scope_rejected=PASS
+
+wrong_network_project=$(new_candidate wrong-network-project)
+reset_fake "$deploy"
+if FAKE_NETWORK_PROJECT=other-project "$operator_root/apply-staging.sh" "$wrong_network_project" >/dev/null 2>&1; then exit 1; fi
+[[ $(cat "$FAKE_STATE") == predecessor && $(cat "$FAKE_BRIDGE_STATE") == absent ]]
+echo authority_bridge_wrong_network_project_rejected=PASS
+
+multiple_networks=$(new_candidate multiple-networks)
+reset_fake "$deploy"
+if FAKE_MULTIPLE_NETWORKS=1 "$operator_root/apply-staging.sh" "$multiple_networks" >/dev/null 2>&1; then exit 1; fi
+[[ $(cat "$FAKE_STATE") == predecessor && $(cat "$FAKE_BRIDGE_STATE") == absent ]]
+echo authority_bridge_multiple_networks_rejected=PASS
+
+bridge_health_fail=$(new_candidate bridge-health-fail)
+reset_fake "$deploy"
+if FAKE_BRIDGE_HEALTH_FAIL=1 "$operator_root/apply-staging.sh" "$bridge_health_fail" >/dev/null 2>&1; then exit 1; fi
+[[ $(cat "$FAKE_STATE") == predecessor && $(cat "$FAKE_BRIDGE_STATE") == absent ]]
+jq -e '.authority_bridge.stop.orphan_count == 0 and .authority_bridge.stop.listener_absent == true' \
+  "$bridge_health_fail/receipts/ROLLBACK-RECEIPT.json" >/dev/null
+echo authority_bridge_health_failure_zero_orphan_rollback=PASS
+
+bridge_http_fail=$(new_candidate bridge-http-fail)
+reset_fake "$deploy"
+if FAKE_BRIDGE_HTTP_FAIL=1 "$operator_root/apply-staging.sh" "$bridge_http_fail" >/dev/null 2>&1; then exit 1; fi
+[[ $(cat "$FAKE_STATE") == predecessor && $(cat "$FAKE_BRIDGE_STATE") == absent ]]
+echo authority_bridge_http_failure_zero_orphan_rollback=PASS
 
 transient_refused=$(new_candidate transient-refused)
 transient_err="$tmp/transient-refused.err"
@@ -256,7 +400,9 @@ reset_fake "$deploy"
 "$operator_root/apply-staging.sh" "$manual" >/dev/null
 "$operator_root/rollback-staging.sh" "$manual" manual-test >/dev/null
 [[ $(cat "$FAKE_STATE") == predecessor ]]
+[[ $(cat "$FAKE_BRIDGE_STATE") == absent ]]
 jq -e '.reason == "manual-test" and
+  .authority_bridge.stop.orphan_count == 0 and .authority_bridge.stop.listener_absent == true and
   .restored_backend.ref == "multica-backend:dgx-ultra-20260819-353b16c3" and
   .restored_backend.id == "sha256:f6c5050276263266cf4c08954694d2022f60b942716d12f40f4ef5da2599649a" and
   .restored_web.ref == "multica-web:dgx-ultra-20260819-4ab2c72c2" and

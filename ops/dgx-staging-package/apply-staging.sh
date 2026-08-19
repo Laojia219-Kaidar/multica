@@ -22,24 +22,37 @@ env_file=$(resolve_deploy_env_file)
 docker_bin=$(resolve_executable "${DOCKER_BIN:-docker}")
 curl_bin=$(resolve_executable "${CURL_BIN:-curl}")
 counts_bin=$(resolve_executable "${COUNTS_BIN:-$root/collect-readonly-counts.sh}")
+$docker_bin compose --env-file "$env_file" -f "$pkg/compose.yaml" -p "$project" config --quiet
 readiness_attempts=${HIVECREW_READINESS_ATTEMPTS:-30}
 readiness_delay_seconds=${HIVECREW_READINESS_DELAY_SECONDS:-1}
-bridge_resolver=${AUTHORITY_BRIDGE_RESOLVER:-$root/../../deploy/dgx-authority/authority-bridge-resolve.sh}
-bridge_compose=${AUTHORITY_BRIDGE_COMPOSE:-$root/../../deploy/dgx-authority/docker-compose.loopback-bridge.yml}
+bridge_resolver=$root/authority-bridge-resolve.sh
+bridge_port_check=$root/authority-bridge-port-check.sh
+bridge_compose=$root/docker-compose.loopback-bridge.yml
 [[ "$readiness_attempts" =~ ^[1-9][0-9]*$ && "$readiness_attempts" -le 120 &&
    "$readiness_delay_seconds" =~ ^[0-9]+$ && "$readiness_delay_seconds" -le 30 ]] || {
   echo invalid-readiness-policy >&2
   exit 78
 }
-$docker_bin compose --env-file "$env_file" -f "$pkg/compose.yaml" -p "$project" config --quiet
 mkdir -p "$out"
 rm -f -- "$receipt"
-bridge_gateway=$(DOCKER_BIN="$docker_bin" "$bridge_resolver" "$backend_container" "$project")
-[[ -n "$bridge_gateway" ]] || { echo authority-bridge-gateway-required >&2; exit 78; }
-if "$docker_bin" ps --filter "label=com.docker.compose.project=$project" --format '{{.Ports}}' | grep -Eq "${bridge_gateway}:3151|0.0.0.0:3151"; then
-  echo authority-bridge-port-in-use >&2; exit 78
-fi
+
+backend_ref=$(jq -r .backend_image.ref "$id")
+backend_id=$(jq -r .backend_image.id "$id")
+backend_digest=$(jq -r .backend_image.digest "$id")
+web_ref=$(jq -r .web_image.ref "$id")
+web_id=$(jq -r .web_image.id "$id")
+web_digest=$(jq -r .web_image.digest "$id")
+write_image_override "$backend_ref" "$web_ref" "$override"
+
+bridge_info=$(DOCKER_BIN="$docker_bin" "$bridge_resolver" "$backend_container" "$project")
+bridge_gateway=$(jq -er .gateway <<<"$bridge_info")
+bridge_network_name=$(jq -er .network_name <<<"$bridge_info")
+bridge_network_id=$(jq -er .network_id <<<"$bridge_info")
+DOCKER_BIN="$docker_bin" "$bridge_port_check" "$bridge_gateway" >/dev/null
 export HIVECOSM_AUTHORITY_BRIDGE_BIND_ADDR="$bridge_gateway"
+export HIVECREW_BACKEND_IMAGE="$backend_ref"
+$docker_bin compose --env-file "$env_file" -f "$pkg/compose.yaml" -f "$bridge_compose" -f "$override" \
+  -p "$project" config --quiet
 
 wait_for_health() {
   local attempt health_status
@@ -106,25 +119,25 @@ jq -n --arg project "$project" --arg compose_hash "$compose_hash" \
     rollback_predecessor:$predecessor, mutation_started:false,
     secret_values_recorded:false}' > "$snapshot"
 
-backend_ref=$(jq -r .backend_image.ref "$id")
-backend_id=$(jq -r .backend_image.id "$id")
-backend_digest=$(jq -r .backend_image.digest "$id")
-web_ref=$(jq -r .web_image.ref "$id")
-web_id=$(jq -r .web_image.id "$id")
-web_digest=$(jq -r .web_image.digest "$id")
-write_image_override "$backend_ref" "$web_ref" "$override"
-
 OPERATOR_ROLLBACK_STATE=mutation_started
 $docker_bin compose --env-file "$env_file" -f "$pkg/compose.yaml" -f "$bridge_compose" -f "$override" -p "$project" \
   up -d --no-deps authority-loopback-bridge
-bridge_container=$($docker_bin ps --filter "label=com.docker.compose.project=$project" --filter "label=com.docker.compose.service=authority-loopback-bridge" --format '{{.ID}}')
-[[ "$bridge_container" =~ ^[a-f0-9]{12,}$ ]] || { echo authority-bridge-container-missing >&2; exit 79; }
+bridge_container_output=$($docker_bin ps --filter "label=com.docker.compose.project=$project" \
+  --filter "label=com.docker.compose.service=authority-loopback-bridge" --format '{{.ID}}' | sed '/^$/d')
+bridge_container_count=$(awk 'NF {count++} END {print count+0}' <<<"$bridge_container_output")
+(( bridge_container_count == 1 )) || { echo authority-bridge-container-not-unique >&2; exit 79; }
+bridge_container=$bridge_container_output
+[[ "$bridge_container" =~ ^[a-f0-9]{12,64}$ ]] || { echo authority-bridge-container-invalid >&2; exit 79; }
 for ((attempt=1; attempt<=readiness_attempts; attempt++)); do
   health=$($docker_bin inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$bridge_container")
   [[ "$health" == healthy ]] && break
   (( attempt < readiness_attempts )) && sleep "$readiness_delay_seconds"
 done
 [[ "$health" == healthy ]] || { echo authority-bridge-health-failed >&2; exit 79; }
+assert_container_image "$docker_bin" "$bridge_container" "$backend_ref" "$backend_id" "$backend_digest"
+bridge_http=$($curl_bin -sS -o /dev/null -w '%{http_code}' --max-time 8 \
+  "http://${bridge_gateway}:3151/bff/health")
+[[ "$bridge_http" == 200 ]] || { echo authority-bridge-http-readback-mismatch >&2; exit 79; }
 $docker_bin compose --env-file "$env_file" -f "$pkg/compose.yaml" -f "$bridge_compose" -f "$override" -p "$project" \
   up -d --no-deps backend frontend
 assert_container_image "$docker_bin" "$backend_container" "$backend_ref" "$backend_id" "$backend_digest"
@@ -141,10 +154,15 @@ jq -n --arg project "$project" --arg revision "$(jq -r .final_revision "$id")" \
   --arg backend_id "$backend_id" --arg backend_digest "$backend_digest" \
   --arg web_ref "$web_ref" --arg web_id "$web_id" --arg web_digest "$web_digest" \
   --arg version "$actual_version" --argjson counts "$counts" \
+  --arg bridge_container "$bridge_container" --arg bridge_gateway "$bridge_gateway" \
+  --arg bridge_network_name "$bridge_network_name" --arg bridge_network_id "$bridge_network_id" \
   '{schema:"HiveCrewOperatorApplyReceiptV3", compose_project:$project,
     final_revision:$revision, final_tree:$tree,
     backend:{ref:$backend_ref,id:$backend_id,digest:$backend_digest},
     web:{ref:$web_ref,id:$web_id,digest:$web_digest},
+    authority_bridge:{container_id:$bridge_container,image_ref:$backend_ref,image_id:$backend_id,
+      network_name:$bridge_network_name,network_id:$bridge_network_id,gateway:$bridge_gateway,
+      bind:($bridge_gateway+":3151"),target:"127.0.0.1:3150",health:"healthy",health_http:200},
     health_http:200, server_version:$version, schema_read_only_counts:$counts,
     pre_apply_snapshot:"PRE-APPLY-SNAPSHOT.json",
     rollback_receipt:"ROLLBACK-RECEIPT.json",
