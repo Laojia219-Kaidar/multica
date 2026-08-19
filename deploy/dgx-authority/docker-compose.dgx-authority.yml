@@ -1,0 +1,19 @@
+services:
+  backend:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      HIVECOSM_AUTHORITY_BASE_URL: ${HIVECOSM_AUTHORITY_BASE_URL:-http://host.docker.internal:3150}
+      HIVECOSM_TENANT_ID: ${HIVECOSM_TENANT_ID:-}
+      HIVECOSM_AUTHORITY_BEARER_TOKEN_FILE: ${HIVECOSM_AUTHORITY_BEARER_TOKEN_FILE:-/run/secrets/hivecosm_authority_bearer_token}
+      HIVECOSM_AUTHORITY_BEARER_TOKEN: ""
+      HIVECOSM_AUTHORITY_PREFLIGHT_TIMEOUT_SECONDS: ${HIVECOSM_AUTHORITY_PREFLIGHT_TIMEOUT_SECONDS:-5}
+    secrets:
+      - hivecosm_authority_bearer_token
+    volumes:
+      - ${HIVECREW_AUTHORITY_ENTRYPOINT_DIR:-./deploy/dgx-authority}:/opt/hivecrew-authority:ro
+    entrypoint: ["/opt/hivecrew-authority/authority-entrypoint.sh"]
+
+secrets:
+  hivecosm_authority_bearer_token:
+    file: ${HIVECOSM_AUTHORITY_TOKEN_FILE:?Set HIVECOSM_AUTHORITY_TOKEN_FILE to an operator-owned secret file}
