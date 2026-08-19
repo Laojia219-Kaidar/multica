@@ -1,0 +1,21 @@
+{
+  "work_order_id": "WO-C1-04",
+  "candidate": "luna-authority-wiring-wave2",
+  "actor": "luna-authority-wiring",
+  "human_principal": "William",
+  "carrier": "Codex/Luna",
+  "host": "spark-b398",
+  "source_revision": "d7b7d3e4ced492e689954f881ffb0e98ed2c1c7a",
+  "base_revision": "9ca3429fcd23a5d213916ba2b7d75d00a09e03c2",
+  "state": "verified_local_not_staged",
+  "secret_values_recorded": false,
+  "production_applied": false,
+  "changed_files": [
+    "deploy/dgx-authority/authority-entrypoint.sh",
+    "deploy/dgx-authority/authority-preflight.sh",
+    "deploy/dgx-authority/docker-compose.dgx-authority.yml",
+    "deploy/dgx-authority/operator-apply-preview.sh"
+  ],
+  "unchanged_boundaries": ["staging", "production", "database", "registry", "RUN-06", "GPU", "training", "model", "SGLang", "8000", "8001"],
+  "next_action": "operator review and separately authorized staging apply"
+}
