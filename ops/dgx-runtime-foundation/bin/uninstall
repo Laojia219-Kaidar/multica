@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
-root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd); prefix=${HIVECREW_RUNTIME_PREFIX:-"$root/.installed"}; mode=${1:---preview}; [[ "$mode" == --preview || "$mode" == --apply ]] || exit 2
-if [[ "$mode" == --preview ]]; then printf "preview rollback_plan=restore_from_receipt prefix=%s\\n" "$prefix"; exit 0; fi
-[[ -f "$prefix/state/install.receipt" ]] || { echo missing-receipt >&2; exit 1; }; printf "rollback receipt=%s\\n" "$prefix/state/install.receipt"; rm -rf "$prefix"
+root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+prefix=${HIVECREW_RUNTIME_PREFIX:-"$root/.installed"}; mode=${1:---preview}
+if [[ "$mode" == --preview ]]; then echo rollback_preview=restore_receipt; exit 0; fi
+receipt="$prefix/state/install.receipt"; [[ -f "$receipt" ]] || exit 1
+backup=$(awk -F= '$1=="backup"{print $2}' "$receipt")
+rm -rf "$prefix"; [[ -d "$backup" ]] && { mkdir -p "$prefix"; cp -a "$backup/." "$prefix/"; }
+echo rollback_restored=true
