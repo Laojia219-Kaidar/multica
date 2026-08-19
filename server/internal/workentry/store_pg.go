@@ -511,6 +511,9 @@ func (p *PGStore) AppendEvent(ctx context.Context, event EventRecord) (*EventRec
 	if err != nil {
 		return nil, ErrInvalidRequest
 	}
+	if strings.TrimSpace(event.ID) == "" {
+		event.ID = newID()
+	}
 	payloadJSON, err := json.Marshal(event.EventPayload)
 	if err != nil {
 		return nil, fmt.Errorf("encode event payload: %w", err)
@@ -524,8 +527,8 @@ func (p *PGStore) AppendEvent(ctx context.Context, event EventRecord) (*EventRec
 		return nil, fmt.Errorf("parse observed_at: %w", err)
 	}
 	_, err = p.exec.Exec(ctx,
-		"INSERT INTO work_event (workspace_id, work_ref, session_id, run_id, event_type, event_payload, blocker_reason, receiver, idempotency_key, occurred_at, observed_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT (workspace_id, work_ref, idempotency_key) DO NOTHING",
-		ws, event.WorkRef, nullString(event.SessionID), nullString(event.RunID), string(event.EventType),
+		"INSERT INTO work_event (id, workspace_id, work_ref, session_id, run_id, event_type, event_payload, blocker_reason, receiver, idempotency_key, occurred_at, observed_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) ON CONFLICT (workspace_id, work_ref, idempotency_key) DO NOTHING",
+		event.ID, ws, event.WorkRef, nullString(event.SessionID), nullString(event.RunID), string(event.EventType),
 		payloadJSON, nullString(event.BlockerReason), nullString(event.Receiver), event.IdempotencyKey, occurredAt, observedAt)
 	if err != nil {
 		return nil, fmt.Errorf("append work event: %w", err)
@@ -560,8 +563,8 @@ func (p *PGStore) GetEvent(ctx context.Context, workspaceID, workRef, idempotenc
 		observedAt    pgtype.Timestamptz
 	)
 	err = p.exec.QueryRow(ctx,
-		"SELECT work_ref, session_id, run_id, event_type, event_payload, blocker_reason, receiver, idempotency_key, occurred_at, observed_at FROM work_event WHERE workspace_id = $1 AND work_ref = $2 AND idempotency_key = $3",
-		ws, workRef, idempotencyKey).Scan(&rec.WorkRef, &sessionID, &runID, &eventType,
+		"SELECT id::text, work_ref, session_id, run_id, event_type, event_payload, blocker_reason, receiver, idempotency_key, occurred_at, observed_at FROM work_event WHERE workspace_id = $1 AND work_ref = $2 AND idempotency_key = $3",
+		ws, workRef, idempotencyKey).Scan(&rec.ID, &rec.WorkRef, &sessionID, &runID, &eventType,
 		&payloadJSON, &blockerReason, &receiver, &rec.IdempotencyKey, &occurredAt, &observedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil

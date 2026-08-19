@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -13,12 +15,11 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// multica work — Universal Work Registration Kernel (offline candidate ledger)
+// multica work — Universal Work Registration Kernel
 //
-// Every subcommand runs against an in-memory MemoryStore; the optional
-// --state file persists the ledger so resolve → register → status can be
-// exercised across invocations without a live database. This slice is the
-// reuse-only first cut: no migration, no PostgreSQL writes.
+// Commands use the authenticated HiveCrew API by default. Passing --state
+// selects the explicit offline candidate ledger, preserving the deterministic
+// resolve → register → status flow used by canaries and disconnected carriers.
 // ---------------------------------------------------------------------------
 
 var workCmd = &cobra.Command{
@@ -107,7 +108,7 @@ var workReplayCmd = &cobra.Command{
 }
 
 func init() {
-	workCmd.PersistentFlags().String("state", "", "Path to the offline candidate ledger snapshot (JSON); empty = ephemeral in-memory store")
+	workCmd.PersistentFlags().String("state", "", "Use an offline candidate ledger snapshot at this path; omit to call the authenticated HiveCrew API")
 	workCmd.PersistentFlags().String("output", "json", "Output format: json (default) or table")
 
 	workCmd.AddCommand(
@@ -189,6 +190,42 @@ func workWorkspace(cmd *cobra.Command) string {
 	return cli.FlagOrEnv(cmd, "workspace-id", "MULTICA_WORKSPACE_ID", "")
 }
 
+func workUsesLiveAPI(cmd *cobra.Command) bool {
+	statePath, _ := cmd.Flags().GetString("state")
+	return strings.TrimSpace(statePath) == ""
+}
+
+func workAPIClient(cmd *cobra.Command) (*cli.APIClient, error) {
+	client, err := newAPIClient(cmd)
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(client.WorkspaceID) == "" {
+		return nil, fmt.Errorf("--workspace-id (or MULTICA_WORKSPACE_ID/profile workspace_id) is required")
+	}
+	return client, nil
+}
+
+func workPostJSON(cmd *cobra.Command, path string, body, out any) error {
+	client, err := workAPIClient(cmd)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := cli.APIContext(context.Background())
+	defer cancel()
+	return client.PostJSON(ctx, path, body, out)
+}
+
+func workGetJSON(cmd *cobra.Command, path string, out any) error {
+	client, err := workAPIClient(cmd)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := cli.APIContext(context.Background())
+	defer cancel()
+	return client.GetJSON(ctx, path, out)
+}
+
 func workLoadStore(cmd *cobra.Command) (*workentry.MemoryStore, error) {
 	store := workentry.NewMemoryStore()
 	statePath, _ := cmd.Flags().GetString("state")
@@ -228,16 +265,32 @@ func workSaveStore(cmd *cobra.Command, store *workentry.MemoryStore) error {
 func workPrintJSON(v any) error { return cli.PrintJSON(os.Stdout, v) }
 
 func runWorkResolve(cmd *cobra.Command, _ []string) error {
+	var req workentry.ResolveRequest
+	if err := readRequestJSON(cmd, &req); err != nil {
+		return err
+	}
+	if workUsesLiveAPI(cmd) {
+		client, err := workAPIClient(cmd)
+		if err != nil {
+			return err
+		}
+		if strings.TrimSpace(req.Actor.WorkspaceID) == "" {
+			req.Actor.WorkspaceID = client.WorkspaceID
+		}
+		var res workentry.ResolveResult
+		ctx, cancel := cli.APIContext(context.Background())
+		defer cancel()
+		if err := client.PostJSON(ctx, "/api/work/resolve", req, &res); err != nil {
+			return err
+		}
+		return workPrintJSON(res)
+	}
+
 	store, err := workLoadStore(cmd)
 	if err != nil {
 		return err
 	}
 	svc := workentry.NewService(store)
-
-	var req workentry.ResolveRequest
-	if err := readRequestJSON(cmd, &req); err != nil {
-		return err
-	}
 	if req.Actor.WorkspaceID == "" {
 		req.Actor.WorkspaceID = workWorkspace(cmd)
 	}
@@ -250,12 +303,6 @@ func runWorkResolve(cmd *cobra.Command, _ []string) error {
 }
 
 func runWorkRegister(cmd *cobra.Command, _ []string) error {
-	store, err := workLoadStore(cmd)
-	if err != nil {
-		return err
-	}
-	svc := workentry.NewService(store)
-
 	var req workentry.RegisterRequest
 	if err := readRequestJSON(cmd, &req); err != nil {
 		return err
@@ -266,6 +313,28 @@ func runWorkRegister(cmd *cobra.Command, _ []string) error {
 	if confirm, _ := cmd.Flags().GetBool("confirm-create"); confirm {
 		req.ConfirmCreate = true
 	}
+	if workUsesLiveAPI(cmd) {
+		client, err := workAPIClient(cmd)
+		if err != nil {
+			return err
+		}
+		if strings.TrimSpace(req.Actor.WorkspaceID) == "" {
+			req.Actor.WorkspaceID = client.WorkspaceID
+		}
+		var receipt workentry.WorkRegistrationReceiptV1
+		ctx, cancel := cli.APIContext(context.Background())
+		defer cancel()
+		if err := client.PostJSON(ctx, "/api/work/register", req, &receipt); err != nil {
+			return err
+		}
+		return workPrintJSON(receipt)
+	}
+
+	store, err := workLoadStore(cmd)
+	if err != nil {
+		return err
+	}
+	svc := workentry.NewService(store)
 
 	receipt, err := svc.Register(context.Background(), req)
 	if err != nil {
@@ -278,23 +347,51 @@ func runWorkRegister(cmd *cobra.Command, _ []string) error {
 }
 
 func runWorkStart(cmd *cobra.Command, args []string) error {
-	store, err := workLoadStore(cmd)
-	if err != nil {
-		return err
-	}
-	svc := workentry.NewService(store)
-
 	sessionID, _ := cmd.Flags().GetString("session-id")
 	runID, _ := cmd.Flags().GetString("run-id")
 	actorID, _ := cmd.Flags().GetString("actor-id")
-
-	res, err := svc.Start(context.Background(), workentry.StartRequest{
+	req := workentry.StartRequest{
 		WorkRef:     args[0],
 		SessionID:   sessionID,
 		RunID:       runID,
 		ActorID:     actorID,
 		WorkspaceID: workWorkspace(cmd),
-	})
+	}
+	if workUsesLiveAPI(cmd) {
+		if strings.TrimSpace(runID) != "" {
+			return fmt.Errorf("--run-id cannot be supplied in live API mode; HiveCrew owns run lineage")
+		}
+		client, err := workAPIClient(cmd)
+		if err != nil {
+			return err
+		}
+		req.WorkspaceID = client.WorkspaceID
+		// run_id is a server-owned proof field. Do not serialize even an empty
+		// value because live admission rejects caller-supplied proof keys.
+		body := struct {
+			WorkRef     string `json:"work_ref"`
+			SessionID   string `json:"session_id"`
+			ActorID     string `json:"actor_id"`
+			WorkspaceID string `json:"workspace_id"`
+		}{
+			WorkRef: req.WorkRef, SessionID: req.SessionID,
+			ActorID: req.ActorID, WorkspaceID: req.WorkspaceID,
+		}
+		var res workentry.EventResult
+		ctx, cancel := cli.APIContext(context.Background())
+		defer cancel()
+		if err := client.PostJSON(ctx, "/api/work/start", body, &res); err != nil {
+			return err
+		}
+		return workPrintJSON(res)
+	}
+
+	store, err := workLoadStore(cmd)
+	if err != nil {
+		return err
+	}
+	svc := workentry.NewService(store)
+	res, err := svc.Start(context.Background(), req)
 	if err != nil {
 		return err
 	}
@@ -305,19 +402,24 @@ func runWorkStart(cmd *cobra.Command, args []string) error {
 }
 
 func runWorkStatus(cmd *cobra.Command, args []string) error {
-	store, err := workLoadStore(cmd)
-	if err != nil {
-		return err
-	}
-	svc := workentry.NewService(store)
-
-	ws := workWorkspace(cmd)
-	if ws == "" {
-		return fmt.Errorf("--workspace-id (or MULTICA_WORKSPACE_ID) is required")
-	}
-	res, err := svc.Status(context.Background(), workentry.StatusRequest{WorkRef: args[0], WorkspaceID: ws})
-	if err != nil {
-		return err
+	var res workentry.StatusResult
+	if workUsesLiveAPI(cmd) {
+		if err := workGetJSON(cmd, "/api/work/status?work_ref="+url.QueryEscape(args[0]), &res); err != nil {
+			return err
+		}
+	} else {
+		store, err := workLoadStore(cmd)
+		if err != nil {
+			return err
+		}
+		ws := workWorkspace(cmd)
+		if ws == "" {
+			return fmt.Errorf("--workspace-id (or MULTICA_WORKSPACE_ID) is required")
+		}
+		res, err = workentry.NewService(store).Status(context.Background(), workentry.StatusRequest{WorkRef: args[0], WorkspaceID: ws})
+		if err != nil {
+			return err
+		}
 	}
 	if workOutput(cmd) == "table" {
 		headers := []string{"WORK_REF", "FOUND", "DECISION", "PROJECT_ID", "ISSUE_ID", "TASK_ID"}
@@ -332,14 +434,8 @@ func runWorkStatus(cmd *cobra.Command, args []string) error {
 }
 
 func runWorkHeartbeat(cmd *cobra.Command, _ []string) error {
-	store, err := workLoadStore(cmd)
-	if err != nil {
-		return err
-	}
-	svc := workentry.NewService(store)
-
 	ws := workWorkspace(cmd)
-	if ws == "" {
+	if ws == "" && !workUsesLiveAPI(cmd) {
 		return fmt.Errorf("--workspace-id (or MULTICA_WORKSPACE_ID) is required")
 	}
 	actorID, _ := cmd.Flags().GetString("actor-id")
@@ -357,7 +453,7 @@ func runWorkHeartbeat(cmd *cobra.Command, _ []string) error {
 	currentCommand, _ := cmd.Flags().GetString("current-command")
 	agentHint, _ := cmd.Flags().GetString("agent-hint")
 
-	res, err := svc.Heartbeat(context.Background(), workentry.HeartbeatRecord{
+	record := workentry.HeartbeatRecord{
 		WorkspaceID:    ws,
 		ActorID:        actorID,
 		SessionID:      sessionID,
@@ -367,7 +463,27 @@ func runWorkHeartbeat(cmd *cobra.Command, _ []string) error {
 		PaneIndex:      pane,
 		CurrentCommand: currentCommand,
 		AgentHint:      agentHint,
-	})
+	}
+	if workUsesLiveAPI(cmd) {
+		client, err := workAPIClient(cmd)
+		if err != nil {
+			return err
+		}
+		record.WorkspaceID = client.WorkspaceID
+		var res workentry.HeartbeatResult
+		ctx, cancel := cli.APIContext(context.Background())
+		defer cancel()
+		if err := client.PostJSON(ctx, "/api/work/heartbeat", record, &res); err != nil {
+			return err
+		}
+		return workPrintJSON(res)
+	}
+
+	store, err := workLoadStore(cmd)
+	if err != nil {
+		return err
+	}
+	res, err := workentry.NewService(store).Heartbeat(context.Background(), record)
 	if err != nil {
 		return err
 	}
@@ -375,16 +491,23 @@ func runWorkHeartbeat(cmd *cobra.Command, _ []string) error {
 }
 
 func runWorkEvent(cmd *cobra.Command, _ []string) error {
+	var event workentry.WorkEventV1
+	if err := readRequestJSON(cmd, &event); err != nil {
+		return err
+	}
+	if workUsesLiveAPI(cmd) {
+		var res workentry.EventResult
+		if err := workPostJSON(cmd, "/api/work/event", event, &res); err != nil {
+			return err
+		}
+		return workPrintJSON(res)
+	}
+
 	store, err := workLoadStore(cmd)
 	if err != nil {
 		return err
 	}
 	svc := workentry.NewService(store)
-
-	var event workentry.WorkEventV1
-	if err := readRequestJSON(cmd, &event); err != nil {
-		return err
-	}
 	res, err := svc.Event(context.Background(), event)
 	if err != nil {
 		return err
@@ -396,16 +519,23 @@ func runWorkEvent(cmd *cobra.Command, _ []string) error {
 }
 
 func runWorkHandoff(cmd *cobra.Command, _ []string) error {
+	var pkg workentry.WorkHandoffV1
+	if err := readRequestJSON(cmd, &pkg); err != nil {
+		return err
+	}
+	if workUsesLiveAPI(cmd) {
+		var res workentry.HandoffResult
+		if err := workPostJSON(cmd, "/api/work/handoff", pkg, &res); err != nil {
+			return err
+		}
+		return workPrintJSON(res)
+	}
+
 	store, err := workLoadStore(cmd)
 	if err != nil {
 		return err
 	}
 	svc := workentry.NewService(store)
-
-	var pkg workentry.WorkHandoffV1
-	if err := readRequestJSON(cmd, &pkg); err != nil {
-		return err
-	}
 	res, err := svc.Handoff(context.Background(), pkg)
 	if err != nil {
 		return err
@@ -417,16 +547,23 @@ func runWorkHandoff(cmd *cobra.Command, _ []string) error {
 }
 
 func runWorkFinish(cmd *cobra.Command, _ []string) error {
+	var completion workentry.WorkCompletionV1
+	if err := readRequestJSON(cmd, &completion); err != nil {
+		return err
+	}
+	if workUsesLiveAPI(cmd) {
+		var res workentry.CompletionResult
+		if err := workPostJSON(cmd, "/api/work/finish", completion, &res); err != nil {
+			return err
+		}
+		return workPrintJSON(res)
+	}
+
 	store, err := workLoadStore(cmd)
 	if err != nil {
 		return err
 	}
 	svc := workentry.NewService(store)
-
-	var completion workentry.WorkCompletionV1
-	if err := readRequestJSON(cmd, &completion); err != nil {
-		return err
-	}
 	res, err := svc.Finish(context.Background(), completion)
 	if err != nil {
 		return err
@@ -438,16 +575,23 @@ func runWorkFinish(cmd *cobra.Command, _ []string) error {
 }
 
 func runWorkSync(cmd *cobra.Command, _ []string) error {
+	var entries []workentry.SyncEntry
+	if err := readRequestJSON(cmd, &entries); err != nil {
+		return err
+	}
+	if workUsesLiveAPI(cmd) {
+		var res workentry.SyncResult
+		if err := workPostJSON(cmd, "/api/work/sync", map[string]any{"entries": entries}, &res); err != nil {
+			return err
+		}
+		return workPrintJSON(res)
+	}
+
 	store, err := workLoadStore(cmd)
 	if err != nil {
 		return err
 	}
 	svc := workentry.NewService(store)
-
-	var entries []workentry.SyncEntry
-	if err := readRequestJSON(cmd, &entries); err != nil {
-		return err
-	}
 	res, err := svc.Sync(context.Background(), entries)
 	if err != nil {
 		return err
@@ -459,19 +603,24 @@ func runWorkSync(cmd *cobra.Command, _ []string) error {
 }
 
 func runWorkDoctor(cmd *cobra.Command, _ []string) error {
-	store, err := workLoadStore(cmd)
-	if err != nil {
-		return err
-	}
-	svc := workentry.NewService(store)
-
-	ws := workWorkspace(cmd)
-	if ws == "" {
-		return fmt.Errorf("--workspace-id (or MULTICA_WORKSPACE_ID) is required")
-	}
-	items, err := svc.Reconcile(context.Background(), ws)
-	if err != nil {
-		return err
+	var items []workentry.InboxItem
+	if workUsesLiveAPI(cmd) {
+		if err := workGetJSON(cmd, "/api/work/reconcile", &items); err != nil {
+			return err
+		}
+	} else {
+		store, err := workLoadStore(cmd)
+		if err != nil {
+			return err
+		}
+		ws := workWorkspace(cmd)
+		if ws == "" {
+			return fmt.Errorf("--workspace-id (or MULTICA_WORKSPACE_ID) is required")
+		}
+		items, err = workentry.NewService(store).Reconcile(context.Background(), ws)
+		if err != nil {
+			return err
+		}
 	}
 	if items == nil {
 		items = []workentry.InboxItem{}
@@ -489,20 +638,33 @@ func runWorkDoctor(cmd *cobra.Command, _ []string) error {
 }
 
 func runWorkDoctorAttach(cmd *cobra.Command, _ []string) error {
-	store, err := workLoadStore(cmd)
-	if err != nil {
-		return err
-	}
-	svc := workentry.NewService(store)
-
 	ws := workWorkspace(cmd)
 	inboxID, _ := cmd.Flags().GetString("inbox-id")
 	projectID, _ := cmd.Flags().GetString("project-id")
 	issueID, _ := cmd.Flags().GetString("issue-id")
-
-	res, err := svc.Attach(context.Background(), workentry.AttachRequest{
+	req := workentry.AttachRequest{
 		WorkspaceID: ws, InboxID: inboxID, ProjectID: projectID, IssueID: issueID,
-	})
+	}
+	if workUsesLiveAPI(cmd) {
+		client, err := workAPIClient(cmd)
+		if err != nil {
+			return err
+		}
+		req.WorkspaceID = client.WorkspaceID
+		var res workentry.AttachResult
+		ctx, cancel := cli.APIContext(context.Background())
+		defer cancel()
+		if err := client.PostJSON(ctx, "/api/work/attach", req, &res); err != nil {
+			return err
+		}
+		return workPrintJSON(res)
+	}
+
+	store, err := workLoadStore(cmd)
+	if err != nil {
+		return err
+	}
+	res, err := workentry.NewService(store).Attach(context.Background(), req)
 	if err != nil {
 		return err
 	}
@@ -513,19 +675,32 @@ func runWorkDoctorAttach(cmd *cobra.Command, _ []string) error {
 }
 
 func runWorkDoctorIgnore(cmd *cobra.Command, _ []string) error {
+	ws := workWorkspace(cmd)
+	inboxID, _ := cmd.Flags().GetString("inbox-id")
+	reason, _ := cmd.Flags().GetString("reason")
+	req := workentry.IgnoreRequest{
+		WorkspaceID: ws, InboxID: inboxID, Reason: reason,
+	}
+	if workUsesLiveAPI(cmd) {
+		client, err := workAPIClient(cmd)
+		if err != nil {
+			return err
+		}
+		req.WorkspaceID = client.WorkspaceID
+		var res workentry.IgnoreResult
+		ctx, cancel := cli.APIContext(context.Background())
+		defer cancel()
+		if err := client.PostJSON(ctx, "/api/work/ignore", req, &res); err != nil {
+			return err
+		}
+		return workPrintJSON(res)
+	}
+
 	store, err := workLoadStore(cmd)
 	if err != nil {
 		return err
 	}
-	svc := workentry.NewService(store)
-
-	ws := workWorkspace(cmd)
-	inboxID, _ := cmd.Flags().GetString("inbox-id")
-	reason, _ := cmd.Flags().GetString("reason")
-
-	res, err := svc.Ignore(context.Background(), workentry.IgnoreRequest{
-		WorkspaceID: ws, InboxID: inboxID, Reason: reason,
-	})
+	res, err := workentry.NewService(store).Ignore(context.Background(), req)
 	if err != nil {
 		return err
 	}
@@ -536,12 +711,6 @@ func runWorkDoctorIgnore(cmd *cobra.Command, _ []string) error {
 }
 
 func runWorkReplay(cmd *cobra.Command, _ []string) error {
-	store, err := workLoadStore(cmd)
-	if err != nil {
-		return err
-	}
-	svc := workentry.NewService(store)
-
 	ws := workWorkspace(cmd)
 	key, _ := cmd.Flags().GetString("idempotency-key")
 	if key == "" {
@@ -550,7 +719,20 @@ func runWorkReplay(cmd *cobra.Command, _ []string) error {
 	kind, _ := cmd.Flags().GetString("kind")
 	workRef, _ := cmd.Flags().GetString("work-ref")
 
-	res, err := svc.Replay(context.Background(), workentry.ReplayRequest{
+	if workUsesLiveAPI(cmd) {
+		path := "/api/work/replay?key=" + url.QueryEscape(key) + "&kind=" + url.QueryEscape(kind) + "&work_ref=" + url.QueryEscape(workRef)
+		var res workentry.ReplayResult
+		if err := workGetJSON(cmd, path, &res); err != nil {
+			return err
+		}
+		return workPrintJSON(res)
+	}
+
+	store, err := workLoadStore(cmd)
+	if err != nil {
+		return err
+	}
+	res, err := workentry.NewService(store).Replay(context.Background(), workentry.ReplayRequest{
 		WorkspaceID: ws, IdempotencyKey: key, Kind: kind, WorkRef: workRef,
 	})
 	if err != nil {
