@@ -65,6 +65,7 @@ exit 1
 		"QWEN_ARGS_FILE":                  argsFile,
 		"HIVECREW_QWEN_PROFILE_ID":        "qwen-hive-qwen",
 		"HIVECREW_QWEN_LANDLOCK_REQUIRED": "1",
+		"HIVECREW_RUNTIME_PREFIX":         filepath.Join(repoRoot, "ops", "dgx-runtime-foundation"),
 	}
 	if omitOwner {
 		delete(env, "HIVECREW_AUTH_TOKEN_REF")
@@ -112,6 +113,23 @@ func TestQwenNoToolRejectsRawExecutable(t *testing.T) {
 	backend := &qwenBackend{cfg: Config{ExecutablePath: raw, Logger: slog.Default()}}
 	if _, err := backend.Execute(context.Background(), "task", ExecOptions{Model: "qwen3.7-plus", ToolPolicy: "deny", SandboxRequired: true}); err == nil || !strings.Contains(err.Error(), "governed wrapper") {
 		t.Fatalf("raw executable error = %v", err)
+	}
+}
+
+func TestQwenNoToolRejectsSameNameOutsideTrustedRoot(t *testing.T) {
+	trustedRoot := filepath.Join(t.TempDir(), "trusted")
+	if err := os.MkdirAll(filepath.Join(trustedRoot, "bin"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	forged := filepath.Join(t.TempDir(), "qwen-hive-qwen")
+	writeTestExecutable(t, forged, []byte("#!/bin/sh\nexit 0\n"))
+	backend := &qwenBackend{cfg: Config{
+		ExecutablePath: forged,
+		Logger:         slog.Default(),
+		Env:            map[string]string{"HIVECREW_RUNTIME_PREFIX": trustedRoot},
+	}}
+	if _, err := backend.Execute(context.Background(), "task", ExecOptions{Model: "qwen3.7-plus", ToolPolicy: "deny", SandboxRequired: true}); err == nil || !strings.Contains(err.Error(), "outside trusted runtime prefix") {
+		t.Fatalf("same-name forged executable error = %v", err)
 	}
 }
 

@@ -78,7 +78,7 @@ func buildQwenArgs(prompt string, opts ExecOptions, logger *slog.Logger) []strin
 	return args
 }
 
-func resolveQwenExecutable(execPath string, opts ExecOptions) (string, error) {
+func resolveQwenExecutable(execPath string, opts ExecOptions, env map[string]string) (string, error) {
 	if opts.ToolPolicy != "deny" {
 		if execPath == "" {
 			execPath = "qwen"
@@ -98,12 +98,24 @@ func resolveQwenExecutable(execPath string, opts ExecOptions) (string, error) {
 	if !allowedName(filepath.Base(execPath)) {
 		return "", fmt.Errorf("qwen no-tool executable %q is not a governed wrapper", execPath)
 	}
+	trustedRoot := strings.TrimSpace(env["HIVECREW_RUNTIME_PREFIX"])
+	if trustedRoot == "" || !filepath.IsAbs(trustedRoot) {
+		return "", fmt.Errorf("qwen no-tool policy requires an absolute HIVECREW_RUNTIME_PREFIX")
+	}
+	trustedRoot, err := filepath.EvalSymlinks(trustedRoot)
+	if err != nil {
+		return "", fmt.Errorf("resolve governed qwen runtime prefix: %w", err)
+	}
 	resolved, err := filepath.EvalSymlinks(execPath)
 	if err != nil {
 		return "", fmt.Errorf("resolve governed qwen wrapper %q: %w", execPath, err)
 	}
 	if !filepath.IsAbs(resolved) || !allowedName(filepath.Base(resolved)) {
 		return "", fmt.Errorf("qwen governed wrapper resolves outside the allowed executable identity: %q", resolved)
+	}
+	expected := filepath.Join(trustedRoot, "bin", filepath.Base(resolved))
+	if resolved != expected {
+		return "", fmt.Errorf("qwen governed wrapper %q is outside trusted runtime prefix %q", resolved, trustedRoot)
 	}
 	info, err := os.Stat(resolved)
 	if err != nil {
@@ -120,7 +132,7 @@ func (b *qwenBackend) Execute(ctx context.Context, prompt string, opts ExecOptio
 		return nil, fmt.Errorf("qwen no-tool policy requires sandbox")
 	}
 	execPath := b.cfg.ExecutablePath
-	execPath, err := resolveQwenExecutable(execPath, opts)
+	execPath, err := resolveQwenExecutable(execPath, opts, b.cfg.Env)
 	if err != nil {
 		return nil, err
 	}
