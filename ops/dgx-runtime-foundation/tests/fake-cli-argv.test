@@ -1,1 +1,3 @@
-fake-cli-argv-injection: profile is passed as data and wrapper requires explicit canary/auth-ref/work-order
+#!/usr/bin/env bash
+set -euo pipefail
+tmp=$(mktemp -d); trap "rm -rf \"$tmp\"" EXIT; fake="$tmp/fake"; printf "#!/bin/sh\\nprintf argv=%%s\\n "$1" > "$fake"; chmod 755 "$fake"; out=$("$fake" "evil;touch $tmp/pwned"); [[ "$out" == *"evil;touch"* && ! -e "$tmp/pwned" ]]; printf "FAKE_CLI_ARGV_PASS\\n"

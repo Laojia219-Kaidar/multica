@@ -1,3 +1,3 @@
 #!/usr/bin/env bash
 set -euo pipefail
-root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd); command -v jq >/dev/null || exit 127; qwen=$(command -v qwen 2>/dev/null || true); if [[ -n "$qwen" ]]; then ver=$("$qwen" --version 2>&1 || true); printf "qwen_cli=present version=%s\\n" "$ver"; else printf "qwen_cli=missing\\n"; fi; printf "landlock_preflight=required\\nno_model_call=true\\nsecret_values_recorded=false\\n"
+trusted=/home/williamdev/.local/bin/qwen; [[ "$trusted" == /* ]] || exit 77; if [[ -x "$trusted" ]]; then ver=$("$trusted" --version 2>&1 || true); [[ "$ver" == *0.21.14* ]] && state=present_verified || state=version_mismatch; else state=missing; fi; printf "qwen_cli=%s path=%s required_version=0.21.14\\nlandlock_preflight=required\\nno_model_call=true\\nsecret_values_recorded=false\\n" "$state" "$trusted"; [[ "$state" == present_verified ]] || exit 77
