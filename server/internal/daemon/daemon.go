@@ -6861,7 +6861,7 @@ func isBlockedEnvKey(key string) bool {
 	// never Agent-owned custom environment. In particular, Qwen treats any
 	// pre-existing SANDBOX value as proof that it is already isolated; allowing
 	// an Agent to inject that marker would bypass a required sandbox.
-	if strings.HasPrefix(upper, "HIVECREW_QWEN_") || strings.HasPrefix(upper, "HIVECREW_LANDLOCK_") {
+	if strings.HasPrefix(upper, "HIVECREW_QWEN_") || strings.HasPrefix(upper, "HIVECREW_LANDLOCK_") || upper == "HIVECREW_RUNTIME_PREFIX" {
 		return true
 	}
 	switch upper {

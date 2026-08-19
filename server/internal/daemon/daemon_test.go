@@ -168,6 +168,8 @@ func TestIsBlockedEnvKey(t *testing.T) {
 		{key: "SANDBOX_MOUNTS", want: true},
 		{key: "SANDBOX_ENV", want: true},
 		{key: "HIVECREW_QWEN_BIN", want: true},
+		{key: "HIVECREW_RUNTIME_PREFIX", want: true},
+		{key: "hivecrew_runtime_prefix", want: true},
 		{key: "hivecrew_landlock_exec", want: true},
 		{key: "ANTHROPIC_API_KEY", want: false},
 		{key: "CURSOR_AGENT", want: false},
@@ -221,10 +223,10 @@ func TestLayerCustomEnvAndHermesHome(t *testing.T) {
 		},
 		{
 			name:        "blocklisted key dropped, overlay still applied",
-			customEnv:   map[string]string{"CODEX_HOME": "/evil", "MULTICA_TOKEN": "x", "SANDBOX": "fake", "HIVECREW_QWEN_BIN": "/evil/qwen"},
+			customEnv:   map[string]string{"CODEX_HOME": "/evil", "MULTICA_TOKEN": "x", "SANDBOX": "fake", "HIVECREW_QWEN_BIN": "/evil/qwen", "HIVECREW_RUNTIME_PREFIX": "/attacker/runtime"},
 			overlayHome: "/tmp/task/hermes-home",
 			wantHermes:  "/tmp/task/hermes-home",
-			wantAbsent:  []string{"CODEX_HOME", "MULTICA_TOKEN", "SANDBOX", "HIVECREW_QWEN_BIN"},
+			wantAbsent:  []string{"CODEX_HOME", "MULTICA_TOKEN", "SANDBOX", "HIVECREW_QWEN_BIN", "HIVECREW_RUNTIME_PREFIX"},
 		},
 	}
 
