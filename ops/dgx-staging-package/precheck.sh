@@ -7,9 +7,10 @@ source "$root/common.sh"
 
 id="$pkg/INTEGRATION-IDENTITY.json"
 compose="$pkg/compose.yaml"
+rollback_compose="$pkg/rollback-compose.yaml"
 bridge_compose="$root/docker-compose.loopback-bridge.yml"
 command -v jq >/dev/null || { echo missing-jq >&2; exit 127; }
-[[ -r "$id" && -r "$compose" && -r "$bridge_compose" ]] || { echo missing-candidate-files >&2; exit 78; }
+[[ -r "$id" && -r "$compose" && -r "$rollback_compose" && -r "$bridge_compose" ]] || { echo missing-candidate-files >&2; exit 78; }
 for asset in authority-bridge-resolve.sh authority-bridge-port-check.sh authority-bridge-stop.sh; do
   [[ -f "$root/$asset" && -x "$root/$asset" && ! -L "$root/$asset" ]] || {
     echo "missing-authority-bridge-asset:$asset" >&2
@@ -26,7 +27,7 @@ jq -e '
   def sha64: type == "string" and test("^[0-9a-f]{64}$");
   def image_ref: type == "string" and length > 0 and length <= 255 and test("^[A-Za-z0-9][A-Za-z0-9._:/-]*$");
   def image_id: type == "string" and test("^sha256:[0-9a-f]{64}$");
-  (.schema == "HiveCrewIntegrationIdentityV2") and
+  (.schema == "HiveCrewIntegrationIdentityV3") and
   (.compose_project == "multica-dgx-ultra") and
   (.final_revision | sha40) and (.final_tree | sha40) and
   (.source_archive_sha256 | sha64) and
@@ -48,11 +49,15 @@ jq -e '
   (.rollback_predecessor.web.ref | image_ref) and
   (.rollback_predecessor.web.id | image_id) and
   (.rollback_predecessor.web.digest | image_id)
+  and (.rollback_predecessor.compose_sha256 | sha64)
 ' "$id" >/dev/null || { echo invalid-identity >&2; exit 78; }
 
 actual=$(sha256sum "$compose" | awk '{print $1}')
 expected=$(jq -r .compose_sha256 "$id")
 [[ "$actual" == "$expected" ]] || { echo compose-hash-mismatch >&2; exit 78; }
+actual=$(sha256sum "$rollback_compose" | awk '{print $1}')
+expected=$(jq -r .rollback_predecessor.compose_sha256 "$id")
+[[ "$actual" == "$expected" ]] || { echo rollback-compose-hash-mismatch >&2; exit 78; }
 
 for spec in \
   'authority-bridge-resolve.sh:.authority_bridge.resolver_sha256' \

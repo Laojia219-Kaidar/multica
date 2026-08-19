@@ -70,6 +70,23 @@ write_image_override() {
   } > "$output"
 }
 
+write_rollback_image_override() {
+  local backend_ref=${1:?backend ref required}
+  local web_ref=${2:?web ref required}
+  local output=${3:?override output required}
+  local backend_yaml web_yaml
+  backend_yaml=$(yaml_string "$backend_ref")
+  web_yaml=$(yaml_string "$web_ref")
+  umask 077
+  {
+    printf '%s\n' 'services:'
+    printf '%s\n' '  backend:'
+    printf '    image: %s\n' "$backend_yaml"
+    printf '%s\n' '  frontend:'
+    printf '    image: %s\n' "$web_yaml"
+  } > "$output"
+}
+
 assert_container_image() {
   local docker_bin=${1:?docker required}
   local container=${2:?container required}

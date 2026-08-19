@@ -13,6 +13,7 @@ project=multica-dgx-ultra
 backend_container=${BACKEND_CONTAINER:-multica-dgx-ultra-backend-1}
 web_container=${WEB_CONTAINER:-multica-dgx-ultra-frontend-1}
 id="$pkg/INTEGRATION-IDENTITY.json"
+rollback_compose="$pkg/rollback-compose.yaml"
 out="$pkg/receipts"
 receipt="$out/ROLLBACK-RECEIPT.json"
 override="$out/rollback-compose.override.yaml"
@@ -22,7 +23,7 @@ bridge_stop=$root/authority-bridge-stop.sh
 "$root/precheck.sh" "$pkg" >/dev/null
 env_file=$(resolve_deploy_env_file)
 docker_bin=$(resolve_executable "${DOCKER_BIN:-docker}")
-$docker_bin compose --env-file "$env_file" -f "$pkg/compose.yaml" -p "$project" config --quiet
+$docker_bin compose --env-file "$env_file" -f "$rollback_compose" -p "$project" config --quiet
 mkdir -p "$out"
 rm -f -- "$receipt"
 
@@ -37,12 +38,12 @@ backend_digest=$(jq -r .rollback_predecessor.backend.digest "$id")
 web_ref=$(jq -r .rollback_predecessor.web.ref "$id")
 web_id=$(jq -r .rollback_predecessor.web.id "$id")
 web_digest=$(jq -r .rollback_predecessor.web.digest "$id")
-write_image_override "$backend_ref" "$web_ref" "$override"
+write_rollback_image_override "$backend_ref" "$web_ref" "$override"
 export HIVECOSM_AUTHORITY_BRIDGE_BIND_ADDR="$bridge_gateway"
 export HIVECREW_BACKEND_IMAGE="$backend_ref"
-$docker_bin compose --env-file "$env_file" -f "$pkg/compose.yaml" -f "$override" -p "$project" config --quiet
+$docker_bin compose --env-file "$env_file" -f "$rollback_compose" -f "$override" -p "$project" config --quiet
 
-$docker_bin compose --env-file "$env_file" -f "$pkg/compose.yaml" -f "$override" -p "$project" \
+$docker_bin compose --env-file "$env_file" -f "$rollback_compose" -f "$override" -p "$project" \
   up -d --no-deps backend frontend
 assert_container_image "$docker_bin" "$backend_container" "$backend_ref" "$backend_id" "$backend_digest"
 assert_container_image "$docker_bin" "$web_container" "$web_ref" "$web_id" "$web_digest"

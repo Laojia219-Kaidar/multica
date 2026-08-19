@@ -49,8 +49,10 @@ new_candidate() {
   local name=${1:?name required} dir="$tmp/$1"
   mkdir -p "$dir"
   printf '%s\n' 'services:' '  backend: {}' '  frontend: {}' > "$dir/compose.yaml"
-  local compose_sha
+  cp "$dir/compose.yaml" "$dir/rollback-compose.yaml"
+  local compose_sha rollback_compose_sha
   compose_sha=$(sha256sum "$dir/compose.yaml" | awk '{print $1}')
+  rollback_compose_sha=$(sha256sum "$dir/rollback-compose.yaml" | awk '{print $1}')
   local resolver_sha port_check_sha stop_sha bridge_compose_sha
   resolver_sha=$(sha256sum "$operator_root/authority-bridge-resolve.sh" | awk '{print $1}')
   port_check_sha=$(sha256sum "$operator_root/authority-bridge-port-check.sh" | awk '{print $1}')
@@ -63,7 +65,8 @@ new_candidate() {
     --arg cwref "$candidate_web_ref" --arg cwid "$candidate_web_id" \
     --arg pbref "$previous_backend_ref" --arg pbid "$previous_backend_id" \
     --arg pwref "$previous_web_ref" --arg pwid "$previous_web_id" \
-    '{schema:"HiveCrewIntegrationIdentityV2", compose_project:"multica-dgx-ultra",
+    --arg rollback_compose_sha "$rollback_compose_sha" \
+    '{schema:"HiveCrewIntegrationIdentityV3", compose_project:"multica-dgx-ultra",
       final_revision:$revision, final_tree:("b"*40), source_archive_sha256:("c"*64),
       authority_overlay_sha256:("d"*64), compose_sha256:$compose_sha,
       authority_bridge:{resolver_sha256:$resolver_sha,port_check_sha256:$port_check_sha,
@@ -72,7 +75,7 @@ new_candidate() {
       api:{server_version:"candidate-version"},
       backend_image:{ref:$cbref,id:$cbid,digest:$cbid},
       web_image:{ref:$cwref,id:$cwid,digest:$cwid},
-      rollback_predecessor:{backend:{ref:$pbref,id:$pbid,digest:$pbid},web:{ref:$pwref,id:$pwid,digest:$pwid}}}' \
+      rollback_predecessor:{backend:{ref:$pbref,id:$pbid,digest:$pbid},web:{ref:$pwref,id:$pwid,digest:$pwid},compose_sha256:$rollback_compose_sha}}' \
       > "$dir/INTEGRATION-IDENTITY.json"
   printf '%s\n' "$dir"
 }
@@ -408,7 +411,7 @@ jq -e '.reason == "manual-test" and
   .restored_web.ref == "multica-web:dgx-ultra-20260819-4ab2c72c2" and
   .restored_web.id == "sha256:53b41218f7e0fe2ad3dfa63e9e40a30a21a14a7150579471d107fecc4f861d55"' \
   "$manual/receipts/ROLLBACK-RECEIPT.json" >/dev/null
-grep -F "compose --env-file $deploy/.env -f $manual/compose.yaml -f $manual/receipts/rollback-compose.override.yaml -p multica-dgx-ultra up -d --no-deps backend frontend" \
+grep -F "compose --env-file $deploy/.env -f $manual/rollback-compose.yaml -f $manual/receipts/rollback-compose.override.yaml -p multica-dgx-ultra up -d --no-deps backend frontend" \
   "$FAKE_DOCKER_LOG" >/dev/null
 echo manual_rollback_exact_predecessor=PASS
 
