@@ -2,6 +2,4 @@
 set -euo pipefail
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd); command -v jq >/dev/null || exit 127
 jq -e '.secret_values_recorded == false and (.profiles|length >= 8)' "$root/profiles.json" >/dev/null
-printf .package_valid=true
-.runtime_ready=false
-.n'
+printf "package_valid=true\nruntime_ready=false\n"
