@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -euo pipefail
+root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+out=${1:-"$root/../qwen-fast-path-v4.tar"}; list=$(mktemp); trap "rm -f \"$list\"" EXIT
+find "$root" -type f -printf "%P\n" | sort > "$list"
+tar --sort=name --mtime="UTC 1970-01-01" --owner=0 --group=0 --numeric-owner -cf "$out" -C "$root" -T "$list"
+sha256sum "$out" > "$out.sha256"; printf "%s\n" "$out"
