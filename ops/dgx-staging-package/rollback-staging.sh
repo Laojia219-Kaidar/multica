@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 umask 077
-pkg=${1:?usage: rollback-staging.sh CANDIDATE_DIR DEPLOY_DIR [REASON]}
-deploy_dir=${2:?usage: rollback-staging.sh CANDIDATE_DIR DEPLOY_DIR [REASON]}
-reason=${3:-manual}
+[[ $# -ge 1 && $# -le 2 ]] || {
+  echo 'usage: rollback-staging.sh CANDIDATE_DIR [REASON]' >&2
+  exit 64
+}
+pkg=$1
+reason=${2:-manual}
 root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 source "$root/common.sh"
 project=multica-dgx-ultra
@@ -15,7 +18,7 @@ receipt="$out/ROLLBACK-RECEIPT.json"
 override="$out/rollback-compose.override.yaml"
 
 "$root/precheck.sh" "$pkg" >/dev/null
-env_file=$(resolve_deploy_env_file "$deploy_dir")
+env_file=$(resolve_deploy_env_file)
 docker_bin=$(resolve_executable "${DOCKER_BIN:-docker}")
 $docker_bin compose --env-file "$env_file" -f "$pkg/compose.yaml" -p "$project" config --quiet
 mkdir -p "$out"

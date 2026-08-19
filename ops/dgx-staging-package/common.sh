@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+readonly GOVERNED_STAGING_DEPLOY_DIR=/srv/hivecosm/52-staging/multica-dgx-ultra/4ab2c72c27e0ecf38f32cd3f6f1274350a80efca
+
 resolve_executable() {
   local requested=${1:?executable required} resolved
   if [[ "$requested" == */* ]]; then
@@ -17,21 +19,18 @@ resolve_executable() {
 }
 
 resolve_deploy_env_file() {
-  local deploy_dir=${1:?deploy directory required}
+  local deploy_dir=$GOVERNED_STAGING_DEPLOY_DIR
   local canonical_dir env_file canonical_env
-  [[ "$deploy_dir" == /* ]] || {
-    echo governed-staging-env-unavailable >&2
-    return 78
-  }
   canonical_dir=$(realpath -e -- "$deploy_dir") || {
     echo governed-staging-env-unavailable >&2
     return 78
   }
-  [[ "$canonical_dir" == "$deploy_dir" && -d "$canonical_dir" ]] || {
+  [[ "$deploy_dir" == /* && "$canonical_dir" == "$GOVERNED_STAGING_DEPLOY_DIR" &&
+     "$canonical_dir" == "$deploy_dir" && -d "$canonical_dir" ]] || {
     echo governed-staging-env-unavailable >&2
     return 78
   }
-  env_file="$deploy_dir/.env"
+  env_file="$GOVERNED_STAGING_DEPLOY_DIR/.env"
   [[ -f "$env_file" && -r "$env_file" && -s "$env_file" && ! -L "$env_file" ]] || {
     echo governed-staging-env-unavailable >&2
     return 78
@@ -40,7 +39,8 @@ resolve_deploy_env_file() {
     echo governed-staging-env-unavailable >&2
     return 78
   }
-  [[ "$canonical_env" == "$env_file" && "${canonical_env%/*}" == "$canonical_dir" ]] || {
+  [[ "$canonical_env" == "$GOVERNED_STAGING_DEPLOY_DIR/.env" &&
+     "$canonical_env" == "$env_file" && "${canonical_env%/*}" == "$canonical_dir" ]] || {
     echo governed-staging-env-unavailable >&2
     return 78
   }

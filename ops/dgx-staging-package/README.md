@@ -6,11 +6,13 @@ Input is one candidate directory containing `INTEGRATION-IDENTITY.json` and `com
 
 `apply-staging.sh` and `rollback-staging.sh` are intentionally parameter-light and use `DOCKER_BIN`/`CURL_BIN` only for fake tests or an existing governed operator environment. They never print or persist secret values. Receipts are written under the candidate `receipts/` directory. External acceptance is a separate artifact contract and is not faked by the apply script.
 
-Apply and rollback require the canonical deploy directory as an explicit second
-argument. Every Compose config or mutation uses exactly
-`--env-file "$deploy_dir/.env"`; the canonical regular, non-empty env file is
-validated before receipts, overrides, or container changes. Env content is never
-read or copied by the operator package. The read-only count collector keeps
+Apply and rollback bind the single governed deploy directory internally:
+`/srv/hivecosm/52-staging/multica-dgx-ultra/4ab2c72c27e0ecf38f32cd3f6f1274350a80efca`.
+The caller cannot provide or override it. Every Compose config or mutation uses
+exactly that directory's `/.env`; canonical path equality and a regular,
+non-empty env file are validated before receipts, overrides, or container
+changes. Env content is never read or copied by the operator package. The
+read-only count collector keeps
 `default_transaction_read_only=on` and converts a textual migration version such
 as `415_project_revision` to the numeric schema top `415`.
 

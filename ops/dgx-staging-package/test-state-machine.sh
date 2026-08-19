@@ -3,6 +3,28 @@ set -Eeuo pipefail
 root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
+governed_live_deploy=/srv/hivecosm/52-staging/multica-dgx-ultra/4ab2c72c27e0ecf38f32cd3f6f1274350a80efca
+governed_test_deploy="$tmp/deploy-governed"
+operator_root="$tmp/operator"
+mkdir -p "$operator_root"
+for script in common.sh precheck.sh apply-staging.sh rollback-staging.sh; do
+  cp -p -- "$root/$script" "$operator_root/$script"
+done
+python3 - "$operator_root/common.sh" "$governed_live_deploy" "$governed_test_deploy" <<'PY'
+import pathlib, sys
+path = pathlib.Path(sys.argv[1])
+live, test = sys.argv[2:]
+source = path.read_text()
+if source.count(live) != 1:
+    raise SystemExit("governed deploy constant missing or duplicated")
+path.write_text(source.replace(live, test))
+PY
+grep -F "readonly GOVERNED_STAGING_DEPLOY_DIR=$governed_live_deploy" "$root/common.sh" >/dev/null
+if rg -n 'deploy_dir=.*\$\{|deploy_dir=.*:-|resolve_deploy_env_file "?\$' \
+    "$root/common.sh" "$root/apply-staging.sh" "$root/rollback-staging.sh" >/dev/null; then
+  echo governed-deploy-path-is-overridable >&2
+  exit 1
+fi
 
 candidate_backend_ref=backend:candidate
 candidate_backend_id=sha256:$(printf 'e%.0s' {1..64})
@@ -155,7 +177,7 @@ reset_fake() {
 deploy=$(new_deploy governed)
 success=$(new_candidate success)
 reset_fake "$deploy"
-"$root/apply-staging.sh" "$success" "$deploy" >/dev/null
+"$operator_root/apply-staging.sh" "$success" >/dev/null
 [[ $(cat "$FAKE_STATE") == candidate ]]
 jq -e '.schema == "HiveCrewOperatorApplyReceiptV3" and .health_http == 200 and
   .schema_read_only_counts.schema_top == 415 and .schema_read_only_counts.agent_count == 36' \
@@ -175,7 +197,7 @@ echo success=PASS
 
 health_fail=$(new_candidate health-fail)
 reset_fake "$deploy"
-if FAKE_HEALTH_FAIL=1 "$root/apply-staging.sh" "$health_fail" "$deploy" >/dev/null 2>&1; then exit 1; fi
+if FAKE_HEALTH_FAIL=1 "$operator_root/apply-staging.sh" "$health_fail" >/dev/null 2>&1; then exit 1; fi
 [[ $(cat "$FAKE_STATE") == predecessor ]]
 [[ ! -e "$health_fail/receipts/OPERATOR-APPLY-RECEIPT.json" ]]
 jq -e '.exact_predecessor == true and (.reason | startswith("automatic-apply-failure-"))' \
@@ -184,7 +206,7 @@ echo health_fail_autorollback=PASS
 
 version_fail=$(new_candidate version-fail)
 reset_fake "$deploy"
-if FAKE_VERSION_FAIL=1 "$root/apply-staging.sh" "$version_fail" "$deploy" >/dev/null 2>&1; then exit 1; fi
+if FAKE_VERSION_FAIL=1 "$operator_root/apply-staging.sh" "$version_fail" >/dev/null 2>&1; then exit 1; fi
 [[ $(cat "$FAKE_STATE") == predecessor ]]
 [[ ! -e "$version_fail/receipts/OPERATOR-APPLY-RECEIPT.json" ]]
 jq -e '.exact_predecessor == true' "$version_fail/receipts/ROLLBACK-RECEIPT.json" >/dev/null
@@ -192,8 +214,8 @@ echo version_fail_autorollback=PASS
 
 manual=$(new_candidate manual-rollback)
 reset_fake "$deploy"
-"$root/apply-staging.sh" "$manual" "$deploy" >/dev/null
-"$root/rollback-staging.sh" "$manual" "$deploy" manual-test >/dev/null
+"$operator_root/apply-staging.sh" "$manual" >/dev/null
+"$operator_root/rollback-staging.sh" "$manual" manual-test >/dev/null
 [[ $(cat "$FAKE_STATE") == predecessor ]]
 jq -e '.reason == "manual-test" and
   .restored_backend.ref == "multica-backend:dgx-ultra-20260819-353b16c3" and
@@ -207,17 +229,17 @@ echo manual_rollback_exact_predecessor=PASS
 
 collector_fail=$(new_candidate collector-fail)
 reset_fake "$deploy"
-if FAKE_COUNTS_FAIL=1 "$root/apply-staging.sh" "$collector_fail" "$deploy" >/dev/null 2>&1; then exit 1; fi
+if FAKE_COUNTS_FAIL=1 "$operator_root/apply-staging.sh" "$collector_fail" >/dev/null 2>&1; then exit 1; fi
 [[ $(cat "$FAKE_STATE") == predecessor ]]
 if grep -F 'up -d --no-deps' "$FAKE_DOCKER_LOG" >/dev/null; then exit 1; fi
 [[ ! -e "$collector_fail/receipts/OPERATOR-APPLY-RECEIPT.json" ]]
 echo collector_failure_zero_mutation=PASS
 
 missing_env=$(new_candidate missing-env)
-missing_deploy="$tmp/deploy-missing"
-mkdir -p "$missing_deploy"
-reset_fake "$missing_deploy"
-if "$root/apply-staging.sh" "$missing_env" "$missing_deploy" >/dev/null 2>&1; then exit 1; fi
+mv "$deploy/.env" "$deploy/.env.saved"
+reset_fake "$deploy"
+if "$operator_root/apply-staging.sh" "$missing_env" >/dev/null 2>&1; then exit 1; fi
+mv "$deploy/.env.saved" "$deploy/.env"
 [[ $(cat "$FAKE_STATE") == predecessor && ! -s "$FAKE_DOCKER_LOG" ]]
 [[ ! -e "$missing_env/receipts/OPERATOR-APPLY-RECEIPT.json" ]]
 echo missing_env_file_zero_mutation=PASS
@@ -225,27 +247,75 @@ echo missing_env_file_zero_mutation=PASS
 wrong_env=$(new_candidate wrong-env)
 reset_fake "$deploy"
 export FAKE_EXPECTED_ENV_FILE="$tmp/not-the-governed-env/.env"
-if "$root/apply-staging.sh" "$wrong_env" "$deploy" >/dev/null 2>&1; then exit 1; fi
+if "$operator_root/apply-staging.sh" "$wrong_env" >/dev/null 2>&1; then exit 1; fi
 [[ $(cat "$FAKE_STATE") == predecessor ]]
 if grep -F 'up -d --no-deps' "$FAKE_DOCKER_LOG" >/dev/null; then exit 1; fi
 [[ ! -e "$wrong_env/receipts/OPERATOR-APPLY-RECEIPT.json" ]]
 echo wrong_env_file_zero_mutation=PASS
 
 symlink_env=$(new_candidate symlink-env)
-symlink_deploy="$tmp/deploy-symlink"
-mkdir -p "$symlink_deploy"
-ln -s "$deploy/.env" "$symlink_deploy/.env"
-reset_fake "$symlink_deploy"
-if "$root/apply-staging.sh" "$symlink_env" "$symlink_deploy" >/dev/null 2>&1; then exit 1; fi
+mv "$deploy/.env" "$deploy/.env.saved"
+ln -s "$deploy/.env.saved" "$deploy/.env"
+reset_fake "$deploy"
+if "$operator_root/apply-staging.sh" "$symlink_env" >/dev/null 2>&1; then exit 1; fi
+rm "$deploy/.env"
+mv "$deploy/.env.saved" "$deploy/.env"
 [[ $(cat "$FAKE_STATE") == predecessor && ! -s "$FAKE_DOCKER_LOG" ]]
 [[ ! -e "$symlink_env/receipts/OPERATOR-APPLY-RECEIPT.json" ]]
 echo symlink_env_file_zero_mutation=PASS
+
+rollback_missing_env=$(new_candidate rollback-missing-env)
+mv "$deploy/.env" "$deploy/.env.saved"
+reset_fake "$deploy"
+if "$operator_root/rollback-staging.sh" "$rollback_missing_env" missing-env-test >/dev/null 2>&1; then exit 1; fi
+mv "$deploy/.env.saved" "$deploy/.env"
+[[ $(cat "$FAKE_STATE") == predecessor && ! -s "$FAKE_DOCKER_LOG" ]]
+[[ ! -e "$rollback_missing_env/receipts/ROLLBACK-RECEIPT.json" ]]
+[[ ! -e "$rollback_missing_env/receipts/rollback-compose.override.yaml" ]]
+echo rollback_missing_env_file_zero_mutation=PASS
+
+rollback_wrong_env=$(new_candidate rollback-wrong-env)
+reset_fake "$deploy"
+export FAKE_EXPECTED_ENV_FILE="$tmp/not-the-governed-env/.env"
+if "$operator_root/rollback-staging.sh" "$rollback_wrong_env" wrong-env-test >/dev/null 2>&1; then exit 1; fi
+[[ $(cat "$FAKE_STATE") == predecessor ]]
+if grep -F 'up -d --no-deps' "$FAKE_DOCKER_LOG" >/dev/null; then exit 1; fi
+[[ ! -e "$rollback_wrong_env/receipts/ROLLBACK-RECEIPT.json" ]]
+[[ ! -e "$rollback_wrong_env/receipts/rollback-compose.override.yaml" ]]
+echo rollback_wrong_env_file_zero_mutation=PASS
+
+rollback_symlink_env=$(new_candidate rollback-symlink-env)
+mv "$deploy/.env" "$deploy/.env.saved"
+ln -s "$deploy/.env.saved" "$deploy/.env"
+reset_fake "$deploy"
+if "$operator_root/rollback-staging.sh" "$rollback_symlink_env" symlink-env-test >/dev/null 2>&1; then exit 1; fi
+rm "$deploy/.env"
+mv "$deploy/.env.saved" "$deploy/.env"
+[[ $(cat "$FAKE_STATE") == predecessor && ! -s "$FAKE_DOCKER_LOG" ]]
+[[ ! -e "$rollback_symlink_env/receipts/ROLLBACK-RECEIPT.json" ]]
+[[ ! -e "$rollback_symlink_env/receipts/rollback-compose.override.yaml" ]]
+echo rollback_symlink_env_file_zero_mutation=PASS
+
+apply_path_override=$(new_candidate apply-path-override)
+reset_fake "$deploy"
+if "$operator_root/apply-staging.sh" "$apply_path_override" "$tmp/evil-deploy" >/dev/null 2>&1; then exit 1; fi
+[[ $(cat "$FAKE_STATE") == predecessor && ! -s "$FAKE_DOCKER_LOG" ]]
+[[ ! -e "$apply_path_override/receipts/OPERATOR-APPLY-RECEIPT.json" ]]
+echo apply_path_override_rejected_zero_mutation=PASS
+
+rollback_path_override=$(new_candidate rollback-path-override)
+reset_fake "$deploy"
+if "$operator_root/rollback-staging.sh" "$rollback_path_override" "$tmp/evil-deploy" override-test >/dev/null 2>&1; then exit 1; fi
+[[ $(cat "$FAKE_STATE") == predecessor && ! -s "$FAKE_DOCKER_LOG" ]]
+[[ ! -e "$rollback_path_override/receipts/ROLLBACK-RECEIPT.json" ]]
+[[ ! -e "$rollback_path_override/receipts/rollback-compose.override.yaml" ]]
+echo rollback_path_override_rejected_zero_mutation=PASS
 
 injection=$(new_candidate injection)
 jq '.backend_image.ref="evil\nservices: {}"' "$injection/INTEGRATION-IDENTITY.json" > "$injection/identity.tmp"
 mv "$injection/identity.tmp" "$injection/INTEGRATION-IDENTITY.json"
 reset_fake "$deploy"
-if "$root/apply-staging.sh" "$injection" "$deploy" >/dev/null 2>&1; then exit 1; fi
+if "$operator_root/apply-staging.sh" "$injection" >/dev/null 2>&1; then exit 1; fi
 [[ ! -s "$FAKE_DOCKER_LOG" ]]
 echo identity_injection_zero_docker=PASS
 

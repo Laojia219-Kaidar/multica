@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 umask 077
-pkg=${1:?usage: apply-staging.sh CANDIDATE_DIR DEPLOY_DIR}
-deploy_dir=${2:?usage: apply-staging.sh CANDIDATE_DIR DEPLOY_DIR}
+[[ $# -eq 1 ]] || {
+  echo 'usage: apply-staging.sh CANDIDATE_DIR' >&2
+  exit 64
+}
+pkg=$1
 root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 source "$root/common.sh"
 project=multica-dgx-ultra
@@ -15,7 +18,7 @@ receipt="$out/OPERATOR-APPLY-RECEIPT.json"
 override="$out/candidate-compose.override.yaml"
 
 "$root/precheck.sh" "$pkg" >/dev/null
-env_file=$(resolve_deploy_env_file "$deploy_dir")
+env_file=$(resolve_deploy_env_file)
 docker_bin=$(resolve_executable "${DOCKER_BIN:-docker}")
 curl_bin=$(resolve_executable "${CURL_BIN:-curl}")
 counts_bin=$(resolve_executable "${COUNTS_BIN:-$root/collect-readonly-counts.sh}")
@@ -29,7 +32,7 @@ rollback_on_exit() {
   trap - EXIT
   if [[ "$rc" -ne 0 && "$applied" == true ]]; then
     if ! DOCKER_BIN="$docker_bin" CURL_BIN="$curl_bin" COUNTS_BIN="$counts_bin" \
-      "$root/rollback-staging.sh" "$pkg" "$deploy_dir" "automatic-apply-failure-$rc"; then
+      "$root/rollback-staging.sh" "$pkg" "automatic-apply-failure-$rc"; then
       exit 80
     fi
   fi
