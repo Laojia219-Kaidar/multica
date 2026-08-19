@@ -6857,8 +6857,16 @@ func isBlockedEnvKey(key string) bool {
 	if strings.HasPrefix(upper, "MULTICA_") {
 		return true
 	}
+	// Sandbox selection and executable paths are daemon/runtime-profile policy,
+	// never Agent-owned custom environment. In particular, Qwen treats any
+	// pre-existing SANDBOX value as proof that it is already isolated; allowing
+	// an Agent to inject that marker would bypass a required sandbox.
+	if strings.HasPrefix(upper, "HIVECREW_QWEN_") || strings.HasPrefix(upper, "HIVECREW_LANDLOCK_") {
+		return true
+	}
 	switch upper {
-	case "HOME", "PATH", "USER", "SHELL", "TERM", "TMPDIR", "TMP", "TEMP", "CODEX_HOME", "CURSOR_DATA_DIR", execenv.CursorMcpAuthSourceEnv, "OPENCLAW_CONFIG_PATH", "OPENCLAW_INCLUDE_ROOTS":
+	case "HOME", "PATH", "USER", "SHELL", "TERM", "TMPDIR", "TMP", "TEMP", "CODEX_HOME", "CURSOR_DATA_DIR", execenv.CursorMcpAuthSourceEnv, "OPENCLAW_CONFIG_PATH", "OPENCLAW_INCLUDE_ROOTS",
+		"SANDBOX", "QWEN_SANDBOX", "QWEN_SANDBOX_IMAGE", "QWEN_SANDBOX_PROXY_COMMAND", "BUILD_SANDBOX", "SANDBOX_FLAGS", "SANDBOX_MOUNTS", "SANDBOX_ENV", "SANDBOX_PORTS", "SANDBOX_SET_UID_GID":
 		return true
 	}
 	return false

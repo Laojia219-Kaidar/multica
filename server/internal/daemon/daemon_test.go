@@ -159,6 +159,16 @@ func TestIsBlockedEnvKey(t *testing.T) {
 		{key: "CURSOR_MCP_AUTH_SOURCE", want: true},
 		{key: "OPENCLAW_CONFIG_PATH", want: true},
 		{key: "OPENCLAW_INCLUDE_ROOTS", want: true},
+		{key: "SANDBOX", want: true},
+		{key: "QWEN_SANDBOX", want: true},
+		{key: "QWEN_SANDBOX_IMAGE", want: true},
+		{key: "QWEN_SANDBOX_PROXY_COMMAND", want: true},
+		{key: "BUILD_SANDBOX", want: true},
+		{key: "SANDBOX_FLAGS", want: true},
+		{key: "SANDBOX_MOUNTS", want: true},
+		{key: "SANDBOX_ENV", want: true},
+		{key: "HIVECREW_QWEN_BIN", want: true},
+		{key: "hivecrew_landlock_exec", want: true},
 		{key: "ANTHROPIC_API_KEY", want: false},
 		{key: "CURSOR_AGENT", want: false},
 		// HERMES_HOME is intentionally NOT blocked: a skill-less Hermes task
@@ -211,10 +221,10 @@ func TestLayerCustomEnvAndHermesHome(t *testing.T) {
 		},
 		{
 			name:        "blocklisted key dropped, overlay still applied",
-			customEnv:   map[string]string{"CODEX_HOME": "/evil", "MULTICA_TOKEN": "x"},
+			customEnv:   map[string]string{"CODEX_HOME": "/evil", "MULTICA_TOKEN": "x", "SANDBOX": "fake", "HIVECREW_QWEN_BIN": "/evil/qwen"},
 			overlayHome: "/tmp/task/hermes-home",
 			wantHermes:  "/tmp/task/hermes-home",
-			wantAbsent:  []string{"CODEX_HOME", "MULTICA_TOKEN"},
+			wantAbsent:  []string{"CODEX_HOME", "MULTICA_TOKEN", "SANDBOX", "HIVECREW_QWEN_BIN"},
 		},
 	}
 
