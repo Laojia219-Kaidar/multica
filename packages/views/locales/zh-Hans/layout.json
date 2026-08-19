@@ -1,5 +1,6 @@
 {
   "nav": {
+    "command": "CEO 主控台",
     "inbox": "收件箱",
     "chat": "聊天",
     "my_issues": "我的议题",
@@ -20,6 +21,18 @@
     "employees": "员工",
     "datasets": "数据集",
     "workflow": "工作流"
+  },
+  "command": {
+    "title": "CEO 总指挥台",
+    "subtitle": "实时查看工作、项目、数字员工和运行时状态。",
+    "open_work": "进行中工作",
+    "in_review": "待审核",
+    "active_projects": "推进中项目",
+    "online_runtimes": "在线运行时",
+    "working_agents": "工作中员工",
+    "loading": "正在读取实时运营数据…",
+    "degraded": "部分实时数据读取失败，请进入对应页面查看详情。",
+    "open_surface": "打开"
   },
   "tab": {
     "issue": "议题",

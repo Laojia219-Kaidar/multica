@@ -18,6 +18,7 @@ import { OutcomesPage } from "@multica/views/outcomes";
 import { OrganizationPage } from "@multica/views/organization";
 import { DesktopEmployeeDossierPage } from "./pages/employee-dossier-page";
 import { DashboardPage } from "@multica/views/dashboard";
+import { CommandPage } from "@multica/views/command";
 import { AutopilotsPage } from "@multica/views/autopilots/components";
 import { MyIssuesPage } from "@multica/views/my-issues";
 import { SkillsPage } from "@multica/views/skills";
@@ -125,6 +126,11 @@ export const appRoutes: RouteObject[] = [
           // safety net instead of an in-router <Navigate> (MUL-4741
           // invariant 1: the router never self-navigates).
           { index: true, element: null },
+          {
+            path: "command",
+            element: <CommandPage />,
+            handle: { title: "CEO Command Center" },
+          },
           {
             path: "issues",
             element: <IssuesPage />,

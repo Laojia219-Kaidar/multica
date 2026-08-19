@@ -104,6 +104,7 @@ const EMPTY_INBOX_SUMMARY: Awaited<ReturnType<typeof api.getInboxUnreadSummary>>
 // against the current workspace slug at render time (see AppSidebar body).
 // Only parameterless paths are valid nav destinations.
 type NavKey =
+  | "command"
   | "inbox"
   | "chat"
   | "myIssues"
@@ -128,6 +129,7 @@ type NavKey =
 // Static schema (key only) — labels resolved at render via useT("layout"),
 // icons derived from the destination path via routeIconForPath.
 type NavLabelKey =
+  | "command"
   | "inbox"
   | "chat"
   | "my_issues"
@@ -169,7 +171,9 @@ type NavGroupLabelKey =
 // always agree. See route-icon-components.tsx.
 /** 11 能力域栏目（VC-13）——公司操作系统信息架构重组。 */
 const navGroups: { key: string; labelKey: NavGroupLabelKey; items: { key: NavKey; labelKey: NavLabelKey }[] }[] = [
-  { key: "ceo", labelKey: "group_ceo", items: [] },
+  { key: "ceo", labelKey: "group_ceo", items: [
+    { key: "command", labelKey: "command" },
+  ]},
   { key: "work", labelKey: "group_work", items: [
     { key: "inbox", labelKey: "inbox" },
     { key: "chat", labelKey: "chat" },
