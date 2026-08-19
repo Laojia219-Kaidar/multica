@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 umask 077
-pkg=${1:?usage: rollback-staging.sh CANDIDATE_DIR}
-reason=${2:-manual}
+pkg=${1:?usage: rollback-staging.sh CANDIDATE_DIR DEPLOY_DIR [REASON]}
+deploy_dir=${2:?usage: rollback-staging.sh CANDIDATE_DIR DEPLOY_DIR [REASON]}
+reason=${3:-manual}
 root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 source "$root/common.sh"
 project=multica-dgx-ultra
@@ -10,13 +11,15 @@ backend_container=${BACKEND_CONTAINER:-multica-dgx-ultra-backend-1}
 web_container=${WEB_CONTAINER:-multica-dgx-ultra-frontend-1}
 id="$pkg/INTEGRATION-IDENTITY.json"
 out="$pkg/receipts"
-mkdir -p "$out"
 receipt="$out/ROLLBACK-RECEIPT.json"
 override="$out/rollback-compose.override.yaml"
-rm -f -- "$receipt"
 
 "$root/precheck.sh" "$pkg" >/dev/null
+env_file=$(resolve_deploy_env_file "$deploy_dir")
 docker_bin=$(resolve_executable "${DOCKER_BIN:-docker}")
+$docker_bin compose --env-file "$env_file" -f "$pkg/compose.yaml" -p "$project" config --quiet
+mkdir -p "$out"
+rm -f -- "$receipt"
 
 backend_ref=$(jq -r .rollback_predecessor.backend.ref "$id")
 backend_id=$(jq -r .rollback_predecessor.backend.id "$id")
@@ -26,7 +29,7 @@ web_id=$(jq -r .rollback_predecessor.web.id "$id")
 web_digest=$(jq -r .rollback_predecessor.web.digest "$id")
 write_image_override "$backend_ref" "$web_ref" "$override"
 
-$docker_bin compose -f "$pkg/compose.yaml" -f "$override" -p "$project" \
+$docker_bin compose --env-file "$env_file" -f "$pkg/compose.yaml" -f "$override" -p "$project" \
   up -d --no-deps backend frontend
 assert_container_image "$docker_bin" "$backend_container" "$backend_ref" "$backend_id" "$backend_digest"
 assert_container_image "$docker_bin" "$web_container" "$web_ref" "$web_id" "$web_digest"

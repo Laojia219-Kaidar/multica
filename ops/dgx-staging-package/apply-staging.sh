@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 umask 077
-pkg=${1:?usage: apply-staging.sh CANDIDATE_DIR}
+pkg=${1:?usage: apply-staging.sh CANDIDATE_DIR DEPLOY_DIR}
+deploy_dir=${2:?usage: apply-staging.sh CANDIDATE_DIR DEPLOY_DIR}
 root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 source "$root/common.sh"
 project=multica-dgx-ultra
@@ -9,16 +10,18 @@ backend_container=${BACKEND_CONTAINER:-multica-dgx-ultra-backend-1}
 web_container=${WEB_CONTAINER:-multica-dgx-ultra-frontend-1}
 id="$pkg/INTEGRATION-IDENTITY.json"
 out="$pkg/receipts"
-mkdir -p "$out"
 snapshot="$out/PRE-APPLY-SNAPSHOT.json"
 receipt="$out/OPERATOR-APPLY-RECEIPT.json"
 override="$out/candidate-compose.override.yaml"
-rm -f -- "$receipt"
 
 "$root/precheck.sh" "$pkg" >/dev/null
+env_file=$(resolve_deploy_env_file "$deploy_dir")
 docker_bin=$(resolve_executable "${DOCKER_BIN:-docker}")
 curl_bin=$(resolve_executable "${CURL_BIN:-curl}")
 counts_bin=$(resolve_executable "${COUNTS_BIN:-$root/collect-readonly-counts.sh}")
+$docker_bin compose --env-file "$env_file" -f "$pkg/compose.yaml" -p "$project" config --quiet
+mkdir -p "$out"
+rm -f -- "$receipt"
 
 applied=false
 rollback_on_exit() {
@@ -26,7 +29,7 @@ rollback_on_exit() {
   trap - EXIT
   if [[ "$rc" -ne 0 && "$applied" == true ]]; then
     if ! DOCKER_BIN="$docker_bin" CURL_BIN="$curl_bin" COUNTS_BIN="$counts_bin" \
-      "$root/rollback-staging.sh" "$pkg" "automatic-apply-failure-$rc"; then
+      "$root/rollback-staging.sh" "$pkg" "$deploy_dir" "automatic-apply-failure-$rc"; then
       exit 80
     fi
   fi
@@ -76,7 +79,7 @@ web_digest=$(jq -r .web_image.digest "$id")
 write_image_override "$backend_ref" "$web_ref" "$override"
 
 applied=true
-$docker_bin compose -f "$pkg/compose.yaml" -f "$override" -p "$project" \
+$docker_bin compose --env-file "$env_file" -f "$pkg/compose.yaml" -f "$override" -p "$project" \
   up -d --no-deps backend frontend
 assert_container_image "$docker_bin" "$backend_container" "$backend_ref" "$backend_id" "$backend_digest"
 assert_container_image "$docker_bin" "$web_container" "$web_ref" "$web_id" "$web_digest"

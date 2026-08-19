@@ -7,7 +7,12 @@ postgres_container=${POSTGRES_CONTAINER:-multica-dgx-ultra-postgres-1}
 postgres_user=${POSTGRES_USER:-multica}
 postgres_db=${POSTGRES_DB:-multica}
 
-sql="SELECT json_build_object('schema_top', COALESCE((SELECT max(version) FROM schema_migrations), 0), 'agent_count', (SELECT count(*) FROM agent), 'project_count', (SELECT count(*) FROM project), 'status', 'collected_read_only');"
+sql="SELECT json_build_object(
+  'schema_top', COALESCE((SELECT max((substring(version FROM '^[0-9]+'))::bigint)
+                          FROM schema_migrations WHERE version ~ '^[0-9]+'), 0),
+  'agent_count', (SELECT count(*) FROM agent),
+  'project_count', (SELECT count(*) FROM project),
+  'status', 'collected_read_only');"
 result=$($docker_bin exec -e 'PGOPTIONS=-c default_transaction_read_only=on' "$postgres_container" \
   psql -X -qAt -v ON_ERROR_STOP=1 -U "$postgres_user" -d "$postgres_db" -c "$sql")
 printf '%s\n' "$result" | jq -e '

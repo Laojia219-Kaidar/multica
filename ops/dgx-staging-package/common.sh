@@ -16,6 +16,37 @@ resolve_executable() {
   printf '%s\n' "$resolved"
 }
 
+resolve_deploy_env_file() {
+  local deploy_dir=${1:?deploy directory required}
+  local canonical_dir env_file canonical_env
+  [[ "$deploy_dir" == /* ]] || {
+    echo governed-staging-env-unavailable >&2
+    return 78
+  }
+  canonical_dir=$(realpath -e -- "$deploy_dir") || {
+    echo governed-staging-env-unavailable >&2
+    return 78
+  }
+  [[ "$canonical_dir" == "$deploy_dir" && -d "$canonical_dir" ]] || {
+    echo governed-staging-env-unavailable >&2
+    return 78
+  }
+  env_file="$deploy_dir/.env"
+  [[ -f "$env_file" && -r "$env_file" && -s "$env_file" && ! -L "$env_file" ]] || {
+    echo governed-staging-env-unavailable >&2
+    return 78
+  }
+  canonical_env=$(realpath -e -- "$env_file") || {
+    echo governed-staging-env-unavailable >&2
+    return 78
+  }
+  [[ "$canonical_env" == "$env_file" && "${canonical_env%/*}" == "$canonical_dir" ]] || {
+    echo governed-staging-env-unavailable >&2
+    return 78
+  }
+  printf '%s\n' "$canonical_env"
+}
+
 yaml_string() {
   jq -Rn --arg value "$1" '$value'
 }

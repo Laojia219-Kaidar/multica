@@ -6,4 +6,12 @@ Input is one candidate directory containing `INTEGRATION-IDENTITY.json` and `com
 
 `apply-staging.sh` and `rollback-staging.sh` are intentionally parameter-light and use `DOCKER_BIN`/`CURL_BIN` only for fake tests or an existing governed operator environment. They never print or persist secret values. Receipts are written under the candidate `receipts/` directory. External acceptance is a separate artifact contract and is not faked by the apply script.
 
+Apply and rollback require the canonical deploy directory as an explicit second
+argument. Every Compose config or mutation uses exactly
+`--env-file "$deploy_dir/.env"`; the canonical regular, non-empty env file is
+validated before receipts, overrides, or container changes. Env content is never
+read or copied by the operator package. The read-only count collector keeps
+`default_transaction_read_only=on` and converts a textual migration version such
+as `415_project_revision` to the numeric schema top `415`.
+
 The package does not grant Docker access, sudo, operator identity, or staging authorization. A governed `jiawei219` operator must execute the final candidate after independent review and exact Owner authorization.
