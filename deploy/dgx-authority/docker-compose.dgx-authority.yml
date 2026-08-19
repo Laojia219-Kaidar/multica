@@ -3,11 +3,12 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
-      HIVECOSM_AUTHORITY_BASE_URL: ${HIVECOSM_AUTHORITY_BASE_URL:-http://host.docker.internal:3150}
-      HIVECOSM_TENANT_ID: ${HIVECOSM_TENANT_ID:-}
-      HIVECOSM_AUTHORITY_BEARER_TOKEN_FILE: ${HIVECOSM_AUTHORITY_BEARER_TOKEN_FILE:-/run/secrets/hivecosm_authority_bearer_token}
+      HIVECOSM_AUTHORITY_BASE_URL: "${HIVECOSM_AUTHORITY_BASE_URL:?Set HIVECOSM_AUTHORITY_BASE_URL (recommended: http://host.docker.internal:3150)}"
+      HIVECOSM_TENANT_ID: "${HIVECOSM_TENANT_ID:?Set HIVECOSM_TENANT_ID}"
+      HIVECOSM_AUTHORITY_BEARER_TOKEN_FILE: /run/secrets/hivecosm_authority_bearer_token
       HIVECOSM_AUTHORITY_BEARER_TOKEN: ""
       HIVECOSM_AUTHORITY_PREFLIGHT_TIMEOUT_SECONDS: ${HIVECOSM_AUTHORITY_PREFLIGHT_TIMEOUT_SECONDS:-5}
+      HIVECOSM_AUTHORITY_PREFLIGHT_SCRIPT: /opt/hivecrew-authority/authority-preflight.sh
     secrets:
       - hivecosm_authority_bearer_token
     volumes:

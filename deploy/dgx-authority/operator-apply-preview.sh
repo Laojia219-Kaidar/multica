@@ -1,6 +1,7 @@
 #!/bin/sh
 set -eu
 
+: "${HIVECOSM_AUTHORITY_BASE_URL:?Set HIVECOSM_AUTHORITY_BASE_URL (recommended: http://host.docker.internal:3150)}"
 : "${HIVECOSM_AUTHORITY_TOKEN_FILE:?Set HIVECOSM_AUTHORITY_TOKEN_FILE in the operator environment; its value is never printed}"
 : "${HIVECOSM_TENANT_ID:?Set HIVECOSM_TENANT_ID in the operator environment}"
 
@@ -16,4 +17,4 @@ esac
 echo "operator preview only; no deployment was executed"
 echo 'docker compose -f docker-compose.selfhost.yml -f deploy/dgx-authority/docker-compose.dgx-authority.yml config'
 echo 'docker compose -f docker-compose.selfhost.yml -f deploy/dgx-authority/docker-compose.dgx-authority.yml up -d backend'
-echo 'HIVECOSM_AUTHORITY_BASE_URL defaults to http://host.docker.internal:3150; override only with a governed host route'
+echo 'The backend entrypoint runs authority-preflight before migrations/server; failed preflight prevents exec.'
