@@ -66,11 +66,11 @@ export function CommandPage() {
   const isLoading = [issuesQuery, projectsQuery, agentsQuery, runtimesQuery].some((query) => query.isLoading);
   const isDegraded = [issuesQuery, projectsQuery, agentsQuery, runtimesQuery].some((query) => query.isError);
   const cards = [
-    { label: t(($) => $.command.open_work), value: metrics.openWork, href: wsPaths.issues(), icon: ListTodo },
-    { label: t(($) => $.command.in_review), value: metrics.inReview, href: wsPaths.issues(), icon: ShieldCheck },
-    { label: t(($) => $.command.active_projects), value: metrics.activeProjects, href: wsPaths.projects(), icon: FolderKanban },
-    { label: t(($) => $.command.online_runtimes), value: metrics.onlineRuntimes, href: wsPaths.runtimes(), icon: Monitor },
-    { label: t(($) => $.command.working_agents), value: metrics.workingAgents, href: wsPaths.agents(), icon: Bot },
+    { label: t(($) => $.command.open_work), value: issuesQuery.data ? metrics.openWork : null, href: wsPaths.issues(), icon: ListTodo },
+    { label: t(($) => $.command.in_review), value: issuesQuery.data ? metrics.inReview : null, href: wsPaths.issues(), icon: ShieldCheck },
+    { label: t(($) => $.command.active_projects), value: projectsQuery.data ? metrics.activeProjects : null, href: wsPaths.projects(), icon: FolderKanban },
+    { label: t(($) => $.command.online_runtimes), value: runtimesQuery.data ? metrics.onlineRuntimes : null, href: wsPaths.runtimes(), icon: Monitor },
+    { label: t(($) => $.command.working_agents), value: agentsQuery.data ? metrics.workingAgents : null, href: wsPaths.agents(), icon: Bot },
   ];
 
   return (
@@ -103,7 +103,7 @@ export function CommandPage() {
                     <Icon className="size-4" />
                     <ArrowRight className="size-4 transition-transform group-hover:translate-x-0.5" />
                   </div>
-                  <p className="mt-6 text-3xl font-semibold tabular-nums">{card.value}</p>
+                  <p className="mt-6 text-3xl font-semibold tabular-nums">{card.value ?? "—"}</p>
                   <div className="mt-1 flex items-center justify-between gap-2 text-sm">
                     <span>{card.label}</span>
                     <span className="text-xs text-muted-foreground">{t(($) => $.command.open_surface)}</span>

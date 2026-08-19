@@ -494,6 +494,7 @@ export function invalidateIssueDerivatives(
   qc.invalidateQueries({ queryKey: issueKeys.myAssigneeGroupsAll(wsId) });
   qc.invalidateQueries({ queryKey: issueKeys.projectGanttAll(wsId) });
   if (opts.statusOrProjectChanged) {
+    qc.invalidateQueries({ queryKey: issueKeys.commandMetrics(wsId) });
     qc.invalidateQueries({ queryKey: projectKeys.all(wsId) });
   }
 }
