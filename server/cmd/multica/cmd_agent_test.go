@@ -1786,6 +1786,60 @@ func TestAgentCreateSendsThinkingLevel(t *testing.T) {
 	}
 }
 
+func TestAgentCreateWelcomeChatPolicy(t *testing.T) {
+	flag := agentCreateCmd.Flag("welcome-chat")
+	if flag == nil || flag.DefValue != "false" {
+		t.Fatalf("agent create --welcome-chat flag = %#v, want registered and default false", flag)
+	}
+
+	tests := []struct {
+		name            string
+		welcomeChat     bool
+		wantSkipWelcome bool
+	}{
+		{name: "cli defaults to no implicit execution", wantSkipWelcome: true},
+		{name: "operator can opt in to welcome chat", welcomeChat: true, wantSkipWelcome: false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var gotBody map[string]any
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+					t.Errorf("decode request body: %v", err)
+				}
+				json.NewEncoder(w).Encode(map[string]any{"id": "agent-123", "name": "TestAgent"})
+			}))
+			defer srv.Close()
+
+			t.Setenv("MULTICA_SERVER_URL", srv.URL)
+			t.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
+			t.Setenv("MULTICA_TOKEN", "test-token")
+			t.Setenv("MULTICA_AGENT_ID", "")
+			t.Setenv("MULTICA_TASK_ID", "")
+
+			cmd := &cobra.Command{Use: "create"}
+			cmd.Flags().String("name", "", "")
+			cmd.Flags().String("runtime-id", "", "")
+			cmd.Flags().Bool("welcome-chat", false, "")
+			cmd.Flags().String("output", "json", "")
+			cmd.Flags().String("profile", "", "")
+			_ = cmd.Flags().Set("name", "TestAgent")
+			_ = cmd.Flags().Set("runtime-id", "runtime-1")
+			if tc.welcomeChat {
+				_ = cmd.Flags().Set("welcome-chat", "true")
+			}
+
+			if err := runAgentCreate(cmd, nil); err != nil {
+				t.Fatalf("runAgentCreate: %v", err)
+			}
+			if got, ok := gotBody["skip_welcome_chat"].(bool); !ok || got != tc.wantSkipWelcome {
+				t.Fatalf("skip_welcome_chat body = %#v, want %v", gotBody["skip_welcome_chat"], tc.wantSkipWelcome)
+			}
+		})
+	}
+}
+
 // TestAgentCreateOmitsThinkingLevelWhenUnset guards the Changed-gated send:
 // an unset --thinking-level must not appear in the body at all, so the server
 // applies its default instead of receiving an explicit empty string.

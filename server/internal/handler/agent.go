@@ -992,6 +992,10 @@ type CreateAgentRequest struct {
 	// SkillIDs are attached inside the same transaction as the agent row so a
 	// create never becomes visible in a partially configured state.
 	SkillIDs []string `json:"skill_ids"`
+	// SkipWelcomeChat separates provisioning an execution carrier from running
+	// it. Browser callers omit this field and keep the proactive introduction;
+	// automation/CLI callers can suppress the implicit chat task.
+	SkipWelcomeChat bool `json:"skip_welcome_chat"`
 }
 
 func decodeJSONBodyWithRawFields(body io.Reader, dst any) (map[string]json.RawMessage, error) {
@@ -1242,7 +1246,11 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 
 	// Start the existing proactive introduction only after the complete Agent
 	// configuration has committed, so the first run sees its skills and access.
-	h.sendAgentWelcomeChat(r.Context(), created, ownerID, workspaceID)
+	// Machine provisioning can suppress this implicit execution and bind the
+	// agent's first task explicitly instead.
+	if !req.SkipWelcomeChat {
+		h.sendAgentWelcomeChat(r.Context(), created, ownerID, workspaceID)
+	}
 
 	obsmetrics.RecordEvent(h.Analytics, h.Metrics, analytics.AgentCreated(
 		ownerID,

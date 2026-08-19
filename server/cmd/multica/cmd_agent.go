@@ -177,6 +177,7 @@ func init() {
 	agentCreateCmd.Flags().Bool("public-to-workspace", false, "public_to: allow every workspace member to invoke this agent.")
 	agentCreateCmd.Flags().StringSlice("public-to-member", nil, "public_to: allow the given member user id(s) to invoke this agent. Repeatable.")
 	agentCreateCmd.Flags().Int32("max-concurrent-tasks", 6, "Maximum concurrent tasks (1-50)")
+	agentCreateCmd.Flags().Bool("welcome-chat", false, "Run the agent once after creation to introduce itself. Disabled by default so CLI provisioning does not enqueue implicit work.")
 	agentCreateCmd.Flags().String("output", "json", "Output format: table or json")
 
 	// agent update
@@ -547,8 +548,12 @@ func runAgentCreate(cmd *cobra.Command, _ []string) error {
 	}
 
 	body := map[string]any{
-		"name":       name,
-		"runtime_id": runtimeID,
+		"name":              name,
+		"runtime_id":        runtimeID,
+		"skip_welcome_chat": true,
+	}
+	if welcomeChat, _ := cmd.Flags().GetBool("welcome-chat"); welcomeChat {
+		body["skip_welcome_chat"] = false
 	}
 	if v, _ := cmd.Flags().GetString("description"); v != "" {
 		body["description"] = v

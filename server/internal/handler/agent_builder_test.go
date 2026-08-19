@@ -166,6 +166,46 @@ func TestCreateAgentAttachesSkillsInCreateTransaction(t *testing.T) {
 	}
 }
 
+func TestCreateAgentCanSkipWelcomeChat(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	const agentName = "No Welcome Chat Agent"
+	t.Cleanup(func() {
+		_, _ = testPool.Exec(context.Background(), `DELETE FROM agent WHERE workspace_id = $1 AND name = $2`, testWorkspaceID, agentName)
+	})
+
+	w := httptest.NewRecorder()
+	testHandler.CreateAgent(w, newRequest(http.MethodPost, "/api/agents", map[string]any{
+		"name":              agentName,
+		"runtime_id":        testRuntimeID,
+		"skip_welcome_chat": true,
+	}))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("CreateAgent: expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	var response AgentResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+
+	var introSessions, chatTasks int
+	if err := testPool.QueryRow(ctx, `
+		SELECT count(*) FROM chat_session WHERE agent_id = $1 AND is_agent_intro = true
+	`, response.ID).Scan(&introSessions); err != nil {
+		t.Fatalf("count welcome chat sessions: %v", err)
+	}
+	if err := testPool.QueryRow(ctx, `
+		SELECT count(*) FROM agent_task_queue WHERE agent_id = $1 AND chat_session_id IS NOT NULL
+	`, response.ID).Scan(&chatTasks); err != nil {
+		t.Fatalf("count welcome chat tasks: %v", err)
+	}
+	if introSessions != 0 || chatTasks != 0 {
+		t.Fatalf("skip_welcome_chat created intro sessions=%d chat tasks=%d, want both 0", introSessions, chatTasks)
+	}
+}
+
 // newBuilderSession starts a builder conversation on testRuntimeID and registers
 // cleanup for the carrier agents the flow creates.
 func newBuilderSession(t *testing.T) CreateAgentBuilderSessionResponse {
