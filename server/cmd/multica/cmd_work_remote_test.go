@@ -187,7 +187,7 @@ func TestRunWorkStartOmitsServerOwnedRunIDForLiveAPI(t *testing.T) {
 	_ = cmd.Flags().Set("session-id", "session-1")
 	_ = cmd.Flags().Set("actor-id", "codex-primary")
 	if _, err := captureRuntimeStdout(t, func() error {
-		return runWorkStart(cmd, []string{"hivecrew://work/ws-1/project-1/issue-1"})
+		return runWorkStart(cmd, []string{"hivecrew://ws-1/work/project-1/issue-1"})
 	}); err != nil {
 		t.Fatalf("runWorkStart: %v", err)
 	}
@@ -196,7 +196,7 @@ func TestRunWorkStartOmitsServerOwnedRunIDForLiveAPI(t *testing.T) {
 	}
 
 	_ = cmd.Flags().Set("run-id", "caller-forged-run")
-	if err := runWorkStart(cmd, []string{"hivecrew://work/ws-1/project-1/issue-1"}); err == nil {
+	if err := runWorkStart(cmd, []string{"hivecrew://ws-1/work/project-1/issue-1"}); err == nil {
 		t.Fatal("live start with caller-supplied run_id should fail closed")
 	}
 	if requests != 1 {
@@ -221,17 +221,17 @@ func TestRunWorkRegisterAndStatusUseLiveAPI(t *testing.T) {
 				t.Fatalf("register request = %#v", req)
 			}
 			_ = json.NewEncoder(w).Encode(workentry.WorkRegistrationReceiptV1{
-				WorkRef:            "hivecrew://work/ws-1/project-1/issue-1",
+				WorkRef:            "hivecrew://ws-1/work/project-1/issue-1",
 				ResolutionDecision: workentry.DecisionContinued,
 				Continued:          true,
 			})
 		case r.Method == http.MethodGet && r.URL.Path == "/api/work/status":
 			statusRequests++
-			if got := r.URL.Query().Get("work_ref"); got != "hivecrew://work/ws-1/project-1/issue-1" {
+			if got := r.URL.Query().Get("work_ref"); got != "hivecrew://ws-1/work/project-1/issue-1" {
 				t.Fatalf("status work_ref = %q", got)
 			}
 			_ = json.NewEncoder(w).Encode(workentry.StatusResult{
-				WorkRef: "hivecrew://work/ws-1/project-1/issue-1",
+				WorkRef: "hivecrew://ws-1/work/project-1/issue-1",
 				Found:   true,
 			})
 		default:
@@ -255,7 +255,7 @@ func TestRunWorkRegisterAndStatusUseLiveAPI(t *testing.T) {
 
 	statusCmd := newWorkRemoteTestCmd(srv.URL, "ws-1")
 	if _, err := captureRuntimeStdout(t, func() error {
-		return runWorkStatus(statusCmd, []string{"hivecrew://work/ws-1/project-1/issue-1"})
+		return runWorkStatus(statusCmd, []string{"hivecrew://ws-1/work/project-1/issue-1"})
 	}); err != nil {
 		t.Fatalf("runWorkStatus: %v", err)
 	}
@@ -348,7 +348,7 @@ func TestRunWorkResolveUsesLiveAPIWhenStateIsOmitted(t *testing.T) {
 			DedupeDigest:       "digest-1",
 			Matches: []workentry.Match{{
 				Kind:    workentry.MatchWorkOrder,
-				WorkRef: "hivecrew://work/ws-1/project-1/issue-1",
+				WorkRef: "hivecrew://ws-1/work/project-1/issue-1",
 			}},
 		})
 	}))

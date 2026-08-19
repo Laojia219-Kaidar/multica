@@ -362,9 +362,11 @@ func (s *Service) Event(ctx context.Context, event WorkEventV1) (EventResult, er
 	if err := ValidateWorkEvent(event); err != nil {
 		return EventResult{}, invalid(err)
 	}
-	if event.EventID == "" {
-		event.EventID = newID()
+	eventID, err := normalizeEventID(event.EventID)
+	if err != nil {
+		return EventResult{}, invalid(err)
 	}
+	event.EventID = eventID
 	if event.ObservedAt == "" {
 		event.ObservedAt = s.nowString()
 	}

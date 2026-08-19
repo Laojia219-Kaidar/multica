@@ -511,9 +511,11 @@ func (p *PGStore) AppendEvent(ctx context.Context, event EventRecord) (*EventRec
 	if err != nil {
 		return nil, ErrInvalidRequest
 	}
-	if strings.TrimSpace(event.ID) == "" {
-		event.ID = newID()
+	eventID, err := normalizeEventID(event.ID)
+	if err != nil {
+		return nil, ErrInvalidRequest
 	}
+	event.ID = eventID
 	payloadJSON, err := json.Marshal(event.EventPayload)
 	if err != nil {
 		return nil, fmt.Errorf("encode event payload: %w", err)
@@ -531,6 +533,10 @@ func (p *PGStore) AppendEvent(ctx context.Context, event EventRecord) (*EventRec
 		event.ID, ws, event.WorkRef, nullString(event.SessionID), nullString(event.RunID), string(event.EventType),
 		payloadJSON, nullString(event.BlockerReason), nullString(event.Receiver), event.IdempotencyKey, occurredAt, observedAt)
 	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			return nil, ErrConflict
+		}
 		return nil, fmt.Errorf("append work event: %w", err)
 	}
 	stored, err := p.GetEvent(ctx, event.WorkspaceID, event.WorkRef, event.IdempotencyKey)
@@ -563,7 +569,7 @@ func (p *PGStore) GetEvent(ctx context.Context, workspaceID, workRef, idempotenc
 		observedAt    pgtype.Timestamptz
 	)
 	err = p.exec.QueryRow(ctx,
-		"SELECT id::text, work_ref, session_id, run_id, event_type, event_payload, blocker_reason, receiver, idempotency_key, occurred_at, observed_at FROM work_event WHERE workspace_id = $1 AND work_ref = $2 AND idempotency_key = $3",
+		"SELECT replace(id::text, '-', ''), work_ref, session_id, run_id, event_type, event_payload, blocker_reason, receiver, idempotency_key, occurred_at, observed_at FROM work_event WHERE workspace_id = $1 AND work_ref = $2 AND idempotency_key = $3",
 		ws, workRef, idempotencyKey).Scan(&rec.ID, &rec.WorkRef, &sessionID, &runID, &eventType,
 		&payloadJSON, &blockerReason, &receiver, &rec.IdempotencyKey, &occurredAt, &observedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
