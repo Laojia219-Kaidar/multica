@@ -79,6 +79,7 @@ func TestEventRecordJSONUsesWireFieldNames(t *testing.T) {
 		if _, ok := fields[field]; !ok { t.Fatalf("missing wire field %q in %s", field, payload) }
 	}
 	if _, ok := fields["WorkspaceID"]; ok { t.Fatalf("Go field leaked into wire payload: %s", payload) }
+	if _, ok := fields["id"]; ok { t.Fatalf("ambiguous id field leaked into wire payload: %s", payload) }
 }
 
 func TestPGStoreGetEventRestoresTimestamps(t *testing.T) {
