@@ -113,10 +113,14 @@ compose_hash=$(sha256sum "$pkg/compose.yaml" | awk '{print $1}')
 jq -n --arg project "$project" --arg compose_hash "$compose_hash" \
   --arg identity_path "$id" --argjson containers "$containers" \
   --argjson counts "$counts" --argjson predecessor "$(jq -c .rollback_predecessor "$id")" \
+  --arg bridge_gateway "$bridge_gateway" --arg bridge_network_name "$bridge_network_name" \
+  --arg bridge_network_id "$bridge_network_id" \
   '{schema:"HiveCrewPreApplySnapshotV3", compose_project:$project,
     compose_config_sha256:$compose_hash, containers:$containers,
     schema_read_only_counts:$counts, rollback_artifact_path:$identity_path,
     rollback_predecessor:$predecessor, mutation_started:false,
+    authority_bridge:{network_name:$bridge_network_name,network_id:$bridge_network_id,
+      gateway:$bridge_gateway,bind:($bridge_gateway+":3151"),target:"127.0.0.1:3150"},
     secret_values_recorded:false}' > "$snapshot"
 
 OPERATOR_ROLLBACK_STATE=mutation_started

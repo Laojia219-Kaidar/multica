@@ -16,6 +16,7 @@ id="$pkg/INTEGRATION-IDENTITY.json"
 rollback_compose="$pkg/rollback-compose.yaml"
 out="$pkg/receipts"
 receipt="$out/ROLLBACK-RECEIPT.json"
+snapshot="$out/PRE-APPLY-SNAPSHOT.json"
 override="$out/rollback-compose.override.yaml"
 bridge_resolver=$root/authority-bridge-resolve.sh
 bridge_stop=$root/authority-bridge-stop.sh
@@ -27,7 +28,20 @@ $docker_bin compose --env-file "$env_file" -f "$rollback_compose" -p "$project" 
 mkdir -p "$out"
 rm -f -- "$receipt"
 
-bridge_info=$(DOCKER_BIN="$docker_bin" "$bridge_resolver" "$backend_container" "$project")
+[[ -f "$snapshot" && -r "$snapshot" && ! -L "$snapshot" ]] || {
+  echo pre-apply-snapshot-required >&2
+  exit 78
+}
+bridge_info=$(jq -cer --arg project "$project" '
+  select(.schema == "HiveCrewPreApplySnapshotV3" and .compose_project == $project and
+    .mutation_started == false and .secret_values_recorded == false) |
+  .authority_bridge |
+  select(.network_name == ($project + "_default") and
+    (.network_id | test("^[0-9a-f]{64}$")) and
+    (.gateway | test("^172\\.(1[6-9]|2[0-9]|3[01])\\.[0-9]{1,3}\\.[0-9]{1,3}$")) and
+    .bind == (.gateway + ":3151") and .target == "127.0.0.1:3150") |
+  {network_name,network_id,gateway}
+' "$snapshot") || { echo pre-apply-bridge-snapshot-invalid >&2; exit 78; }
 bridge_gateway=$(jq -er .gateway <<<"$bridge_info")
 bridge_network_name=$(jq -er .network_name <<<"$bridge_info")
 bridge_network_id=$(jq -er .network_id <<<"$bridge_info")

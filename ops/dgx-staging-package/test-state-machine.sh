@@ -265,6 +265,10 @@ jq -e '.schema == "HiveCrewOperatorApplyReceiptV3" and .health_http == 200 and
   .authority_bridge.health == "healthy" and .authority_bridge.gateway == "172.24.0.1" and
   .schema_read_only_counts.schema_top == 415 and .schema_read_only_counts.agent_count == 36' \
   "$success/receipts/OPERATOR-APPLY-RECEIPT.json" >/dev/null
+jq -e '.schema == "HiveCrewPreApplySnapshotV3" and
+  .authority_bridge.network_id == "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" and
+  .authority_bridge.gateway == "172.24.0.1" and .authority_bridge.bind == "172.24.0.1:3151"' \
+  "$success/receipts/PRE-APPLY-SNAPSHOT.json" >/dev/null
 jq -e \
   '.rollback_predecessor.backend.ref == "multica-backend:dgx-ultra-20260819-353b16c3" and
    .rollback_predecessor.backend.id == "sha256:f6c5050276263266cf4c08954694d2022f60b942716d12f40f4ef5da2599649a" and
@@ -351,6 +355,15 @@ reset_fake "$deploy"
 if FAKE_BRIDGE_HTTP_FAIL=1 "$operator_root/apply-staging.sh" "$bridge_http_fail" >/dev/null 2>&1; then exit 1; fi
 [[ $(cat "$FAKE_STATE") == predecessor && $(cat "$FAKE_BRIDGE_STATE") == absent ]]
 echo authority_bridge_http_failure_zero_orphan_rollback=PASS
+
+backend_disappears=$(new_candidate backend-disappears)
+reset_fake "$deploy"
+"$operator_root/apply-staging.sh" "$backend_disappears" >/dev/null
+[[ $(cat "$FAKE_STATE") == candidate && $(cat "$FAKE_BRIDGE_STATE") == present ]]
+FAKE_CONTAINER_PROJECT=missing "$operator_root/rollback-staging.sh" \
+  "$backend_disappears" backend-missing-test >/dev/null
+[[ $(cat "$FAKE_STATE") == predecessor && $(cat "$FAKE_BRIDGE_STATE") == absent ]]
+echo rollback_uses_pre_mutation_bridge_snapshot_when_backend_unavailable=PASS
 
 transient_refused=$(new_candidate transient-refused)
 transient_err="$tmp/transient-refused.err"
