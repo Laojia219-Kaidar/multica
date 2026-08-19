@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+set -euo pipefail
+root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd); profile=${1:-}; shift || true; "$root/bin/resolve-runtime" "$profile" --dry-run >/dev/null || exit 1; "$root/bin/runtime-wrapper" "$profile" "$@"
