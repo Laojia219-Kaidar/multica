@@ -170,9 +170,12 @@ func readRequestJSON(cmd *cobra.Command, dst any) error {
 		return fmt.Errorf("provide --request '<json>', --request-stdin, or --request-file <path>")
 	}
 	var proofErr error
-	if _, ok := dst.(*workentry.WorkEventV1); ok {
+	switch dst.(type) {
+	case *workentry.WorkEventV1:
 		proofErr = workentry.RejectForbiddenProofFieldsForEvent([]byte(body))
-	} else {
+	case *[]workentry.SyncEntry:
+		proofErr = workentry.RejectForbiddenProofFieldsForSync([]byte(body))
+	default:
 		proofErr = workentry.RejectForbiddenProofFields([]byte(body))
 	}
 	if proofErr != nil {

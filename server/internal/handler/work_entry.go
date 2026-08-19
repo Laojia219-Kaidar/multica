@@ -47,9 +47,14 @@ func decodeWorkRequest(w http.ResponseWriter, r *http.Request, dst any) bool {
 		return false
 	}
 	var proofErr error
-	if _, ok := dst.(*workentry.WorkEventV1); ok {
+	switch dst.(type) {
+	case *workentry.WorkEventV1:
 		proofErr = workentry.RejectForbiddenProofFieldsForEvent(body)
-	} else {
+	case *workEntrySyncRequest:
+		proofErr = workentry.RejectForbiddenProofFieldsForSync(body)
+	case *workMCPCallRequest:
+		proofErr = workentry.RejectForbiddenProofFieldsForMCPCall(body)
+	default:
 		proofErr = workentry.RejectForbiddenProofFields(body)
 	}
 	if proofErr != nil {

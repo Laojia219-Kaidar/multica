@@ -61,3 +61,45 @@ func TestRejectForbiddenProofFieldsForEventAllowsOnlyRootRunID(t *testing.T) {
 		})
 	}
 }
+
+func TestRejectForbiddenProofFieldsForSyncAllowsOnlyTypedEventRunID(t *testing.T) {
+	tests := []struct {
+		name    string
+		body    string
+		wantErr bool
+	}{
+		{name: "CLI event entry", body: `[{"verb":"event","canonical_payload":{"event":{"run_id":"run-1"}}}]`},
+		{name: "HTTP event entry", body: `{"entries":[{"verb":"event","canonical_payload":{"event":{"run_id":"run-1"}}}]}`},
+		{name: "register smuggling", body: `{"entries":[{"verb":"register","canonical_payload":{"event":{"run_id":"forged"}}}]}`, wantErr: true},
+		{name: "event payload smuggling", body: `{"entries":[{"verb":"event","canonical_payload":{"event":{"event_payload":{"run_id":"forged"}}}}]}`, wantErr: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := RejectForbiddenProofFieldsForSync([]byte(tc.body))
+			if got := errors.Is(err, ErrForbiddenProofField); got != tc.wantErr {
+				t.Fatalf("forbidden error = %v, want %v; err=%v", got, tc.wantErr, err)
+			}
+		})
+	}
+}
+
+func TestRejectForbiddenProofFieldsForMCPCallAllowsOnlyTypedEventRunID(t *testing.T) {
+	tests := []struct {
+		name    string
+		body    string
+		wantErr bool
+	}{
+		{name: "work event", body: `{"name":"work.event","arguments":{"run_id":"run-1"}}`},
+		{name: "work sync event", body: `{"name":"work.sync","arguments":{"entries":[{"verb":"event","canonical_payload":{"event":{"run_id":"run-1"}}}]}}`},
+		{name: "wrong tool", body: `{"name":"work.register","arguments":{"run_id":"forged"}}`, wantErr: true},
+		{name: "nested payload", body: `{"name":"work.event","arguments":{"event_payload":{"run_id":"forged"}}}`, wantErr: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := RejectForbiddenProofFieldsForMCPCall([]byte(tc.body))
+			if got := errors.Is(err, ErrForbiddenProofField); got != tc.wantErr {
+				t.Fatalf("forbidden error = %v, want %v; err=%v", got, tc.wantErr, err)
+			}
+		})
+	}
+}

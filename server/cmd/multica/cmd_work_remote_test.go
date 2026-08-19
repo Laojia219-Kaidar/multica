@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
@@ -65,6 +66,18 @@ func TestRemainingWorkVerbsUseLiveAPI(t *testing.T) {
 				t.Fatalf("event run_id = %q, want run-1", event.RunID)
 			}
 			_ = json.NewEncoder(w).Encode(workentry.EventResult{EventID: "event-1"})
+		case "POST /api/work/sync":
+			var request struct {
+				Entries []workentry.SyncEntry `json:"entries"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				t.Fatalf("decode sync request: %v", err)
+			}
+			payload, _ := json.Marshal(request.Entries[0].CanonicalPayload)
+			if !strings.Contains(string(payload), `"run_id":"run-sync-1"`) {
+				t.Fatalf("sync event lost run_id: %s", payload)
+			}
+			_ = json.NewEncoder(w).Encode(workentry.SyncResult{Synced: 1})
 		case "POST /api/work/handoff":
 			_ = json.NewEncoder(w).Encode(workentry.HandoffResult{HandoffID: "handoff-1"})
 		case "POST /api/work/finish":
@@ -104,6 +117,21 @@ func TestRemainingWorkVerbsUseLiveAPI(t *testing.T) {
 	_ = eventCmd.Flags().Set("request", string(eventBody))
 	if _, err := captureRuntimeStdout(t, func() error { return runWorkEvent(eventCmd, nil) }); err != nil {
 		t.Fatalf("runWorkEvent: %v", err)
+	}
+
+	syncEntries := []workentry.SyncEntry{{
+		Verb: "event", IdempotencyKey: "sync-event-1", PayloadDigest: "sha256:test",
+		CanonicalPayload: map[string]any{"event": map[string]any{
+			"work_ref": workRef, "session_id": "session-1", "run_id": "run-sync-1",
+			"event_type": "progress", "event_payload": map[string]any{"step": "sync"},
+			"idempotency_key": "sync-event-1", "occurred_at": "2026-08-19T04:00:00Z", "observed_at": "2026-08-19T04:00:00Z",
+		}},
+	}}
+	syncBody, _ := json.Marshal(syncEntries)
+	syncCmd := newWorkRemoteTestCmd(srv.URL, "ws-1")
+	_ = syncCmd.Flags().Set("request", string(syncBody))
+	if _, err := captureRuntimeStdout(t, func() error { return runWorkSync(syncCmd, nil) }); err != nil {
+		t.Fatalf("runWorkSync: %v", err)
 	}
 
 	handoff := workentry.WorkHandoffV1{WorkRef: workRef, Revision: "revision-1"}
@@ -156,7 +184,7 @@ func TestRemainingWorkVerbsUseLiveAPI(t *testing.T) {
 	}
 
 	for _, endpoint := range []string{
-		"POST /api/work/heartbeat", "POST /api/work/event", "POST /api/work/handoff",
+		"POST /api/work/heartbeat", "POST /api/work/event", "POST /api/work/sync", "POST /api/work/handoff",
 		"POST /api/work/finish", "GET /api/work/reconcile", "POST /api/work/attach",
 		"POST /api/work/ignore", "GET /api/work/replay",
 	} {
