@@ -9,6 +9,11 @@ services:
     read_only: true
     cap_drop: ["ALL"]
     security_opt: ["no-new-privileges:true"]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://$${HIVECOSM_AUTHORITY_BRIDGE_BIND_ADDR}:3151/bff/health"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
     restart: "no"
   backend:
     depends_on:
