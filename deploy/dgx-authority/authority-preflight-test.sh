@@ -58,6 +58,10 @@ case "$request_url" in
     ;;
 esac
 printf 'wget\n' >> "${FAKE_HTTP_LOG:?}"
+if [ "${FAKE_WGET_NO_STATUS:-0}" = 1 ]; then
+  echo 'fixture transport failed without response' >&2
+  exit 1
+fi
 printf '  HTTP/1.1 %s fixture\n' "$status" >&2
 [ "$status" = 200 ]
 EOF
@@ -103,6 +107,13 @@ if FAKE_HEALTH_STATUS=204 run_preflight "$curl_dir" >"$tmp/health.out" 2>"$tmp/h
 fi
 grep -F 'health returned 204 (expected 200)' "$tmp/health.err" >/dev/null
 echo authority_preflight_health_exact_status=PASS
+
+: > "$tmp/http.log"
+if FAKE_WGET_NO_STATUS=1 run_preflight "$wget_dir" >"$tmp/no-status.out" 2>"$tmp/no-status.err"; then
+  exit 1
+fi
+grep -F 'authority preflight: HTTP request failed' "$tmp/no-status.err" >/dev/null
+echo authority_preflight_busybox_wget_no_status_fail_closed=PASS
 
 : > "$tmp/http.log"
 if FAKE_ANONYMOUS_STATUS=403 run_preflight "$wget_dir" >"$tmp/anonymous.out" 2>"$tmp/anonymous.err"; then
