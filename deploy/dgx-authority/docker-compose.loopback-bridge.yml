@@ -1,0 +1,18 @@
+services:
+  authority-loopback-bridge:
+    build:
+      context: ../..
+      dockerfile: deploy/dgx-authority/Dockerfile.loopback-bridge
+    network_mode: host
+    environment:
+      HIVECOSM_AUTHORITY_BRIDGE_BIND_ADDR: "${HIVECOSM_AUTHORITY_BRIDGE_BIND_ADDR:?operator must resolve the candidate Docker bridge gateway}"
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    restart: "no"
+  backend:
+    depends_on:
+      authority-loopback-bridge:
+        condition: service_started
+    environment:
+      HIVECOSM_AUTHORITY_BASE_URL: "http://${HIVECOSM_AUTHORITY_BRIDGE_BIND_ADDR:?operator must resolve the candidate Docker bridge gateway}:3151"
