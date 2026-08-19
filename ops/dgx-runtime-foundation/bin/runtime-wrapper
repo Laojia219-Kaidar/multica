@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+set -euo pipefail
+root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+profile=${1:-}; shift || true
+[[ "${HIVECREW_CANARY_MODE:-}" == 1 && -n "${HIVECREW_AUTH_TOKEN_REF:-}" && -n "${HIVECREW_WORK_ORDER:-}" ]] || { echo 'fail-closed: explicit canary, auth reference, and WorkOrder required' >&2; exit 77; }
+command -v jq >/dev/null || exit 127
+row=$(jq -c --arg id "$profile" '.profiles[]|select(.id==$id)' "$root/profiles.json"); [[ -n "$row" ]] || exit 1
+cmd=$(jq -r .command <<<"$row"); path=$(command -v "$cmd" 2>/dev/null || true); [[ -n "$path" ]] || { echo "missing provider CLI: $cmd" >&2; exit 127; }
+exec "$path" "$@"

@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -euo pipefail
+root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd); command -v jq >/dev/null || exit 127
+jq -e '.secret_values_recorded == false and (.profiles|length >= 8)' "$root/profiles.json" >/dev/null
+printf 'preflight=pass execution=disabled secret_values_recorded=false\n'

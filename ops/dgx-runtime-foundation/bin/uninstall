@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+set -euo pipefail
+root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd); prefix=${HIVECREW_RUNTIME_PREFIX:-"$root/.installed"}; mode=${1:---preview}; [[ "$mode" == --preview || "$mode" == --apply ]] || exit 2
+[[ "$mode" == --apply ]] && { rm -f "$prefix/bin/hivecrew-runtime-wrapper" "$prefix/state/manifest"; rmdir "$prefix/bin" "$prefix/state" "$prefix" 2>/dev/null || true; }

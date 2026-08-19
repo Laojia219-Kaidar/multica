@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -euo pipefail
+root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd); prefix=${HIVECREW_RUNTIME_PREFIX:-"$root/.installed"}; mode=${1:---preview}
+[[ "$mode" == --preview || "$mode" == --apply ]] || exit 2
+command -v jq >/dev/null || exit 127; count=$(jq '.profiles|length' "$root/profiles.json")
+[[ "$mode" == --preview ]] && { printf 'preview prefix=%s profiles=%s\n' "$prefix" "$count"; exit 0; }
+mkdir -p "$prefix/bin" "$prefix/state"; cp "$root/runtime-wrapper" "$prefix/bin/hivecrew-runtime-wrapper"; chmod 755 "$prefix/bin/hivecrew-runtime-wrapper"; printf '%s\n' "$root/profiles.json" > "$prefix/state/manifest"
