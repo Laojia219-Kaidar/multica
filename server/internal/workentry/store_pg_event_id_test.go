@@ -75,7 +75,7 @@ func TestEventRecordJSONUsesWireFieldNames(t *testing.T) {
 	if err != nil { t.Fatalf("marshal EventRecord: %v", err) }
 	var fields map[string]any
 	if err := json.Unmarshal(payload, &fields); err != nil { t.Fatalf("unmarshal EventRecord: %v", err) }
-	for _, field := range []string{"workspace_id", "work_ref", "run_id", "event_type", "event_payload", "idempotency_key", "occurred_at", "observed_at", "sequence"} {
+	for _, field := range []string{"event_id", "workspace_id", "work_ref", "run_id", "event_type", "event_payload", "idempotency_key", "occurred_at", "observed_at", "sequence"} {
 		if _, ok := fields[field]; !ok { t.Fatalf("missing wire field %q in %s", field, payload) }
 	}
 	if _, ok := fields["WorkspaceID"]; ok { t.Fatalf("Go field leaked into wire payload: %s", payload) }

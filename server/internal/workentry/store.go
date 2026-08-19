@@ -127,7 +127,7 @@ type ReceiptRecord struct {
 
 // EventRecord is the persisted append-only work event.
 type EventRecord struct {
-	ID             string        `json:"id"`
+	ID             string        `json:"event_id"`
 	WorkspaceID    string        `json:"workspace_id"`
 	WorkRef        string        `json:"work_ref"`
 	SessionID      string        `json:"session_id"`
