@@ -5,16 +5,20 @@
   "human_principal": "William",
   "carrier": "Codex/Luna",
   "host": "spark-b398",
-  "source_revision": "d7b7d3e4ced492e689954f881ffb0e98ed2c1c7a",
+  "source_candidate_parent": "943e616bcb97b9feff15d97efa357992c4192717",
+  "source_candidate_tree": "6c662e93064802219e1e14d09d29b1feb8c87b1e",
   "base_revision": "9ca3429fcd23a5d213916ba2b7d75d00a09e03c2",
   "state": "verified_local_not_staged",
   "secret_values_recorded": false,
   "production_applied": false,
+  "manifest_self_reference": false,
+  "package_digest_contract": "SHA256SUMS covers wiring scripts, HANDOFF.md, and run-manifest.json; final metadata commit is the external Git HEAD to avoid recursive self-reference",
   "changed_files": [
     "deploy/dgx-authority/authority-entrypoint.sh",
     "deploy/dgx-authority/authority-preflight.sh",
     "deploy/dgx-authority/docker-compose.dgx-authority.yml",
-    "deploy/dgx-authority/operator-apply-preview.sh"
+    "deploy/dgx-authority/operator-apply-preview.sh",
+    "deploy/dgx-authority/authority-wiring-test.sh"
   ],
   "unchanged_boundaries": ["staging", "production", "database", "registry", "RUN-06", "GPU", "training", "model", "SGLang", "8000", "8001"],
   "next_action": "operator review and separately authorized staging apply"
