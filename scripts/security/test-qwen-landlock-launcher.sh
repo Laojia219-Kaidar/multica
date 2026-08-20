@@ -21,6 +21,7 @@ cat > "${test_root}/bin/fake-qwen" <<'FAKE_QWEN'
 set -eu
 test "${SANDBOX:-}" = landlock
 test -z "${QWEN_SANDBOX:-}"
+test "${HOME}" != "${REAL_HOME}"
 test -L "${HOME}/.qwen/.env"
 test "$(readlink "${HOME}/.qwen/.env")" = "${EXPECTED_SECRET}"
 printf state > "${HOME}/state"
@@ -37,6 +38,7 @@ before_count="$(find /tmp -maxdepth 1 -type d -name 'hivecrew-qwen-landlock.*' |
 (
   cd "${test_root}/allowed"
   EXPECTED_SECRET="${test_root}/real-home/.qwen/.env" \
+  REAL_HOME="${test_root}/real-home" \
   FORBIDDEN="${test_root}/forbidden" \
   HIVECREW_QWEN_REAL_HOME="${test_root}/real-home" \
   HIVECREW_LANDLOCK_EXEC="${test_root}/bin/hivecrew-landlock-exec" \
@@ -57,5 +59,39 @@ grep -Fx -- 'plan' "${test_root}/allowed/launcher-args" >/dev/null
 grep -Fx -- '--max-tool-calls' "${test_root}/allowed/launcher-args" >/dev/null
 grep -Fx -- '0' "${test_root}/allowed/launcher-args" >/dev/null
 grep -Fx -- '--sandbox' "${test_root}/allowed/launcher-args" >/dev/null
+test "$(grep -Fxc -- '--auth-type' "${test_root}/allowed/launcher-args")" = 1
+test "$(grep -Fxc -- 'openai' "${test_root}/allowed/launcher-args")" = 1
+test "$(paste -sd ' ' "${test_root}/allowed/launcher-args")" = '--auth-type openai --model qwen3.7-plus --approval-mode plan --max-tool-calls 0 --sandbox'
+
+assert_auth_type_rejected() {
+  case_name="$1"
+  shift
+  case_root="${test_root}/${case_name}"
+  mkdir -p "${case_root}"
+  set +e
+  (
+    cd "${case_root}"
+    EXPECTED_SECRET="${test_root}/real-home/.qwen/.env" \
+    REAL_HOME="${test_root}/real-home" \
+    FORBIDDEN="${test_root}/forbidden" \
+    HIVECREW_QWEN_REAL_HOME="${test_root}/real-home" \
+    HIVECREW_LANDLOCK_EXEC="${test_root}/bin/hivecrew-landlock-exec" \
+    HIVECREW_QWEN_BIN="${test_root}/bin/fake-qwen" \
+    HIVECREW_QWEN_SECRET_FILE="${test_root}/real-home/.qwen/.env" \
+      "${launcher}" "$@"
+  ) >"${case_root}/stdout" 2>"${case_root}/stderr"
+  status=$?
+  set -e
+  test "${status}" = 77
+  grep -Fx -- 'reserved auth/model/sandbox/tool flag' "${case_root}/stderr" >/dev/null
+  test ! -e "${case_root}/launcher-args"
+  test ! -e "${case_root}/launcher-created"
+}
+
+assert_auth_type_rejected task-explicit-openai --auth-type openai
+assert_auth_type_rejected task-inline-openai --auth-type=openai
+assert_auth_type_rejected task-explicit-other --auth-type qwen-oauth
+assert_auth_type_rejected task-inline-other --auth-type=qwen-oauth
+assert_auth_type_rejected task-duplicate --auth-type openai --auth-type openai
 
 echo "HIVECREW_QWEN_LANDLOCK_LAUNCHER_TEST_PASS"
