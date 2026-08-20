@@ -1,0 +1,27 @@
+{
+  "schema_version": "p3-p0-source-candidate-v1",
+  "work_id": "WO-C1-04-P3-P0-REPAIR-001",
+  "state": "CANDIDATE_ONLY_NOT_REVIEWED_NOT_INTEGRATED_NOT_APPLIED",
+  "base_revision": "b884ac5b7df37ffd77272ba917341fb64868e702",
+  "base_tree": "7c6361f46df49156f03ff68d5292ef9aa820e3a3",
+  "branch": "owner/william/william-macstudio-ultra/codex/wo-c1-04-p3-p0-repair-r1",
+  "reviewer_agent_id": "708a49ba-7e7d-4363-8b9b-e6a4aeb5d980",
+  "expected_project_id": "3b0330e7-a2da-4f41-94ab-61c911af2820",
+  "expected_source_ref": "refs/heads/owner/william/william-macstudio-ultra/codex/wo-c1-04-hivecrew-integration-v1",
+  "expected_revision": "b884ac5b7df37ffd77272ba917341fb64868e702",
+  "expected_tree": "7c6361f46df49156f03ff68d5292ef9aa820e3a3",
+  "review_cell_default_enabled": false,
+  "review_cell_candidate_enabled": true,
+  "authority_dispatch_only": true,
+  "owner_promotion_boundary_changed": false,
+  "live_preflight": {
+    "status": "EXPECTED_REJECT_STALE_RESOURCE",
+    "exit_code": 42,
+    "mutations": 0
+  },
+  "runtime_credential_repair_in_scope": false,
+  "issue_created": false,
+  "database_mutated": false,
+  "staging_applied": false,
+  "model_calls": 0
+}

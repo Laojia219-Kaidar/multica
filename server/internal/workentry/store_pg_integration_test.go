@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -17,7 +18,8 @@ import (
 // TestPGStoreRegisterIdempotency proves the production persistence path
 // (project_lifecycle_receipt idempotency anchor + project/issue reuse) against
 // a real PostgreSQL. Run with:
-//   DATABASE_URL=... go test -tags integration -run TestPGStore ./internal/workentry/
+//
+//	DATABASE_URL=... go test -tags integration -run TestPGStore ./internal/workentry/
 func TestPGStoreRegisterIdempotency(t *testing.T) {
 	url := os.Getenv("DATABASE_URL")
 	if url == "" {
@@ -100,7 +102,6 @@ func TestPGStoreRegisterIdempotency(t *testing.T) {
 	if r2.ActorIdentity.ActorID != r1.ActorIdentity.ActorID || r2.ActorIdentity.ActorType != ActorExternalAgent {
 		t.Fatalf("replay must preserve actor_identity, got %+v want %+v", r2.ActorIdentity, r1.ActorIdentity)
 	}
-
 
 	// 4. register same key DIFFERENT digest -> 409 conflict
 	intent2 := intent
@@ -307,9 +308,9 @@ func TestPGStoreFinishCreatesArtifactCandidate(t *testing.T) {
 	}
 
 	_, err = svc.Finish(ctx, WorkCompletionV1{
-		WorkRef: r1.WorkRef,
-		CompletionCandidate: CompletionCandidate{ArtifactRef: "artifact://c/1", Digest: "sha256:abcd", Revision: "rev"},
-		Review: CompletionReview{ReviewerActorID: "REV-1"},
+		WorkRef:                     r1.WorkRef,
+		CompletionCandidate:         CompletionCandidate{ArtifactRef: "artifact://c/1", Digest: "sha256:abcd", Revision: "rev"},
+		Review:                      CompletionReview{ReviewerActorID: "REV-1"},
 		ProjectLifecycleConsequence: LifecycleContinue,
 	})
 	if err != nil {
@@ -404,10 +405,20 @@ func TestPGStoreReviewRecordsVerdict(t *testing.T) {
 	if err != nil {
 		t.Fatalf("register: %v", err)
 	}
+	reviewerActor := actor
+	reviewerActor.ActorID = "EXT-rev-2"
+	reviewerActor.SessionID = "rev-s2"
+	reviewerIntent := intent
+	reviewerIntent.BranchOrWorktree = "review"
+	reviewerIntent.Objective = "independent review"
+	reviewerReceipt, err := svc.Register(ctx, RegisterRequest{ResolveRequest: ResolveRequest{Actor: reviewerActor, Intent: reviewerIntent}, ConfirmCreate: true})
+	if err != nil {
+		t.Fatalf("register reviewer: %v", err)
+	}
 	if _, err := svc.Finish(ctx, WorkCompletionV1{
-		WorkRef: r1.WorkRef,
-		CompletionCandidate: CompletionCandidate{ArtifactRef: "artifact://c/1", Digest: "sha256:abcd", Revision: "rev"},
-		Review:              CompletionReview{ReviewerActorID: "REV-1"},
+		WorkRef:                     r1.WorkRef,
+		CompletionCandidate:         CompletionCandidate{ArtifactRef: "artifact://c/1", Digest: "sha256:abcd", Revision: "rev"},
+		Review:                      CompletionReview{ReviewerActorID: "REV-1"},
 		ProjectLifecycleConsequence: LifecycleContinue,
 	}); err != nil {
 		t.Fatalf("finish: %v", err)
@@ -416,7 +427,7 @@ func TestPGStoreReviewRecordsVerdict(t *testing.T) {
 	// Independent review: reviewer != implementer actor.
 	res, err := svc.Review(ctx, ReviewRequest{
 		WorkRef: r1.WorkRef, WorkspaceID: wsID,
-		ReviewerActorID: "REV-1", Decision: ReviewPass,
+		ReviewerActorID: reviewerActor.ActorID, ReviewerWorkRef: reviewerReceipt.WorkRef, Decision: ReviewPass,
 	})
 	if err != nil {
 		t.Fatalf("review: %v", err)
@@ -425,13 +436,16 @@ func TestPGStoreReviewRecordsVerdict(t *testing.T) {
 		t.Fatalf("PASS review should set Passed=true, got %+v", res)
 	}
 
-	var eventType string
+	var eventType, idempotencyKey string
 	if err := pool.QueryRow(ctx,
-		`SELECT event_type FROM artifact_event WHERE workspace_id=$1 ORDER BY sequence DESC LIMIT 1`, wsID).Scan(&eventType); err != nil {
+		`SELECT event_type, idempotency_key FROM artifact_event WHERE workspace_id=$1 ORDER BY sequence DESC LIMIT 1`, wsID).Scan(&eventType, &idempotencyKey); err != nil {
 		t.Fatalf("read artifact event: %v", err)
 	}
 	if eventType != "approved" {
 		t.Fatalf("PASS review should record 'approved' artifact_event, got %q", eventType)
+	}
+	if !strings.Contains(idempotencyKey, "external_agent:"+reviewerActor.ActorID) {
+		t.Fatalf("review event does not persist receipt-bound reviewer identity: %q", idempotencyKey)
 	}
 	t.Logf("review chain PASS: register -> finish -> review PASS -> artifact_event approved")
 }

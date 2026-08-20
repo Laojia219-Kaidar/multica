@@ -7,14 +7,16 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/reviewcellconfig"
 	"github.com/multica-ai/multica/server/internal/service"
 )
 
-// reviewCellEnabled is the single source of truth for the Lane B review-cell
-// feature switch inside cmd/server. When off, no review listener is registered,
-// no review routes are wired, and every terminal-status interpretation keeps its
-// legacy behavior.
-var reviewCellEnabled = os.Getenv("REVIEW_CELL_ENABLED") == "true"
+// reviewCellEnabledFromEnv is the single source of truth for the Lane B
+// review-cell feature switch inside cmd/server. Only the exact value "true"
+// enables it; missing, malformed, or case-drifted values fail closed.
+func reviewCellEnabledFromEnv() bool {
+	return reviewcellconfig.Enabled(os.Getenv("REVIEW_CELL_ENABLED"))
+}
 
 // reviewCellConfigFromEnv builds the review-cell wiring from environment. The
 // L1 reviewer and coordinator agent ids are workspace-local agent UUIDs; an
@@ -26,7 +28,7 @@ var reviewCellEnabled = os.Getenv("REVIEW_CELL_ENABLED") == "true"
 // the legacy local-task behavior.
 func reviewCellConfigFromEnv() service.ReviewCellConfig {
 	cfg := service.ReviewCellConfig{
-		Enabled:               reviewCellEnabled,
+		Enabled:               reviewCellEnabledFromEnv(),
 		AuthorityDispatchOnly: true,
 		ReviewWIPLimit:        int32(envPositiveInt("REVIEW_CELL_REVIEW_WIP_LIMIT", 10)),
 		ReviewPriority:        int32(envPositiveInt("REVIEW_CELL_REVIEW_PRIORITY", 5)),

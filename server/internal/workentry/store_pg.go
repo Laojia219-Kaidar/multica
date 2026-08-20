@@ -61,14 +61,14 @@ func (p *PGStore) uuid(s string) (pgtype.UUID, error) { return util.ParseUUID(s)
 // existing artifact_candidate machinery (which flows into review/promotion/
 // outcome center). LineageID is the issue the work was registered under.
 type ArtifactCandidateInput struct {
-	WorkspaceID string
-	LineageID   string
-	Revision    int32
-	StorageKey  string
-	DurableRef  string
-	Digest      string
-	Filename    string
-	ContentType string
+	WorkspaceID    string
+	LineageID      string
+	Revision       int32
+	StorageKey     string
+	DurableRef     string
+	Digest         string
+	Filename       string
+	ContentType    string
 	IdempotencyKey string
 }
 
@@ -106,7 +106,6 @@ func (p *PGStore) CreateArtifactCandidate(ctx context.Context, in ArtifactCandid
 type artifactCandidateCreator interface {
 	CreateArtifactCandidate(ctx context.Context, in ArtifactCandidateInput) error
 }
-
 
 // escapeLike escapes LIKE wildcards so a caller-supplied query is matched
 // literally (F10). PostgreSQL's default LIKE escape character is backslash.
@@ -434,6 +433,7 @@ func (p *PGStore) FindReceiptByWorkRef(ctx context.Context, workspaceID, workRef
 		return nil, fmt.Errorf("scan work registration receipts: %w", err)
 	}
 	defer rows.Close()
+	var found *ReceiptRecord
 	for rows.Next() {
 		var storedRef, idemKey, digest, decision string
 		var projectID, issueID, taskID pgtype.UUID
@@ -454,11 +454,18 @@ func (p *PGStore) FindReceiptByWorkRef(ctx context.Context, workspaceID, workRef
 			TaskID: util.UUIDToString(taskID), Decision: ResolutionDecision(decision),
 			Actor: actor, Intent: intent,
 		}
-		if rec.WorkRef == workRef {
-			return rec, nil
+		if found != nil {
+			// A work_ref with more than one registration receipt has ambiguous
+			// actor authority. No status or review path may select one by row
+			// order; fail closed until the lineage is repaired.
+			return nil, ErrConflict
 		}
+		found = rec
 	}
-	return nil, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return found, nil
 }
 
 // ListProjectParticipants reads the receipt ledger for one project (workspace-

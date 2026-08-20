@@ -29,6 +29,8 @@ func writeWorkEntryError(w http.ResponseWriter, err error) {
 		writeJSON(w, http.StatusNotFound, workEntryErrorResponse{Error: err.Error(), ReasonCode: "not_found"})
 	case errors.Is(err, workentry.ErrUnavailable):
 		writeJSON(w, http.StatusServiceUnavailable, workEntryErrorResponse{Error: err.Error(), ReasonCode: "writer_unavailable"})
+	case errors.Is(err, workentry.ErrSelfReview):
+		writeJSON(w, http.StatusConflict, workEntryErrorResponse{Error: err.Error(), ReasonCode: "self_review_forbidden"})
 	case errors.Is(err, workentry.ErrForbiddenProofField):
 		writeJSON(w, http.StatusBadRequest, workEntryErrorResponse{Error: err.Error(), ReasonCode: "forbidden_proof_field"})
 	default:
@@ -474,6 +476,9 @@ func (h *Handler) WorkEntryReview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !h.requireWorkRefTenant(w, r, req.WorkRef) {
+		return
+	}
+	if !h.requireWorkRefTenant(w, r, req.ReviewerWorkRef) {
 		return
 	}
 	res, err := h.WorkEntry.Review(r.Context(), req)

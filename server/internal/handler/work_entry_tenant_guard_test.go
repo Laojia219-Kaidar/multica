@@ -134,6 +134,20 @@ func assertGuardForbidden(t *testing.T, w *httptest.ResponseRecorder) {
 	}
 }
 
+func TestWorkEntryReviewRejectsCrossTenantReviewerWorkRefBeforeWrite(t *testing.T) {
+	h, _ := newWorkEntryGuardHandler()
+	body, _ := json.Marshal(map[string]any{
+		"work_ref":          workentry.FormatWorkRef(guardTenantWS, "project", "issue", ""),
+		"workspace_id":      guardTenantWS,
+		"reviewer_actor_id": "reviewer",
+		"reviewer_work_ref": workentry.FormatWorkRef(guardForeignWS, "project", "review-issue", ""),
+		"decision":          "PASS",
+	})
+	w := httptest.NewRecorder()
+	h.WorkEntryReview(w, newWorkEntryGuardRequest(http.MethodPost, "/api/work/review", string(body)))
+	assertGuardForbidden(t, w)
+}
+
 // ---------------------------------------------------------------------------
 // POST /api/work/sync
 // ---------------------------------------------------------------------------

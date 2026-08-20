@@ -1,0 +1,10 @@
+# Source-only staging override. It is inert unless an operator explicitly adds
+# it to an accepted base compose file in a separately authorized staging apply.
+services:
+  backend:
+    environment:
+      REVIEW_CELL_ENABLED: "true"
+      REVIEW_CELL_L1_AGENT_ID: "708a49ba-7e7d-4363-8b9b-e6a4aeb5d980"
+      REVIEW_CELL_REVIEW_WIP_LIMIT: "1"
+      REVIEW_CELL_REVIEW_PRIORITY: "5"
+      REVIEW_CELL_REPAIR_PRIORITY: "5"

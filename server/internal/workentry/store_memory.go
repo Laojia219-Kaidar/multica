@@ -149,13 +149,17 @@ func (m *MemoryStore) GetReceipt(_ context.Context, workspaceID, dedupeKey strin
 func (m *MemoryStore) FindReceiptByWorkRef(_ context.Context, workspaceID, workRef string) (*ReceiptRecord, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	var found *ReceiptRecord
 	for _, r := range m.receipts {
 		if r.WorkspaceID == workspaceID && r.WorkRef == workRef {
+			if found != nil {
+				return nil, ErrConflict
+			}
 			cp := *r
-			return &cp, nil
+			found = &cp
 		}
 	}
-	return nil, nil
+	return found, nil
 }
 
 func (m *MemoryStore) ListProjectParticipants(_ context.Context, workspaceID, projectID string) ([]ProjectParticipant, error) {

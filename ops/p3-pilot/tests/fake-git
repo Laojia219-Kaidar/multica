@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+printf 'git %s\n' "$*" >>"$P3_TEST_CALLS"
+case "$*" in
+  *"^{tree}"*) printf '%s\n' "${P3_TEST_TREE:-7c6361f46df49156f03ff68d5292ef9aa820e3a3}" ;;
+  *) printf '%s\n' "${P3_TEST_REVISION:-b884ac5b7df37ffd77272ba917341fb64868e702}" ;;
+esac

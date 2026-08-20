@@ -25,4 +25,10 @@ var (
 	// the current slice (e.g. no reusable table without a new migration). It is
 	// mapped to 503 by the HTTP layer.
 	ErrUnavailable = errors.New("work entry operation unavailable in this slice")
+
+	// ErrSelfReview is returned when the append-only registration receipts prove
+	// that the proposed reviewer and the implementation worker are the same
+	// authoritative actor. A caller-supplied reviewer label can never override
+	// the receipt identity.
+	ErrSelfReview = errors.New("work entry self-review is forbidden")
 )
