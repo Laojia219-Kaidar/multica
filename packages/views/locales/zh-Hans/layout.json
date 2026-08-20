@@ -32,7 +32,23 @@
     "working_agents": "工作中员工",
     "loading": "正在读取实时运营数据...",
     "degraded": "部分实时数据读取失败，请进入对应页面查看详情。",
-    "open_surface": "打开"
+    "open_surface": "打开",
+    "review_frontier": {
+      "eyebrow": "审核前沿",
+      "title": "Owner 审核队列",
+      "description": "仅显示具备 Authority 证据的审核工作；证据缺失时保持明确阻断。",
+      "loading": "正在读取正式审核队列...",
+      "empty": "当前没有开放的 Review Cell 条目。",
+      "blocked_title": "审核队列不可用",
+      "blocked_description": "Review Cell 或 Authority 读模型尚不可用，未启用任何审核动作。",
+      "owner_ready": "Owner 决策",
+      "active_review": "审核中",
+      "blocked_review": "已阻断",
+      "open_owner_decision": "打开 Owner 决策",
+      "open_detail": "打开只读详情",
+      "reviewer": "审核人",
+      "outcome_center": "打开成果中心"
+    }
   },
   "tab": {
     "issue": "议题",

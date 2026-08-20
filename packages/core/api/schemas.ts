@@ -49,6 +49,7 @@ import type {
   WorkConservingProjection,
   IssueDispatchPreview,
   IssueDispatchResult,
+  ReviewQueueResponse,
 } from "../types";
 import type { CloudRuntimeNode } from "../runtimes/cloud-runtime";
 import type { CreateFeedbackResponse } from "../feedback/types";
@@ -123,6 +124,36 @@ export const EMPTY_ISSUE_DISPATCH_RESULT: IssueDispatchResult = {
   task_ids: [],
   replayed: false,
 };
+
+const ReviewQueueItemWireSchema = z.object({
+  issue_id: z.string().uuid(),
+  identifier: z.string().min(1),
+  title: z.string(),
+  review_state: z.enum(["queued", "triaging", "evidence_review", "owner_decision"]).nullable(),
+  review_state_reason: z.string().min(1).nullable().optional(),
+  reviewer_agent_id: z.string().uuid().nullable().optional(),
+  reviewer_name: z.string().min(1).nullable().optional(),
+  review_target_task_id: z.string().uuid().nullable().optional(),
+  review_task_status: z.string().min(1).nullable().optional(),
+  issue_updated_at: z.string().datetime({ offset: true }),
+}).loose();
+
+export const ReviewQueueResponseSchema = z.object({
+  issues: z.array(ReviewQueueItemWireSchema),
+}).loose().transform<ReviewQueueResponse>((response) => ({
+  issues: response.issues.map((item) => ({
+    issueId: item.issue_id,
+    identifier: item.identifier,
+    title: item.title,
+    reviewState: item.review_state,
+    reviewStateReason: item.review_state_reason ?? null,
+    reviewerAgentId: item.reviewer_agent_id ?? null,
+    reviewerName: item.reviewer_name ?? null,
+    reviewTargetTaskId: item.review_target_task_id ?? null,
+    reviewTaskStatus: item.review_task_status ?? null,
+    issueUpdatedAt: item.issue_updated_at,
+  })),
+}));
 
 const WorkConservingAuthoritySnapshotSchema = z.object({
   workspace_id: z.string().default(""),

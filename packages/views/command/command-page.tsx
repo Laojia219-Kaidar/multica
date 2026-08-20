@@ -5,6 +5,7 @@ import { ArrowRight, Bot, FolderKanban, ListTodo, Monitor, ShieldCheck } from "l
 import { useWorkspaceId } from "@multica/core/hooks";
 import {
   commandIssueMetricsOptions,
+  commandReviewQueueOptions,
   type CommandIssueMetrics,
 } from "@multica/core/issues/queries";
 import { projectListOptions } from "@multica/core/projects/queries";
@@ -15,6 +16,7 @@ import { agentListOptions } from "@multica/core/workspace/queries";
 import { AppLink } from "../navigation";
 import { PageHeader } from "../layout/page-header";
 import { useT } from "../i18n";
+import { CommandReviewFrontier } from "./command-review-frontier";
 
 type CommandProject = Pick<Project, "status">;
 type CommandAgent = Pick<Agent, "status">;
@@ -53,6 +55,7 @@ export function CommandPage() {
   const wsId = useWorkspaceId();
   const wsPaths = useWorkspacePaths();
   const issuesQuery = useQuery(commandIssueMetricsOptions(wsId));
+  const reviewQueueQuery = useQuery(commandReviewQueueOptions(wsId));
   const projectsQuery = useQuery(projectListOptions(wsId));
   const agentsQuery = useQuery(agentListOptions(wsId));
   const runtimesQuery = useQuery(runtimeListOptions(wsId));
@@ -112,6 +115,29 @@ export function CommandPage() {
               );
             })}
           </section>
+          <CommandReviewFrontier
+            issues={reviewQueueQuery.data?.issues ?? []}
+            loading={reviewQueueQuery.isLoading}
+            error={reviewQueueQuery.isError}
+            issueHref={wsPaths.issueDetail}
+            outcomesHref={wsPaths.outcomes()}
+            copy={{
+              eyebrow: t(($) => $.command.review_frontier.eyebrow),
+              title: t(($) => $.command.review_frontier.title),
+              description: t(($) => $.command.review_frontier.description),
+              loading: t(($) => $.command.review_frontier.loading),
+              empty: t(($) => $.command.review_frontier.empty),
+              blockedTitle: t(($) => $.command.review_frontier.blocked_title),
+              blockedDescription: t(($) => $.command.review_frontier.blocked_description),
+              ownerReady: t(($) => $.command.review_frontier.owner_ready),
+              activeReview: t(($) => $.command.review_frontier.active_review),
+              blockedReview: t(($) => $.command.review_frontier.blocked_review),
+              openOwnerDecision: t(($) => $.command.review_frontier.open_owner_decision),
+              openDetail: t(($) => $.command.review_frontier.open_detail),
+              reviewer: t(($) => $.command.review_frontier.reviewer),
+              outcomeCenter: t(($) => $.command.review_frontier.outcome_center),
+            }}
+          />
         </div>
       </main>
     </div>

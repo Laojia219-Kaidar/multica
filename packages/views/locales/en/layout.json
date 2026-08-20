@@ -32,7 +32,23 @@
     "working_agents": "Working agents",
     "loading": "Loading live operating data…",
     "degraded": "Some live data could not be loaded. Open the linked surface for details.",
-    "open_surface": "Open"
+    "open_surface": "Open",
+    "review_frontier": {
+      "eyebrow": "Review frontier",
+      "title": "Owner review queue",
+      "description": "Authority-backed review work only. Missing evidence stays visibly blocked.",
+      "loading": "Reading the canonical review queue...",
+      "empty": "No open Review Cell items.",
+      "blocked_title": "Review queue unavailable",
+      "blocked_description": "The Review Cell or Authority read model is not available. No review action has been enabled.",
+      "owner_ready": "Owner decision",
+      "active_review": "Review active",
+      "blocked_review": "Blocked",
+      "open_owner_decision": "Open Owner decision",
+      "open_detail": "Open read-only detail",
+      "reviewer": "Reviewer",
+      "outcome_center": "Open Outcome Center"
+    }
   },
   "tab": {
     "issue": "Issue",

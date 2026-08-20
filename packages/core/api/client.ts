@@ -70,6 +70,7 @@ import type {
   IssueDispatchResult,
   IssueStopReceipt,
   IssueReviewReceipt,
+  ReviewQueueResponse,
   RuntimeHourlyActivity,
   RuntimeUsageByAgent,
   RuntimeUsageByHour,
@@ -1170,6 +1171,7 @@ import {
   MALFORMED_RUNTIME_MODEL_LIST_REQUEST,
   IssueDispatchPreviewSchema,
   IssueDispatchResultSchema,
+  ReviewQueueResponseSchema,
   EMPTY_ISSUE_DISPATCH_PREVIEW,
   EMPTY_ISSUE_DISPATCH_RESULT,
   WorkConservingProjectionResponseSchema,
@@ -2859,6 +2861,20 @@ export class ApiClient {
     return this.fetch(`/api/issues/${issueId}/send-to-review`, {
       method: "POST",
     });
+  }
+
+  async listReviewQueue(): Promise<ReviewQueueResponse> {
+    const raw = await this.fetch<unknown>("/api/issues/review-queue");
+    const parsed = parseWithFallback<ReviewQueueResponse | null>(
+      raw,
+      ReviewQueueResponseSchema,
+      null,
+      { endpoint: "GET /api/issues/review-queue" },
+    );
+    if (!parsed) {
+      throw new Error("Invalid review queue response.");
+    }
+    return parsed;
   }
 
   // Inbox

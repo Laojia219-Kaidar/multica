@@ -35,6 +35,7 @@ export interface IssueSortParam {
 export const issueKeys = {
   all: (wsId: string) => ["issues", wsId] as const,
   commandMetrics: (wsId: string) => [...issueKeys.all(wsId), "command-metrics"] as const,
+  commandReviewQueue: (wsId: string) => [...issueKeys.all(wsId), "command-review-queue"] as const,
   /** PREFIX for invalidation — no sort. */
   list: (wsId: string) => [...issueKeys.all(wsId), "list"] as const,
   /** FULL KEY for queryOptions — includes sort. */
@@ -638,6 +639,15 @@ export function commandIssueMetricsOptions(wsId: string) {
         inReview: totals.get("in_review") ?? 0,
       };
     },
+  });
+}
+
+/** Exact, read-only Review Cell frontier for the CEO command surface. */
+export function commandReviewQueueOptions(wsId: string) {
+  return queryOptions({
+    queryKey: issueKeys.commandReviewQueue(wsId),
+    queryFn: () => api.listReviewQueue(),
+    enabled: Boolean(wsId),
   });
 }
 

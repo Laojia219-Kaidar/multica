@@ -9,6 +9,7 @@ import type {
   IssueTableRowsResponse,
   ListIssuesParams,
   ListIssuesResponse,
+  ReviewQueueResponse,
   SearchIssuesResponse,
 } from "../types";
 import {
@@ -19,6 +20,7 @@ import {
   childrenByParentsOptions,
   childIssuesOptions,
   commandIssueMetricsOptions,
+  commandReviewQueueOptions,
   compareIssuesForSort,
   issueFlatExportOptions,
   issueFlatListOptions,
@@ -65,6 +67,10 @@ function installFakeApi(listIssues: (params?: ListIssuesParams) => Promise<ListI
   setApiInstance({ listIssues } as unknown as ApiClient);
 }
 
+function installFakeReviewQueueApi(listReviewQueue: () => Promise<ReviewQueueResponse>) {
+  setApiInstance({ listReviewQueue } as unknown as ApiClient);
+}
+
 function installFakeChildrenApi(
   listChildrenByParents: (parentIds: string[]) => Promise<{ issues: Issue[] }>,
 ) {
@@ -108,6 +114,37 @@ describe("commandIssueMetricsOptions", () => {
     expect(result).toEqual({ openWork: 214, inReview: 9 });
     expect(listIssues).toHaveBeenCalledTimes(5);
     expect(listIssues).toHaveBeenCalledWith({ status: "in_review", limit: 1, offset: 0 });
+    qc.clear();
+  });
+});
+
+describe("commandReviewQueueOptions", () => {
+  it("uses a workspace-scoped key and the canonical review queue read API", async () => {
+    const response: ReviewQueueResponse = {
+      issues: [{
+        issueId: "00000000-0000-4000-8000-000000000001",
+        identifier: "HIV-721",
+        title: "Owner-to-Outcome review",
+        reviewState: "owner_decision",
+        reviewStateReason: null,
+        reviewerAgentId: null,
+        reviewerName: null,
+        reviewTargetTaskId: null,
+        reviewTaskStatus: null,
+        issueUpdatedAt: "2026-08-20T12:00:00Z",
+      }],
+    };
+    const listReviewQueue = vi.fn().mockResolvedValue(response);
+    installFakeReviewQueueApi(listReviewQueue);
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    await expect(qc.fetchQuery(commandReviewQueueOptions(WS_ID))).resolves.toEqual(response);
+    expect(commandReviewQueueOptions(WS_ID).queryKey).toEqual([
+      "issues",
+      WS_ID,
+      "command-review-queue",
+    ]);
+    expect(listReviewQueue).toHaveBeenCalledTimes(1);
     qc.clear();
   });
 });

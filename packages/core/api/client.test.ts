@@ -66,6 +66,60 @@ describe("ApiClient owner dispatch dual-shape contract", () => {
   });
 });
 
+describe("ApiClient review queue read model", () => {
+  it("parses the canonical wire projection into camel-case domain fields", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      issues: [{
+        issue_id: "00000000-0000-4000-8000-000000000001",
+        identifier: "HIV-721",
+        title: "Owner-to-Outcome review",
+        review_state: "owner_decision",
+        review_state_reason: null,
+        reviewer_agent_id: "00000000-0000-4000-8000-000000000002",
+        reviewer_name: "Gauss",
+        review_target_task_id: "00000000-0000-4000-8000-000000000003",
+        review_task_status: "waiting_local_directory",
+        issue_updated_at: "2026-08-20T12:00:00Z",
+      }],
+    }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(new ApiClient("https://api.example.test").listReviewQueue()).resolves.toEqual({
+      issues: [{
+        issueId: "00000000-0000-4000-8000-000000000001",
+        identifier: "HIV-721",
+        title: "Owner-to-Outcome review",
+        reviewState: "owner_decision",
+        reviewStateReason: null,
+        reviewerAgentId: "00000000-0000-4000-8000-000000000002",
+        reviewerName: "Gauss",
+        reviewTargetTaskId: "00000000-0000-4000-8000-000000000003",
+        reviewTaskStatus: "waiting_local_directory",
+        issueUpdatedAt: "2026-08-20T12:00:00Z",
+      }],
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.example.test/api/issues/review-queue",
+      expect.anything(),
+    );
+  });
+
+  it("fails closed instead of turning a malformed queue into an empty queue", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      issues: [{
+        issue_id: "not-a-uuid",
+        identifier: "HIV-721",
+        title: "Broken projection",
+        review_state: "ready",
+        issue_updated_at: "not-a-time",
+      }],
+    }), { status: 200 })));
+
+    await expect(new ApiClient("https://api.example.test").listReviewQueue())
+      .rejects.toThrow("Invalid review queue response.");
+  });
+});
+
 describe("ApiClient work-conserving projection", () => {
   const authority = {
     workspace_id: "00000000-0000-0000-0000-000000000001",

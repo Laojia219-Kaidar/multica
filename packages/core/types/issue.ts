@@ -120,3 +120,27 @@ export interface IssueReviewReceipt {
   actor_type: string;
   actor_id: string;
 }
+
+export type ReviewQueueState =
+  | "queued"
+  | "triaging"
+  | "evidence_review"
+  | "owner_decision";
+
+/** Canonical read-only Review Cell projection used by Owner surfaces. */
+export interface ReviewQueueItem {
+  issueId: string;
+  identifier: string;
+  title: string;
+  reviewState: ReviewQueueState | null;
+  reviewStateReason: string | null;
+  reviewerAgentId: string | null;
+  reviewerName: string | null;
+  reviewTargetTaskId: string | null;
+  reviewTaskStatus: string | null;
+  issueUpdatedAt: string;
+}
+
+export interface ReviewQueueResponse {
+  issues: ReviewQueueItem[];
+}
