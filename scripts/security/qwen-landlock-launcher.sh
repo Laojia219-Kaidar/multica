@@ -11,7 +11,7 @@ secret_file="${HIVECREW_QWEN_SECRET_FILE:-${real_home}/.qwen/.env}"
 [[ "$(readlink -f "$secret_file")" == "$real_home/.qwen/.env" ]] || exit 78
 for arg in "$@"; do
   case "$arg" in
-    --auth-type|--auth-type=*|--model|--model=*|--approval-mode|--approval-mode=*|--max-tool-calls|--max-tool-calls=*|--sandbox|--no-sandbox|--sandbox=*) echo 'reserved auth/model/sandbox/tool flag' >&2; exit 77 ;;
+    --auth-type|--auth-type=*|--authType|--authType=*|--model|--model=*|--approval-mode|--approval-mode=*|--max-tool-calls|--max-tool-calls=*|--sandbox|--no-sandbox|--sandbox=*) echo 'reserved auth/model/sandbox/tool flag' >&2; exit 77 ;;
   esac
 done
 [[ -z "${HIVECREW_QWEN_CHAIN_TRACE:-}" ]] || printf '%s\n' landlock-launcher >> "$HIVECREW_QWEN_CHAIN_TRACE"

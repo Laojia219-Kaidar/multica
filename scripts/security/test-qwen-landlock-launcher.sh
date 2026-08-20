@@ -34,6 +34,14 @@ printf '%s\n' "$@" > "${PWD}/launcher-args"
 FAKE_QWEN
 chmod 755 "${test_root}/bin/fake-qwen"
 
+cat > "${test_root}/bin/forbidden-landlock" <<'FORBIDDEN_LANDLOCK'
+#!/bin/sh
+set -eu
+printf called > "${LANDLOCK_CALL_MARKER:?}"
+exit 99
+FORBIDDEN_LANDLOCK
+chmod 755 "${test_root}/bin/forbidden-landlock"
+
 before_count="$(find /tmp -maxdepth 1 -type d -name 'hivecrew-qwen-landlock.*' | wc -l)"
 (
   cd "${test_root}/allowed"
@@ -75,15 +83,19 @@ assert_auth_type_rejected() {
     REAL_HOME="${test_root}/real-home" \
     FORBIDDEN="${test_root}/forbidden" \
     HIVECREW_QWEN_REAL_HOME="${test_root}/real-home" \
-    HIVECREW_LANDLOCK_EXEC="${test_root}/bin/hivecrew-landlock-exec" \
+    HIVECREW_LANDLOCK_EXEC="${test_root}/bin/forbidden-landlock" \
     HIVECREW_QWEN_BIN="${test_root}/bin/fake-qwen" \
     HIVECREW_QWEN_SECRET_FILE="${test_root}/real-home/.qwen/.env" \
+    HIVECREW_QWEN_CHAIN_TRACE="${case_root}/trace" \
+    LANDLOCK_CALL_MARKER="${case_root}/landlock-called" \
       "${launcher}" "$@"
   ) >"${case_root}/stdout" 2>"${case_root}/stderr"
   status=$?
   set -e
   test "${status}" = 77
   grep -Fx -- 'reserved auth/model/sandbox/tool flag' "${case_root}/stderr" >/dev/null
+  test ! -e "${case_root}/landlock-called"
+  test ! -e "${case_root}/trace"
   test ! -e "${case_root}/launcher-args"
   test ! -e "${case_root}/launcher-created"
 }
@@ -93,5 +105,12 @@ assert_auth_type_rejected task-inline-openai --auth-type=openai
 assert_auth_type_rejected task-explicit-other --auth-type qwen-oauth
 assert_auth_type_rejected task-inline-other --auth-type=qwen-oauth
 assert_auth_type_rejected task-duplicate --auth-type openai --auth-type openai
+assert_auth_type_rejected task-camel-explicit-openai --authType openai
+assert_auth_type_rejected task-camel-inline-openai --authType=openai
+assert_auth_type_rejected task-camel-explicit-other --authType qwen-oauth
+assert_auth_type_rejected task-camel-inline-other --authType=qwen-oauth
+assert_auth_type_rejected task-camel-duplicate --authType openai --authType qwen-oauth
+assert_auth_type_rejected task-camel-missing-value --authType
+assert_auth_type_rejected task-camel-inline-missing-value --authType=
 
 echo "HIVECREW_QWEN_LANDLOCK_LAUNCHER_TEST_PASS"

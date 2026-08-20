@@ -20,7 +20,13 @@ while [ "$#" -gt 0 ]; do
 done
 exit 1
 SH
-chmod 755 "$tmp/bin/qwen" "$tmp/bin/landlock"
+cat > "$tmp/bin/forbidden-landlock" <<'SH'
+#!/bin/sh
+set -eu
+printf called > "${LANDLOCK_CALL_MARKER:?}"
+exit 99
+SH
+chmod 755 "$tmp/bin/qwen" "$tmp/bin/landlock" "$tmp/bin/forbidden-landlock"
 PATH="$tmp/bin:$PATH" HIVECREW_CANARY_MODE=1 HIVECREW_AUTH_TOKEN_REF=ref HIVECREW_WORK_ORDER=WO-TEST HIVECREW_QWEN_REAL_HOME="$tmp/home" HIVECREW_QWEN_BIN="$tmp/bin/qwen" HIVECREW_QWEN_SECRET_FILE="$tmp/home/.qwen/.env" HIVECREW_LANDLOCK_EXEC="$tmp/bin/landlock" HIVECREW_QWEN_CHAIN_TRACE="$tmp/trace" CHAIN_LOG="$tmp/argv" "$repo/ops/dgx-runtime-foundation/bin/qwen-chain" qwen-hive-qwen malicious\;argv
 test "$(paste -sd, "$tmp/trace")" = resolver,runtime-wrapper,qwen-preflight,landlock-launcher
 grep -- '--auth-type openai --model qwen3.7-plus --approval-mode plan --max-tool-calls 0 --sandbox malicious;argv' "$tmp/argv"
@@ -34,6 +40,44 @@ test ! -e "$tmp/argv3"
 chmod 600 "$tmp/home/.qwen/.env"
 prefix="$tmp/installed"; backup="$tmp/backup"
 HIVECREW_RUNTIME_PREFIX="$prefix" HIVECREW_BACKUP_DIR="$backup" "$repo/ops/dgx-runtime-foundation/bin/install" --apply
+
+assert_installed_auth_type_rejected() {
+  case_name="$1"
+  shift
+  case_root="$tmp/installed-auth-${case_name}"
+  mkdir -p "$case_root"
+  set +e
+  PATH="$tmp/bin:$PATH" \
+    HIVECREW_CANARY_MODE=1 \
+    HIVECREW_AUTH_TOKEN_REF=ref \
+    HIVECREW_WORK_ORDER=WO-TEST \
+    HIVECREW_QWEN_REAL_HOME="$tmp/home" \
+    HIVECREW_QWEN_BIN="$tmp/bin/qwen" \
+    HIVECREW_QWEN_SECRET_FILE="$tmp/home/.qwen/.env" \
+    HIVECREW_LANDLOCK_EXEC="$tmp/bin/forbidden-landlock" \
+    HIVECREW_QWEN_CHAIN_TRACE="$case_root/trace" \
+    LANDLOCK_CALL_MARKER="$case_root/landlock-called" \
+    CHAIN_LOG="$case_root/qwen-argv" \
+      "$prefix/bin/qwen-chain" qwen-hive-qwen "$@" \
+      >"$case_root/stdout" 2>"$case_root/stderr"
+  status=$?
+  set -e
+  test "$status" = 77
+  grep -Fx -- 'reserved auth/model/sandbox/tool flag' "$case_root/stderr" >/dev/null
+  test ! -e "$case_root/landlock-called"
+  test ! -e "$case_root/qwen-argv"
+  test -f "$case_root/trace"
+  if grep -Fx -- landlock-launcher "$case_root/trace" >/dev/null; then exit 1; fi
+}
+
+assert_installed_auth_type_rejected camel-explicit-openai --authType openai
+assert_installed_auth_type_rejected camel-inline-openai --authType=openai
+assert_installed_auth_type_rejected camel-explicit-other --authType qwen-oauth
+assert_installed_auth_type_rejected camel-inline-other --authType=qwen-oauth
+assert_installed_auth_type_rejected camel-duplicate --authType openai --authType qwen-oauth
+assert_installed_auth_type_rejected camel-missing-value --authType
+assert_installed_auth_type_rejected camel-inline-missing-value --authType=
+
 PATH="$tmp/bin:$PATH" HIVECREW_CANARY_MODE=1 HIVECREW_AUTH_TOKEN_REF=ref HIVECREW_WORK_ORDER=WO-TEST HIVECREW_QWEN_REAL_HOME="$tmp/home" HIVECREW_QWEN_BIN="$tmp/bin/qwen" HIVECREW_QWEN_SECRET_FILE="$tmp/home/.qwen/.env" HIVECREW_LANDLOCK_EXEC="$tmp/bin/landlock" CHAIN_LOG="$tmp/installed-argv" "$prefix/bin/qwen-chain" qwen-hive-qwen installed-arg
 grep -- '--auth-type openai --model qwen3.7-plus --approval-mode plan --max-tool-calls 0 --sandbox installed-arg' "$tmp/installed-argv"
 test -x "$prefix/bin/qwen-landlock-launcher.sh"
