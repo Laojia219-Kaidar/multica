@@ -2,10 +2,22 @@
 set -euo pipefail
 
 printf 'cli %s\n' "$*" >>"$P3_TEST_CALLS"
+if [[ "$*" == "--version" ]]; then
+  if [[ -n "${P3_TEST_REPLACE_PATH:-}" && -n "${P3_TEST_REPLACEMENT:-}" ]]; then
+    /bin/mv -- "$P3_TEST_REPLACEMENT" "$P3_TEST_REPLACE_PATH"
+  fi
+  printf '%s\n%s\n' \
+    "${P3_TEST_CLI_VERSION_LINE_1:-test hivecrew b884}" \
+    "${P3_TEST_CLI_VERSION_LINE_2:-test linux/arm64}"
+  exit 0
+fi
+
+expected="--profile wo-c1-04-ultra-dgx-qwen-canary --workspace-id 1b2a1f07-3050-4d47-aca5-6e6fdbd393d9 project resource list 3b0330e7-a2da-4f41-94ab-61c911af2820 --output json"
+[[ "$*" == "$expected" ]] || exit 93
 url="dgx-hive-dev:/srv/hivecosm/12-development-workspaces/users/williamdev/repos/hivecrew.git"
 ref="refs/heads/owner/william/william-macstudio-ultra/codex/wo-c1-04-hivecrew-integration-v1"
 case "${P3_TEST_RESOURCE_MODE:-exact}" in
   stale) ref="work/hivecrew-four-lane-formal-convergence-codex" ;;
   wrong-url) url="dgx-hive-dev:/srv/hivecosm/wrong.git" ;;
 esac
-jq -n --arg url "$url" --arg ref "$ref" '[{resource_type:"github_repo",resource_ref:{url:$url,ref:$ref}}] + (if env.P3_TEST_RESOURCE_MODE == "duplicate" then [{resource_type:"github_repo",resource_ref:{url:$url,ref:$ref}}] else [] end)'
+/usr/bin/jq -n --arg url "$url" --arg ref "$ref" '[{resource_type:"github_repo",resource_ref:{url:$url,ref:$ref}}] + (if env.P3_TEST_RESOURCE_MODE == "duplicate" then [{resource_type:"github_repo",resource_ref:{url:$url,ref:$ref}}] else [] end)'

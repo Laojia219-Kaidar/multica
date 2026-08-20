@@ -1,15 +1,53 @@
 {
-  "schema_version": "p3-p0-source-candidate-v1",
-  "work_id": "WO-C1-04-P3-P0-REPAIR-001",
-  "state": "CANDIDATE_ONLY_NOT_REVIEWED_NOT_INTEGRATED_NOT_APPLIED",
+  "schema_version": "p3-p0-source-candidate-v2",
+  "work_id": "WO-C1-04-P3-P0-REPAIR-002",
+  "state": "CANDIDATE_ONLY_R1_BLOCKER_REPAIRED_NOT_REVIEWED_NOT_INTEGRATED_NOT_APPLIED",
   "base_revision": "b884ac5b7df37ffd77272ba917341fb64868e702",
   "base_tree": "7c6361f46df49156f03ff68d5292ef9aa820e3a3",
-  "branch": "owner/william/william-macstudio-ultra/codex/wo-c1-04-p3-p0-repair-r1",
+  "r1_revision": "28731a3ad7f9ebcce0c48a72362aa36b0c945ff5",
+  "r1_tree": "67c37959ef8a6cac2c78ddb4843157de019ccc1b",
+  "branch": "owner/william/william-macstudio-ultra/codex/wo-c1-04-p3-p0-repair-r2",
+  "r1_independent_review_sha256": "26a87dd0752b94e7a12ea6297b8768494c30749066c89f70b685b09f58679563",
+  "r1_review_verdict": "REVISE",
+  "r1_blocker_closed_by_candidate": "ambient executable overrides cannot enter the live operator path",
   "reviewer_agent_id": "708a49ba-7e7d-4363-8b9b-e6a4aeb5d980",
   "expected_project_id": "3b0330e7-a2da-4f41-94ab-61c911af2820",
   "expected_source_ref": "refs/heads/owner/william/william-macstudio-ultra/codex/wo-c1-04-hivecrew-integration-v1",
   "expected_revision": "b884ac5b7df37ffd77272ba917341fb64868e702",
   "expected_tree": "7c6361f46df49156f03ff68d5292ef9aa820e3a3",
+  "operator_contract_files": [
+    "ops/p3-pilot/pilot-preflight.sh",
+    "ops/p3-pilot/review-cell.staging.override.yaml"
+  ],
+  "test_only_files_excluded_from_operator_contract": [
+    "ops/p3-pilot/test-source-only.sh",
+    "ops/p3-pilot/tests/fake-hivecrew",
+    "ops/p3-pilot/tests/fake-git",
+    "ops/p3-pilot/tests/pilot-preflight-test-harness.py"
+  ],
+  "tool_bindings": {
+    "ambient_cli_override_supported": false,
+    "ambient_git_override_supported": false,
+    "open_file_descriptor_execution": true,
+    "path_identity_rechecked_between_operations": true,
+    "hivecrew_cli": {
+      "path": "/home/williamdev/.local/bin/hivecrew-wo-c1-04-b884ac5b7df3",
+      "sha256": "e4eac92e4133effe85984285159d6194c8f6894aecbbdadac4d06c1622596ce9",
+      "uid": 1006,
+      "gid": 1006,
+      "mode": "0755",
+      "version": "multica 0.4.24-b884ac5b7df3-candidate / go1.26.6 linux/arm64"
+    },
+    "git": {
+      "path": "/usr/bin/git",
+      "sha256": "aa6540695d076182256dd6e96c8b302e4d56381e3000bbfd5c71bbdfe94a4942",
+      "uid": 0,
+      "gid": 0,
+      "mode": "0755",
+      "version": "git version 2.43.0"
+    }
+  },
+  "source_ref_resolution_count": 1,
   "review_cell_default_enabled": false,
   "review_cell_candidate_enabled": true,
   "authority_dispatch_only": true,

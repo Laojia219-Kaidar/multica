@@ -2,7 +2,16 @@
 set -euo pipefail
 
 printf 'git %s\n' "$*" >>"$P3_TEST_CALLS"
+if [[ "$*" == "--version" ]]; then
+  printf '%s\n' "${P3_TEST_GIT_VERSION:-git version test-p3}"
+  exit 0
+fi
+
+prefix="--git-dir=/srv/hivecosm/12-development-workspaces/users/williamdev/repos/hivecrew.git rev-parse --verify "
+ref="refs/heads/owner/william/william-macstudio-ultra/codex/wo-c1-04-hivecrew-integration-v1^{commit}"
+revision="${P3_TEST_REVISION:-b884ac5b7df37ffd77272ba917341fb64868e702}"
 case "$*" in
-  *"^{tree}"*) printf '%s\n' "${P3_TEST_TREE:-7c6361f46df49156f03ff68d5292ef9aa820e3a3}" ;;
-  *) printf '%s\n' "${P3_TEST_REVISION:-b884ac5b7df37ffd77272ba917341fb64868e702}" ;;
+  "$prefix$ref") printf '%s\n' "$revision" ;;
+  "$prefix${revision}^{tree}") printf '%s\n' "${P3_TEST_TREE:-7c6361f46df49156f03ff68d5292ef9aa820e3a3}" ;;
+  *) exit 94 ;;
 esac
