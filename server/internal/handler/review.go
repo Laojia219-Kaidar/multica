@@ -33,6 +33,16 @@ type reviewQueueItemResponse struct {
 	IssueUpdatedAt     string  `json:"issue_updated_at"`
 }
 
+// reviewQueueResponse keeps the local queue rows separate from the two
+// provider-backed capabilities the Owner surface needs before it can describe
+// review work as actionable. Both booleans default false and therefore fail
+// closed when their provider is absent.
+type reviewQueueResponse struct {
+	Issues             []reviewQueueItemResponse `json:"issues"`
+	AuthorityReady     bool                      `json:"authority_ready"`
+	OutcomeCenterReady bool                      `json:"outcome_center_ready"`
+}
+
 // reviewVerdictRequest is the verdict write body.
 type reviewVerdictRequest struct {
 	Verdict            string   `json:"verdict"` // "pass" | "revise"
@@ -63,7 +73,15 @@ func (h *Handler) ListReviewQueue(w http.ResponseWriter, r *http.Request) {
 	for _, row := range rows {
 		items = append(items, reviewQueueItem(row, prefix))
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"issues": items})
+	writeJSON(w, http.StatusOK, h.buildReviewQueueResponse(items))
+}
+
+func (h *Handler) buildReviewQueueResponse(items []reviewQueueItemResponse) reviewQueueResponse {
+	return reviewQueueResponse{
+		Issues:             items,
+		AuthorityReady:     h.ReviewAuthorityEvidenceReady,
+		OutcomeCenterReady: h.CompanyOpsOutcomeCenter != nil,
+	}
 }
 
 // WriteReviewVerdict applies a reviewer/coordinator verdict

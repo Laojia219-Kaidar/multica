@@ -121,6 +121,8 @@ describe("commandIssueMetricsOptions", () => {
 describe("commandReviewQueueOptions", () => {
   it("uses a workspace-scoped key and the canonical review queue read API", async () => {
     const response: ReviewQueueResponse = {
+      authorityReady: true,
+      outcomeCenterReady: true,
       issues: [{
         issueId: "00000000-0000-4000-8000-000000000001",
         identifier: "HIV-721",

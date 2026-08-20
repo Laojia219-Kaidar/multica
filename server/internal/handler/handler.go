@@ -175,6 +175,10 @@ type Handler struct {
 	// PASS/REVISE/repair/re-review). Nil when the feature switch is off; the
 	// review routes fail closed with 503 in that state.
 	ReviewCellService *service.ReviewCellService
+	// ReviewAuthorityEvidenceReady is true only when review dispatch is wired
+	// to a real Authority identity plus eligibility evidence provider. Local
+	// reviewer/task rows are never sufficient proof on their own.
+	ReviewAuthorityEvidenceReady bool
 	// CompanyOpsAuthority resolves the exact HiveCosm WorkOrder, Employee and
 	// IdentityBinding together with one HiveCrew-local executable Agent.
 	// Nil means the cross-system authority adapter is not configured; the

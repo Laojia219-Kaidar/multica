@@ -49,6 +49,8 @@ function makeItem(overrides: Partial<ReviewQueueItem> = {}): ReviewQueueItem {
 const commonProps = {
   loading: false,
   error: false,
+  authorityReady: true,
+  outcomeCenterReady: true,
   issueHref: (id: string) => `/hivecosm/issues/${id}`,
   outcomesHref: "/hivecosm/outcomes",
   copy,
@@ -63,28 +65,48 @@ describe("CommandReviewFrontier", () => {
     expect(screen.queryByText("Open Owner decision")).not.toBeInTheDocument();
   });
 
-  it("keeps an Authority evidence gap visibly blocked while preserving read-only detail", () => {
-    const item = makeItem({ reviewStateReason: "authority_evidence_missing" });
-    render(<CommandReviewFrontier {...commonProps} issues={[item]} />);
+  it("keeps a missing Authority provider visibly blocked while preserving read-only detail", () => {
+    const item = makeItem();
+    render(<CommandReviewFrontier {...commonProps} issues={[item]} authorityReady={false} />);
 
-    expect(reviewQueueDisposition(item)).toBe("blocked");
-    expect(screen.getByText("authority_evidence_missing")).toBeInTheDocument();
+    expect(reviewQueueDisposition(item, { authorityReady: false, outcomeCenterReady: true })).toBe("blocked");
+    expect(screen.getByTestId("review-frontier-blocked")).toBeInTheDocument();
     expect(screen.getByText("Blocked")).toBeInTheDocument();
+    expect(screen.queryByText("Review active")).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: /Open read-only detail/ })).toHaveAttribute(
       "href",
       `/hivecosm/issues/${item.issueId}`,
     );
   });
 
+  it("shows an active review only for a provider-backed active task", () => {
+    const item = makeItem();
+    render(<CommandReviewFrontier {...commonProps} issues={[item]} />);
+
+    expect(reviewQueueDisposition(item, { authorityReady: true, outcomeCenterReady: true })).toBe("active");
+    expect(screen.getByText("Review active")).toBeInTheDocument();
+  });
+
+  it("blocks a stale review row when its active task status is absent", () => {
+    const item = makeItem({ reviewTaskStatus: null });
+    render(<CommandReviewFrontier {...commonProps} issues={[item]} />);
+
+    expect(reviewQueueDisposition(item, { authorityReady: true, outcomeCenterReady: true })).toBe("blocked");
+    expect(screen.getByText("Blocked")).toBeInTheDocument();
+    expect(screen.queryByText("Review active")).not.toBeInTheDocument();
+  });
+
   it("makes an Owner decision and the canonical Outcome Center discoverable", () => {
     const item = makeItem({
       reviewState: "owner_decision",
+      reviewStateReason: "no_source_task_id",
       reviewerAgentId: null,
       reviewTargetTaskId: null,
     });
     render(<CommandReviewFrontier {...commonProps} issues={[item]} />);
 
-    expect(reviewQueueDisposition(item)).toBe("owner_decision");
+    expect(reviewQueueDisposition(item, { authorityReady: true, outcomeCenterReady: true })).toBe("owner_decision");
+    expect(screen.getByText("no_source_task_id")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /Open Owner decision/ })).toHaveAttribute(
       "href",
       `/hivecosm/issues/${item.issueId}`,
@@ -100,5 +122,20 @@ describe("CommandReviewFrontier", () => {
 
     expect(screen.getByText("No open review items")).toBeInTheDocument();
     expect(screen.queryByTestId("review-frontier-blocked")).not.toBeInTheDocument();
+  });
+
+  it("does not claim an empty queue or link to outcomes when the Outcome read model is absent", () => {
+    render(
+      <CommandReviewFrontier
+        {...commonProps}
+        issues={[]}
+        outcomeCenterReady={false}
+      />,
+    );
+
+    expect(screen.getByTestId("review-frontier-blocked")).toBeInTheDocument();
+    expect(screen.queryByText("No open review items")).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /Open Outcome Center/ })).not.toBeInTheDocument();
+    expect(screen.getByText("Open Outcome Center")).toHaveAttribute("aria-disabled", "true");
   });
 });

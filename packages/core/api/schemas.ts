@@ -134,12 +134,14 @@ const ReviewQueueItemWireSchema = z.object({
   reviewer_agent_id: z.string().uuid().nullable().optional(),
   reviewer_name: z.string().min(1).nullable().optional(),
   review_target_task_id: z.string().uuid().nullable().optional(),
-  review_task_status: z.string().min(1).nullable().optional(),
+  review_task_status: z.enum(["queued", "dispatched", "running", "waiting_local_directory"]).nullable().optional(),
   issue_updated_at: z.string().datetime({ offset: true }),
 }).loose();
 
 export const ReviewQueueResponseSchema = z.object({
   issues: z.array(ReviewQueueItemWireSchema),
+  authority_ready: z.boolean(),
+  outcome_center_ready: z.boolean(),
 }).loose().transform<ReviewQueueResponse>((response) => ({
   issues: response.issues.map((item) => ({
     issueId: item.issue_id,
@@ -153,6 +155,8 @@ export const ReviewQueueResponseSchema = z.object({
     reviewTaskStatus: item.review_task_status ?? null,
     issueUpdatedAt: item.issue_updated_at,
   })),
+  authorityReady: response.authority_ready,
+  outcomeCenterReady: response.outcome_center_ready,
 }));
 
 const WorkConservingAuthoritySnapshotSchema = z.object({

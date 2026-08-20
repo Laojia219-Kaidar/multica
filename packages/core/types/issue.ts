@@ -127,6 +127,12 @@ export type ReviewQueueState =
   | "evidence_review"
   | "owner_decision";
 
+export type ReviewTaskStatus =
+  | "queued"
+  | "dispatched"
+  | "running"
+  | "waiting_local_directory";
+
 /** Canonical read-only Review Cell projection used by Owner surfaces. */
 export interface ReviewQueueItem {
   issueId: string;
@@ -137,10 +143,12 @@ export interface ReviewQueueItem {
   reviewerAgentId: string | null;
   reviewerName: string | null;
   reviewTargetTaskId: string | null;
-  reviewTaskStatus: string | null;
+  reviewTaskStatus: ReviewTaskStatus | null;
   issueUpdatedAt: string;
 }
 
 export interface ReviewQueueResponse {
   issues: ReviewQueueItem[];
+  authorityReady: boolean;
+  outcomeCenterReady: boolean;
 }

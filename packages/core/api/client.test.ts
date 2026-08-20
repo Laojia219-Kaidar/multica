@@ -69,6 +69,8 @@ describe("ApiClient owner dispatch dual-shape contract", () => {
 describe("ApiClient review queue read model", () => {
   it("parses the canonical wire projection into camel-case domain fields", async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      authority_ready: true,
+      outcome_center_ready: true,
       issues: [{
         issue_id: "00000000-0000-4000-8000-000000000001",
         identifier: "HIV-721",
@@ -85,6 +87,8 @@ describe("ApiClient review queue read model", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     await expect(new ApiClient("https://api.example.test").listReviewQueue()).resolves.toEqual({
+      authorityReady: true,
+      outcomeCenterReady: true,
       issues: [{
         issueId: "00000000-0000-4000-8000-000000000001",
         identifier: "HIV-721",
@@ -106,12 +110,58 @@ describe("ApiClient review queue read model", () => {
 
   it("fails closed instead of turning a malformed queue into an empty queue", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      authority_ready: true,
+      outcome_center_ready: true,
       issues: [{
         issue_id: "not-a-uuid",
         identifier: "HIV-721",
         title: "Broken projection",
         review_state: "ready",
         issue_updated_at: "not-a-time",
+      }],
+    }), { status: 200 })));
+
+    await expect(new ApiClient("https://api.example.test").listReviewQueue())
+      .rejects.toThrow("Invalid review queue response.");
+  });
+
+  it("preserves explicit provider source gaps instead of inferring readiness from queue rows", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      authority_ready: false,
+      outcome_center_ready: false,
+      issues: [],
+    }), { status: 200 })));
+
+    await expect(new ApiClient("https://api.example.test").listReviewQueue()).resolves.toEqual({
+      authorityReady: false,
+      outcomeCenterReady: false,
+      issues: [],
+    });
+  });
+
+  it.each([
+    { issues: [], outcome_center_ready: true },
+    { issues: [], authority_ready: true },
+    { issues: [], authority_ready: "yes", outcome_center_ready: true },
+    { issues: [], authority_ready: true, outcome_center_ready: "yes" },
+  ])("fails closed when required provider readiness is missing or malformed", async (payload) => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(payload), { status: 200 })));
+
+    await expect(new ApiClient("https://api.example.test").listReviewQueue())
+      .rejects.toThrow("Invalid review queue response.");
+  });
+
+  it("fails closed on an unknown review task status", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      authority_ready: true,
+      outcome_center_ready: true,
+      issues: [{
+        issue_id: "00000000-0000-4000-8000-000000000001",
+        identifier: "HIV-721",
+        title: "Stale review task",
+        review_state: "evidence_review",
+        review_task_status: "completed",
+        issue_updated_at: "2026-08-20T12:00:00Z",
       }],
     }), { status: 200 })));
 

@@ -119,6 +119,8 @@ export function CommandPage() {
             issues={reviewQueueQuery.data?.issues ?? []}
             loading={reviewQueueQuery.isLoading}
             error={reviewQueueQuery.isError}
+            authorityReady={reviewQueueQuery.data?.authorityReady ?? false}
+            outcomeCenterReady={reviewQueueQuery.data?.outcomeCenterReady ?? false}
             issueHref={wsPaths.issueDetail}
             outcomesHref={wsPaths.outcomes()}
             copy={{

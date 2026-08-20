@@ -923,6 +923,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					continuousDispatchShadow,
 					continuousDispatchTrigger,
 				).WithAuthorityEvidenceProvider(evidence)
+				h.ReviewAuthorityEvidenceReady = true
 				slog.Warn("companyops review authority evidence provider enabled")
 			}
 		}
