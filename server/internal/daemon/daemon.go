@@ -4893,16 +4893,16 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	workspaceState, workspaceContract := boundedworkspace.Parse(
 		task.HandoffNote, provider, task.TaskKind, task.ID, task.IssueID, task.WorkspaceID,
 	)
-	if executionPolicy.ToolPolicy == boundedworkspace.ToolPolicy {
-		if workspaceState != boundedworkspace.Valid {
-			return TaskResult{}, fmt.Errorf("bounded workspace marker is missing or invalid")
+	if workspaceState != boundedworkspace.NotPresent {
+		if workspaceState != boundedworkspace.Valid || executionPolicy.ToolPolicy != workspaceContract.ToolPolicy {
+			return TaskResult{}, fmt.Errorf("bounded pilot marker is invalid or does not match the execution policy")
 		}
 		if task.Agent == nil || len(task.Agent.CustomArgs) != 0 || len(task.Agent.CustomEnv) != 0 ||
 			len(bytes.TrimSpace(task.Agent.McpConfig)) != 0 {
-			return TaskResult{}, fmt.Errorf("bounded workspace rejects custom args, custom env, and MCP")
+			return TaskResult{}, fmt.Errorf("bounded pilot rejects custom args, custom env, and MCP")
 		}
-	} else if workspaceState != boundedworkspace.NotPresent {
-		return TaskResult{}, fmt.Errorf("bounded workspace marker requires tool policy %q", boundedworkspace.ToolPolicy)
+	} else if executionPolicy.ToolPolicy == boundedworkspace.WorkspaceToolPolicy {
+		return TaskResult{}, fmt.Errorf("bounded workspace marker is missing or invalid")
 	}
 	enforceGitTarget := task.WriterLeaseMode == "enforce" && (len(task.WriterLeaseTargets) > 0 || len(task.Repos) > 0)
 	if enforceGitTarget && repoCheckoutModeFor(provider, runtime.GOOS) == "" {
@@ -5221,9 +5221,9 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			return TaskResult{}, fmt.Errorf("prepare execution environment: %w", err)
 		}
 	}
-	if executionPolicy.ToolPolicy == boundedworkspace.ToolPolicy {
+	if workspaceState == boundedworkspace.Valid {
 		if err := boundedworkspace.ValidateAssignedWorktree(workspaceContract, env.WorkDir, env.LocalDirectory); err != nil {
-			return TaskResult{}, fmt.Errorf("validate bounded workspace: %w", err)
+			return TaskResult{}, fmt.Errorf("validate bounded pilot worktree: %w", err)
 		}
 	}
 	// Belt-and-suspenders: also mark whatever root we ended up with, in case

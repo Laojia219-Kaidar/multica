@@ -94,7 +94,7 @@ func TestBuildPrompt_NoToolMarkerMismatchRejectsWithoutFallback(t *testing.T) {
 
 func TestBuildPrompt_BoundedWorkspaceUsesClosedNoShellRoute(t *testing.T) {
 	marker, err := boundedworkspace.CanonicalMarker(
-		"01234567-89ab-cdef-0123-456789abcdef",
+		boundedworkspace.WorkspaceToolPolicy,
 		"11234567-89ab-cdef-0123-456789abcdef",
 		"21234567-89ab-cdef-0123-456789abcdef",
 		"Edit the named pilot fixture.",
@@ -111,7 +111,7 @@ func TestBuildPrompt_BoundedWorkspaceUsesClosedNoShellRoute(t *testing.T) {
 		TaskKind:    boundedworkspace.TaskKind,
 		HandoffNote: marker,
 	}, "qwen")
-	for _, required := range []string{"Edit the named pilot fixture.", "edit", "write_file", boundedworkspace.DeliveryPrefix} {
+	for _, required := range []string{"Edit the named pilot fixture.", "edit", "write_file", boundedworkspace.WorkspaceDeliveryPrefix} {
 		if !strings.Contains(out, required) {
 			t.Fatalf("required bounded workspace instruction %q missing:\n%s", required, out)
 		}
@@ -119,6 +119,37 @@ func TestBuildPrompt_BoundedWorkspaceUsesClosedNoShellRoute(t *testing.T) {
 	for _, forbidden := range []string{"multica issue", "comment add", "Start by running"} {
 		if strings.Contains(out, forbidden) {
 			t.Fatalf("bounded workspace prompt contains tool mandate %q:\n%s", forbidden, out)
+		}
+	}
+}
+
+func TestBuildPrompt_BoundedReadUsesClosedQuinnRoute(t *testing.T) {
+	marker, err := boundedworkspace.CanonicalMarker(
+		boundedworkspace.ReadOnlyToolPolicy,
+		"11234567-89ab-cdef-0123-456789abcdef",
+		"21234567-89ab-cdef-0123-456789abcdef",
+		"Inspect the named pilot fixture.",
+		boundedworkspace.WorktreeRoot+"pilot",
+		"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := BuildPrompt(Task{
+		ID:          "01234567-89ab-cdef-0123-456789abcdef",
+		IssueID:     "11234567-89ab-cdef-0123-456789abcdef",
+		WorkspaceID: "21234567-89ab-cdef-0123-456789abcdef",
+		TaskKind:    boundedworkspace.TaskKind,
+		HandoffNote: marker,
+	}, "qwen")
+	for _, required := range []string{"Inspect the named pilot fixture.", "read_file", "grep_search", boundedworkspace.ReadOnlyDeliveryPrefix} {
+		if !strings.Contains(out, required) {
+			t.Fatalf("required bounded read instruction %q missing:\n%s", required, out)
+		}
+	}
+	for _, forbidden := range []string{"multica issue", "comment add", "Start by running"} {
+		if strings.Contains(out, forbidden) {
+			t.Fatalf("bounded read prompt contains ordinary mandate %q:\n%s", forbidden, out)
 		}
 	}
 }
