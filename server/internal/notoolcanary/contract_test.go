@@ -1,0 +1,80 @@
+package notoolcanary
+
+import (
+	"strings"
+	"testing"
+)
+
+const testRequestSHA = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+func validMarker() string {
+	marker, err := CanonicalMarker(testRequestSHA)
+	if err != nil {
+		panic(err)
+	}
+	return marker
+}
+
+func TestParseValidClosedContract(t *testing.T) {
+	state, contract := Parse(validMarker(), Provider, TaskKind, IssueID)
+	if state != Valid {
+		t.Fatalf("state = %v, want Valid", state)
+	}
+	if contract.RequestSHA256 != testRequestSHA {
+		t.Fatalf("request digest drift: %q", contract.RequestSHA256)
+	}
+	for _, forbidden := range []string{"multica ", "issue get", "comment add", "MCP"} {
+		if strings.Contains(Prompt(contract)+RuntimeBrief(state, contract), forbidden) {
+			t.Fatalf("no-tool rendering contains forbidden mandate %q", forbidden)
+		}
+	}
+	if !strings.Contains(Prompt(contract), Instruction) || !strings.Contains(Prompt(contract), DeliveryPrefix) {
+		t.Fatal("exact instruction or delivery prefix missing")
+	}
+}
+
+func TestParseOrdinaryHandoffNotPresent(t *testing.T) {
+	state, _ := Parse("ordinary assignment handoff", Provider, TaskKind, IssueID)
+	if state != NotPresent {
+		t.Fatalf("state = %v, want NotPresent", state)
+	}
+}
+
+func TestParseMarkerVariantsFailClosed(t *testing.T) {
+	cases := map[string]string{
+		"stale canary":        strings.Replace(validMarker(), CanaryID, "WO-C1-04-HIV719-QWEN-DGX-FRESH-CANARY-014", 1),
+		"wrong issue field":   strings.Replace(validMarker(), IssueID, "00000000-0000-4000-8000-000000000000", 1),
+		"wrong live issue":    validMarker(),
+		"wrong task field":    strings.Replace(validMarker(), `"task_kind":"work"`, `"task_kind":"review"`, 1),
+		"wrong live task":     validMarker(),
+		"wrong live provider": validMarker(),
+		"unknown version":     strings.Replace(validMarker(), MarkerPrefix, MarkerNamespace+"V2 ", 1),
+		"unknown field":       strings.Replace(validMarker(), `,"tool_policy"`, `,"unknown":true,"tool_policy"`, 1),
+		"noncanonical order":  strings.Replace(validMarker(), `"canary_id":"`+CanaryID+`","delivery_prefix":"`+DeliveryPrefix+`"`, `"delivery_prefix":"`+DeliveryPrefix+`","canary_id":"`+CanaryID+`"`, 1),
+		"uppercase digest":    strings.Replace(validMarker(), testRequestSHA, strings.ToUpper(testRequestSHA), 1),
+		"malformed":           MarkerPrefix + `{`,
+	}
+	for name, note := range cases {
+		t.Run(name, func(t *testing.T) {
+			actualKind := TaskKind
+			actualIssue := IssueID
+			actualProvider := Provider
+			if name == "wrong live issue" {
+				actualIssue = "00000000-0000-4000-8000-000000000000"
+			}
+			if name == "wrong live task" {
+				actualKind = "review"
+			}
+			if name == "wrong live provider" {
+				actualProvider = "claude"
+			}
+			state, _ := Parse(note, actualProvider, actualKind, actualIssue)
+			if state != Invalid {
+				t.Fatalf("state = %v, want Invalid", state)
+			}
+			if strings.Contains(InvalidPrompt()+RuntimeBrief(state, Contract{}), "multica ") {
+				t.Fatal("rejection path contains CLI mandate")
+			}
+		})
+	}
+}

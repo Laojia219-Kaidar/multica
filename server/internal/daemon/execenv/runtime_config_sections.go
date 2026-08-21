@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/multica-ai/multica/server/internal/notoolcanary"
 	"github.com/multica-ai/multica/server/internal/runtimeapps"
 )
 
@@ -720,6 +721,10 @@ func writeOutput(b *strings.Builder, kind taskKind, ctx TaskContextForEnv) {
 // Workflow, Always Use CLI, Output — are shared by every kind and emitted
 // unconditionally (or gated by their own data preconditions).
 func buildMetaSkillContentSlim(provider string, ctx TaskContextForEnv) string {
+	state, contract := notoolcanary.Parse(ctx.HandoffNote, provider, ctx.TaskKind, ctx.IssueID)
+	if state != notoolcanary.NotPresent {
+		return notoolcanary.RuntimeBrief(state, contract)
+	}
 	var b strings.Builder
 	kind := classifyTask(ctx)
 

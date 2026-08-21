@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/multica-ai/multica/server/internal/daemon/execenv"
+	"github.com/multica-ai/multica/server/internal/notoolcanary"
 )
 
 // freshSessionRetryPrompt prefixes an explicit context-loss disclosure onto the
@@ -100,6 +101,13 @@ func buildResolvedOwnerAuthorizationBlock(resolved *ResolvedTaskContext) string 
 // post with `--content-file`) because the shell-layer corruption it guards
 // against is not specific to any one provider or host (MUL-2904, #4182).
 func BuildPrompt(task Task, provider string) string {
+	state, contract := notoolcanary.Parse(task.HandoffNote, provider, task.TaskKind, task.IssueID)
+	switch state {
+	case notoolcanary.Valid:
+		return notoolcanary.Prompt(contract)
+	case notoolcanary.Invalid:
+		return notoolcanary.InvalidPrompt()
+	}
 	body := buildPromptBody(task, provider)
 	// Run-scoped context is appended, never prepended: everything ahead of it
 	// is stable across runs of a resumed session, and appending keeps it after

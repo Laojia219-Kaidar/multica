@@ -1,9 +1,24 @@
 package execenv
 
 import (
+	"crypto/sha256"
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/multica-ai/multica/server/internal/notoolcanary"
 )
+
+const ordinaryRuntimeBriefSHA256 = "bfb67014018d5b07e2b214e650dcbca809700c325dcd25a708ed55a894345c4d"
+
+var ordinaryRuntimeModeSHA256 = map[string]string{
+	"issue":     ordinaryRuntimeBriefSHA256,
+	"autopilot": "c49c8d34ac847539c56cc62a52cc4e7d118973ff0c9f659eb8531eca98a707d0",
+	"quick":     "5a59b2ba7d04f378a9c3720b11842fe4234f2e272567a3697a8bdc95103d9c16",
+	"chat":      "6d5ba263e3f7d7f036a8129997a17b323b43c096aa474956fb9fb03f7f9d574c",
+}
 
 // TestClassifyTask pins the precedence rule on classifyTask. All four
 // kinds plus tiebreak cases for safety.
@@ -32,6 +47,104 @@ func TestClassifyTask(t *testing.T) {
 				t.Errorf("classifyTask: got %d, want %d", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestBuildMetaSkillContentNoToolCanarySuppressesToolWorkflow(t *testing.T) {
+	marker, err := notoolcanary.CanonicalMarker("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := buildMetaSkillContent("qwen", TaskContextForEnv{
+		IssueID:     notoolcanary.IssueID,
+		TaskKind:    notoolcanary.TaskKind,
+		HandoffNote: marker,
+	})
+	if out != notoolcanary.RuntimeBrief(notoolcanary.Valid, notoolcanary.Contract{DeliveryPrefix: notoolcanary.DeliveryPrefix}) {
+		t.Fatalf("runtime brief is not the closed no-tool brief:\n%s", out)
+	}
+	for _, forbidden := range []string{"multica ", "issue get", "comment add", "Available Commands", "Workflow", "MCP", "Repositories", "Skills"} {
+		if strings.Contains(out, forbidden) {
+			t.Fatalf("closed no-tool runtime brief contains forbidden mandate %q:\n%s", forbidden, out)
+		}
+	}
+}
+
+func TestBuildMetaSkillContentNoToolMarkerMismatchRejectsWithoutFallback(t *testing.T) {
+	marker, err := notoolcanary.CanonicalMarker("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := buildMetaSkillContent("qwen", TaskContextForEnv{
+		IssueID:     notoolcanary.IssueID,
+		TaskKind:    "review",
+		HandoffNote: marker,
+	})
+	if out != notoolcanary.RuntimeBrief(notoolcanary.Invalid, notoolcanary.Contract{}) {
+		t.Fatalf("mismatch did not take fixed rejection brief:\n%s", out)
+	}
+	if strings.Contains(out, "multica ") || strings.Contains(out, "Available Commands") {
+		t.Fatalf("mismatch fell through to ordinary runtime brief:\n%s", out)
+	}
+}
+
+func TestInjectRuntimeConfigNoToolCanaryWritesOnlyClosedQwenBrief(t *testing.T) {
+	marker, err := notoolcanary.CanonicalMarker("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	content, err := InjectRuntimeConfig(dir, "qwen", TaskContextForEnv{
+		IssueID:     notoolcanary.IssueID,
+		TaskKind:    notoolcanary.TaskKind,
+		HandoffNote: marker,
+	})
+	if err != nil {
+		t.Fatalf("InjectRuntimeConfig: %v", err)
+	}
+	physical, err := os.ReadFile(filepath.Join(dir, "QWEN.md"))
+	if err != nil {
+		t.Fatalf("read QWEN.md: %v", err)
+	}
+	if !strings.Contains(string(physical), content) {
+		t.Fatal("physical QWEN.md does not contain the exact closed runtime brief")
+	}
+	for _, forbidden := range []string{"multica ", "issue get", "comment add", "Available Commands", "Workflow", "MCP", "Repositories", "Skills"} {
+		if strings.Contains(string(physical), forbidden) {
+			t.Fatalf("physical QWEN.md contains forbidden mandate %q:\n%s", forbidden, physical)
+		}
+	}
+}
+
+func TestBuildMetaSkillContentOrdinaryBytesPinned(t *testing.T) {
+	out := buildMetaSkillContent("qwen", TaskContextForEnv{IssueID: "issue-1"})
+	got := fmt.Sprintf("%x", sha256.Sum256([]byte(out)))
+	if ordinaryRuntimeBriefSHA256 == "" {
+		t.Logf("ordinary runtime brief sha256=%s", got)
+		return
+	}
+	if got != ordinaryRuntimeBriefSHA256 {
+		t.Fatalf("ordinary runtime brief bytes drifted: got %s want %s", got, ordinaryRuntimeBriefSHA256)
+	}
+}
+
+func TestBuildMetaSkillContentOrdinaryModeBytesPinned(t *testing.T) {
+	fixtures := map[string]TaskContextForEnv{
+		"issue":     {IssueID: "issue-1"},
+		"autopilot": {AutopilotRunID: "run-1", AutopilotTitle: "routine", AutopilotDescription: "summarize state"},
+		"quick":     {QuickCreatePrompt: "create a bounded issue"},
+		"chat":      {ChatSessionID: "chat-1"},
+	}
+	for name, ctx := range fixtures {
+		got := fmt.Sprintf("%x", sha256.Sum256([]byte(buildMetaSkillContent("qwen", ctx))))
+		want := ordinaryRuntimeModeSHA256[name]
+		if want == "" {
+			t.Logf("ordinary runtime %s sha256=%s", name, got)
+			continue
+		}
+		if got != want {
+			t.Fatalf("ordinary %s runtime bytes drifted: got %s want %s", name, got, want)
+		}
 	}
 }
 
