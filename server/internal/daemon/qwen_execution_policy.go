@@ -9,7 +9,7 @@ import (
 
 type agentExecutionPolicy struct {
 	ToolPolicy      string
-	NoTools         bool
+	GovernedTools   bool
 	SandboxRequired bool
 }
 
@@ -39,8 +39,13 @@ func decodeAgentExecutionPolicy(provider string, data *AgentData) (agentExecutio
 	if cfg.ExecutionPolicy == nil {
 		return agentExecutionPolicy{}, nil
 	}
-	if cfg.ExecutionPolicy.Tools == "deny" && cfg.ExecutionPolicy.Sandbox == "required" {
-		return agentExecutionPolicy{ToolPolicy: "deny", NoTools: true, SandboxRequired: true}, nil
+	if cfg.ExecutionPolicy.Sandbox != "required" {
+		return agentExecutionPolicy{}, errors.New("qwen execution_policy sandbox must be required")
 	}
-	return agentExecutionPolicy{}, errors.New("qwen execution_policy must be exactly tools=deny and sandbox=required")
+	switch cfg.ExecutionPolicy.Tools {
+	case "deny", "bounded_read", "bounded_workspace_noshell":
+		return agentExecutionPolicy{ToolPolicy: cfg.ExecutionPolicy.Tools, GovernedTools: true, SandboxRequired: true}, nil
+	default:
+		return agentExecutionPolicy{}, errors.New("qwen execution_policy tools must be deny, bounded_read, or bounded_workspace_noshell")
+	}
 }

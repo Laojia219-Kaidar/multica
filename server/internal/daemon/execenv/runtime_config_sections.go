@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/multica-ai/multica/server/internal/boundedworkspace"
 	"github.com/multica-ai/multica/server/internal/notoolcanary"
 	"github.com/multica-ai/multica/server/internal/runtimeapps"
 )
@@ -721,6 +722,12 @@ func writeOutput(b *strings.Builder, kind taskKind, ctx TaskContextForEnv) {
 // Workflow, Always Use CLI, Output — are shared by every kind and emitted
 // unconditionally (or gated by their own data preconditions).
 func buildMetaSkillContentSlim(provider string, ctx TaskContextForEnv) string {
+	workspaceState, workspaceContract := boundedworkspace.Parse(
+		ctx.HandoffNote, provider, ctx.TaskKind, ctx.TaskID, ctx.IssueID, ctx.WorkspaceID,
+	)
+	if workspaceState != boundedworkspace.NotPresent {
+		return boundedworkspace.RuntimeBrief(workspaceState, workspaceContract)
+	}
 	state, contract := notoolcanary.Parse(ctx.HandoffNote, provider, ctx.TaskKind, ctx.IssueID)
 	if state != notoolcanary.NotPresent {
 		return notoolcanary.RuntimeBrief(state, contract)

@@ -94,6 +94,95 @@ func TestBuildQwenArgsNoToolSandboxPolicyCannotBeOverridden(t *testing.T) {
 	}
 }
 
+func TestBuildQwenArgsBoundedReadPolicyCannotBeOverridden(t *testing.T) {
+	args := buildQwenArgs("task", ExecOptions{
+		ToolPolicy:      "bounded_read",
+		SandboxRequired: true,
+		CustomArgs: []string{
+			"--yolo", "--bare", "--sandbox=false", "--max-tool-calls", "99",
+			"--approval-mode", "yolo", "--allowed-tools", "run_shell_command",
+		},
+	}, slog.Default())
+	joined := strings.Join(args, " ")
+	for _, want := range []string{
+		"--sandbox",
+		"--max-tool-calls " + qwenBoundedReadMaxToolCalls,
+		"--approval-mode plan",
+		"--allowed-tools " + strings.Join(qwenBoundedReadAllowedTools, ","),
+	} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("managed bounded-read argument %q missing from %v", want, args)
+		}
+	}
+	for _, forbidden := range []string{"--yolo", "--bare", "sandbox=false", "99", "run_shell_command"} {
+		if strings.Contains(joined, forbidden) {
+			t.Fatalf("override %q leaked into %v", forbidden, args)
+		}
+	}
+}
+
+func TestBuildQwenArgsBoundedWorkspaceNoShellCannotBeOverridden(t *testing.T) {
+	args := buildQwenArgs("task", ExecOptions{
+		ToolPolicy:      "bounded_workspace_noshell",
+		SandboxRequired: true,
+		CustomArgs: []string{
+			"--yolo", "--safe-mode", "--sandbox=false", "--max-tool-calls", "99",
+			"--approval-mode", "yolo", "--allowed-tools", "run_shell_command",
+		},
+	}, slog.Default())
+	joined := strings.Join(args, " ")
+	for _, want := range []string{
+		"--sandbox",
+		"--max-tool-calls " + qwenBoundedWorkspaceMaxToolCalls,
+		"--approval-mode auto-edit",
+		"--allowed-tools " + strings.Join(qwenBoundedWorkspaceAllowedTools, ","),
+	} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("managed bounded-workspace argument %q missing from %v", want, args)
+		}
+	}
+	for _, forbidden := range []string{"--yolo", "--safe-mode", "sandbox=false", "99", "run_shell_command"} {
+		if strings.Contains(joined, forbidden) {
+			t.Fatalf("override %q leaked into %v", forbidden, args)
+		}
+	}
+}
+
+func TestQwenBoundedReadRejectsManagedMCPBeforeLaunch(t *testing.T) {
+	backend := newFakeQwenBackend(t, nil)
+	_, err := backend.Execute(context.Background(), "task", ExecOptions{
+		ToolPolicy:      "bounded_read",
+		SandboxRequired: true,
+		McpConfig:       json.RawMessage(`{"mcpServers":{"unsafe":{"command":"false"}}}`),
+	})
+	if err == nil || !strings.Contains(err.Error(), "rejects managed MCP") {
+		t.Fatalf("Execute error = %v, want managed MCP rejection", err)
+	}
+}
+
+func TestQwenBoundedWorkspaceRejectsManagedMCPBeforeLaunch(t *testing.T) {
+	backend := newFakeQwenBackend(t, nil)
+	_, err := backend.Execute(context.Background(), "task", ExecOptions{
+		ToolPolicy:      "bounded_workspace_noshell",
+		SandboxRequired: true,
+		McpConfig:       json.RawMessage(`{"mcpServers":{"unsafe":{"command":"false"}}}`),
+	})
+	if err == nil || !strings.Contains(err.Error(), "rejects managed MCP") {
+		t.Fatalf("Execute error = %v, want managed MCP rejection", err)
+	}
+}
+
+func TestQwenUnknownToolPolicyFailsClosedWithoutYolo(t *testing.T) {
+	args := buildQwenArgs("task", ExecOptions{ToolPolicy: "bounded_workspace"}, slog.Default())
+	if strings.Contains(strings.Join(args, " "), "--yolo") {
+		t.Fatalf("unknown policy rendered yolo: %v", args)
+	}
+	backend := newFakeQwenBackend(t, nil)
+	if _, err := backend.Execute(context.Background(), "task", ExecOptions{ToolPolicy: "bounded_workspace"}); err == nil || !strings.Contains(err.Error(), "unknown qwen governed tool policy") {
+		t.Fatalf("Execute error = %v, want unknown-policy rejection", err)
+	}
+}
+
 func fakeQwenScript() string {
 	return `#!/bin/sh
 if [ -n "$QWEN_ARGS_FILE" ]; then printf '%s\n' "$@" > "$QWEN_ARGS_FILE"; fi

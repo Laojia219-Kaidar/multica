@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/multica-ai/multica/server/internal/boundedworkspace"
 	"github.com/multica-ai/multica/server/internal/daemon/execenv"
 	"github.com/multica-ai/multica/server/internal/notoolcanary"
 )
@@ -101,6 +102,15 @@ func buildResolvedOwnerAuthorizationBlock(resolved *ResolvedTaskContext) string 
 // post with `--content-file`) because the shell-layer corruption it guards
 // against is not specific to any one provider or host (MUL-2904, #4182).
 func BuildPrompt(task Task, provider string) string {
+	workspaceState, workspaceContract := boundedworkspace.Parse(
+		task.HandoffNote, provider, task.TaskKind, task.ID, task.IssueID, task.WorkspaceID,
+	)
+	switch workspaceState {
+	case boundedworkspace.Valid:
+		return boundedworkspace.Prompt(workspaceContract)
+	case boundedworkspace.Invalid:
+		return boundedworkspace.InvalidPrompt()
+	}
 	state, contract := notoolcanary.Parse(task.HandoffNote, provider, task.TaskKind, task.IssueID)
 	switch state {
 	case notoolcanary.Valid:

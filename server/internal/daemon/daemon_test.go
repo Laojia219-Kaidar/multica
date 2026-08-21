@@ -267,17 +267,17 @@ func TestQwenRuntimePrefixIsDaemonOwned(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
 		provider string
-		noTools  bool
+		governed bool
 		prefix   string
 	}{
-		{name: "other provider", provider: "codex", noTools: true, prefix: "/trusted/runtime"},
+		{name: "other provider", provider: "codex", governed: true, prefix: "/trusted/runtime"},
 		{name: "tools allowed", provider: "qwen", prefix: "/trusted/runtime"},
-		{name: "relative prefix", provider: "qwen", noTools: true, prefix: "relative/runtime"},
-		{name: "empty prefix", provider: "qwen", noTools: true},
+		{name: "relative prefix", provider: "qwen", governed: true, prefix: "relative/runtime"},
+		{name: "empty prefix", provider: "qwen", governed: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			env := map[string]string{}
-			injectQwenRuntimePrefix(env, tc.provider, tc.noTools, tc.prefix)
+			injectQwenRuntimePrefix(env, tc.provider, tc.governed, tc.prefix)
 			if _, ok := env["HIVECREW_RUNTIME_PREFIX"]; ok {
 				t.Fatalf("unexpected runtime prefix injection: %#v", env)
 			}

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/multica-ai/multica/server/internal/boundedworkspace"
 	"github.com/multica-ai/multica/server/internal/notoolcanary"
 )
 
@@ -85,6 +86,37 @@ func TestBuildMetaSkillContentNoToolMarkerMismatchRejectsWithoutFallback(t *test
 	}
 	if strings.Contains(out, "multica ") || strings.Contains(out, "Available Commands") {
 		t.Fatalf("mismatch fell through to ordinary runtime brief:\n%s", out)
+	}
+}
+
+func TestBuildMetaSkillContentBoundedWorkspaceSuppressesToolWorkflow(t *testing.T) {
+	marker, err := boundedworkspace.CanonicalMarker(
+		"01234567-89ab-cdef-0123-456789abcdef",
+		"11234567-89ab-cdef-0123-456789abcdef",
+		"21234567-89ab-cdef-0123-456789abcdef",
+		"Edit the named pilot fixture.",
+		boundedworkspace.WorktreeRoot+"pilot",
+		"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := buildMetaSkillContent("qwen", TaskContextForEnv{
+		TaskID:      "01234567-89ab-cdef-0123-456789abcdef",
+		IssueID:     "11234567-89ab-cdef-0123-456789abcdef",
+		WorkspaceID: "21234567-89ab-cdef-0123-456789abcdef",
+		TaskKind:    boundedworkspace.TaskKind,
+		HandoffNote: marker,
+	})
+	for _, forbidden := range []string{"multica issue", "comment add", "Available Commands", "run_shell_command"} {
+		if strings.Contains(out, forbidden) {
+			t.Fatalf("bounded workspace runtime brief contains %q:\n%s", forbidden, out)
+		}
+	}
+	for _, required := range []string{"edit", "write_file", "fixed trusted runner"} {
+		if !strings.Contains(out, required) {
+			t.Fatalf("bounded workspace runtime brief missing %q:\n%s", required, out)
+		}
 	}
 }
 

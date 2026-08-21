@@ -7,7 +7,10 @@ list=$(mktemp)
 trap 'rm -f "$list"' EXIT
 {
   find "$root" -type f -printf 'ops/dgx-runtime-foundation/%P\n'
-  printf '%s\n' scripts/security/qwen-landlock-launcher.sh
+  printf '%s\n' \
+    scripts/security/qwen-landlock-launcher.sh \
+    scripts/security/render-qwen-foundation-for-test.py \
+    scripts/security/render-qwen-landlock-launcher-for-test.py
 } | sort -u > "$list"
 tar --sort=name --mtime="UTC 1970-01-01" --owner=0 --group=0 --numeric-owner -cf "$out" -C "$repo" -T "$list"
 sha=$(sha256sum "$out"|awk '{print $1}')

@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -19,6 +20,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/multica-ai/multica/server/internal/boundedworkspace"
 	"golang.org/x/sync/errgroup"
 	"golang.org/x/sync/singleflight"
 
@@ -4888,6 +4890,20 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	if err != nil {
 		return TaskResult{}, err
 	}
+	workspaceState, workspaceContract := boundedworkspace.Parse(
+		task.HandoffNote, provider, task.TaskKind, task.ID, task.IssueID, task.WorkspaceID,
+	)
+	if executionPolicy.ToolPolicy == boundedworkspace.ToolPolicy {
+		if workspaceState != boundedworkspace.Valid {
+			return TaskResult{}, fmt.Errorf("bounded workspace marker is missing or invalid")
+		}
+		if task.Agent == nil || len(task.Agent.CustomArgs) != 0 || len(task.Agent.CustomEnv) != 0 ||
+			len(bytes.TrimSpace(task.Agent.McpConfig)) != 0 {
+			return TaskResult{}, fmt.Errorf("bounded workspace rejects custom args, custom env, and MCP")
+		}
+	} else if workspaceState != boundedworkspace.NotPresent {
+		return TaskResult{}, fmt.Errorf("bounded workspace marker requires tool policy %q", boundedworkspace.ToolPolicy)
+	}
 	enforceGitTarget := task.WriterLeaseMode == "enforce" && (len(task.WriterLeaseTargets) > 0 || len(task.Repos) > 0)
 	if enforceGitTarget && repoCheckoutModeFor(provider, runtime.GOOS) == "" {
 		return TaskResult{}, fmt.Errorf("writer lease enforce requires mediated Linux Codex checkout")
@@ -4974,6 +4990,8 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// Repos are passed as metadata only — the agent checks them out on demand
 	// via `multica repo checkout <url>`.
 	taskCtx := execenv.TaskContextForEnv{
+		TaskID:              task.ID,
+		WorkspaceID:         task.WorkspaceID,
 		IssueID:             task.IssueID,
 		TriggerCommentID:    task.TriggerCommentID,
 		TriggerThreadID:     task.TriggerThreadID,
@@ -5203,6 +5221,11 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			return TaskResult{}, fmt.Errorf("prepare execution environment: %w", err)
 		}
 	}
+	if executionPolicy.ToolPolicy == boundedworkspace.ToolPolicy {
+		if err := boundedworkspace.ValidateAssignedWorktree(workspaceContract, env.WorkDir, env.LocalDirectory); err != nil {
+			return TaskResult{}, fmt.Errorf("validate bounded workspace: %w", err)
+		}
+	}
 	// Belt-and-suspenders: also mark whatever root we ended up with, in case
 	// future changes diverge from PredictRootDir.
 	if env.RootDir != predictedRoot && env.RootDir != "" {
@@ -5430,7 +5453,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	if rootsValue, ok := composeOpenclawIncludeRoots(env.OpenclawIncludeRoot, os.Getenv("OPENCLAW_INCLUDE_ROOTS")); ok {
 		agentEnv["OPENCLAW_INCLUDE_ROOTS"] = rootsValue
 	}
-	injectQwenRuntimePrefix(agentEnv, provider, executionPolicy.NoTools, os.Getenv("HIVECREW_RUNTIME_PREFIX"))
+	injectQwenRuntimePrefix(agentEnv, provider, executionPolicy.GovernedTools, os.Getenv("HIVECREW_RUNTIME_PREFIX"))
 	// Inject user-configured custom environment variables (e.g. ANTHROPIC_API_KEY,
 	// ANTHROPIC_BASE_URL for router/proxy mode, or CLAUDE_CODE_USE_BEDROCK for
 	// Bedrock). These are set per-agent via the agent settings UI.
@@ -5441,7 +5464,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		agentCustomEnv = task.Agent.CustomEnv
 	}
 	layerCustomEnvAndHermesHome(agentEnv, agentCustomEnv, env.HermesHome, d.logger)
-	if executionPolicy.NoTools {
+	if executionPolicy.GovernedTools {
 		// QWEN_SANDBOX has higher precedence than the CLI flag. Reassert it
 		// after custom_env is layered so an Agent cannot turn the sandbox off.
 		agentEnv["QWEN_SANDBOX"] = "true"
@@ -5507,7 +5530,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		customArgs = task.Agent.CustomArgs
 		mcpConfig = effectiveMcpConfig
 	}
-	if executionPolicy.NoTools {
+	if executionPolicy.GovernedTools {
 		mcpConfig = nil
 	}
 	if provider == "hermes" {
@@ -6879,9 +6902,9 @@ func isBlockedEnvKey(key string) bool {
 // is blocklisted, so an Agent cannot repoint the governed Qwen entrypoint.
 // An empty or relative value is intentionally omitted; qwenBackend then fails
 // closed before starting a provider process.
-func injectQwenRuntimePrefix(agentEnv map[string]string, provider string, noTools bool, prefix string) {
+func injectQwenRuntimePrefix(agentEnv map[string]string, provider string, governedTools bool, prefix string) {
 	prefix = strings.TrimSpace(prefix)
-	if provider == "qwen" && noTools && filepath.IsAbs(prefix) {
+	if provider == "qwen" && governedTools && filepath.IsAbs(prefix) {
 		agentEnv["HIVECREW_RUNTIME_PREFIX"] = filepath.Clean(prefix)
 	}
 }

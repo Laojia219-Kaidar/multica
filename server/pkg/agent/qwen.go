@@ -41,6 +41,7 @@ var qwenBlockedArgs = map[string]blockedArgMode{
 	"--chat-recording":     blockedWithValue,
 	"--mcp-config":         blockedWithValue,
 	"--safe-mode":          blockedStandalone,
+	"--bare":               blockedStandalone,
 	"--yolo":               blockedStandalone,
 	"-y":                   blockedStandalone,
 	"--approval-mode":      blockedWithValue,
@@ -53,6 +54,31 @@ var qwenBlockedArgs = map[string]blockedArgMode{
 	"--exclude-tools":      blockedWithValue,
 }
 
+const (
+	qwenBoundedReadMaxToolCalls      = "8"
+	qwenBoundedWorkspaceMaxToolCalls = "12"
+)
+
+var qwenBoundedReadAllowedTools = []string{
+	"read_file",
+	"glob",
+	"grep_search",
+	"list_directory",
+}
+
+var qwenBoundedWorkspaceAllowedTools = []string{
+	"read_file",
+	"glob",
+	"grep_search",
+	"list_directory",
+	"edit",
+	"write_file",
+}
+
+func isGovernedQwenToolPolicy(policy string) bool {
+	return policy == "deny" || policy == "bounded_read" || policy == "bounded_workspace_noshell"
+}
+
 func buildQwenArgs(prompt string, opts ExecOptions, logger *slog.Logger) []string {
 	args := []string{"-p", prompt, "--output-format", "stream-json"}
 	if opts.Model != "" {
@@ -61,7 +87,8 @@ func buildQwenArgs(prompt string, opts ExecOptions, logger *slog.Logger) []strin
 	if opts.ResumeSessionID != "" {
 		args = append(args, "--resume", opts.ResumeSessionID)
 	}
-	if opts.ToolPolicy == "deny" {
+	switch opts.ToolPolicy {
+	case "deny":
 		// Qwen 0.21's max-tool-calls=0 is an execution gate: the first attempted
 		// tool aborts before execution. Plan mode removes write/shell approval,
 		// and the sandbox is defense in depth around the provider process.
@@ -69,9 +96,36 @@ func buildQwenArgs(prompt string, opts ExecOptions, logger *slog.Logger) []strin
 		if opts.SandboxRequired {
 			args = append(args, "--sandbox")
 		}
-	} else {
+	case "bounded_read":
+		// The wrapper and exact Qwen 0.21.14 launcher independently validate
+		// this allowlist and apply its deny-complement. Plan mode blocks
+		// mutation tools, while the finite budget bounds read-side activity.
+		args = append(args,
+			"--approval-mode", "plan",
+			"--max-tool-calls", qwenBoundedReadMaxToolCalls,
+			"--allowed-tools", strings.Join(qwenBoundedReadAllowedTools, ","),
+		)
+		if opts.SandboxRequired {
+			args = append(args, "--sandbox")
+		}
+	case "bounded_workspace_noshell":
+		// Auto-edit permits the two dedicated mutation tools without opening the
+		// interactive approval surface. The launcher independently applies the
+		// deny-complement, including run_shell_command and every network tool.
+		args = append(args,
+			"--approval-mode", "auto-edit",
+			"--max-tool-calls", qwenBoundedWorkspaceMaxToolCalls,
+			"--allowed-tools", strings.Join(qwenBoundedWorkspaceAllowedTools, ","),
+		)
+		if opts.SandboxRequired {
+			args = append(args, "--sandbox")
+		}
+	case "":
 		// --yolo is daemon-owned for ordinary autonomous runs.
 		args = append(args, "--yolo")
+	default:
+		// Execute rejects unknown non-empty policies before process launch. Keep
+		// this renderer fail-closed as well: never turn a typo into --yolo.
 	}
 	args = append(args, filterCustomArgs(opts.ExtraArgs, qwenBlockedArgs, logger)...)
 	args = append(args, filterCustomArgs(opts.CustomArgs, qwenBlockedArgs, logger)...)
@@ -79,7 +133,7 @@ func buildQwenArgs(prompt string, opts ExecOptions, logger *slog.Logger) []strin
 }
 
 func resolveQwenExecutable(execPath string, opts ExecOptions, env map[string]string) (string, error) {
-	if opts.ToolPolicy != "deny" {
+	if !isGovernedQwenToolPolicy(opts.ToolPolicy) {
 		if execPath == "" {
 			execPath = "qwen"
 		}
@@ -90,17 +144,17 @@ func resolveQwenExecutable(execPath string, opts ExecOptions, env map[string]str
 		return resolved, nil
 	}
 	if execPath == "" || !filepath.IsAbs(execPath) {
-		return "", fmt.Errorf("qwen no-tool policy requires an absolute governed wrapper path")
+		return "", fmt.Errorf("qwen governed tool policy requires an absolute governed wrapper path")
 	}
 	allowedName := func(name string) bool {
 		return name == "qwen-hive-qwen" || name == "qwen-hive-qwen-landlock"
 	}
 	if !allowedName(filepath.Base(execPath)) {
-		return "", fmt.Errorf("qwen no-tool executable %q is not a governed wrapper", execPath)
+		return "", fmt.Errorf("qwen governed executable %q is not a governed wrapper", execPath)
 	}
 	trustedRoot := strings.TrimSpace(env["HIVECREW_RUNTIME_PREFIX"])
 	if trustedRoot == "" || !filepath.IsAbs(trustedRoot) {
-		return "", fmt.Errorf("qwen no-tool policy requires an absolute HIVECREW_RUNTIME_PREFIX")
+		return "", fmt.Errorf("qwen governed tool policy requires an absolute HIVECREW_RUNTIME_PREFIX")
 	}
 	trustedRoot, err := filepath.EvalSymlinks(trustedRoot)
 	if err != nil {
@@ -128,8 +182,14 @@ func resolveQwenExecutable(execPath string, opts ExecOptions, env map[string]str
 }
 
 func (b *qwenBackend) Execute(ctx context.Context, prompt string, opts ExecOptions) (*Session, error) {
-	if opts.ToolPolicy == "deny" && !opts.SandboxRequired {
-		return nil, fmt.Errorf("qwen no-tool policy requires sandbox")
+	if opts.ToolPolicy != "" && !isGovernedQwenToolPolicy(opts.ToolPolicy) {
+		return nil, fmt.Errorf("unknown qwen governed tool policy %q", opts.ToolPolicy)
+	}
+	if isGovernedQwenToolPolicy(opts.ToolPolicy) && !opts.SandboxRequired {
+		return nil, fmt.Errorf("qwen governed tool policy requires sandbox")
+	}
+	if isGovernedQwenToolPolicy(opts.ToolPolicy) && hasManagedMcpConfig(opts.McpConfig) {
+		return nil, fmt.Errorf("qwen governed tool policy rejects managed MCP tools")
 	}
 	execPath := b.cfg.ExecutablePath
 	execPath, err := resolveQwenExecutable(execPath, opts, b.cfg.Env)

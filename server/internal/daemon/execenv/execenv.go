@@ -147,7 +147,9 @@ type TaskContextForEnv struct {
 	AutopilotSource         string
 	AutopilotTriggerPayload string
 	QuickCreatePrompt       string // non-empty for quick-create tasks
-	TaskKind                string // authoritative queue kind; used by the closed no-tool canary prompt policy
+	TaskID                  string // authoritative task identity for closed governed prompt policies
+	WorkspaceID             string // authoritative workspace identity for closed governed prompt policies
+	TaskKind                string // authoritative queue kind; used by closed governed prompt policies
 	HandoffNote             string // assignment handoff instruction; rendered into issue_context.md (MUL-3375)
 	ResolvedContext         *ResolvedTaskContextForEnv
 	IsSquadLeader           bool // true when the agent is acting as a squad leader (may exit silently on no_action)
