@@ -19,21 +19,22 @@ import (
 
 const (
 	MarkerNamespace = "HIVECREW_BOUNDED_WORKSPACE_"
-	MarkerPrefix    = MarkerNamespace + "V2 "
+	MarkerPrefix    = MarkerNamespace + "V3 "
 
-	PilotID                    = "WO-C1-04-HIV719-QWEN-P3-BOUNDED-WORKSPACE-PILOT-002"
-	TaskKind                   = "work"
-	WorkspaceToolPolicy        = "bounded_workspace_noshell"
-	ReadOnlyToolPolicy         = "bounded_read"
-	WorkspaceMaxToolCalls      = 12
-	ReadOnlyMaxToolCalls       = 8
-	Provider                   = "qwen"
-	WorktreeRoot               = "/srv/hivecosm/12-development-workspaces/users/williamdev/worktrees/"
-	ExpectedUID                = 1006
-	ExpectedGID                = 1006
-	WorkspaceDeliveryPrefix    = "P3-BOUNDED-WORKSPACE-DELIVERY:"
-	ReadOnlyDeliveryPrefix     = "P3-BOUNDED-READ-DELIVERY:"
-	ServerGeneratedTaskBinding = "server_generated_uuid"
+	PilotID                 = "WO-C1-04-HIV719-QWEN-P3-BOUNDED-WORKSPACE-PILOT-003"
+	TaskKind                = "work"
+	WorkspaceToolPolicy     = "bounded_workspace_noshell"
+	ReadOnlyToolPolicy      = "bounded_read"
+	WorkspaceMaxToolCalls   = 12
+	ReadOnlyMaxToolCalls    = 8
+	Provider                = "qwen"
+	WorktreeRoot            = "/srv/hivecosm/12-development-workspaces/users/williamdev/worktrees/"
+	ExpectedUID             = 1006
+	ExpectedGID             = 1006
+	WorkspaceDeliveryPrefix = "P3-BOUNDED-WORKSPACE-DELIVERY:"
+	ReadOnlyDeliveryPrefix  = "P3-BOUNDED-READ-DELIVERY:"
+	PendingTaskBinding      = "pending_server_generated_uuid"
+	BoundTaskBinding        = "bound_server_generated_uuid"
 )
 
 var uuidPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
@@ -51,6 +52,7 @@ const (
 // rejected by Parse.
 type Contract struct {
 	DeliveryPrefix string `json:"delivery_prefix"`
+	DispatchKey    string `json:"dispatch_key"`
 	IssueID        string `json:"issue_id"`
 	MaxToolCalls   int    `json:"max_tool_calls"`
 	Objective      string `json:"objective"`
@@ -58,6 +60,7 @@ type Contract struct {
 	Provider       string `json:"provider"`
 	RequestSHA256  string `json:"request_sha256"`
 	TaskBinding    string `json:"task_binding"`
+	TaskID         string `json:"task_id"`
 	TaskKind       string `json:"task_kind"`
 	ToolPolicy     string `json:"tool_policy"`
 	WorkspaceID    string `json:"workspace_id"`
@@ -67,26 +70,28 @@ type Contract struct {
 // CanonicalMarker is the only supported external marker producer. It is
 // intentionally constructible before dispatch creates the task UUID. Parse
 // still requires and validates the actual server-generated task UUID.
-func CanonicalMarker(toolPolicy, issueID, workspaceID, objective, worktree, requestSHA256 string) (string, error) {
+func CanonicalMarker(toolPolicy, dispatchKey, issueID, workspaceID, objective, worktree, requestSHA256 string) (string, error) {
 	maxToolCalls, deliveryPrefix, ok := policyContract(toolPolicy)
 	if !ok {
 		return "", errors.New("unsupported bounded pilot tool policy")
 	}
 	contract := Contract{
 		DeliveryPrefix: deliveryPrefix,
+		DispatchKey:    dispatchKey,
 		IssueID:        issueID,
 		MaxToolCalls:   maxToolCalls,
 		Objective:      objective,
 		PilotID:        PilotID,
 		Provider:       Provider,
 		RequestSHA256:  requestSHA256,
-		TaskBinding:    ServerGeneratedTaskBinding,
+		TaskBinding:    PendingTaskBinding,
+		TaskID:         "",
 		TaskKind:       TaskKind,
 		ToolPolicy:     toolPolicy,
 		WorkspaceID:    workspaceID,
 		Worktree:       worktree,
 	}
-	if err := validateContract(contract); err != nil {
+	if err := validateContract(contract, false); err != nil {
 		return "", err
 	}
 	payload, err := json.Marshal(contract)
@@ -96,7 +101,45 @@ func CanonicalMarker(toolPolicy, issueID, workspaceID, objective, worktree, requ
 	return MarkerPrefix + string(payload), nil
 }
 
+// BindTask is the production dispatch finalizer. OwnerDispatchService calls it
+// after PostgreSQL has generated the task UUID but before the surrounding
+// transaction commits or publishes the task. A pre-dispatch marker can
+// therefore become valid for exactly that persisted task and no other.
+func BindTask(note, actualDispatchKey, actualTaskID, actualIssueID, actualWorkspaceID string) (State, string, error) {
+	state, contract := parseContract(note, false)
+	if state != Valid {
+		if state == NotPresent {
+			return NotPresent, note, nil
+		}
+		return Invalid, "", errors.New("invalid bounded pilot pre-dispatch marker")
+	}
+	if contract.DispatchKey != actualDispatchKey || contract.IssueID != actualIssueID ||
+		contract.WorkspaceID != actualWorkspaceID || !uuidPattern.MatchString(actualTaskID) {
+		return Invalid, "", errors.New("bounded pilot dispatch identity mismatch")
+	}
+	contract.TaskBinding = BoundTaskBinding
+	contract.TaskID = actualTaskID
+	payload, err := json.Marshal(contract)
+	if err != nil {
+		return Invalid, "", err
+	}
+	return Valid, MarkerPrefix + string(payload), nil
+}
+
 func Parse(note, actualProvider, actualTaskKind, actualTaskID, actualIssueID, actualWorkspaceID string) (State, Contract) {
+	state, contract := parseContract(note, true)
+	if state != Valid {
+		return state, Contract{}
+	}
+	if actualProvider != Provider || actualTaskKind != TaskKind ||
+		actualTaskID != contract.TaskID || actualIssueID != contract.IssueID ||
+		actualWorkspaceID != contract.WorkspaceID {
+		return Invalid, Contract{}
+	}
+	return Valid, contract
+}
+
+func parseContract(note string, bound bool) (State, Contract) {
 	if !strings.HasPrefix(note, MarkerNamespace) {
 		return NotPresent, Contract{}
 	}
@@ -109,26 +152,32 @@ func Parse(note, actualProvider, actualTaskKind, actualTaskID, actualIssueID, ac
 		return Invalid, Contract{}
 	}
 	canonical, err := json.Marshal(contract)
-	if err != nil || payload != string(canonical) || validateContract(contract) != nil {
-		return Invalid, Contract{}
-	}
-	if actualProvider != Provider || actualTaskKind != TaskKind ||
-		!uuidPattern.MatchString(actualTaskID) || actualIssueID != contract.IssueID ||
-		actualWorkspaceID != contract.WorkspaceID {
+	if err != nil || payload != string(canonical) || validateContract(contract, bound) != nil {
 		return Invalid, Contract{}
 	}
 	return Valid, contract
 }
 
-func validateContract(contract Contract) error {
+func validateContract(contract Contract, bound bool) error {
 	maxToolCalls, deliveryPrefix, ok := policyContract(contract.ToolPolicy)
 	if !ok || contract.DeliveryPrefix != deliveryPrefix || contract.MaxToolCalls != maxToolCalls ||
 		contract.PilotID != PilotID || contract.Provider != Provider ||
-		contract.TaskBinding != ServerGeneratedTaskBinding || contract.TaskKind != TaskKind {
+		contract.TaskKind != TaskKind {
 		return errors.New("fixed bounded workspace identity mismatch")
+	}
+	if bound {
+		if contract.TaskBinding != BoundTaskBinding || !uuidPattern.MatchString(contract.TaskID) {
+			return errors.New("bounded pilot task identity is not finalized")
+		}
+	} else if contract.TaskBinding != PendingTaskBinding || contract.TaskID != "" {
+		return errors.New("bounded pilot pre-dispatch task identity invalid")
 	}
 	if !uuidPattern.MatchString(contract.IssueID) || !uuidPattern.MatchString(contract.WorkspaceID) {
 		return errors.New("issue and workspace identities must be lowercase UUIDs")
+	}
+	if contract.DispatchKey == "" || len(contract.DispatchKey) > 256 ||
+		strings.TrimSpace(contract.DispatchKey) != contract.DispatchKey || strings.ContainsRune(contract.DispatchKey, '\x00') {
+		return errors.New("invalid bounded pilot dispatch key")
 	}
 	if !isLowerSHA256(contract.RequestSHA256) {
 		return errors.New("invalid request sha256")

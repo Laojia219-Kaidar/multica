@@ -3,12 +3,14 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/boundedworkspace"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -375,6 +377,70 @@ func TestDispatch_IdempotencyDigestScopesIssueAndReceiptAuthority(t *testing.T) 
 	statusChanged, changed, _ := dispatch(issueA, changedBody)
 	if statusChanged != http.StatusConflict || changed.Reason != service.BlockReasonIdempotencyConflict {
 		t.Fatalf("same-issue different body status=%d result=%#v, want 409 idempotency conflict", statusChanged, changed)
+	}
+}
+
+func TestDispatch_BindsIndependentPreMarkerToExactlyOneGeneratedTask(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("test handler not initialized")
+	}
+	agentID := createHandlerTestAgent(t, "dispatch-bounded-pilot-marker", nil)
+	issueID := createDispatchTestIssue(t, agentID, "todo")
+	key := "p3-pilot-003-" + strings.ReplaceAll(t.Name(), "/", "-")
+	secondKey := key + "-different"
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM dispatch_idempotency WHERE workspace_id = $1 AND idempotency_key IN ($2, $3)`, testWorkspaceID, key, secondKey)
+	})
+
+	// This is an independent wire literal, intentionally not produced by
+	// boundedworkspace.CanonicalMarker. At this point no task UUID exists.
+	preMarker := fmt.Sprintf(`HIVECREW_BOUNDED_WORKSPACE_V3 {"delivery_prefix":"P3-BOUNDED-WORKSPACE-DELIVERY:","dispatch_key":"%s","issue_id":"%s","max_tool_calls":12,"objective":"Edit the named pilot fixture.","pilot_id":"WO-C1-04-HIV719-QWEN-P3-BOUNDED-WORKSPACE-PILOT-003","provider":"qwen","request_sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","task_binding":"pending_server_generated_uuid","task_id":"","task_kind":"work","tool_policy":"bounded_workspace_noshell","workspace_id":"%s","worktree":"/srv/hivecosm/12-development-workspaces/users/williamdev/worktrees/p3-pilot-003"}`, key, issueID, testWorkspaceID)
+	body := map[string]any{"idempotency_key": key, "expected_status": "todo", "handoff_note": preMarker}
+	dispatch := func(requestBody map[string]any) (int, service.DispatchResult) {
+		w := httptest.NewRecorder()
+		r := withURLParam(newRequest("POST", "/api/issues/"+issueID+"/dispatch", requestBody), "id", issueID)
+		testHandler.Dispatch(w, r)
+		var response service.DispatchResult
+		if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+			t.Fatalf("decode dispatch response (%d): %v; body=%s", w.Code, err, w.Body.String())
+		}
+		return w.Code, response
+	}
+
+	status, first := dispatch(body)
+	if status != http.StatusAccepted || first.Replayed || len(first.TaskIDs) != 1 {
+		t.Fatalf("fresh dispatch status=%d result=%#v", status, first)
+	}
+	taskID := first.TaskIDs[0]
+	var stored string
+	if err := testPool.QueryRow(context.Background(), `SELECT COALESCE(handoff_note, '') FROM agent_task_queue WHERE id = $1`, taskID).Scan(&stored); err != nil {
+		t.Fatalf("read finalized handoff: %v", err)
+	}
+	if stored == preMarker || !strings.Contains(stored, `"task_id":"`+taskID+`"`) {
+		t.Fatalf("stored marker was not finalized to returned task id: %s", stored)
+	}
+	if state, _ := boundedworkspace.Parse(stored, "qwen", "work", taskID, issueID, testWorkspaceID); state != boundedworkspace.Valid {
+		t.Fatalf("stored marker state=%v", state)
+	}
+
+	replayStatus, replay := dispatch(body)
+	if replayStatus != http.StatusOK || !replay.Replayed || len(replay.TaskIDs) != 1 || replay.TaskIDs[0] != taskID {
+		t.Fatalf("same-key replay status=%d result=%#v", replayStatus, replay)
+	}
+	if _, err := testPool.Exec(context.Background(), `UPDATE agent_task_queue SET status = 'cancelled', completed_at = now() WHERE id = $1`, taskID); err != nil {
+		t.Fatalf("make first task terminal: %v", err)
+	}
+	differentBody := map[string]any{"idempotency_key": secondKey, "expected_status": "todo", "handoff_note": preMarker}
+	differentStatus, _ := dispatch(differentBody)
+	if differentStatus == http.StatusAccepted {
+		t.Fatal("marker with a different dispatch key created a second task")
+	}
+	var taskCount int
+	if err := testPool.QueryRow(context.Background(), `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1`, issueID).Scan(&taskCount); err != nil {
+		t.Fatalf("count tasks: %v", err)
+	}
+	if taskCount != 1 {
+		t.Fatalf("task count=%d, want exactly original task", taskCount)
 	}
 }
 

@@ -12,6 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/boundedworkspace"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
@@ -371,6 +372,32 @@ func (s *OwnerDispatchService) Dispatch(ctx context.Context, p DispatchParams) (
 	}
 	if err != nil {
 		return nil, fmt.Errorf("prepare dispatch task: %w", err)
+	}
+	markerState, finalizedHandoff, bindErr := boundedworkspace.BindTask(
+		p.HandoffNote,
+		p.IdempotencyKey,
+		util.UUIDToString(task.ID),
+		util.UUIDToString(issue.ID),
+		util.UUIDToString(p.WorkspaceID),
+	)
+	if bindErr != nil {
+		return nil, fmt.Errorf("bind bounded pilot task marker: %w", bindErr)
+	}
+	if markerState == boundedworkspace.Invalid {
+		return nil, errors.New("bind bounded pilot task marker: invalid marker")
+	}
+	if markerState == boundedworkspace.Valid {
+		updatedHandoff, updateErr := txQueries.UpdateAgentTaskHandoffNote(ctx, db.UpdateAgentTaskHandoffNoteParams{
+			ID:          task.ID,
+			HandoffNote: pgtype.Text{String: finalizedHandoff, Valid: true},
+		})
+		if updateErr != nil {
+			return nil, fmt.Errorf("persist bounded pilot task marker: %w", updateErr)
+		}
+		if !updatedHandoff.Valid || updatedHandoff.String != finalizedHandoff {
+			return nil, errors.New("persist bounded pilot task marker: readback mismatch")
+		}
+		task.HandoffNote = updatedHandoff
 	}
 	targetAgentID, assigneeType, authorityErr := dispatchTaskAuthorityFromTasks([]db.AgentTaskQueue{task})
 	if authorityErr != nil {

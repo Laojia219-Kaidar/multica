@@ -947,6 +947,14 @@ SET status = 'failed',
 WHERE id = $1 AND status IN ('dispatched', 'running', 'waiting_local_directory')
 RETURNING *;
 
+-- name: UpdateAgentTaskHandoffNote :one
+-- Finalizes a governed pre-dispatch marker after PostgreSQL generated the task
+-- UUID but before the owner-dispatch transaction commits or publishes it.
+UPDATE agent_task_queue
+SET handoff_note = $2
+WHERE id = $1 AND status = 'queued'
+RETURNING handoff_note;
+
 -- name: UpdateAgentTaskSession :exec
 -- Pins the resume pointer mid-flight so a daemon crash leaves a usable
 -- session_id/work_dir on the task row. No-op if the task is no longer

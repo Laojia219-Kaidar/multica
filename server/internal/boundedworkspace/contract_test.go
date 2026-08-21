@@ -12,23 +12,28 @@ const (
 	testIssueID     = "11234567-89ab-cdef-0123-456789abcdef"
 	testWorkspaceID = "21234567-89ab-cdef-0123-456789abcdef"
 	testRequest     = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	testDispatchKey = "p3-pilot-003-dispatch"
 )
 
 func TestMarkerCanBeConstructedBeforeDispatchAndAcceptedAfterTaskCreation(t *testing.T) {
 	worktree := WorktreeRoot + "pilot"
-	marker, err := CanonicalMarker(WorkspaceToolPolicy, testIssueID, testWorkspaceID, "Edit the named pilot fixture.", worktree, testRequest)
+	preMarker, err := CanonicalMarker(WorkspaceToolPolicy, testDispatchKey, testIssueID, testWorkspaceID, "Edit the named pilot fixture.", worktree, testRequest)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(marker, testTaskID) || strings.Contains(marker, `"task_id"`) {
-		t.Fatalf("pre-dispatch marker unexpectedly requires the future task UUID: %s", marker)
+	if strings.Contains(preMarker, testTaskID) || !strings.Contains(preMarker, `"task_id":""`) {
+		t.Fatalf("pre-dispatch marker unexpectedly requires the future task UUID: %s", preMarker)
 	}
 	// Simulate dispatch assigning an ID after the external handoff marker has
 	// already been constructed. Parse must validate the real server ID rather
 	// than trusting a client-supplied task identity.
+	state, marker, err := BindTask(preMarker, testDispatchKey, testTaskID, testIssueID, testWorkspaceID)
+	if err != nil || state != Valid {
+		t.Fatalf("BindTask state=%v err=%v", state, err)
+	}
 	state, contract := Parse(marker, Provider, TaskKind, testTaskID, testIssueID, testWorkspaceID)
 	if state != Valid || contract.Worktree != worktree || contract.ToolPolicy != WorkspaceToolPolicy ||
-		contract.TaskBinding != ServerGeneratedTaskBinding {
+		contract.TaskBinding != BoundTaskBinding || contract.TaskID != testTaskID {
 		t.Fatalf("state=%v contract=%+v", state, contract)
 	}
 	for _, forbidden := range []string{"run_shell_command", "multica issue", "comment add"} {
@@ -39,9 +44,13 @@ func TestMarkerCanBeConstructedBeforeDispatchAndAcceptedAfterTaskCreation(t *tes
 }
 
 func TestReadOnlyMarkerUsesClosedQuinnRoute(t *testing.T) {
-	marker, err := CanonicalMarker(ReadOnlyToolPolicy, testIssueID, testWorkspaceID, "Inspect the named pilot fixture.", WorktreeRoot+"pilot", testRequest)
+	preMarker, err := CanonicalMarker(ReadOnlyToolPolicy, testDispatchKey, testIssueID, testWorkspaceID, "Inspect the named pilot fixture.", WorktreeRoot+"pilot", testRequest)
 	if err != nil {
 		t.Fatal(err)
+	}
+	state, marker, err := BindTask(preMarker, testDispatchKey, testTaskID, testIssueID, testWorkspaceID)
+	if err != nil || state != Valid {
+		t.Fatalf("BindTask state=%v err=%v", state, err)
 	}
 	state, contract := Parse(marker, Provider, TaskKind, testTaskID, testIssueID, testWorkspaceID)
 	if state != Valid || contract.ToolPolicy != ReadOnlyToolPolicy || contract.MaxToolCalls != ReadOnlyMaxToolCalls {
@@ -61,9 +70,13 @@ func TestReadOnlyMarkerUsesClosedQuinnRoute(t *testing.T) {
 }
 
 func TestMarkerContextAndTaskUUIDMismatchFailClosed(t *testing.T) {
-	marker, err := CanonicalMarker(WorkspaceToolPolicy, testIssueID, testWorkspaceID, "Edit the named pilot fixture.", WorktreeRoot+"pilot", testRequest)
+	preMarker, err := CanonicalMarker(WorkspaceToolPolicy, testDispatchKey, testIssueID, testWorkspaceID, "Edit the named pilot fixture.", WorktreeRoot+"pilot", testRequest)
 	if err != nil {
 		t.Fatal(err)
+	}
+	state, marker, err := BindTask(preMarker, testDispatchKey, testTaskID, testIssueID, testWorkspaceID)
+	if err != nil || state != Valid {
+		t.Fatalf("BindTask state=%v err=%v", state, err)
 	}
 	for _, mutate := range []func() (string, string, string, string, string){
 		func() (string, string, string, string, string) {
@@ -95,16 +108,49 @@ func TestMarkerContextAndTaskUUIDMismatchFailClosed(t *testing.T) {
 func TestInvalidPreDispatchBindingsFailClosed(t *testing.T) {
 	validWorktree := WorktreeRoot + "pilot"
 	for name, args := range map[string][]string{
-		"issue":     {WorkspaceToolPolicy, "not-an-issue-uuid", testWorkspaceID, "Edit fixture.", validWorktree, testRequest},
-		"workspace": {WorkspaceToolPolicy, testIssueID, "not-a-workspace-uuid", "Edit fixture.", validWorktree, testRequest},
-		"worktree":  {WorkspaceToolPolicy, testIssueID, testWorkspaceID, "Edit fixture.", "/tmp/pilot", testRequest},
-		"policy":    {"bounded_workspace_shell", testIssueID, testWorkspaceID, "Edit fixture.", validWorktree, testRequest},
+		"dispatch":  {WorkspaceToolPolicy, "", testIssueID, testWorkspaceID, "Edit fixture.", validWorktree, testRequest},
+		"issue":     {WorkspaceToolPolicy, testDispatchKey, "not-an-issue-uuid", testWorkspaceID, "Edit fixture.", validWorktree, testRequest},
+		"workspace": {WorkspaceToolPolicy, testDispatchKey, testIssueID, "not-a-workspace-uuid", "Edit fixture.", validWorktree, testRequest},
+		"worktree":  {WorkspaceToolPolicy, testDispatchKey, testIssueID, testWorkspaceID, "Edit fixture.", "/tmp/pilot", testRequest},
+		"policy":    {"bounded_workspace_shell", testDispatchKey, testIssueID, testWorkspaceID, "Edit fixture.", validWorktree, testRequest},
 	} {
 		t.Run(name, func(t *testing.T) {
-			if marker, err := CanonicalMarker(args[0], args[1], args[2], args[3], args[4], args[5]); err == nil {
+			if marker, err := CanonicalMarker(args[0], args[1], args[2], args[3], args[4], args[5], args[6]); err == nil {
 				t.Fatalf("invalid %s accepted: %s", name, marker)
 			}
 		})
+	}
+}
+
+func TestFinalMarkerCannotBeReplayedForSecondTask(t *testing.T) {
+	preMarker, err := CanonicalMarker(WorkspaceToolPolicy, testDispatchKey, testIssueID, testWorkspaceID, "Edit fixture.", WorktreeRoot+"pilot", testRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, marker, err := BindTask(preMarker, testDispatchKey, testTaskID, testIssueID, testWorkspaceID)
+	if err != nil || state != Valid {
+		t.Fatalf("BindTask state=%v err=%v", state, err)
+	}
+	secondTaskID := "31234567-89ab-cdef-0123-456789abcdef"
+	if state, _ := Parse(marker, Provider, TaskKind, secondTaskID, testIssueID, testWorkspaceID); state != Invalid {
+		t.Fatalf("task-bound marker replay state=%v", state)
+	}
+	if state, _, err := BindTask(preMarker, "different-dispatch-key", secondTaskID, testIssueID, testWorkspaceID); state != Invalid || err == nil {
+		t.Fatalf("different dispatch key state=%v err=%v", state, err)
+	}
+}
+
+func TestIndependentRawPreDispatchWireFinalizesToReturnedTask(t *testing.T) {
+	// This literal models the external Owner dispatch client and deliberately
+	// does not use CanonicalMarker, so producer and consumer cannot agree by
+	// sharing the same construction code.
+	preMarker := `HIVECREW_BOUNDED_WORKSPACE_V3 {"delivery_prefix":"P3-BOUNDED-WORKSPACE-DELIVERY:","dispatch_key":"p3-pilot-003-dispatch","issue_id":"11234567-89ab-cdef-0123-456789abcdef","max_tool_calls":12,"objective":"Edit fixture.","pilot_id":"WO-C1-04-HIV719-QWEN-P3-BOUNDED-WORKSPACE-PILOT-003","provider":"qwen","request_sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","task_binding":"pending_server_generated_uuid","task_id":"","task_kind":"work","tool_policy":"bounded_workspace_noshell","workspace_id":"21234567-89ab-cdef-0123-456789abcdef","worktree":"/srv/hivecosm/12-development-workspaces/users/williamdev/worktrees/p3-pilot-003"}`
+	state, marker, err := BindTask(preMarker, testDispatchKey, testTaskID, testIssueID, testWorkspaceID)
+	if err != nil || state != Valid {
+		t.Fatalf("BindTask state=%v err=%v", state, err)
+	}
+	if state, contract := Parse(marker, Provider, TaskKind, testTaskID, testIssueID, testWorkspaceID); state != Valid || contract.TaskID != testTaskID {
+		t.Fatalf("final state=%v contract=%+v", state, contract)
 	}
 }
 

@@ -21,6 +21,33 @@ var ordinaryRuntimeModeSHA256 = map[string]string{
 	"chat":      "6d5ba263e3f7d7f036a8129997a17b323b43c096aa474956fb9fb03f7f9d574c",
 }
 
+func boundPilotRuntimeMarker(t *testing.T, toolPolicy, objective string) string {
+	t.Helper()
+	preMarker, err := boundedworkspace.CanonicalMarker(
+		toolPolicy,
+		"p3-pilot-003-dispatch",
+		"11234567-89ab-cdef-0123-456789abcdef",
+		"21234567-89ab-cdef-0123-456789abcdef",
+		objective,
+		boundedworkspace.WorktreeRoot+"pilot",
+		"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, marker, err := boundedworkspace.BindTask(
+		preMarker,
+		"p3-pilot-003-dispatch",
+		"01234567-89ab-cdef-0123-456789abcdef",
+		"11234567-89ab-cdef-0123-456789abcdef",
+		"21234567-89ab-cdef-0123-456789abcdef",
+	)
+	if err != nil || state != boundedworkspace.Valid {
+		t.Fatalf("BindTask state=%v err=%v", state, err)
+	}
+	return marker
+}
+
 // TestClassifyTask pins the precedence rule on classifyTask. All four
 // kinds plus tiebreak cases for safety.
 func TestClassifyTask(t *testing.T) {
@@ -90,17 +117,7 @@ func TestBuildMetaSkillContentNoToolMarkerMismatchRejectsWithoutFallback(t *test
 }
 
 func TestBuildMetaSkillContentBoundedWorkspaceSuppressesToolWorkflow(t *testing.T) {
-	marker, err := boundedworkspace.CanonicalMarker(
-		boundedworkspace.WorkspaceToolPolicy,
-		"11234567-89ab-cdef-0123-456789abcdef",
-		"21234567-89ab-cdef-0123-456789abcdef",
-		"Edit the named pilot fixture.",
-		boundedworkspace.WorktreeRoot+"pilot",
-		"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	marker := boundPilotRuntimeMarker(t, boundedworkspace.WorkspaceToolPolicy, "Edit the named pilot fixture.")
 	out := buildMetaSkillContent("qwen", TaskContextForEnv{
 		TaskID:      "01234567-89ab-cdef-0123-456789abcdef",
 		IssueID:     "11234567-89ab-cdef-0123-456789abcdef",
@@ -121,17 +138,7 @@ func TestBuildMetaSkillContentBoundedWorkspaceSuppressesToolWorkflow(t *testing.
 }
 
 func TestBuildMetaSkillContentBoundedReadSuppressesOrdinaryWorkflow(t *testing.T) {
-	marker, err := boundedworkspace.CanonicalMarker(
-		boundedworkspace.ReadOnlyToolPolicy,
-		"11234567-89ab-cdef-0123-456789abcdef",
-		"21234567-89ab-cdef-0123-456789abcdef",
-		"Inspect the named pilot fixture.",
-		boundedworkspace.WorktreeRoot+"pilot",
-		"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	marker := boundPilotRuntimeMarker(t, boundedworkspace.ReadOnlyToolPolicy, "Inspect the named pilot fixture.")
 	out := buildMetaSkillContent("qwen", TaskContextForEnv{
 		TaskID:      "01234567-89ab-cdef-0123-456789abcdef",
 		IssueID:     "11234567-89ab-cdef-0123-456789abcdef",

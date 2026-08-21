@@ -20,6 +20,33 @@ var ordinaryPromptSHA256 = map[string]string{
 	"repair":     "fdc0584470220a44915548bdfd7fd55afd04cd7cae9d6e0e90a90c947165f10c",
 }
 
+func boundPilotPromptMarker(t *testing.T, toolPolicy, objective string) string {
+	t.Helper()
+	preMarker, err := boundedworkspace.CanonicalMarker(
+		toolPolicy,
+		"p3-pilot-003-dispatch",
+		"11234567-89ab-cdef-0123-456789abcdef",
+		"21234567-89ab-cdef-0123-456789abcdef",
+		objective,
+		boundedworkspace.WorktreeRoot+"pilot",
+		"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, marker, err := boundedworkspace.BindTask(
+		preMarker,
+		"p3-pilot-003-dispatch",
+		"01234567-89ab-cdef-0123-456789abcdef",
+		"11234567-89ab-cdef-0123-456789abcdef",
+		"21234567-89ab-cdef-0123-456789abcdef",
+	)
+	if err != nil || state != boundedworkspace.Valid {
+		t.Fatalf("BindTask state=%v err=%v", state, err)
+	}
+	return marker
+}
+
 // TestBuildPrompt_HandoffNote_AssignmentBranch verifies a handoff note on an
 // issue-assignment task renders through the assignment branch — it appears in
 // the prompt, framed as a handoff (not a comment to reply to), and does not
@@ -93,17 +120,7 @@ func TestBuildPrompt_NoToolMarkerMismatchRejectsWithoutFallback(t *testing.T) {
 }
 
 func TestBuildPrompt_BoundedWorkspaceUsesClosedNoShellRoute(t *testing.T) {
-	marker, err := boundedworkspace.CanonicalMarker(
-		boundedworkspace.WorkspaceToolPolicy,
-		"11234567-89ab-cdef-0123-456789abcdef",
-		"21234567-89ab-cdef-0123-456789abcdef",
-		"Edit the named pilot fixture.",
-		boundedworkspace.WorktreeRoot+"pilot",
-		"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	marker := boundPilotPromptMarker(t, boundedworkspace.WorkspaceToolPolicy, "Edit the named pilot fixture.")
 	out := BuildPrompt(Task{
 		ID:          "01234567-89ab-cdef-0123-456789abcdef",
 		IssueID:     "11234567-89ab-cdef-0123-456789abcdef",
@@ -124,17 +141,7 @@ func TestBuildPrompt_BoundedWorkspaceUsesClosedNoShellRoute(t *testing.T) {
 }
 
 func TestBuildPrompt_BoundedReadUsesClosedQuinnRoute(t *testing.T) {
-	marker, err := boundedworkspace.CanonicalMarker(
-		boundedworkspace.ReadOnlyToolPolicy,
-		"11234567-89ab-cdef-0123-456789abcdef",
-		"21234567-89ab-cdef-0123-456789abcdef",
-		"Inspect the named pilot fixture.",
-		boundedworkspace.WorktreeRoot+"pilot",
-		"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	marker := boundPilotPromptMarker(t, boundedworkspace.ReadOnlyToolPolicy, "Inspect the named pilot fixture.")
 	out := BuildPrompt(Task{
 		ID:          "01234567-89ab-cdef-0123-456789abcdef",
 		IssueID:     "11234567-89ab-cdef-0123-456789abcdef",

@@ -7295,6 +7295,27 @@ func (q *Queries) UpdateAgentStatus(ctx context.Context, arg UpdateAgentStatusPa
 	return i, err
 }
 
+const updateAgentTaskHandoffNote = `-- name: UpdateAgentTaskHandoffNote :one
+UPDATE agent_task_queue
+SET handoff_note = $2
+WHERE id = $1 AND status = 'queued'
+RETURNING handoff_note
+`
+
+type UpdateAgentTaskHandoffNoteParams struct {
+	ID          pgtype.UUID `json:"id"`
+	HandoffNote pgtype.Text `json:"handoff_note"`
+}
+
+// Finalizes a governed pre-dispatch marker after PostgreSQL generated the task
+// UUID but before the owner-dispatch transaction commits or publishes it.
+func (q *Queries) UpdateAgentTaskHandoffNote(ctx context.Context, arg UpdateAgentTaskHandoffNoteParams) (pgtype.Text, error) {
+	row := q.db.QueryRow(ctx, updateAgentTaskHandoffNote, arg.ID, arg.HandoffNote)
+	var handoffNote pgtype.Text
+	err := row.Scan(&handoffNote)
+	return handoffNote, err
+}
+
 const updateAgentTaskSession = `-- name: UpdateAgentTaskSession :exec
 UPDATE agent_task_queue
 SET session_id = COALESCE($2, session_id),
