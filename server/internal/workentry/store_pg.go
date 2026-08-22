@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/google/uuid"
 
@@ -618,13 +619,13 @@ func (p *PGStore) UpsertHeartbeat(ctx context.Context, hb HeartbeatRecord) error
 	return nil
 }
 
-var heartbeatANSIPattern = regexp.MustCompile(`\x1b(\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(\x07|\x1b\\))`)
+var heartbeatANSIPattern = regexp.MustCompile(`(?:\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\))|\x9b[0-?]*[ -/]*[@-~]|\x9d[^\x07\x9c]*(?:\x07|\x9c))`)
 
 func sanitizeHeartbeatField(value string, maxRunes int) string {
 	value = heartbeatANSIPattern.ReplaceAllString(value, "")
 	var clean strings.Builder
 	for _, ch := range value {
-		if ch >= 0x20 && ch != 0x7f {
+		if !unicode.IsControl(ch) {
 			clean.WriteRune(ch)
 		}
 	}
