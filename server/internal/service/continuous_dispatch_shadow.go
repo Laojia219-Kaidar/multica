@@ -71,11 +71,19 @@ type ShadowQuotaSnapshot struct {
 type ContinuousDispatchShadowSources struct {
 	Project      bool `json:"project"`
 	Organization bool `json:"organization"`
-	Runtime      bool `json:"runtime"`
-	Tasks        bool `json:"tasks"`
-	Quota        bool `json:"quota"`
-	WriteLease   bool `json:"write_lease"`
-	WIP          bool `json:"wip"`
+	// OrganizationSourceState is the sanitized classification of the
+	// organization (workforce authority) source. It is one of the eight frozen
+	// CompanyOps organization source state constants; it never carries a URL,
+	// tenant value, token source name, credential reference, raw response,
+	// raw error or log content. "healthy" is request-local: it is only
+	// reported when this request's authoritative directory read returned a
+	// valid non-empty workforce.
+	OrganizationSourceState OrganizationSourceState `json:"organization_source_state"`
+	Runtime                 bool                    `json:"runtime"`
+	Tasks                   bool                    `json:"tasks"`
+	Quota                   bool                    `json:"quota"`
+	WriteLease              bool                    `json:"write_lease"`
+	WIP                     bool                    `json:"wip"`
 }
 
 type ContinuousDispatchShadowItem struct {
@@ -129,6 +137,11 @@ type ContinuousDispatchShadowService struct {
 	leases    ContinuousDispatchLeaseReader
 	planner   *continuousdispatch.Planner
 	clock     continuousDispatchClock
+	// startupOrganizationSourceState is the immutable classification of the
+	// startup directory wiring outcome computed by configureCompanyOps. It is
+	// read-only after construction; request-time outcomes are classified
+	// per request in readEmployeeDirectory and are never written back here.
+	startupOrganizationSourceState OrganizationSourceState
 }
 
 func NewContinuousDispatchShadowService(
@@ -140,7 +153,23 @@ func NewContinuousDispatchShadowService(
 	return &ContinuousDispatchShadowService{
 		store: store, directory: directory, quota: quota, leases: leases,
 		planner: continuousdispatch.NewPlanner(), clock: systemContinuousDispatchClock{},
+		startupOrganizationSourceState: OrganizationSourceDirectoryRequestError,
 	}
+}
+
+// WithOrganizationSourceState installs the immutable startup classification of
+// the organization source. An unknown value is rejected so no unsanitized
+// string can reach the wire; a missing call keeps the request-time-degraded
+// default, which every request overwrites with its own outcome.
+func (s *ContinuousDispatchShadowService) WithOrganizationSourceState(state OrganizationSourceState) *ContinuousDispatchShadowService {
+	if s == nil {
+		return s
+	}
+	cp := *s
+	if ValidOrganizationSourceState(state) {
+		cp.startupOrganizationSourceState = state
+	}
+	return &cp
 }
 
 func (s *ContinuousDispatchShadowService) WithClock(clock continuousDispatchClock) *ContinuousDispatchShadowService {
@@ -203,7 +232,7 @@ func (s *ContinuousDispatchShadowService) inspectProject(
 		}
 		return nil, fmt.Errorf("read project: %w", err)
 	}
-	employees, organizationComplete := s.readEmployeeDirectory(ctx, workspaceID)
+	employees, organizationComplete, organizationState := s.readEmployeeDirectory(ctx, workspaceID)
 	issues, err := s.store.ListIssues(ctx, db.ListIssuesParams{
 		WorkspaceID: workspaceID,
 		ProjectID:   projectID,
@@ -324,7 +353,8 @@ func (s *ContinuousDispatchShadowService) inspectProject(
 		GeneratedAt: now.Format(time.RFC3339Nano),
 		Sources: ContinuousDispatchShadowSources{
 			Project: true, Organization: organizationComplete, Runtime: true, Tasks: true,
-			Quota: quotaComplete, WriteLease: leaseComplete, WIP: wip.Known && wip.Reconciled,
+			OrganizationSourceState: organizationState,
+			Quota:                   quotaComplete, WriteLease: leaseComplete, WIP: wip.Known && wip.Reconciled,
 		},
 		Items: items, Total: int(total), Limit: limit, Offset: offset,
 	}, nil
@@ -332,20 +362,33 @@ func (s *ContinuousDispatchShadowService) inspectProject(
 
 // readEmployeeDirectory reads the authoritative HiveCosm employee directory
 // and degrades gracefully. An absent directory adapter, an unavailable
-// authority, or a nil result yields zero employees with
-// organizationComplete=false: the Project and its Issues stay readable and the
-// planner fails closed with no eligible dispatch candidate instead of
-// inventing a local workforce. Only this authority read degrades; unrelated
-// Project/Issue/Task database failures still fail closed in inspectProject.
-func (s *ContinuousDispatchShadowService) readEmployeeDirectory(ctx context.Context, workspaceID pgtype.UUID) ([]companyopsapi.PublicEmployeeSummary, bool) {
+// authority, an explicitly empty authoritative workforce, or a nil result
+// yields zero employees with organizationComplete=false: the Project and its
+// Issues stay readable and the planner fails closed with no eligible dispatch
+// candidate instead of inventing a local workforce. Only this authority read
+// degrades; unrelated Project/Issue/Task database failures still fail closed
+// in inspectProject.
+//
+// The returned state is the sanitized request-local classification. Absent
+// wiring falls back to the immutable startup classification (base_missing,
+// base_invalid, token_unavailable, tenant_missing,
+// directory_constructor_error); a present adapter is classified per request
+// (directory_request_error, empty_authoritative_workforce, healthy) with no
+// cross-request mutable state, no retained raw error, and no raw response.
+func (s *ContinuousDispatchShadowService) readEmployeeDirectory(ctx context.Context, workspaceID pgtype.UUID) ([]companyopsapi.PublicEmployeeSummary, bool, OrganizationSourceState) {
 	if s == nil || s.directory == nil {
-		return nil, false
+		startup := OrganizationSourceDirectoryRequestError
+		if s != nil && ValidOrganizationSourceState(s.startupOrganizationSourceState) {
+			startup = s.startupOrganizationSourceState
+		}
+		return nil, false, startup
 	}
 	result, err := s.directory.GetEmployees(ctx, workspaceID, "", "", 500, 0)
-	if err != nil || result == nil {
-		return nil, false
+	state := ClassifyOrganizationDirectoryOutcome(result, err)
+	if err != nil || result == nil || state != OrganizationSourceHealthy {
+		return nil, false, state
 	}
-	return result.Items, true
+	return result.Items, true, state
 }
 
 type reviewSourceLineage struct {

@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -31,9 +32,11 @@ type workConservingProjectionFixture struct {
 	result service.WorkConservingProjection
 	err    error
 	req    service.WorkConservingProjectionRequest
+	calls  atomic.Int32
 }
 
 func (f *workConservingProjectionFixture) ProjectWorkConserving(_ context.Context, req service.WorkConservingProjectionRequest) (service.WorkConservingProjection, error) {
+	f.calls.Add(1)
 	f.req = req
 	return f.result, f.err
 }
@@ -193,10 +196,16 @@ func TestGetProjectNextActionsWorkConservingProviderRoundTripsGlobalTotal(t *tes
 		SchemaVersion: service.ContinuousDispatchShadowSchemaV1,
 		WorkspaceID:   testWorkspaceID,
 		ProjectID:     "00000000-0000-0000-0000-000000000201",
-		Items:         []service.ContinuousDispatchShadowItem{{IssueID: "issue-page-only"}},
-		Total:         1,
-		Limit:         1,
-		Offset:        0,
+		// The provider round-trip is only meaningful when the same request's
+		// top-level organization read was healthy.
+		Sources: service.ContinuousDispatchShadowSources{
+			Project: true, Runtime: true, Tasks: true,
+			Organization: true, OrganizationSourceState: service.OrganizationSourceHealthy,
+		},
+		Items:  []service.ContinuousDispatchShadowItem{{IssueID: "issue-page-only"}},
+		Total:  1,
+		Limit:  1,
+		Offset: 0,
 	}}
 	h := &Handler{ContinuousDispatchShadow: inspector, WorkConservingProjection: provider}
 	req := newRequest(http.MethodGet, "/api/projects/00000000-0000-0000-0000-000000000201/next-actions?workspace_id="+testWorkspaceID+"&limit=1&projection=work_conserving", nil)
@@ -584,5 +593,156 @@ func TestGetProjectNextActionsRejectsMalformedProjectID(t *testing.T) {
 	h.GetProjectNextActions(w, req)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d body=%s", w.Code, w.Body.String())
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Organization source state producer + provider gating (WO-P1-PRIME-PROJECT-AUTHORITY-SOURCE-UI-R6)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// shadowResultWithOrganization builds a minimal shadow result whose only
+// variable is the organization source state.
+func shadowResultWithOrganization(organization bool, state service.OrganizationSourceState) *service.ContinuousDispatchShadowResult {
+	return &service.ContinuousDispatchShadowResult{
+		SchemaVersion: service.ContinuousDispatchShadowSchemaV1,
+		WorkspaceID:   testWorkspaceID,
+		ProjectID:     "00000000-0000-0000-0000-000000000201",
+		Sources: service.ContinuousDispatchShadowSources{
+			Project: true, Runtime: true, Tasks: true,
+			Organization: organization, OrganizationSourceState: state,
+		},
+		Items: []service.ContinuousDispatchShadowItem{}, Total: 0, Limit: 25, Offset: 0,
+	}
+}
+
+// TestGetProjectNextActionsEmitsTopLevelOrganizationSourceState verifies the
+// live API producer: the response envelope carries the sanitized
+// sources.organization_source_state constant verbatim.
+func TestGetProjectNextActionsEmitsTopLevelOrganizationSourceState(t *testing.T) {
+	for _, state := range []service.OrganizationSourceState{
+		service.OrganizationSourceBaseMissing,
+		service.OrganizationSourceBaseInvalid,
+		service.OrganizationSourceTokenUnavailable,
+		service.OrganizationSourceTenantMissing,
+		service.OrganizationSourceDirectoryConstructorError,
+		service.OrganizationSourceDirectoryRequestError,
+		service.OrganizationSourceEmptyAuthoritativeWorkforce,
+		service.OrganizationSourceHealthy,
+	} {
+		t.Run(string(state), func(t *testing.T) {
+			h := &Handler{ContinuousDispatchShadow: &shadowInspectorFixture{result: shadowResultWithOrganization(state == service.OrganizationSourceHealthy, state)}}
+			req := newRequest(http.MethodGet, "/api/projects/00000000-0000-0000-0000-000000000201/next-actions?workspace_id="+testWorkspaceID, nil)
+			req = withURLParam(req, "id", "00000000-0000-0000-0000-000000000201")
+			w := httptest.NewRecorder()
+
+			h.GetProjectNextActions(w, req)
+			if w.Code != http.StatusOK {
+				t.Fatalf("status = %d body=%s", w.Code, w.Body.String())
+			}
+			var body struct {
+				Sources struct {
+					Organization            bool   `json:"organization"`
+					OrganizationSourceState string `json:"organization_source_state"`
+				} `json:"sources"`
+			}
+			if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+				t.Fatal(err)
+			}
+			if body.Sources.OrganizationSourceState != string(state) {
+				t.Fatalf("organization_source_state = %q, want %q", body.Sources.OrganizationSourceState, state)
+			}
+			if body.Sources.Organization != (state == service.OrganizationSourceHealthy) {
+				t.Fatalf("sources.organization = %v for state %q", body.Sources.Organization, state)
+			}
+		})
+	}
+}
+
+// TestGetProjectNextActionsWorkConservingSkipsProviderWhenOrganizationNotHealthy
+// pins the fail-closed provider gate: a non-healthy top-level organization
+// source never evaluates the work-conserving provider, and the response keeps
+// the generic source-gap projection (empty suggestions/backlog, no-write).
+func TestGetProjectNextActionsWorkConservingSkipsProviderWhenOrganizationNotHealthy(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		org   bool
+		state service.OrganizationSourceState
+	}{
+		{"base_missing", false, service.OrganizationSourceBaseMissing},
+		{"base_invalid", false, service.OrganizationSourceBaseInvalid},
+		{"token_unavailable", false, service.OrganizationSourceTokenUnavailable},
+		{"tenant_missing", false, service.OrganizationSourceTenantMissing},
+		{"directory_constructor_error", false, service.OrganizationSourceDirectoryConstructorError},
+		{"directory_request_error", false, service.OrganizationSourceDirectoryRequestError},
+		{"empty_authoritative_workforce", false, service.OrganizationSourceEmptyAuthoritativeWorkforce},
+		{"state healthy but organization false", false, service.OrganizationSourceHealthy},
+		{"organization true but state degraded", true, service.OrganizationSourceDirectoryRequestError},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			provider := &workConservingProjectionFixture{result: validWorkConservingProjection()}
+			h := &Handler{
+				ContinuousDispatchShadow: &shadowInspectorFixture{result: shadowResultWithOrganization(tc.org, tc.state)},
+				WorkConservingProjection: provider,
+			}
+			req := newRequest(http.MethodGet, "/api/projects/00000000-0000-0000-0000-000000000201/next-actions?workspace_id="+testWorkspaceID+"&projection=work_conserving", nil)
+			req = withURLParam(req, "id", "00000000-0000-0000-0000-000000000201")
+			w := httptest.NewRecorder()
+
+			h.GetProjectNextActions(w, req)
+			if w.Code != http.StatusOK {
+				t.Fatalf("status = %d body=%s", w.Code, w.Body.String())
+			}
+			if got := provider.calls.Load(); got != 0 {
+				t.Fatalf("provider called %d times, want 0 for a non-healthy top-level organization", got)
+			}
+			var body struct {
+				WorkConserving *service.WorkConservingProjection `json:"work_conserving"`
+			}
+			if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+				t.Fatal(err)
+			}
+			if body.WorkConserving == nil {
+				t.Fatal("work_conserving projection missing")
+			}
+			p := body.WorkConserving
+			if p.State != service.WorkConservingProjectionSourceGap || !p.NoWrite ||
+				len(p.Suggestions) != 0 || len(p.BlockedBacklog) != 0 {
+				t.Fatalf("projection = %+v, want generic source-gap no-write with empty suggestions/backlog", p)
+			}
+		})
+	}
+}
+
+// TestGetProjectNextActionsWorkConservingCallsProviderWhenOrganizationHealthy
+// proves the gate is not fail-everything: a top-level request-local healthy
+// organization read still evaluates the provider exactly once.
+func TestGetProjectNextActionsWorkConservingCallsProviderWhenOrganizationHealthy(t *testing.T) {
+	provider := &workConservingProjectionFixture{result: validWorkConservingProjection()}
+	h := &Handler{
+		ContinuousDispatchShadow: &shadowInspectorFixture{result: shadowResultWithOrganization(true, service.OrganizationSourceHealthy)},
+		WorkConservingProjection: provider,
+	}
+	req := newRequest(http.MethodGet, "/api/projects/00000000-0000-0000-0000-000000000201/next-actions?workspace_id="+testWorkspaceID+"&projection=work_conserving", nil)
+	req = withURLParam(req, "id", "00000000-0000-0000-0000-000000000201")
+	w := httptest.NewRecorder()
+
+	h.GetProjectNextActions(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", w.Code, w.Body.String())
+	}
+	if got := provider.calls.Load(); got != 1 {
+		t.Fatalf("provider called %d times, want exactly 1", got)
+	}
+	var body struct {
+		WorkConserving *service.WorkConservingProjection `json:"work_conserving"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.WorkConserving == nil || body.WorkConserving.State != service.WorkConservingProjectionReady {
+		t.Fatalf("projection = %+v, want the provider's ready projection", body.WorkConserving)
+	}
+	if !body.WorkConserving.NoWrite {
+		t.Fatal("ready projection must remain no-write")
 	}
 }

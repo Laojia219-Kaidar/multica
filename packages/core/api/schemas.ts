@@ -223,15 +223,15 @@ const ORGANIZATION_SOURCE_STATES = [
 
 /**
  * The organization-source classification is read ONLY from the top-level
- * sources.organization_source_state wire field. The surrounding sources
- * object may carry the other source flags (project, runtime, tasks, quota,
- * write_lease, wip) which are not consumed here, but when
- * organization_source_state IS present it must be exactly one of the eight
- * frozen constants: any other value (unknown, malformed, nested-only, or a
- * value placed anywhere other than the top-level sources block) fails the
- * strict enum parse, so parseWithFallback degrades to the generic EMPTY
- * source-gap projection with a null state — never a synthesized specific
- * state such as base_missing.
+ * sources.organization_source_state wire field, which is REQUIRED: a
+ * response without it fails the strict parse and parseWithFallback degrades
+ * to the generic EMPTY source-gap projection (state=source_gap, zero
+ * metrics, zero suggestions, null organization state). The surrounding
+ * sources object may carry the other source flags (project, runtime, tasks,
+ * quota, write_lease, wip) which are not consumed here. Any value other than
+ * the eight frozen constants (unknown, malformed, nested-only) fails the
+ * same strict parse — never a synthesized specific state such as
+ * base_missing.
  */
 const OrganizationSourceStateWireSchema = z.enum(ORGANIZATION_SOURCE_STATES);
 
@@ -239,13 +239,49 @@ const WorkConservingSourcesWireSchema = z
   .object({
     organization_source_state: OrganizationSourceStateWireSchema,
   })
-  .partial()
   .loose();
 
+const UNHEALTHY_ORGANIZATION_SOURCE_STATES = new Set<string>([
+  "base_missing",
+  "base_invalid",
+  "token_unavailable",
+  "tenant_missing",
+  "directory_constructor_error",
+  "directory_request_error",
+  "empty_authoritative_workforce",
+]);
+
+/**
+ * Cross-field coherence (fail-closed): every unhealthy organization state may
+ * only accompany the strict empty source-gap projection. An unhealthy state
+ * paired with a ready/blocked projection, any suggestion, any backlog entry,
+ * or non-zero totals is incoherent source data: the whole response is
+ * rejected so the client degrades to the EMPTY source-gap projection with no
+ * specific state, no stale metrics, and a hidden drain.
+ */
 export const WorkConservingProjectionResponseSchema = z.object({
   work_conserving: WorkConservingProjectionWireSchema,
-  sources: WorkConservingSourcesWireSchema.optional(),
-}).loose().transform(({ work_conserving: projection, sources }) => ({
+  sources: WorkConservingSourcesWireSchema,
+}).loose().superRefine((response, ctx) => {
+  const state = response.sources?.organization_source_state;
+  if (state === undefined || state === "healthy") return;
+  if (!UNHEALTHY_ORGANIZATION_SOURCE_STATES.has(state)) return; // enum already rejects unknowns
+  const projection = response.work_conserving;
+  const mismatchEmpty = Object.values(projection.mismatch).every((value) => value === 0);
+  const strictlyEmptySourceGap =
+    projection.state === "source_gap" &&
+    projection.reason_code === "source_gap" &&
+    projection.suggestions.length === 0 &&
+    projection.blocked_backlog.length === 0 &&
+    projection.total === 0 &&
+    mismatchEmpty;
+  if (!strictlyEmptySourceGap) {
+    ctx.addIssue({
+      code: "custom",
+      message: "unhealthy organization source state must accompany an empty source_gap projection",
+    });
+  }
+}).transform(({ work_conserving: projection, sources }) => ({
   workConserving: {
     schemaVersion: projection.schema_version,
     state: projection.state,

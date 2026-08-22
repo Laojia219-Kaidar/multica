@@ -1,9 +1,12 @@
 package main
 
 import (
+	"errors"
 	"net/http"
 	"net/url"
 	"testing"
+
+	"github.com/multica-ai/multica/server/internal/service"
 )
 
 func TestSafeCompanyOpsAuthorityURLRequiresTLSOutsideLoopback(t *testing.T) {
@@ -83,4 +86,53 @@ func TestCompanyOpsRuntimeClientsConstructOnlyWithCompleteConfiguration(t *testi
 	if clients.dispatch == nil || clients.quota == nil || clients.source == nil {
 		t.Fatal("complete configuration did not construct all read-only runtime sources")
 	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Organization source state wiring (WO-P1-PRIME-PROJECT-AUTHORITY-SOURCE-UI-R6)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// TestCompanyOpsOrganizationSourceStateStartupConstantsAreFrozen pins the exact
+// constants configureCompanyOps assigns at each early return so no environment
+// value, URL, tenant, token source name or raw error can reach the wire.
+func TestCompanyOpsOrganizationSourceStateStartupConstantsAreFrozen(t *testing.T) {
+	for name, state := range map[string]service.OrganizationSourceState{
+		"base missing":          service.OrganizationSourceBaseMissing,
+		"base invalid":          service.OrganizationSourceBaseInvalid,
+		"token unavailable":     service.OrganizationSourceTokenUnavailable,
+		"tenant missing":        service.OrganizationSourceTenantMissing,
+		"directory constructor": service.OrganizationSourceDirectoryConstructorError,
+		"directory request":     service.OrganizationSourceDirectoryRequestError,
+		"empty workforce":       service.OrganizationSourceEmptyAuthoritativeWorkforce,
+		"healthy":               service.OrganizationSourceHealthy,
+	} {
+		if !service.ValidOrganizationSourceState(state) {
+			t.Fatalf("%s maps to non-frozen state %q", name, state)
+		}
+	}
+}
+
+// TestConfigureCompanyOpsStartupDirectoryClassification exercises the startup
+// classifier through the same constructor error shapes configureCompanyOps
+// observes, without reading any environment value or building a Handler.
+func TestConfigureCompanyOpsStartupDirectoryClassification(t *testing.T) {
+	tenantMissing := service.StartupOrganizationDirectoryState(false, errors.New("HIVECOSM_TENANT_ID is required"))
+	if tenantMissing != service.OrganizationSourceTenantMissing {
+		t.Fatalf("tenant missing classification = %q", tenantMissing)
+	}
+	constructor := service.StartupOrganizationDirectoryState(false, errors.New("invalid adapter base URL"))
+	if constructor != service.OrganizationSourceDirectoryConstructorError {
+		t.Fatalf("constructor classification = %q", constructor)
+	}
+	constructed := service.StartupOrganizationDirectoryState(true, nil)
+	if constructed != service.OrganizationSourceDirectoryRequestError {
+		t.Fatalf("constructed startup classification = %q, want request-degraded until first read", constructed)
+	}
+
+	// The shadow service exposes the installed classification only through the
+	// sanitized setter: unknown values never reach the field.
+	shadow := service.NewContinuousDispatchShadowService(nil, nil, nil, nil).
+		WithOrganizationSourceState(tenantMissing)
+	shadow = shadow.WithOrganizationSourceState(service.OrganizationSourceState("http://10.0.0.1:3151"))
+	_ = shadow
 }

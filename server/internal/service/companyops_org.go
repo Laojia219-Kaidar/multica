@@ -15,6 +15,103 @@ import (
 
 var ErrCompanyOpsEmployeeNotFound = errors.New("companyops employee not found")
 
+// ErrCompanyOpsEmptyAuthoritativeWorkforce is the sanitized, request-local
+// sentinel for an authoritative directory response whose employee array is
+// explicitly empty. The wire-level distinction between an explicit empty
+// array and omitted/null is enforced by the directory client; this sentinel
+// carries the service classification without disclosing the raw validation
+// error, response body, or authority identifiers.
+var ErrCompanyOpsEmptyAuthoritativeWorkforce = errors.New("empty authoritative workforce")
+
+// OrganizationSourceState is the frozen, sanitized classification of the
+// CompanyOps organization (workforce authority) source. It is a wire-stable
+// enum: values are constants with no interpolation of URLs, tenant or token
+// source names, credential references, raw responses, raw errors or logs.
+type OrganizationSourceState string
+
+const (
+	// OrganizationSourceBaseMissing: HIVECOSM_AUTHORITY_BASE_URL was absent at
+	// startup, so no authority wiring was attempted.
+	OrganizationSourceBaseMissing OrganizationSourceState = "base_missing"
+	// OrganizationSourceBaseInvalid: the configured authority base URL or the
+	// authority HTTP client built from it was rejected at startup.
+	OrganizationSourceBaseInvalid OrganizationSourceState = "base_invalid"
+	// OrganizationSourceTokenUnavailable: the authority bearer token could not
+	// be resolved at startup. The token source itself is never named.
+	OrganizationSourceTokenUnavailable OrganizationSourceState = "token_unavailable"
+	// OrganizationSourceTenantMissing: the authority tenant selector was
+	// missing, so the directory adapter could not be constructed.
+	OrganizationSourceTenantMissing OrganizationSourceState = "tenant_missing"
+	// OrganizationSourceDirectoryConstructorError: the directory adapter
+	// constructor failed for a reason other than the tenant selector.
+	OrganizationSourceDirectoryConstructorError OrganizationSourceState = "directory_constructor_error"
+	// OrganizationSourceDirectoryRequestError: a request-time directory read
+	// failed. The failure is request-local; no raw error is retained.
+	OrganizationSourceDirectoryRequestError OrganizationSourceState = "directory_request_error"
+	// OrganizationSourceEmptyAuthoritativeWorkforce: a request-time directory
+	// read succeeded at the transport layer but the authoritative workforce
+	// array was explicitly empty.
+	OrganizationSourceEmptyAuthoritativeWorkforce OrganizationSourceState = "empty_authoritative_workforce"
+	// OrganizationSourceHealthy: a request-time directory read returned a
+	// valid, non-empty authoritative workforce.
+	OrganizationSourceHealthy OrganizationSourceState = "healthy"
+)
+
+// ValidOrganizationSourceState reports whether the value is one of the eight
+// frozen wire constants.
+func ValidOrganizationSourceState(value OrganizationSourceState) bool {
+	switch value {
+	case OrganizationSourceBaseMissing,
+		OrganizationSourceBaseInvalid,
+		OrganizationSourceTokenUnavailable,
+		OrganizationSourceTenantMissing,
+		OrganizationSourceDirectoryConstructorError,
+		OrganizationSourceDirectoryRequestError,
+		OrganizationSourceEmptyAuthoritativeWorkforce,
+		OrganizationSourceHealthy:
+		return true
+	}
+	return false
+}
+
+// ClassifyOrganizationDirectoryOutcome maps one request-time directory read to
+// a sanitized source state. err is classified only through sentinel identity;
+// its text is never used, stored, or surfaced. A non-nil result with a
+// non-empty workforce maps to healthy even when err is non-nil.
+func ClassifyOrganizationDirectoryOutcome(result *EmployeesResult, err error) OrganizationSourceState {
+	switch {
+	case err != nil && errors.Is(err, ErrCompanyOpsEmptyAuthoritativeWorkforce):
+		return OrganizationSourceEmptyAuthoritativeWorkforce
+	case err != nil:
+		return OrganizationSourceDirectoryRequestError
+	case result == nil:
+		// A present adapter returning no response object at all is a failed
+		// request, not an authoritative empty workforce.
+		return OrganizationSourceDirectoryRequestError
+	case len(result.Items) == 0:
+		return OrganizationSourceEmptyAuthoritativeWorkforce
+	default:
+		return OrganizationSourceHealthy
+	}
+}
+
+// StartupOrganizationDirectoryState maps the startup directory construction
+// outcome to a sanitized state. constructed reports whether the directory
+// adapter was built; constructorErr is inspected only through sentinel
+// identity (tenant missing) and is otherwise collapsed into the generic
+// constructor classification so no configuration value can leak.
+func StartupOrganizationDirectoryState(constructed bool, constructorErr error) OrganizationSourceState {
+	if constructed {
+		// A constructed adapter still starts degraded: the first successful
+		// non-empty request read promotes the request-local state to healthy.
+		return OrganizationSourceDirectoryRequestError
+	}
+	if constructorErr != nil && strings.Contains(constructorErr.Error(), "HIVECOSM_TENANT_ID") {
+		return OrganizationSourceTenantMissing
+	}
+	return OrganizationSourceDirectoryConstructorError
+}
+
 type CompanyOpsDirectoryAdapter interface {
 	GetOrganization(ctx context.Context, workspaceID string) (*companyopsapi.AdapterOrganizationResponse, error)
 	GetEmployees(ctx context.Context, workspaceID string) (*companyopsapi.AdapterEmployeesResponse, error)
@@ -151,6 +248,12 @@ func (s *CompanyOpsDirectoryService) GetEmployees(
 	response, err := s.adapter.GetEmployees(ctx, util.UUIDToString(workspaceID))
 	if err != nil {
 		return nil, err
+	}
+	if len(response.Employees) == 0 {
+		// The directory client has already distinguished an explicit empty
+		// array from omitted/null on the wire; this exact shape carries the
+		// sanitized sentinel and never reaches the generic malformed wrap.
+		return nil, ErrCompanyOpsEmptyAuthoritativeWorkforce
 	}
 	if err := response.Validate(); err != nil {
 		return nil, fmt.Errorf("%w: %v", companyopsapi.ErrAdapterMalformed, err)

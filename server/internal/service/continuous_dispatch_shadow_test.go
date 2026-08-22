@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -796,3 +798,137 @@ func uuidString(value pgtype.UUID) string {
 type fixedShadowClock struct{ now time.Time }
 
 func (c fixedShadowClock) Now() time.Time { return c.now }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Organization source state (WO-P1-PRIME-PROJECT-AUTHORITY-SOURCE-UI-R6)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// toggleDirectory alternates between a healthy non-empty read and a transport
+// failure so concurrent requests race both outcomes through one service
+// instance. It records no raw error anywhere.
+type toggleDirectory struct {
+	healthy *EmployeesResult
+	calls   atomic.Int32
+}
+
+func (f *toggleDirectory) GetEmployees(ctx context.Context, workspaceID pgtype.UUID, q string, availability string, limit int, offset int) (*EmployeesResult, error) {
+	if f.calls.Add(1)%2 == 1 {
+		return f.healthy, nil
+	}
+	return nil, errors.New("transient authority failure")
+}
+
+// TestContinuousDispatchShadowOrganizationSourceStateRequestOutcomes covers the
+// request-time classification table: startup fallbacks for a nil adapter,
+// transport failure, nil result, explicit empty workforce, and the healthy
+// read with sources.organization=true.
+func TestContinuousDispatchShadowOrganizationSourceStateRequestOutcomes(t *testing.T) {
+	healthy := employeeDirectory(shadowUUID(t, "00000000-0000-0000-0000-000000000401"), shadowUUID(t, "00000000-0000-0000-0000-000000000402"))
+	empty := &EmployeesResult{SchemaVersion: companyopsapi.PublicEmployeesSchema, Items: []companyopsapi.PublicEmployeeSummary{}, Total: 0}
+
+	cases := []struct {
+		name        string
+		startup     OrganizationSourceState
+		directory   ContinuousDispatchEmployeeDirectory
+		wantState   OrganizationSourceState
+		wantHealthy bool
+	}{
+		{"nil adapter with startup base_missing", OrganizationSourceBaseMissing, nil, OrganizationSourceBaseMissing, false},
+		{"nil adapter with startup base_invalid", OrganizationSourceBaseInvalid, nil, OrganizationSourceBaseInvalid, false},
+		{"nil adapter with startup token_unavailable", OrganizationSourceTokenUnavailable, nil, OrganizationSourceTokenUnavailable, false},
+		{"nil adapter with startup tenant_missing", OrganizationSourceTenantMissing, nil, OrganizationSourceTenantMissing, false},
+		{"nil adapter with startup directory_constructor_error", OrganizationSourceDirectoryConstructorError, nil, OrganizationSourceDirectoryConstructorError, false},
+		{"nil adapter with unknown startup stays request degraded", OrganizationSourceState("nope"), nil, OrganizationSourceDirectoryRequestError, false},
+		{"adapter transport error", OrganizationSourceDirectoryRequestError, shadowDirectoryFixture{err: errors.New("HTTP 503 from authority")}, OrganizationSourceDirectoryRequestError, false},
+		{"adapter nil result", OrganizationSourceDirectoryRequestError, shadowDirectoryFixture{}, OrganizationSourceDirectoryRequestError, false},
+		{"empty authoritative workforce", OrganizationSourceDirectoryRequestError, shadowDirectoryFixture{result: empty}, OrganizationSourceEmptyAuthoritativeWorkforce, false},
+		{"healthy non-empty workforce", OrganizationSourceDirectoryRequestError, shadowDirectoryFixture{result: healthy}, OrganizationSourceHealthy, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture, workspaceID, projectID, issueID, _, _ := validShadowFixture(t)
+			svc := NewContinuousDispatchShadowService(
+				fixture, tc.directory, shadowQuotaFixture{}, shadowLeaseFixture{leases: map[string]*WriteLease{}},
+			).WithClock(fixedShadowClock{now: shadowNow}).WithOrganizationSourceState(tc.startup)
+
+			got, err := svc.InspectProject(context.Background(), workspaceID, projectID, 50, 0)
+			if err != nil {
+				t.Fatalf("InspectProject: %v", err)
+			}
+			if got.Sources.OrganizationSourceState != tc.wantState {
+				t.Fatalf("organization_source_state = %q, want %q", got.Sources.OrganizationSourceState, tc.wantState)
+			}
+			if got.Sources.Organization != tc.wantHealthy {
+				t.Fatalf("sources.organization = %v, want %v", got.Sources.Organization, tc.wantHealthy)
+			}
+			if !got.Sources.Project || !got.Sources.Runtime || !got.Sources.Tasks {
+				t.Fatalf("demand sources must stay readable: %+v", got.Sources)
+			}
+			if len(got.Items) != 1 || got.Items[0].IssueID != uuidString(issueID) {
+				t.Fatalf("items = %+v, want the project issue visible", got.Items)
+			}
+			if !tc.wantHealthy {
+				action := got.Items[0].NextAction
+				if action.State != continuousdispatch.StateBlocked || action.Selected != nil || len(action.Candidates) != 0 {
+					t.Fatalf("non-healthy state must stay fail-closed: %+v", action)
+				}
+			}
+		})
+	}
+}
+
+// TestContinuousDispatchShadowOrganizationSourceStateConcurrentIsolation proves
+// no shared mutable classification leaks between concurrent requests: each
+// response carries only its own request's outcome.
+func TestContinuousDispatchShadowOrganizationSourceStateConcurrentIsolation(t *testing.T) {
+	fixture, workspaceID, projectID, _, _, _ := validShadowFixture(t)
+	healthy := employeeDirectory(shadowUUID(t, "00000000-0000-0000-0000-000000000401"), shadowUUID(t, "00000000-0000-0000-0000-000000000402"))
+	directory := &toggleDirectory{healthy: healthy}
+	svc := NewContinuousDispatchShadowService(
+		fixture, directory, shadowQuotaFixture{}, shadowLeaseFixture{leases: map[string]*WriteLease{}},
+	).WithClock(fixedShadowClock{now: shadowNow})
+
+	const rounds = 40
+	var wg sync.WaitGroup
+	healthySeen := atomic.Int32{}
+	degradedSeen := atomic.Int32{}
+	for i := 0; i < rounds; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			got, err := svc.InspectProject(context.Background(), workspaceID, projectID, 50, 0)
+			if err != nil {
+				t.Errorf("InspectProject: %v", err)
+				return
+			}
+			switch got.Sources.OrganizationSourceState {
+			case OrganizationSourceHealthy:
+				if !got.Sources.Organization {
+					t.Errorf("healthy state with sources.organization=false")
+				}
+				healthySeen.Add(1)
+			case OrganizationSourceDirectoryRequestError:
+				if got.Sources.Organization {
+					t.Errorf("degraded state with sources.organization=true")
+				}
+				degradedSeen.Add(1)
+			default:
+				t.Errorf("unexpected cross-request state %q", got.Sources.OrganizationSourceState)
+			}
+		}()
+	}
+	wg.Wait()
+	if healthySeen.Load() == 0 || degradedSeen.Load() == 0 {
+		t.Fatalf("isolation never exercised both outcomes: healthy=%d degraded=%d", healthySeen.Load(), degradedSeen.Load())
+	}
+}
+
+// TestWithOrganizationSourceStateRejectsUnknownValue pins the sanitized
+// setter: an arbitrary string is ignored and the default degraded
+// classification stays in force.
+func TestWithOrganizationSourceStateRejectsUnknownValue(t *testing.T) {
+	svc := NewContinuousDispatchShadowService(nil, nil, nil, nil).WithOrganizationSourceState(OrganizationSourceState("https://authority.example"))
+	if svc.startupOrganizationSourceState != OrganizationSourceDirectoryRequestError {
+		t.Fatalf("startup state = %q, want default degraded", svc.startupOrganizationSourceState)
+	}
+}

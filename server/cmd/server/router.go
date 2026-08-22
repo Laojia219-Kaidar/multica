@@ -114,6 +114,11 @@ func appURLFromEnv() string {
 
 type companyOpsRuntimeSources struct {
 	quota service.ContinuousDispatchQuotaSource
+	// organizationSourceState is the immutable, sanitized classification of
+	// the startup organization-source wiring outcome. It is computed once
+	// from outcomes configureCompanyOps already derives; no environment value
+	// is read, logged, or interpolated beyond these constants.
+	organizationSourceState service.OrganizationSourceState
 }
 
 type companyOpsRuntimeClients struct {
@@ -129,22 +134,26 @@ type companyOpsRuntimeClients struct {
 // origin/tenant/token configuration never leaves a partially enabled source.
 func configureCompanyOps(h *handler.Handler, queries *db.Queries, pool *pgxpool.Pool) companyOpsRuntimeSources {
 	var runtimeSources companyOpsRuntimeSources
+	runtimeSources.organizationSourceState = service.OrganizationSourceBaseMissing
 	baseURL := os.Getenv("HIVECOSM_AUTHORITY_BASE_URL")
 	if baseURL == "" {
 		return runtimeSources
 	}
 	if !strictCompanyOpsConfigText(baseURL) {
+		runtimeSources.organizationSourceState = service.OrganizationSourceBaseInvalid
 		slog.Warn("companyops authority adapter disabled", "error", "HIVECOSM_AUTHORITY_BASE_URL is invalid")
 		return runtimeSources
 	}
 	token, tokenErr := companyOpsAuthorityBearerTokenFromEnv(context.Background(), nil)
 	if tokenErr != nil {
+		runtimeSources.organizationSourceState = service.OrganizationSourceTokenUnavailable
 		slog.Warn("companyops authority adapter disabled", "error", companyOpsAuthorityTokenSourceError(tokenErr))
 		return runtimeSources
 	}
 
 	authorityURL, err := url.Parse(baseURL)
 	if err != nil || !isSafeCompanyOpsAuthorityURL(authorityURL) {
+		runtimeSources.organizationSourceState = service.OrganizationSourceBaseInvalid
 		slog.Warn("companyops authority adapter disabled", "error", "HIVECOSM_AUTHORITY_BASE_URL is invalid")
 		return runtimeSources
 	}
@@ -159,6 +168,7 @@ func configureCompanyOps(h *handler.Handler, queries *db.Queries, pool *pgxpool.
 		Timeout:   10 * time.Second,
 	})
 	if err != nil {
+		runtimeSources.organizationSourceState = service.OrganizationSourceBaseInvalid
 		slog.Warn("companyops authority adapter disabled", "error", err)
 		return runtimeSources
 	}
@@ -178,6 +188,7 @@ func configureCompanyOps(h *handler.Handler, queries *db.Queries, pool *pgxpool.
 		&http.Client{Transport: transport, Timeout: 10 * time.Second},
 		tenantID,
 	)
+	runtimeSources.organizationSourceState = service.StartupOrganizationDirectoryState(directoryErr == nil, directoryErr)
 	if directoryErr != nil {
 		slog.Warn("companyops directory service disabled", "error", directoryErr)
 	} else {
@@ -853,7 +864,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		h.CompanyOpsDirectory,
 		runtimeSources.quota,
 		service.NewWriteLeaseService(pool),
-	)
+	).WithOrganizationSourceState(runtimeSources.organizationSourceState)
 	h.ContinuousDispatchShadow = continuousDispatchShadow
 	// The Goal/CHECKLIST file is an explicit, read-only execution-status
 	// source. It is optional so an unmounted or malformed source remains the

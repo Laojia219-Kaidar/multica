@@ -77,6 +77,13 @@ describe("ApiClient work-conserving projection", () => {
   };
 
   const readyResponse = {
+    sources: {
+      project: true,
+      organization: true,
+      organization_source_state: "healthy",
+      runtime: true,
+      tasks: true,
+    },
     work_conserving: {
       schema_version: "hivecrew.work-conserving-projection/v1",
       state: "ready",
@@ -165,6 +172,31 @@ describe("ApiClient work-conserving projection", () => {
   });
 
   it("reads organization_source_state only from the top-level sources block", async () => {
+    // Unhealthy states ride the strict empty source-gap projection; healthy
+    // rides the ready plan. Both must surface their exact classification.
+    const emptySourceGap = {
+      schema_version: "hivecrew.work-conserving-projection/v1",
+      state: "source_gap",
+      reason_code: "source_gap",
+      blocked: true,
+      goal_id: undefined,
+      authority: {},
+      suggestions: [],
+      blocked_backlog: [],
+      mismatch: {
+        open_issues: 0,
+        planned_issues: 0,
+        blocked_backlog: 0,
+        healthy_idle_employees: 0,
+        unmatched_healthy_idle_employees: 0,
+        executable_backlog: 0,
+        idle_backlog_mismatch: 0,
+      },
+      total: 0,
+      limit: 50,
+      offset: 0,
+      no_write: true,
+    };
     for (const state of [
       "base_missing",
       "base_invalid",
@@ -175,15 +207,16 @@ describe("ApiClient work-conserving projection", () => {
       "empty_authoritative_workforce",
       "healthy",
     ]) {
+      const unhealthy = state !== "healthy";
       const response = {
-        ...readyResponse,
         sources: {
           project: true,
-          organization: state !== "base_missing",
+          organization: !unhealthy,
           organization_source_state: state,
           runtime: true,
           tasks: true,
         },
+        work_conserving: unhealthy ? emptySourceGap : readyResponse.work_conserving,
       };
       vi.stubGlobal(
         "fetch",
@@ -191,18 +224,80 @@ describe("ApiClient work-conserving projection", () => {
       );
       await expect(
         new ApiClient("https://api.example.test").getProjectWorkConservingProjection("project-1"),
-      ).resolves.toMatchObject({ organizationSourceState: state });
+      ).resolves.toMatchObject({
+        organizationSourceState: state,
+        ...(unhealthy ? { state: "source_gap", suggestions: [], total: 0 } : {}),
+      });
     }
   });
 
-  it("degrades to a null organization state and the generic source-gap projection when sources is absent", async () => {
+  it("fails closed when an unhealthy organization state is paired with a ready projection or suggestions (incoherence)", async () => {
+    const response = {
+      sources: {
+        organization: false,
+        organization_source_state: "tenant_missing",
+      },
+      work_conserving: readyResponse.work_conserving,
+    };
     vi.stubGlobal(
       "fetch",
-      vi.fn().mockResolvedValue(new Response(JSON.stringify(readyResponse), { status: 200 })),
+      vi.fn().mockResolvedValue(new Response(JSON.stringify(response), { status: 200 })),
     );
     await expect(
       new ApiClient("https://api.example.test").getProjectWorkConservingProjection("project-1"),
-    ).resolves.toMatchObject({ organizationSourceState: null });
+    ).resolves.toMatchObject({
+      state: "source_gap",
+      organizationSourceState: null,
+      suggestions: [],
+      blockedBacklog: [],
+      total: 0,
+      noWrite: true,
+    });
+  });
+
+  it("fails closed when an unhealthy organization state is paired with a non-empty source-gap projection (incoherence)", async () => {
+    const response = {
+      sources: {
+        organization: false,
+        organization_source_state: "directory_request_error",
+      },
+      work_conserving: {
+        ...readyResponse.work_conserving,
+        state: "source_gap",
+        reason_code: "source_gap",
+        blocked: true,
+        total: 1,
+      },
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(new Response(JSON.stringify(response), { status: 200 })),
+    );
+    await expect(
+      new ApiClient("https://api.example.test").getProjectWorkConservingProjection("project-1"),
+    ).resolves.toMatchObject({
+      state: "source_gap",
+      organizationSourceState: null,
+      total: 0,
+    });
+  });
+
+  it("fails closed to the empty source-gap projection when sources.organization_source_state is missing", async () => {
+    const { sources: _sources, ...withoutSources } = readyResponse;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(new Response(JSON.stringify(withoutSources), { status: 200 })),
+    );
+    await expect(
+      new ApiClient("https://api.example.test").getProjectWorkConservingProjection("project-1"),
+    ).resolves.toMatchObject({
+      state: "source_gap",
+      organizationSourceState: null,
+      suggestions: [],
+      blockedBacklog: [],
+      total: 0,
+      noWrite: true,
+    });
   });
 
   it("rejects an unknown organization_source_state value to the generic fallback", async () => {

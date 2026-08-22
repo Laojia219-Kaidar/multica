@@ -80,7 +80,19 @@ func (h *Handler) GetProjectNextActions(w http.ResponseWriter, r *http.Request) 
 	}
 	if projectionRequested {
 		projection := service.NewWorkConservingSourceGapProjection(limit, offset)
-		if h.WorkConservingProjection != nil {
+		// The work-conserving provider re-reads the workforce directory
+		// itself. When this request's top-level shadow read already observed a
+		// non-healthy organization source, the provider must not run at all:
+		// a second, independently-classified workforce read could disagree
+		// with the observed top-level state and manufacture ready suggestions
+		// out of a degraded organization supply. Only a top-level
+		// request-local healthy organization read (organization=true together
+		// with the sanitized organization_source_state=healthy constant) may
+		// evaluate the provider; a later provider source gap still degrades
+		// the projection exactly as before.
+		organizationHealthy := result != nil && result.Sources.Organization &&
+			result.Sources.OrganizationSourceState == service.OrganizationSourceHealthy
+		if h.WorkConservingProjection != nil && organizationHealthy {
 			candidate, providerErr := h.WorkConservingProjection.ProjectWorkConserving(r.Context(), service.WorkConservingProjectionRequest{
 				WorkspaceID: workspaceUUID,
 				ProjectID:   projectUUID,

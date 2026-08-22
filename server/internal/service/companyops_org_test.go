@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgtype"
@@ -518,4 +519,103 @@ func cloneEmployees(value *companyopsapi.AdapterEmployeesResponse) *companyopsap
 	copy := *value
 	copy.Employees = append([]companyopsapi.AdapterEmployeeSummary(nil), value.Employees...)
 	return &copy
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Organization source state (WO-P1-PRIME-PROJECT-AUTHORITY-SOURCE-UI-R6)
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestOrganizationSourceStateVocabularyIsFrozen(t *testing.T) {
+	want := []OrganizationSourceState{
+		OrganizationSourceBaseMissing,
+		OrganizationSourceBaseInvalid,
+		OrganizationSourceTokenUnavailable,
+		OrganizationSourceTenantMissing,
+		OrganizationSourceDirectoryConstructorError,
+		OrganizationSourceDirectoryRequestError,
+		OrganizationSourceEmptyAuthoritativeWorkforce,
+		OrganizationSourceHealthy,
+	}
+	seen := map[OrganizationSourceState]bool{}
+	for _, state := range want {
+		if !ValidOrganizationSourceState(state) {
+			t.Fatalf("frozen state %q rejected by validator", state)
+		}
+		if seen[state] {
+			t.Fatalf("duplicate state %q", state)
+		}
+		seen[state] = true
+	}
+	for _, banned := range []OrganizationSourceState{
+		"", "https://authority.example", "tenant-hivecosm", "keychain:ref", "raw:connection refused",
+		"HEALTHY", "Healthy", " healthy", "healthy ", "unknown",
+	} {
+		if ValidOrganizationSourceState(banned) {
+			t.Fatalf("non-frozen value %q accepted", banned)
+		}
+	}
+}
+
+func TestClassifyOrganizationDirectoryOutcomeTable(t *testing.T) {
+	healthy := &EmployeesResult{Items: []companyopsapi.PublicEmployeeSummary{{EmployeeID: "DE-1"}}}
+	empty := &EmployeesResult{Items: []companyopsapi.PublicEmployeeSummary{}}
+	cases := []struct {
+		name   string
+		result *EmployeesResult
+		err    error
+		want   OrganizationSourceState
+	}{
+		{"empty sentinel error", nil, ErrCompanyOpsEmptyAuthoritativeWorkforce, OrganizationSourceEmptyAuthoritativeWorkforce},
+		{"wrapped empty sentinel error", nil, fmt.Errorf("read: %w", ErrCompanyOpsEmptyAuthoritativeWorkforce), OrganizationSourceEmptyAuthoritativeWorkforce},
+		{"transport error", nil, errors.New("authority 503"), OrganizationSourceDirectoryRequestError},
+		{"nil result no error", nil, nil, OrganizationSourceDirectoryRequestError},
+		{"empty items no error", empty, nil, OrganizationSourceEmptyAuthoritativeWorkforce},
+		{"non-empty items", healthy, nil, OrganizationSourceHealthy},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ClassifyOrganizationDirectoryOutcome(tc.result, tc.err); got != tc.want {
+				t.Fatalf("state = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestCompanyOpsDirectoryGetEmployeesClassifiesEmptyAuthoritativeWorkforce(t *testing.T) {
+	empty := serviceEmployees(serviceSummary(companyopsapi.BindingStateUniqueActiveCandidate, nil))
+	empty.Employees = []companyopsapi.AdapterEmployeeSummary{}
+	adapter := &stubDirectoryAdapter{employees: empty}
+	svc := NewCompanyOpsDirectoryService(adapter, nil)
+
+	result, err := svc.GetEmployees(context.Background(), testWorkspaceUUID, "", "", 500, 0)
+	if err == nil || !errors.Is(err, ErrCompanyOpsEmptyAuthoritativeWorkforce) {
+		t.Fatalf("err = %v, want the empty authoritative workforce sentinel", err)
+	}
+	if result != nil {
+		t.Fatalf("result = %+v, want nil", result)
+	}
+	if got := ClassifyOrganizationDirectoryOutcome(result, err); got != OrganizationSourceEmptyAuthoritativeWorkforce {
+		t.Fatalf("state = %q, want empty_authoritative_workforce", got)
+	}
+}
+
+func TestStartupOrganizationDirectoryStateTable(t *testing.T) {
+	cases := []struct {
+		name        string
+		constructed bool
+		err         error
+		want        OrganizationSourceState
+	}{
+		{"constructed defaults request degraded", true, nil, OrganizationSourceDirectoryRequestError},
+		{"tenant missing", false, errors.New("HIVECOSM_TENANT_ID is required"), OrganizationSourceTenantMissing},
+		{"other constructor failure", false, errors.New("invalid adapter base URL"), OrganizationSourceDirectoryConstructorError},
+		{"no error and not constructed", false, nil, OrganizationSourceDirectoryConstructorError},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := StartupOrganizationDirectoryState(tc.constructed, tc.err); got != tc.want {
+				t.Fatalf("state = %q, want %q", got, tc.want)
+			}
+		})
+	}
 }
