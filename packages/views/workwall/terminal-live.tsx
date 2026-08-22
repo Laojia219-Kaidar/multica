@@ -1,4 +1,5 @@
 "use client";
+/* eslint-disable i18next/no-literal-string */
 
 import { useState } from "react";
 import type { TerminalPane } from "@multica/core/api/workwall";
@@ -7,6 +8,11 @@ import type { TerminalPane } from "@multica/core/api/workwall";
 // 数据来自宿主采集器（scripts/terminal-presence-collector.sh），10 秒心跳，
 // 超过 15 分钟未心跳的 pane 由后端过滤。这里是 Owner 看数字员工
 // "此刻真正在 terminal 里干什么"的现场。
+//
+// 重要：Terminal Live 是外部观测，不是员工身份的权威来源。
+// agent_hint 只是从 pane 环境变量 / 进程名推断的线索，
+// 不能作为员工与 pane 的绑定依据。仅当执行链中存在权威身份
+// 引用时（由服务器在 EmployeeLiveActivityV1 中提供），方可认定。
 
 function timeLabel(iso: string) {
   const d = new Date(iso);
@@ -38,7 +44,9 @@ function PaneCard({ pane }: { pane: TerminalPane }) {
           {pane.host}:{pane.window_index}.{pane.pane_index}
         </span>
         {pane.agent_hint ? (
-          <span className="truncate text-green-200">{pane.agent_hint}</span>
+          <span className="truncate text-green-200" data-testid="terminal-live-agent-hint">
+            hint: {pane.agent_hint}
+          </span>
         ) : null}
         <span className="ml-auto whitespace-nowrap text-green-600">
           {pane.current_command || "idle"} · {timeLabel(pane.heartbeat_at)}
@@ -58,10 +66,16 @@ export function TerminalLiveSection({ panes }: { panes: TerminalPane[] }) {
   const hosts = Array.from(new Set(panes.map((p) => p.host)));
   return (
     <section className="mt-4" data-testid="terminal-live-section">
-      <div className="mb-2 flex items-center gap-2">
+      <div className="mb-2 flex flex-wrap items-center gap-2">
         <h2 className="text-sm font-semibold">Terminal 现场</h2>
         <span className="text-xs text-zinc-500">
           {panes.length} 个活跃 pane · {hosts.length} 台主机 · 采集心跳 10s
+        </span>
+        <span
+          className="rounded border border-zinc-700 bg-zinc-900 px-2 py-0.5 text-[11px] text-zinc-400"
+          data-testid="terminal-live-disclaimer"
+        >
+          外部观测，agent_hint 非权威身份绑定
         </span>
       </div>
       {panes.length === 0 ? (

@@ -1,4 +1,5 @@
 "use client";
+/* eslint-disable i18next/no-literal-string */
 
 import { useState } from "react";
 import type {
@@ -44,8 +45,31 @@ const STAGE_LABEL: Record<string, string> = {
   unknown: "未知",
 };
 
+const FRESHNESS_LABEL: Record<string, string> = {
+  fresh: "新鲜",
+  stale: "陈旧",
+  missing: "缺失",
+  conflict: "冲突",
+};
+
+const FRESHNESS_COLOR: Record<string, string> = {
+  fresh: "text-green-400",
+  stale: "text-yellow-400",
+  missing: "text-red-400",
+  conflict: "text-red-400",
+};
+
 function presenceText(p: PresenceState) {
   return `${PRESENCE_ICON[p]} ${PRESENCE_LABEL[p]}`;
+}
+
+function isoAgeLabel(iso: string): string {
+  const d = new Date(iso);
+  const diff = Math.max(0, Math.floor((Date.now() - d.getTime()) / 1000));
+  if (diff < 60) return `${diff} 秒前`;
+  if (diff < 3600) return `${Math.floor(diff / 60)} 分钟前`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)} 小时前`;
+  return `${Math.floor(diff / 86400)} 天前`;
 }
 
 export interface WorkWallProps {
@@ -77,7 +101,19 @@ export function WorkWall({ employees }: WorkWallProps) {
     if (runtimeFilter !== "all" && e.runtime_provider !== runtimeFilter) return false;
     if (modelFilter !== "all" && e.model_name !== modelFilter) return false;
     if (q !== "") {
-      const hay = [e.display_name, e.project_title, e.issue_identifier, e.issue_title, e.model_name]
+      const hay = [
+        e.display_name,
+        e.employee_id,
+        e.agent_id,
+        e.project_title,
+        e.issue_identifier,
+        e.issue_title,
+        e.model_name,
+        e.runtime_provider,
+        e.runtime_profile_name,
+        e.blocked_reason,
+        e.next_action,
+      ]
         .filter((v): v is string => !!v)
         .join(" ")
         .toLowerCase();
@@ -115,7 +151,7 @@ export function WorkWall({ employees }: WorkWallProps) {
 
       <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
         {filtered.map((e) => (
-          <TerminalCard
+          <OwnerCard
             key={e.agent_id}
             employee={e}
             expanded={expandedId === e.agent_id}
@@ -203,7 +239,7 @@ function ExecutionChainBlock({ employee: e }: { employee: EmployeeLiveActivityV1
     !!e.execution_receipt_ref;
   if (!hasAny) return null;
   return (
-    <div className="mb-2 flex flex-col gap-0.5" data-testid="terminal-card-chain">
+    <div className="mb-2 flex flex-col gap-0.5" data-testid="owner-card-chain">
       <div className="text-green-500">执行链</div>
       {e.project_id ? (
         <div className="truncate">
@@ -247,7 +283,10 @@ function ExecutionChainBlock({ employee: e }: { employee: EmployeeLiveActivityV1
   );
 }
 
-function TerminalCard({
+// OwnerCard — Owner 视角的员工卡。严格按 DTO 展示注册身份、运行时/提供商/模型、
+// 任务/运行/回执与新鲜度等所有 Owner 关心的字段。缺失证据时直接显示"无"，
+// 绝不臆造或从 terminal agent_hint 反推身份关联。
+function OwnerCard({
   employee: e,
   expanded,
   onToggle,
@@ -258,17 +297,21 @@ function TerminalCard({
 }) {
   return (
     <div
-      className={`terminal-card rounded-md border border-green-800 bg-black font-mono text-green-300 ${expanded ? "col-span-full" : ""}`}
-      data-testid="terminal-card"
+      className={`owner-card rounded-md border border-green-800 bg-black font-mono text-green-300 ${expanded ? "col-span-full" : ""}`}
+      data-testid="owner-card"
     >
       <button
         type="button"
         onClick={onToggle}
         className="flex w-full items-center gap-2 px-3 py-2 text-left"
         aria-expanded={expanded}
+        data-testid="owner-card-header"
       >
         <span className="truncate text-sm font-semibold text-green-100">
           {e.display_name}
+        </span>
+        <span className="truncate text-[11px] text-green-600">
+          {e.employee_id}
         </span>
         <span className="ml-auto whitespace-nowrap text-xs">
           {presenceText(e.presence_state)}
@@ -277,9 +320,15 @@ function TerminalCard({
       </button>
 
       <div className="border-t border-green-900 px-3 py-2 text-xs">
-        <div className="truncate">
-          {e.model_name ?? "未计量"} · {e.runtime_provider ?? "无 runtime"}
+        <div className="truncate" data-testid="owner-card-runtime">
+          模型：{e.model_name ?? "未计量"} · 提供商：{e.runtime_provider ?? "无"}
         </div>
+        {e.runtime_profile_id ? (
+          <div className="truncate" data-testid="owner-card-profile">
+            运行档案：{e.runtime_profile_name ?? e.runtime_profile_id}
+            <span className="text-green-700"> {e.runtime_profile_id}</span>
+          </div>
+        ) : null}
         {e.project_title ? (
           <div className="truncate">项目：{e.project_title}</div>
         ) : null}
@@ -290,17 +339,110 @@ function TerminalCard({
           </div>
         ) : null}
         {e.work_stage !== "none" ? (
-          <div>阶段：{STAGE_LABEL[e.work_stage] ?? e.work_stage}</div>
+          <div>工作阶段：{STAGE_LABEL[e.work_stage] ?? e.work_stage}</div>
         ) : null}
-        {e.blocked_reason ? <div>阻塞：{e.blocked_reason}</div> : null}
-        {e.next_action ? <div className="truncate">下一动作：{e.next_action}</div> : null}
+        {e.blocked_reason ? (
+          <div className="text-yellow-400" data-testid="owner-card-blocked">
+            阻塞原因：{e.blocked_reason}
+          </div>
+        ) : null}
+        {e.next_action ? (
+          <div className="truncate" data-testid="owner-card-next">
+            下一动作：{e.next_action}
+          </div>
+        ) : null}
+        <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-green-600">
+          <span data-testid="owner-card-freshness" className={FRESHNESS_COLOR[e.freshness_state] ?? "text-green-600"}>
+            新鲜度：{FRESHNESS_LABEL[e.freshness_state] ?? e.freshness_state}
+          </span>
+          {e.last_heartbeat_at ? (
+            <span data-testid="owner-card-heartbeat">
+              心跳：{isoAgeLabel(e.last_heartbeat_at)}
+            </span>
+          ) : null}
+          {e.token_usage != null ? (
+            <span>Token：{e.token_usage}</span>
+          ) : null}
+        </div>
       </div>
 
       {expanded ? (
-        <div className="border-t border-green-900 px-3 py-2 text-xs" data-testid="terminal-card-expanded">
+        <div className="border-t border-green-900 px-3 py-2 text-xs" data-testid="owner-card-expanded">
           <ExecutionChainBlock employee={e} />
+
+          <div className="mb-2 grid grid-cols-1 gap-0.5 md:grid-cols-2" data-testid="owner-card-evidence">
+            <div>
+              <div className="text-green-500">身份</div>
+              <div className="truncate">员工：{e.display_name}</div>
+              <div className="truncate text-green-700">employee_id {e.employee_id}</div>
+              <div className="truncate text-green-700">agent_id {e.agent_id}</div>
+              {e.department_name ? (
+                <div className="truncate">部门：{e.department_name}</div>
+              ) : null}
+              {e.position_name ? (
+                <div className="truncate">职位：{e.position_name}</div>
+              ) : null}
+            </div>
+            <div>
+              <div className="text-green-500">运行时 / 模型</div>
+              <div className="truncate">
+                Runtime：{e.runtime_provider ?? "无"}
+                {e.runtime_id ? <span className="text-green-700"> {e.runtime_id}</span> : null}
+              </div>
+              <div className="truncate">模型：{e.model_name ?? "未计量"}</div>
+              {e.base_name ? (
+                <div className="truncate">
+                  基座：{e.base_name}
+                  {e.base_id ? <span className="text-green-700"> {e.base_id}</span> : null}
+                </div>
+              ) : null}
+              {e.runtime_profile_id ? (
+                <div className="truncate">
+                  档案：{e.runtime_profile_name ?? e.runtime_profile_id}
+                </div>
+              ) : null}
+            </div>
+            <div>
+              <div className="text-green-500">任务 / 运行</div>
+              {e.task_id ? (
+                <div className="truncate text-green-700">task_id {e.task_id}</div>
+              ) : (
+                <div className="text-zinc-500">无关联 Task</div>
+              )}
+              {e.run_id ? (
+                <div className="truncate text-green-700">run_id {e.run_id}</div>
+              ) : e.task_id ? (
+                <div className="text-zinc-500">直发任务（无独立 Run ID）</div>
+              ) : null}
+              {e.execution_receipt_ref ? (
+                <div className="truncate">
+                  回执：{RECEIPT_STATUS_LABEL[e.execution_receipt_status ?? ""] ?? e.execution_receipt_status ?? ""}
+                  <span className="text-green-700"> {e.execution_receipt_ref}</span>
+                </div>
+              ) : (
+                <div className="text-zinc-500">无执行回执</div>
+              )}
+            </div>
+            <div>
+              <div className="text-green-500">时间线</div>
+              {e.queued_at ? <div className="truncate">排队：{e.queued_at}</div> : null}
+              {e.started_at ? <div className="truncate">开始：{e.started_at}</div> : null}
+              {e.last_heartbeat_at ? (
+                <div className="truncate">心跳：{e.last_heartbeat_at}</div>
+              ) : null}
+              {e.completed_at ? (
+                <div className="truncate">完成：{e.completed_at}</div>
+              ) : null}
+              {e.last_event_at ? (
+                <div className="truncate">最近事件：{e.last_event_at}</div>
+              ) : null}
+              <div className="truncate">观测：{e.observed_at}</div>
+            </div>
+          </div>
+
           {e.recent_events.length > 0 ? (
             <div className="flex flex-col gap-1">
+              <div className="text-green-500">最近事件</div>
               {e.recent_events.slice(-5).map((ev) => (
                 <div key={ev.event_id} className="truncate">
                   <span className="text-green-600">{ev.kind}</span> · {ev.safe_summary}
@@ -310,10 +452,9 @@ function TerminalCard({
           ) : (
             <div>暂无活动事件</div>
           )}
-          {e.last_heartbeat_at ? (
-            <div className="mt-1">心跳：{e.last_heartbeat_at}</div>
-          ) : null}
-          <div className="mt-1">出处：{e.source_refs.join(" ")}</div>
+          <div className="mt-1 text-[11px] text-green-700" data-testid="owner-card-source-refs">
+            出处：{e.source_refs.join(" ")}
+          </div>
         </div>
       ) : null}
     </div>

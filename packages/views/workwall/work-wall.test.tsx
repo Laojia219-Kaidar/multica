@@ -21,7 +21,7 @@ function emp(over: Partial<EmployeeLiveActivityV1> = {}): EmployeeLiveActivityV1
 }
 
 describe("WorkWall", () => {
-  it("renders one terminal window per employee with text (not colour-only) presence", () => {
+  it("renders one owner card per employee with text (not colour-only) presence", () => {
     render(
       <WorkWall
         employees={[
@@ -36,6 +36,7 @@ describe("WorkWall", () => {
         ]}
       />,
     );
+    expect(screen.getAllByTestId("owner-card").length).toBe(2);
     expect(screen.getByText("Emory")).toBeDefined();
     expect(screen.getByText("Coco")).toBeDefined();
     expect(screen.getAllByText(/工作中/).length).toBeGreaterThan(0);
@@ -59,9 +60,9 @@ describe("WorkWall", () => {
         ]}
       />,
     );
-    expect(screen.queryByTestId("terminal-card-expanded")).toBeNull();
-    fireEvent.click(screen.getByText("Emory"));
-    expect(screen.getByTestId("terminal-card-expanded")).toBeDefined();
+    expect(screen.queryByTestId("owner-card-expanded")).toBeNull();
+    fireEvent.click(screen.getByTestId("owner-card-header"));
+    expect(screen.getByTestId("owner-card-expanded")).toBeDefined();
     expect(screen.getByText(/run started/)).toBeDefined();
   });
 
@@ -84,7 +85,6 @@ describe("WorkWall", () => {
     expect(screen.queryByText("Emory")).toBeNull();
     expect(screen.getByText("Coco")).toBeDefined();
   });
-});
 
   it("shows a status summary bar with counts", () => {
     render(
@@ -116,11 +116,19 @@ describe("WorkWall", () => {
     expect(screen.getByText("Token 42")).toBeDefined();
   });
 
-  it("filters by search text", () => {
+  it("filters by search text across employee_id, agent_id, blocked_reason, next_action", () => {
     render(
       <WorkWall
         employees={[
-          emp({ display_name: "Emory", project_title: "工作流与员工记忆系统", issue_title: "事件协议" }),
+          emp({
+            display_name: "Emory",
+            project_title: "工作流与员工记忆系统",
+            issue_title: "事件协议",
+            employee_id: "emp-emory-001",
+            agent_id: "agt-emory-001",
+            blocked_reason: "等待设计评审",
+            next_action: "合并 PR #42",
+          }),
           emp({
             agent_id: "agt-2",
             employee_id: "emp-2",
@@ -136,9 +144,117 @@ describe("WorkWall", () => {
     expect(screen.queryByText("Coco")).toBeNull();
     expect(screen.getByText("Emory")).toBeDefined();
 
+    fireEvent.change(screen.getByTestId("work-wall-search"), { target: { value: "emp-emory" } });
+    expect(screen.queryByText("Coco")).toBeNull();
+    expect(screen.getByText("Emory")).toBeDefined();
+
+    fireEvent.change(screen.getByTestId("work-wall-search"), { target: { value: "设计评审" } });
+    expect(screen.queryByText("Coco")).toBeNull();
+    expect(screen.getByText("Emory")).toBeDefined();
+
+    fireEvent.change(screen.getByTestId("work-wall-search"), { target: { value: "合并 PR" } });
+    expect(screen.queryByText("Coco")).toBeNull();
+    expect(screen.getByText("Emory")).toBeDefined();
+
     fireEvent.change(screen.getByTestId("work-wall-search"), { target: { value: "" } });
     expect(screen.getByText("Coco")).toBeDefined();
   });
+});
+
+describe("WorkWall Owner card identity and runtime", () => {
+  it("shows employee_id and agent_id in the collapsed card header", () => {
+    render(
+      <WorkWall
+        employees={[
+          emp({
+            employee_id: "emp-pixel-001",
+            agent_id: "agt-pixel-001",
+            display_name: "Pixel",
+          }),
+        ]}
+      />,
+    );
+    expect(screen.getByText("emp-pixel-001")).toBeDefined();
+  });
+
+  it("shows model name and runtime provider with clear labels on the collapsed card", () => {
+    render(
+      <WorkWall
+        employees={[
+          emp({
+            model_name: "doubao-seed-2.1-turbo",
+            runtime_provider: "volcengine",
+          }),
+        ]}
+      />,
+    );
+    const runtime = screen.getByTestId("owner-card-runtime");
+    expect(runtime.textContent).toContain("模型：doubao-seed-2.1-turbo");
+    expect(runtime.textContent).toContain("提供商：volcengine");
+  });
+
+  it("shows runtime profile when profile_id is present", () => {
+    render(
+      <WorkWall
+        employees={[
+          emp({
+            runtime_profile_id: "prof-123",
+            runtime_profile_name: "前端开发工程师档案",
+          }),
+        ]}
+      />,
+    );
+    const profile = screen.getByTestId("owner-card-profile");
+    expect(profile.textContent).toContain("运行档案：前端开发工程师档案");
+    expect(profile.textContent).toContain("prof-123");
+  });
+
+  it("does not show runtime profile when profile_id is absent", () => {
+    render(<WorkWall employees={[emp({ runtime_profile_name: "孤儿档案名" })]} />);
+    expect(screen.queryByTestId("owner-card-profile")).toBeNull();
+  });
+
+  it("shows freshness state with correct label", () => {
+    render(<WorkWall employees={[emp({ freshness_state: "fresh" })]} />);
+    const freshness = screen.getByTestId("owner-card-freshness");
+    expect(freshness.textContent).toContain("新鲜度：新鲜");
+  });
+
+  it("shows stale freshness with yellow color class", () => {
+    render(<WorkWall employees={[emp({ freshness_state: "stale" })]} />);
+    const freshness = screen.getByTestId("owner-card-freshness");
+    expect(freshness.className).toContain("text-yellow-400");
+  });
+
+  it("shows blocked reason with warning style", () => {
+    render(
+      <WorkWall
+        employees={[emp({ blocked_reason: "等待 API 密钥审批" })]}
+      />,
+    );
+    const blocked = screen.getByTestId("owner-card-blocked");
+    expect(blocked.textContent).toContain("阻塞原因：等待 API 密钥审批");
+    expect(blocked.className).toContain("text-yellow-400");
+  });
+
+  it("shows next action", () => {
+    render(
+      <WorkWall
+        employees={[emp({ next_action: "提交代码审查" })]}
+      />,
+    );
+    const next = screen.getByTestId("owner-card-next");
+    expect(next.textContent).toContain("下一动作：提交代码审查");
+  });
+
+  it("shows heartbeat age label", () => {
+    const now = new Date();
+    const thirtySecAgo = new Date(now.getTime() - 30_000).toISOString();
+    render(<WorkWall employees={[emp({ last_heartbeat_at: thirtySecAgo })]} />);
+    const hb = screen.getByTestId("owner-card-heartbeat");
+    expect(hb.textContent).toMatch(/心跳：\d+ 秒前/);
+  });
+});
 
 describe("WorkWall execution chain", () => {
   it("renders the full execution chain in the expanded card", () => {
@@ -161,9 +277,9 @@ describe("WorkWall execution chain", () => {
         ]}
       />,
     );
-    expect(screen.queryByTestId("terminal-card-chain")).toBeNull();
-    fireEvent.click(screen.getByText("Emory"));
-    const chain = screen.getByTestId("terminal-card-chain");
+    expect(screen.queryByTestId("owner-card-chain")).toBeNull();
+    fireEvent.click(screen.getByTestId("owner-card-header"));
+    const chain = screen.getByTestId("owner-card-chain");
     expect(chain.textContent).toContain("HIV-797");
     expect(chain.textContent).toContain("[DEV] Work Wall complete execution-chain projection");
     expect(chain.textContent).toContain("11111111-1111-1111-1111-111111111111");
@@ -188,18 +304,17 @@ describe("WorkWall execution chain", () => {
         ]}
       />,
     );
-    fireEvent.click(screen.getByText("Emory"));
-    const chain = screen.getByTestId("terminal-card-chain");
+    fireEvent.click(screen.getByTestId("owner-card-header"));
+    const chain = screen.getByTestId("owner-card-chain");
     expect(chain.textContent).toContain("无独立 Run ID");
     expect(chain.textContent).not.toContain("44444444");
-    // No receipt evidence: nothing rendered, no invented status.
     expect(chain.textContent).not.toContain("Receipt");
   });
 
   it("renders no chain block when no evidence exists", () => {
     render(<WorkWall employees={[emp()]} />);
-    fireEvent.click(screen.getByText("Emory"));
-    expect(screen.queryByTestId("terminal-card-chain")).toBeNull();
+    fireEvent.click(screen.getByTestId("owner-card-header"));
+    expect(screen.queryByTestId("owner-card-chain")).toBeNull();
   });
 
   it("shows the issue identifier on the collapsed card", () => {
@@ -214,5 +329,135 @@ describe("WorkWall execution chain", () => {
       />,
     );
     expect(screen.getByText(/HIV-797 · /)).toBeDefined();
+  });
+});
+
+describe("WorkWall expanded evidence panel", () => {
+  it("shows identity evidence with employee_id and agent_id", () => {
+    render(
+      <WorkWall
+        employees={[
+          emp({
+            employee_id: "emp-pixel",
+            agent_id: "agt-pixel",
+            department_name: "前端工程部",
+            position_name: "前端开发工程师",
+          }),
+        ]}
+      />,
+    );
+    fireEvent.click(screen.getByTestId("owner-card-header"));
+    const evidence = screen.getByTestId("owner-card-evidence");
+    expect(evidence.textContent).toContain("employee_id emp-pixel");
+    expect(evidence.textContent).toContain("agent_id agt-pixel");
+    expect(evidence.textContent).toContain("部门：前端工程部");
+    expect(evidence.textContent).toContain("职位：前端开发工程师");
+  });
+
+  it("shows runtime and base model evidence", () => {
+    render(
+      <WorkWall
+        employees={[
+          emp({
+            runtime_id: "rt-001",
+            runtime_provider: "volcengine",
+            model_name: "doubao-seed-2.1-turbo",
+            base_id: "base-doubao",
+            base_name: "doubao-seed",
+            runtime_profile_id: "prof-001",
+            runtime_profile_name: "高速前端档案",
+          }),
+        ]}
+      />,
+    );
+    fireEvent.click(screen.getByTestId("owner-card-header"));
+    const evidence = screen.getByTestId("owner-card-evidence");
+    expect(evidence.textContent).toContain("Runtime：volcengine");
+    expect(evidence.textContent).toContain("rt-001");
+    expect(evidence.textContent).toContain("模型：doubao-seed-2.1-turbo");
+    expect(evidence.textContent).toContain("基座：doubao-seed");
+    expect(evidence.textContent).toContain("档案：高速前端档案");
+  });
+
+  it("shows task/run/receipt evidence with explicit missing labels", () => {
+    render(<WorkWall employees={[emp()]} />);
+    fireEvent.click(screen.getByTestId("owner-card-header"));
+    const evidence = screen.getByTestId("owner-card-evidence");
+    expect(evidence.textContent).toContain("无关联 Task");
+    expect(evidence.textContent).toContain("无执行回执");
+  });
+
+  it("shows timeline evidence with all timestamps", () => {
+    render(
+      <WorkWall
+        employees={[
+          emp({
+            queued_at: "2026-08-13T11:00:00Z",
+            started_at: "2026-08-13T11:05:00Z",
+            last_heartbeat_at: "2026-08-13T12:00:00Z",
+            last_event_at: "2026-08-13T11:59:00Z",
+            completed_at: null as unknown as string,
+          }),
+        ]}
+      />,
+    );
+    fireEvent.click(screen.getByTestId("owner-card-header"));
+    const evidence = screen.getByTestId("owner-card-evidence");
+    expect(evidence.textContent).toContain("排队：2026-08-13T11:00:00Z");
+    expect(evidence.textContent).toContain("开始：2026-08-13T11:05:00Z");
+    expect(evidence.textContent).toContain("心跳：2026-08-13T12:00:00Z");
+    expect(evidence.textContent).toContain("最近事件：2026-08-13T11:59:00Z");
+    expect(evidence.textContent).toContain("观测：2026-08-13T12:00:00Z");
+  });
+
+  it("shows source refs", () => {
+    render(
+      <WorkWall
+        employees={[emp({ source_refs: ["agent://agt-1", "run://run-1"] })]}
+      />,
+    );
+    fireEvent.click(screen.getByTestId("owner-card-header"));
+    const refs = screen.getByTestId("owner-card-source-refs");
+    expect(refs.textContent).toContain("agent://agt-1");
+    expect(refs.textContent).toContain("run://run-1");
+  });
+});
+
+describe("WorkWall missing evidence regression", () => {
+  it("does not fabricate a terminal-to-employee link from agent_hint", () => {
+    render(
+      <WorkWall
+        employees={[
+          emp({
+            display_name: "Pixel",
+            agent_id: "agt-pixel",
+          }),
+        ]}
+      />,
+    );
+    expect(screen.queryByText(/Terminal 现场/)).toBeNull();
+    expect(screen.queryByText(/agent_hint/)).toBeNull();
+  });
+
+  it("shows model name as 未计量 and runtime as 无 when absent", () => {
+    render(
+      <WorkWall
+        employees={[emp({ model_name: undefined, runtime_provider: undefined })]}
+      />,
+    );
+    const runtime = screen.getByTestId("owner-card-runtime");
+    expect(runtime.textContent).toContain("模型：未计量");
+    expect(runtime.textContent).toContain("提供商：无");
+  });
+
+  it("does not show blocked or next sections when absent", () => {
+    render(<WorkWall employees={[emp({ blocked_reason: undefined, next_action: undefined })]} />);
+    expect(screen.queryByTestId("owner-card-blocked")).toBeNull();
+    expect(screen.queryByTestId("owner-card-next")).toBeNull();
+  });
+
+  it("work_stage none hides the stage line", () => {
+    render(<WorkWall employees={[emp({ work_stage: "none" })]} />);
+    expect(screen.queryByText(/工作阶段：/)).toBeNull();
   });
 });
