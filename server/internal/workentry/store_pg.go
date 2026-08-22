@@ -619,7 +619,7 @@ func (p *PGStore) UpsertHeartbeat(ctx context.Context, hb HeartbeatRecord) error
 	return nil
 }
 
-var heartbeatANSIPattern = regexp.MustCompile(`(?:\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\))|\x9b[0-?]*[ -/]*[@-~]|\x9d[^\x07\x9c]*(?:\x07|\x9c))`)
+var heartbeatANSIPattern = regexp.MustCompile(`(?:\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\))|\x9b[0-?]*[ -/]*[@-~]|\x9d[^\x07\x9c\x1b]*(?:\x07|\x9c|\x1b\\))`)
 
 func sanitizeHeartbeatField(value string, maxRunes int) string {
 	value = heartbeatANSIPattern.ReplaceAllString(value, "")

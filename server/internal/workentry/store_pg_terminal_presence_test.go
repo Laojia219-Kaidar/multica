@@ -15,6 +15,7 @@ func TestSanitizeHeartbeatField(t *testing.T) {
 		{name: "OSC", input: "host\x1b]0;hidden\x07-safe", leak: "hidden", want: "host-safe"},
 		{name: "CSI", input: "session\x1b[31m-red\x1b[0m", leak: "\x1b", want: "session-red"},
 		{name: "C1 OSC", input: "host\u009d0;hidden\u009c-safe", leak: "hidden", want: "host-safe"},
+		{name: "C1 OSC with ESC ST", input: "host\u009d0;hidden\x1b\\-safe", leak: "hidden", want: "host-safe"},
 		{name: "C1 CSI", input: "session\u009b31m-red\u009b0m", leak: "\u009b", want: "session-red"},
 		{name: "Unicode control", input: "host\u0085-safe", leak: "\u0085", want: "host-safe"},
 		{name: "Multica token", input: "agent-mul_0123456789abcdef", leak: "mul_", want: "agent-[REDACTED MULTICA TOKEN]"},
