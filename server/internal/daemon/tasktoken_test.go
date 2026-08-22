@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -174,6 +175,38 @@ func TestTaskTokenRegistryRevokeRemovesFileAndRecord(t *testing.T) {
 	// Idempotent: a second revoke must not error.
 	if err := d.taskTokens.Revoke(testRegisteredTaskID); err != nil {
 		t.Fatalf("second Revoke(): %v", err)
+	}
+}
+
+// TestTaskTokenRegistryResolveRevokeLinearized proves that the token copy and
+// revocation share one critical section. Revoke must not complete while an
+// in-flight Resolve is validating/copying the record, and every Resolve after
+// Revoke completes must fail closed.
+func TestTaskTokenRegistryResolveRevokeLinearized(t *testing.T) {
+	d := newTaskTokenTestDaemon()
+	_, capability := taskTokenFixture(t, d, testRegisteredTaskID, testTaskToken, time.Hour)
+	digest := sha256.Sum256([]byte(capability))
+
+	d.taskTokens.mu.Lock()
+	got, ok := d.taskTokens.resolveLocked(testRegisteredTaskID, digest, time.Now())
+	if !ok || got != testTaskToken {
+		d.taskTokens.mu.Unlock()
+		t.Fatalf("resolveLocked() = %q, ok=%v; want live task token", got, ok)
+	}
+	revokeDone := make(chan error, 1)
+	go func() { revokeDone <- d.taskTokens.Revoke(testRegisteredTaskID) }()
+	select {
+	case err := <-revokeDone:
+		d.taskTokens.mu.Unlock()
+		t.Fatalf("Revoke completed before Resolve critical section ended: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	d.taskTokens.mu.Unlock()
+	if err := <-revokeDone; err != nil {
+		t.Fatalf("Revoke(): %v", err)
+	}
+	if token, ok := d.taskTokens.Resolve(testRegisteredTaskID, capability, time.Now()); ok {
+		t.Fatalf("Resolve() after completed Revoke = %q, want refusal", token)
 	}
 }
 
@@ -353,6 +386,33 @@ func TestTaskTokenHandlerRejections(t *testing.T) {
 			method:     http.MethodPost,
 			target:     TaskTokenPath,
 			body:       "{malformed",
+			capability: func(_, cap string) string { return cap },
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "unknown field refused",
+			setup:      withFixture(testRegisteredTaskID, testTaskToken, time.Hour),
+			method:     http.MethodPost,
+			target:     TaskTokenPath,
+			body:       `{"task_id":"` + testRegisteredTaskID + `","runtime_id":"not-accepted"}`,
+			capability: func(_, cap string) string { return cap },
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "second JSON value refused",
+			setup:      withFixture(testRegisteredTaskID, testTaskToken, time.Hour),
+			method:     http.MethodPost,
+			target:     TaskTokenPath,
+			body:       `{"task_id":"` + testRegisteredTaskID + `"}{"task_id":"` + testRegisteredTaskID + `"}`,
+			capability: func(_, cap string) string { return cap },
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "oversized body refused",
+			setup:      withFixture(testRegisteredTaskID, testTaskToken, time.Hour),
+			method:     http.MethodPost,
+			target:     TaskTokenPath,
+			body:       `{"task_id":"` + testRegisteredTaskID + `","padding":"` + strings.Repeat("x", taskTokenRequestLimit) + `"}`,
 			capability: func(_, cap string) string { return cap },
 			wantStatus: http.StatusBadRequest,
 		},

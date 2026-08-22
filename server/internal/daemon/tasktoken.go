@@ -161,8 +161,16 @@ func (r *taskTokenRegistry) Resolve(taskID, capability string, now time.Time) (s
 	}
 	digest := sha256.Sum256([]byte(capability))
 	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.resolveLocked(taskID, digest, now)
+}
+
+// resolveLocked validates and copies the token while the registry lock is
+// held. This is the linearization point shared with Revoke: once Revoke has
+// completed, no concurrent Resolve can still return a token from the removed
+// record.
+func (r *taskTokenRegistry) resolveLocked(taskID string, digest [sha256.Size]byte, now time.Time) (string, bool) {
 	rec := r.records[taskID]
-	r.mu.Unlock()
 	if rec == nil {
 		return "", false
 	}
@@ -226,7 +234,14 @@ func (d *Daemon) taskTokenHandler() http.HandlerFunc {
 			return
 		}
 		var req taskTokenRequest
-		if err := json.NewDecoder(io.LimitReader(r.Body, taskTokenRequestLimit)).Decode(&req); err != nil {
+		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, taskTokenRequestLimit))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&req); err != nil {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+		var trailing any
+		if err := decoder.Decode(&trailing); err != io.EOF {
 			http.Error(w, "invalid request body", http.StatusBadRequest)
 			return
 		}
