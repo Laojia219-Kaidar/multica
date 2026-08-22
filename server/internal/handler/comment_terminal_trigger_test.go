@@ -3,6 +3,8 @@ package handler
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 )
 
@@ -147,6 +149,7 @@ func TestAssigneeFallback_OrdinaryAgentSelfCommentDoesNotTrigger(t *testing.T) {
 		t.Run(status, func(t *testing.T) {
 			issueID := createCommentTriggerPreviewIssue(t, "ordinary self comment "+status, "agent", assigneeID)
 			setIssueStatus(t, issueID, status)
+			taskID := createHandlerTestTaskForAgentOnIssue(t, assigneeID, issueID)
 
 			issue, err := testHandler.Queries.GetIssue(ctx, parseUUID(issueID))
 			if err != nil {
@@ -154,6 +157,20 @@ func TestAssigneeFallback_OrdinaryAgentSelfCommentDoesNotTrigger(t *testing.T) {
 			}
 			if trigger, ok := testHandler.routeAssigneeFallback(ctx, issue, "agent", assigneeID, commentTriggerComputeOptions{}); ok {
 				t.Fatalf("self-comment fallback returned trigger %+v for status %s", trigger, status)
+			}
+
+			w := httptest.NewRecorder()
+			r := withURLParam(newRequest(http.MethodPost, "/api/issues/"+issueID+"/comments", map[string]any{
+				"content": "plain delivery summary without an explicit mention",
+			}), "id", issueID)
+			r.Header.Set("X-Agent-ID", assigneeID)
+			r.Header.Set("X-Task-ID", taskID)
+			testHandler.CreateComment(w, r)
+			if w.Code != http.StatusCreated {
+				t.Fatalf("CreateComment: expected 201, got %d: %s", w.Code, w.Body.String())
+			}
+			if got := countQueuedCommentTriggerTasks(t, issueID, assigneeID); got != 0 {
+				t.Fatalf("plain assignee self-comment queued %d task(s), want 0 for status %s", got, status)
 			}
 		})
 	}
