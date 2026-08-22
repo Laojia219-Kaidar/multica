@@ -3,6 +3,7 @@ package handler
 import (
 	"encoding/json"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -26,9 +27,9 @@ type terminalPresenceDTO struct {
 }
 
 type upsertTerminalPresenceRequest struct {
-	WorkspaceSlug  string `json:"workspace_slug"`
-	Host           string `json:"host"`
-	Sessions       []terminalPresencePane `json:"sessions"`
+	WorkspaceSlug string                `json:"workspace_slug"`
+	Host          string                `json:"host"`
+	Sessions      []terminalPresencePane `json:"sessions"`
 }
 
 type terminalPresencePane struct {
@@ -44,8 +45,18 @@ type terminalPresencePane struct {
 // ReportTerminalPresence POST /api/work-wall/terminal-presence — collector
 // ingest. Authenticated as a workspace member (loopback owner session covers
 // the host collector); each request replaces the host's panes wholesale.
+//
+// Workspace authority: the authenticated workspace comes from
+// resolveWorkspaceID (middleware / X-Workspace-ID / task-token binding). The
+// request-body WorkspaceSlug is IGNORED for write authorization — accepting
+// it would let a member of workspace A upsert presence rows for workspace B
+// by setting a different slug in the JSON body.
 func (h *Handler) ReportTerminalPresence(w http.ResponseWriter, r *http.Request) {
 	workspaceID := h.resolveWorkspaceID(r)
+	if workspaceID == "" {
+		writeError(w, http.StatusBadRequest, "workspace required")
+		return
+	}
 	if _, ok := h.workspaceMember(w, r, workspaceID); !ok {
 		return
 	}
@@ -58,21 +69,13 @@ func (h *Handler) ReportTerminalPresence(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusBadRequest, "host required")
 		return
 	}
-	slug := req.WorkspaceSlug
-	if slug == "" {
-		slug = "hivecosm"
-	}
-	ws, err := h.Queries.GetWorkspaceBySlug(r.Context(), slug)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "unknown workspace")
-		return
-	}
+	workspaceUUID := parseUUID(workspaceID)
 	for _, p := range req.Sessions {
 		if p.SessionName == "" || len(p.TailText) > 20000 {
 			continue
 		}
 		_ = h.Queries.UpsertTerminalPresence(r.Context(), db.UpsertTerminalPresenceParams{
-			WorkspaceID:    ws.ID,
+			WorkspaceID:    workspaceUUID,
 			Host:           req.Host,
 			SessionName:    p.SessionName,
 			WindowIndex:    int32(p.WindowIndex),
@@ -90,6 +93,10 @@ func (h *Handler) ReportTerminalPresence(w http.ResponseWriter, r *http.Request)
 // (heartbeat within 15 minutes), newest first.
 func (h *Handler) ListTerminalPresence(w http.ResponseWriter, r *http.Request) {
 	workspaceID := h.resolveWorkspaceID(r)
+	if workspaceID == "" {
+		writeError(w, http.StatusBadRequest, "workspace required")
+		return
+	}
 	if _, ok := h.workspaceMember(w, r, workspaceID); !ok {
 		return
 	}
@@ -110,10 +117,26 @@ func (h *Handler) ListTerminalPresence(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
+// terminalPresenceSecretPatterns matches obvious secret shapes that must never
+// reach the database. Mirrors the collector-side patterns in
+// scripts/terminal-presence-collector.py so the server is a true second-pass
+// defense even if the collector is bypassed or misconfigured.
+var terminalPresenceSecretPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`\b(sk-[A-Za-z0-9_\-]{8,})`),
+	regexp.MustCompile(`\b(gla-[A-Za-z0-9_\-]{8,})`),
+	regexp.MustCompile(`\b(mul-[A-Za-z0-9_\-]{8,})`),
+	regexp.MustCompile(`\b(AKIA[0-9A-Z]{16})`),
+	regexp.MustCompile(`(Bearer\s+)[A-Za-z0-9._\-]{16,}`),
+	regexp.MustCompile(`(?i)(password|passwd|secret|token)\s*[=:]\s*\S+`),
+}
+
 // sanitizeTail collapses control sequences and strips obvious secret shapes
 // before storage. Defensive only — the collector sanitizes first; this is the
 // server-side second pass.
 func sanitizeTail(s string, max int) string {
+	// Strip ANSI escape sequences.
+	s = ansiEscapePattern.ReplaceAllString(s, "")
+	// Drop control characters except newline and tab.
 	var b strings.Builder
 	for _, ch := range s {
 		switch {
@@ -126,8 +149,16 @@ func sanitizeTail(s string, max int) string {
 		}
 	}
 	out := b.String()
+	// Redact obvious secret shapes.
+	for _, pat := range terminalPresenceSecretPatterns {
+		out = pat.ReplaceAllString(out, "[REDACTED]")
+	}
 	if len(out) > max {
 		out = out[len(out)-max:]
 	}
 	return out
 }
+
+// ansiEscapePattern matches CSI/OSC ANSI escape sequences (e.g. tmux colour
+// codes captured by pane tails).
+var ansiEscapePattern = regexp.MustCompile(`\x1b\[[0-9;?]*[a-zA-Z]`)
