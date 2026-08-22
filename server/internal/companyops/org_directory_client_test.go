@@ -563,15 +563,67 @@ func TestDirectoryClientRejectsNilOrEmptyOrganization(t *testing.T) {
 	}
 }
 
-func TestDirectoryClientRejectsEmptyEmployees(t *testing.T) {
-	value := validEmployees()
-	value.Employees = []AdapterEmployeeSummary{}
-	client := newDirectoryClient(t, func(w http.ResponseWriter, _ *http.Request) {
-		writePayload(t, w, value)
-	})
-	if _, err := client.GetEmployees(context.Background(), testWorkspace); !errors.Is(err, ErrAdapterMalformed) {
-		t.Fatalf("error = %v, want ErrAdapterMalformed", err)
+// TestDirectoryClientEmployeesWirePresence pins the R3 wire distinction. A
+// valid envelope with an explicit empty employees array ("employees": []) is
+// an authoritative empty workforce. An omitted "employees" key and
+// "employees": null are malformed source data: the authority never affirmed
+// an empty workforce, so both fail closed as ErrAdapterMalformed and can
+// never classify as empty_authoritative_workforce. A non-array employees
+// value is likewise malformed.
+func TestDirectoryClientEmployeesWirePresence(t *testing.T) {
+	base := validEmployees()
+	base.Employees = []AdapterEmployeeSummary{}
+	baseWire, err := json.Marshal(base)
+	if err != nil {
+		t.Fatal(err)
 	}
+
+	cases := []struct {
+		name    string
+		wire    string
+		wantErr bool
+	}{
+		{"explicit empty array is accepted", string(baseWire), false},
+		{"omitted employees key is malformed", `{"schema_version":"` + HiveCrewEmployeesSchema + `","ok":true,"tenant_id":"` + testTenantID + `","workspace_id":"` + testWorkspace + `","authority":` + mustMarshal(t, validAuthority()) + `}`, true},
+		{"null employees is malformed", `{"schema_version":"` + HiveCrewEmployeesSchema + `","ok":true,"tenant_id":"` + testTenantID + `","workspace_id":"` + testWorkspace + `","authority":` + mustMarshal(t, validAuthority()) + `,"employees":null}`, true},
+		{"non-array employees is malformed", `{"schema_version":"` + HiveCrewEmployeesSchema + `","ok":true,"tenant_id":"` + testTenantID + `","workspace_id":"` + testWorkspace + `","authority":` + mustMarshal(t, validAuthority()) + `,"employees":{}}`, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			client := newDirectoryClient(t, func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				if _, err := w.Write([]byte(tc.wire)); err != nil {
+					t.Fatal(err)
+				}
+			})
+
+			result, err := client.GetEmployees(context.Background(), testWorkspace)
+			if tc.wantErr {
+				if err == nil || !errors.Is(err, ErrAdapterMalformed) {
+					t.Fatalf("error = %v, want ErrAdapterMalformed", err)
+				}
+				if result != nil {
+					t.Fatalf("result = %+v, want nil", result)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("GetEmployees: %v", err)
+			}
+			if result == nil || len(result.Employees) != 0 {
+				t.Fatalf("result = %+v, want a non-nil authoritative empty result", result)
+			}
+		})
+	}
+}
+
+func mustMarshal(t *testing.T, value any) string {
+	t.Helper()
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(encoded)
 }
 
 func TestDirectoryClientRejectsBindingOutsideEffectiveWindow(t *testing.T) {

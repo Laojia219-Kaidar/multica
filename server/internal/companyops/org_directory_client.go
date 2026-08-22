@@ -85,10 +85,51 @@ func (c *HiveCrewDirectoryClient) GetEmployees(ctx context.Context, workspaceID 
 	if err := result.Authority.Validate(now); err != nil {
 		return nil, fmt.Errorf("%w: authority: %v", ErrAdapterMalformed, err)
 	}
+	// An authoritative response is a valid empty workforce ONLY when the JSON
+	// wire carries an explicit empty employees array ("employees": []). An
+	// omitted "employees" key or "employees": null decodes to the same nil
+	// slice but is malformed source data: the authority did not affirm an
+	// empty workforce, so it must fail closed as ErrAdapterMalformed and is
+	// never classified as empty_authoritative_workforce. Non-empty arrays run
+	// the full Validate — per-employee validation and duplicate identity
+	// checks — below.
+	employeesPresent, presenceErr := employeesFieldPresent(body)
+	if presenceErr != nil {
+		return nil, fmt.Errorf("%w: employees: %v", ErrAdapterMalformed, presenceErr)
+	}
+	if !employeesPresent {
+		return nil, fmt.Errorf("%w: employees field is required and must be an array", ErrAdapterMalformed)
+	}
+	if len(result.Employees) == 0 {
+		return &result, nil
+	}
 	if err := result.Validate(); err != nil {
 		return nil, fmt.Errorf("%w: employees: %v", ErrAdapterMalformed, err)
 	}
 	return &result, nil
+}
+
+// employeesFieldPresent reports whether the decoded body carries an explicit
+// "employees" key that is a JSON array (an explicit [] or a non-empty array).
+// A missing key or a JSON null is not an authoritative workforce statement.
+// The probe intentionally does not DisallowUnknownFields: strictDecode has
+// already enforced the strict envelope on the primary decode, so the probe's
+// only job is key presence and value shape.
+func employeesFieldPresent(body []byte) (bool, error) {
+	var probe struct {
+		Employees json.RawMessage `json:"employees"`
+	}
+	if err := json.Unmarshal(body, &probe); err != nil {
+		return false, err
+	}
+	raw := bytes.TrimSpace(probe.Employees)
+	if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {
+		return false, nil
+	}
+	if len(raw) < 2 || raw[0] != '[' {
+		return false, fmt.Errorf("employees must be a JSON array")
+	}
+	return true, nil
 }
 
 func (c *HiveCrewDirectoryClient) GetEmployee(ctx context.Context, workspaceID, employeeID string) (*AdapterEmployeeDetailResponse, error) {
