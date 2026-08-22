@@ -549,6 +549,37 @@ function invalidateSquadMemberStatusQueries(qc: QueryClient, wsId: string): void
   });
 }
 
+// Non-streaming task lifecycle transitions, exactly as named by the server
+// contract (server/pkg/protocol/events.go EventTask*). These — and only
+// these — may refresh Project read models: Project list / detail / pipeline /
+// lifecycle / work-conserving projections are server-derived from completed
+// Tasks and task-linked receipt comments, so each lifecycle transition can
+// shift project progress.
+//
+// The gate must be this explicit because task:progress (streaming telemetry,
+// one event per progress report) and task:message (one event per streamed
+// message) share the `task:` prefix with the lifecycle events. Project
+// invalidation can therefore never ride the generic prefix path in
+// refreshMap — progress would storm every project refetch during a long run.
+// task:message additionally never reaches the prefix path at all
+// (specificEvents); task:progress is simply not in this set.
+const TASK_LIFECYCLE_EVENTS: ReadonlySet<string> = new Set([
+  "task:queued",
+  "task:dispatch",
+  "task:running",
+  "task:waiting_local_directory",
+  "task:completed",
+  "task:failed",
+  "task:cancelled",
+]);
+
+// Debounce key for the lifecycle-gated Project refresh. It is not a real
+// event prefix, so it can never collide with a refreshMap entry; sharing the
+// same timers map keeps the existing 100ms debounce/coalescing machinery, so
+// a burst of lifecycle transitions inside one window collapses to exactly
+// one Project invalidation.
+const TASK_PROJECT_REFRESH_KEY = "task:project-refresh";
+
 export interface RealtimeSyncStores {
   authStore: UseBoundStore<StoreApi<AuthState>>;
 }
@@ -710,17 +741,12 @@ export function useRealtimeSync(
         // so rows/groups/facets cannot remain on an old task transition while
         // the projection refetches (global staleTime is Infinity).
         qc.invalidateQueries({ queryKey: issueKeys.tableAll(wsId) });
-        // Project list/detail/pipeline/lifecycle/work-conserving read models
-        // are server-derived from completed Tasks and task-linked receipt
-        // comments, so any task lifecycle transition (queued / dispatch /
-        // running / waiting / completed / failed / cancelled) can shift
-        // project progress. Invalidate this workspace's whole project tree
-        // (prefix covers every project read model) so mounted views refetch
-        // current server truth — refresh only, never an optimistic progress
-        // write and never a client-side Issue/Project status flip.
-        // task:message never enters this prefix path (specificEvents), so
-        // streaming during long runs cannot storm these refetches.
-        qc.invalidateQueries({ queryKey: projectKeys.all(wsId) });
+        // NOTE: Project read models are deliberately NOT invalidated here.
+        // This generic prefix path also carries task:progress (streaming
+        // telemetry, one event per progress report during a long run), so a
+        // Project invalidation on it would storm every project refetch.
+        // Project refreshes live behind the explicit lifecycle gate in the
+        // onAny dispatcher below (see TASK_LIFECYCLE_EVENTS).
         // 30d activity series shares the same lifecycle signal — any task
         // completion / failure shifts the histogram. (Dispatch alone
         // doesn't change a completed_at-anchored series, but invalidating
@@ -806,6 +832,21 @@ export function useRealtimeSync(
     const unsubAny = ws.onAny((msg) => {
       if (specificEvents.has(msg.type)) return;
       const prefix = msg.type.split(":")[0] ?? "";
+      // Project rollup, lifecycle-gated: refresh Project read models only on
+      // the explicit non-streaming lifecycle set (TASK_LIFECYCLE_EVENTS),
+      // under its own debounce key so a burst coalesces to exactly one
+      // projectKeys.all(wsId) invalidation scoped to the exact workspace.
+      // Streaming events never reach this branch — task:message is filtered
+      // by specificEvents above and task:progress is not a lifecycle event —
+      // so progress traffic cannot storm project refetches. Invalidation /
+      // refetch only: no optimistic progress write, no client-side
+      // Issue/Project status flip.
+      if (TASK_LIFECYCLE_EVENTS.has(msg.type)) {
+        debouncedRefresh(TASK_PROJECT_REFRESH_KEY, () => {
+          const wsId = getCurrentWsId();
+          if (wsId) qc.invalidateQueries({ queryKey: projectKeys.all(wsId) });
+        });
+      }
       const refresh = refreshMap[prefix];
       if (refresh) debouncedRefresh(prefix, refresh);
     });

@@ -8,7 +8,7 @@ import { describe, expect, it, vi, beforeAll, beforeEach, afterEach } from "vite
 import type { WSClient } from "../api/ws-client";
 import { defaultStorage } from "../platform/storage";
 import { issueKeys } from "../issues/queries";
-import { workspaceWorkingAgentsKeys } from "../agents/queries";
+import { agentTaskSnapshotKeys, workspaceWorkingAgentsKeys } from "../agents/queries";
 import { workspaceKeys } from "../workspace/queries";
 import { projectKeys } from "../projects/queries";
 import type { ProjectPipelineResponse } from "../projects/pipeline-types";
@@ -306,7 +306,7 @@ describe("useRealtimeSync — Table server membership invalidation", () => {
     expect(onAny).toBeDefined();
 
     onAny!({ type: "task:completed", payload: {} } as never);
-    // Not yet — the shared task-prefix debounce has not elapsed.
+    // Not yet — the 100ms debounce has not elapsed.
     expect(qc.getQueryState(pipelineKey)?.isInvalidated).toBe(false);
     vi.advanceTimersByTime(100);
 
@@ -316,9 +316,10 @@ describe("useRealtimeSync — Table server membership invalidation", () => {
     expect(invalidate).toHaveBeenCalledWith({
       queryKey: workspaceWorkingAgentsKeys.all("ws-1"),
     });
-    // Project rollup: task:completed invalidates projectKeys.all for the
-    // exact workspace after the same 100ms task-prefix debounce, so list /
-    // detail / pipeline / lifecycle / work-conserving refetch server truth.
+    // Project rollup: the lifecycle event invalidates projectKeys.all for
+    // the exact workspace after the lifecycle-gated 100ms debounce, so
+    // list / detail / pipeline / lifecycle / work-conserving refetch
+    // server truth.
     expect(invalidate).toHaveBeenCalledWith({
       queryKey: projectKeys.all("ws-1"),
     });
@@ -351,6 +352,94 @@ describe("useRealtimeSync — Table server membership invalidation", () => {
       calls.some((key) => Array.isArray(key) && key[0] === "projects"),
     ).toBe(false);
     expect(qc.getQueryState(pipelineKey)?.isInvalidated).toBe(false);
+  });
+
+  it("does not invalidate Project queries from task:progress streaming", () => {
+    // task:progress is streaming telemetry — it fires per progress report
+    // during a long run and shares the `task:` prefix with the lifecycle
+    // events, so the Project refresh must stay gated on the explicit
+    // lifecycle set and never ride the generic prefix path.
+    vi.useFakeTimers();
+    const ws = createMockWs();
+    const invalidate = vi.spyOn(qc, "invalidateQueries");
+    const pipelineKey = projectKeys.pipeline("ws-1", "proj-1");
+    qc.setQueryData(pipelineKey, pipelineResponse("proj-1"));
+    renderHook(() => useRealtimeSync(ws, stores), {
+      wrapper: createWrapper(qc),
+    });
+    const onAny = vi.mocked(ws.onAny).mock.calls[0]?.[0];
+    expect(onAny).toBeDefined();
+
+    for (let i = 0; i < 5; i += 1) {
+      onAny!({ type: "task:progress", payload: {} } as never);
+    }
+    vi.advanceTimersByTime(500);
+
+    const calls = invalidate.mock.calls.map((call) => call[0]?.queryKey);
+    expect(
+      calls.some((key) => Array.isArray(key) && key[0] === "projects"),
+    ).toBe(false);
+    expect(qc.getQueryState(pipelineKey)?.isInvalidated).toBe(false);
+    // The pre-existing non-Project task-prefix behavior is preserved:
+    // progress still refreshes the agent presence snapshot.
+    expect(invalidate).toHaveBeenCalledWith({
+      queryKey: agentTaskSnapshotKeys.list("ws-1"),
+    });
+  });
+
+  it("coalesces a lifecycle burst into exactly one Project invalidation", () => {
+    // Multiple qualifying lifecycle events inside one debounce window must
+    // collapse to a single projectKeys.all(wsId) invalidation, and a
+    // task:progress event mixed into the same burst must add nothing.
+    vi.useFakeTimers();
+    const ws = createMockWs();
+    const invalidate = vi.spyOn(qc, "invalidateQueries");
+    const pipelineKey = projectKeys.pipeline("ws-1", "proj-1");
+    const otherWsPipelineKey = projectKeys.pipeline("ws-2", "proj-1");
+    qc.setQueryData(pipelineKey, pipelineResponse("proj-1"));
+    qc.setQueryData(otherWsPipelineKey, pipelineResponse("proj-1"));
+    renderHook(() => useRealtimeSync(ws, stores), {
+      wrapper: createWrapper(qc),
+    });
+    const onAny = vi.mocked(ws.onAny).mock.calls[0]?.[0];
+    expect(onAny).toBeDefined();
+
+    const lifecycleBurst = [
+      "task:queued",
+      "task:dispatch",
+      "task:running",
+      "task:waiting_local_directory",
+      "task:completed",
+      "task:failed",
+    ];
+    for (const type of lifecycleBurst) {
+      onAny!({ type, payload: {} } as never);
+    }
+    // Streaming noise inside the same window must not add a Project hit.
+    onAny!({ type: "task:progress", payload: {} } as never);
+    vi.advanceTimersByTime(100);
+
+    const projectInvalidations = () =>
+      invalidate.mock.calls
+        .map((call) => call[0]?.queryKey)
+        .filter(
+          (key) =>
+            Array.isArray(key) &&
+            key.length === 2 &&
+            key[0] === "projects" &&
+            key[1] === "ws-1",
+        );
+    expect(projectInvalidations()).toHaveLength(1);
+    expect(qc.getQueryState(pipelineKey)?.isInvalidated).toBe(true);
+    // Exact workspace scope holds across the burst: another workspace's
+    // project cache stays valid.
+    expect(qc.getQueryState(otherWsPipelineKey)?.isInvalidated).toBe(false);
+
+    // A lifecycle event in a LATER window refreshes again — coalescing is
+    // per window, not a one-shot suppression.
+    onAny!({ type: "task:cancelled", payload: {} } as never);
+    vi.advanceTimersByTime(100);
+    expect(projectInvalidations()).toHaveLength(2);
   });
 
   it("invalidates Table queries after a property definition changes", () => {
