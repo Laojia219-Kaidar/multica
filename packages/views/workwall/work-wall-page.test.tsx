@@ -53,6 +53,10 @@ const liveEmployee = {
   freshness_state: "fresh",
 };
 
+function snapshotCalls() {
+  return apiMock.workWallSnapshot.mock.calls.length;
+}
+
 describe("WorkWallPage SSE integration", () => {
   beforeEach(() => {
     FakeEventSource.instances = [];
@@ -91,6 +95,7 @@ describe("WorkWallPage SSE integration", () => {
 
     expect(await screen.findByText("Pixel SSE")).toBeDefined();
     view.unmount();
+    client.clear();
     expect(source?.closed).toBe(true);
   });
 });
@@ -122,33 +127,33 @@ describe("WorkWallPage SSE fallback polling", () => {
     vi.useRealTimers();
   });
 
-  it("uses 5000ms snapshot polling while connecting (initial state)", async () => {
-    const { source } = setup();
-    expect(source).toBeDefined();
+  it("does not poll at 4999ms while connecting, fires exactly once at 5000ms", async () => {
+    const { client, view } = setup();
+    expect(snapshotCalls()).toBe(1);
 
     await act(async () => {
       vi.advanceTimersToNextTimer();
     });
-
-    const initialCallCount = apiMock.workWallSnapshot.mock.calls.length;
-    expect(initialCallCount).toBeGreaterThanOrEqual(1);
+    const settled = snapshotCalls();
+    expect(settled).toBe(1);
 
     await act(async () => {
-      vi.advanceTimersByTime(5000);
+      vi.advanceTimersByTime(4999);
     });
+    expect(snapshotCalls()).toBe(settled);
 
-    expect(apiMock.workWallSnapshot).toHaveBeenCalledTimes(initialCallCount + 1);
+    await act(async () => {
+      vi.advanceTimersByTime(1);
+    });
+    expect(snapshotCalls()).toBe(settled + 1);
+
+    view.unmount();
+    client.clear();
   });
 
   it("stops snapshot polling after SSE open", async () => {
-    const { source } = setup();
-
-    await act(async () => {
-      vi.advanceTimersToNextTimer();
-    });
-
-    const beforeOpen = apiMock.workWallSnapshot.mock.calls.length;
-    expect(beforeOpen).toBeGreaterThanOrEqual(1);
+    const { client, view, source } = setup();
+    expect(snapshotCalls()).toBe(1);
 
     act(() => {
       source?.emit("open", new Event("open"));
@@ -158,11 +163,14 @@ describe("WorkWallPage SSE fallback polling", () => {
       vi.advanceTimersByTime(20000);
     });
 
-    expect(apiMock.workWallSnapshot).toHaveBeenCalledTimes(beforeOpen);
+    expect(snapshotCalls()).toBe(1);
+
+    view.unmount();
+    client.clear();
   });
 
-  it("restores 5000ms snapshot polling after an SSE transport error", async () => {
-    const { source } = setup();
+  it("does not poll at 4999ms after transport error, fires exactly once at 5000ms", async () => {
+    const { client, view, source } = setup();
 
     act(() => {
       source?.emit("open", new Event("open"));
@@ -171,21 +179,28 @@ describe("WorkWallPage SSE fallback polling", () => {
     await act(async () => {
       vi.advanceTimersByTime(10000);
     });
-    const afterOpen = apiMock.workWallSnapshot.mock.calls.length;
+    expect(snapshotCalls()).toBe(1);
 
     act(() => {
       source?.emit("error", new Event("error"));
     });
 
     await act(async () => {
-      vi.advanceTimersByTime(5000);
+      vi.advanceTimersByTime(4999);
     });
+    expect(snapshotCalls()).toBe(1);
 
-    expect(apiMock.workWallSnapshot).toHaveBeenCalledTimes(afterOpen + 1);
+    await act(async () => {
+      vi.advanceTimersByTime(1);
+    });
+    expect(snapshotCalls()).toBe(2);
+
+    view.unmount();
+    client.clear();
   });
 
-  it("restores 5000ms snapshot polling after a malformed snapshot frame", async () => {
-    const { source } = setup();
+  it("does not poll at 4999ms after malformed snapshot, fires exactly once at 5000ms", async () => {
+    const { client, view, source } = setup();
 
     act(() => {
       source?.emit("open", new Event("open"));
@@ -194,7 +209,7 @@ describe("WorkWallPage SSE fallback polling", () => {
     await act(async () => {
       vi.advanceTimersByTime(10000);
     });
-    const afterOpen = apiMock.workWallSnapshot.mock.calls.length;
+    expect(snapshotCalls()).toBe(1);
 
     act(() => {
       source?.emit(
@@ -204,16 +219,24 @@ describe("WorkWallPage SSE fallback polling", () => {
     });
 
     await act(async () => {
-      vi.advanceTimersByTime(5000);
+      vi.advanceTimersByTime(4999);
     });
+    expect(snapshotCalls()).toBe(1);
 
-    expect(apiMock.workWallSnapshot).toHaveBeenCalledTimes(afterOpen + 1);
+    await act(async () => {
+      vi.advanceTimersByTime(1);
+    });
+    expect(snapshotCalls()).toBe(2);
+
+    view.unmount();
+    client.clear();
   });
 
   it("closes the EventSource on unmount", () => {
-    const { view, source } = setup();
+    const { client, view, source } = setup();
     expect(source?.closed).toBe(false);
     view.unmount();
     expect(source?.closed).toBe(true);
+    client.clear();
   });
 });
