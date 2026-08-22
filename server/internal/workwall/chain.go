@@ -33,16 +33,31 @@ import (
 //     closed set the schema CHECK allows. Runtime snapshots, result
 //     snapshots, digests, errors, prompts and env payloads on the receipt are
 //     never read into the projection.
+//
+// Narrow-read rule: the chain loads only the columns it renders. The store
+// surface below resolves workspace.issue_prefix, runtime_profile
+// (id, workspace_id, display_name) and execution_receipt (task_id,
+// workspace_id, issue_id, terminal_status) — never the workspace
+// settings/context, profile commands/fixed_args, or receipt snapshots,
+// digests and errors those tables also carry.
 
 // chainStore is the narrow read surface the chain walk needs. It is satisfied
-// by *db.Queries in production and faked in unit tests.
+// by *db.Queries in production and faked in unit tests. Issue and project
+// rows stay on the shared workspace-scoped lookups; the workspace prefix,
+// runtime profile and execution receipt reads are the Work Wall's own narrow
+// projections, which select only the columns the card renders.
 type chainStore interface {
 	GetIssueInWorkspace(ctx context.Context, arg db.GetIssueInWorkspaceParams) (db.Issue, error)
 	GetProjectInWorkspace(ctx context.Context, arg db.GetProjectInWorkspaceParams) (db.Project, error)
-	GetRuntimeProfileForWorkspace(ctx context.Context, arg db.GetRuntimeProfileForWorkspaceParams) (db.RuntimeProfile, error)
-	GetExecutionReceipt(ctx context.Context, taskID pgtype.UUID) (db.ExecutionReceipt, error)
-	GetWorkspace(ctx context.Context, id pgtype.UUID) (db.Workspace, error)
+	GetWorkspaceIssuePrefix(ctx context.Context, id pgtype.UUID) (string, error)
+	GetRuntimeProfileForWorkWall(ctx context.Context, arg db.GetRuntimeProfileForWorkWallParams) (db.GetRuntimeProfileForWorkWallRow, error)
+	GetExecutionReceiptForWorkWall(ctx context.Context, taskID pgtype.UUID) (db.GetExecutionReceiptForWorkWallRow, error)
 }
+
+// Compile-time proof that production binds the walk to the generated narrow
+// reads: if the Work Wall chain ever tries to reach a broad row type again,
+// this assignment stops compiling.
+var _ chainStore = (*db.Queries)(nil)
 
 // chainStoreFor is the production seam binding the walk to the concrete query
 // layer (same pattern as runtimeInventoryStoreFor). Tests swap it for a fake.
@@ -89,13 +104,10 @@ func receiptTerminalStatusOK(s string) bool {
 
 // resolveIssuePrefix returns the stored workspace issue prefix (e.g. "HIV").
 // An empty prefix means the exact human identifier cannot be composed; the
-// chain then leaves IssueIdentifier empty rather than inventing one.
+// chain then leaves IssueIdentifier empty rather than inventing one. Only the
+// prefix column is read — never workspace settings, context or repos.
 func resolveIssuePrefix(ctx context.Context, store chainStore, workspaceID pgtype.UUID) (string, error) {
-	ws, err := store.GetWorkspace(ctx, workspaceID)
-	if err != nil {
-		return "", err
-	}
-	return ws.IssuePrefix, nil
+	return store.GetWorkspaceIssuePrefix(ctx, workspaceID)
 }
 
 // resolveExecutionChain hydrates the chain for the task currently shown on the
@@ -119,7 +131,7 @@ func resolveExecutionChain(
 	}
 
 	if rt != nil && rt.ProfileID.Valid {
-		profile, err := store.GetRuntimeProfileForWorkspace(ctx, db.GetRuntimeProfileForWorkspaceParams{
+		profile, err := store.GetRuntimeProfileForWorkWall(ctx, db.GetRuntimeProfileForWorkWallParams{
 			ID:          rt.ProfileID,
 			WorkspaceID: workspaceID,
 		})
@@ -162,7 +174,7 @@ func resolveExecutionChain(
 		}
 	}
 
-	receipt, err := store.GetExecutionReceipt(ctx, task.ID)
+	receipt, err := store.GetExecutionReceiptForWorkWall(ctx, task.ID)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return nil, err
 	}
@@ -179,7 +191,9 @@ func resolveExecutionChain(
 // receiptLineageMatches is the fail-closed receipt gate: the row must belong
 // to the same workspace, the same issue and (by construction of the lookup)
 // the exact task being projected. Any mismatch hides the receipt entirely.
-func receiptLineageMatches(receipt db.ExecutionReceipt, workspaceID pgtype.UUID, task *db.AgentTaskQueue) bool {
+// The narrow row carries lineage and terminal status only, so there is no
+// payload field the gate could accidentally expose.
+func receiptLineageMatches(receipt db.GetExecutionReceiptForWorkWallRow, workspaceID pgtype.UUID, task *db.AgentTaskQueue) bool {
 	if !receipt.WorkspaceID.Valid || receipt.WorkspaceID != workspaceID {
 		return false
 	}

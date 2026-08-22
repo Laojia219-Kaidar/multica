@@ -4,11 +4,13 @@ package workwall
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/multica-ai/multica/server/internal/liveactivity"
@@ -46,20 +48,24 @@ func TestSnapshotQueriesRunAgainstRealSchema(t *testing.T) {
 		t.Fatalf("ListActivitiesForIssue: %v", err)
 	}
 	// Execution-chain reads (HIV-797) must also be valid against the schema.
-	if _, err := q.GetWorkspace(ctx, ws); err != nil {
-		t.Fatalf("GetWorkspace: %v", err)
+	// The probes use a workspace that holds no rows, so pgx.ErrNoRows is the
+	// expected healthy outcome: it proves the query compiled and ran. The
+	// workspace prefix, profile and receipt probes are the Work Wall's narrow
+	// projections — they select only the columns the card renders.
+	if _, err := q.GetWorkspaceIssuePrefix(ctx, ws); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("GetWorkspaceIssuePrefix: %v", err)
 	}
-	if _, err := q.GetIssueInWorkspace(ctx, db.GetIssueInWorkspaceParams{ID: ws, WorkspaceID: ws}); err != nil {
+	if _, err := q.GetIssueInWorkspace(ctx, db.GetIssueInWorkspaceParams{ID: ws, WorkspaceID: ws}); err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		t.Fatalf("GetIssueInWorkspace: %v", err)
 	}
-	if _, err := q.GetProjectInWorkspace(ctx, db.GetProjectInWorkspaceParams{ID: ws, WorkspaceID: ws}); err != nil {
+	if _, err := q.GetProjectInWorkspace(ctx, db.GetProjectInWorkspaceParams{ID: ws, WorkspaceID: ws}); err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		t.Fatalf("GetProjectInWorkspace: %v", err)
 	}
-	if _, err := q.GetRuntimeProfileForWorkspace(ctx, db.GetRuntimeProfileForWorkspaceParams{ID: ws, WorkspaceID: ws}); err != nil {
-		t.Fatalf("GetRuntimeProfileForWorkspace: %v", err)
+	if _, err := q.GetRuntimeProfileForWorkWall(ctx, db.GetRuntimeProfileForWorkWallParams{ID: ws, WorkspaceID: ws}); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("GetRuntimeProfileForWorkWall: %v", err)
 	}
-	if _, err := q.GetExecutionReceipt(ctx, ws); err != nil {
-		t.Fatalf("GetExecutionReceipt: %v", err)
+	if _, err := q.GetExecutionReceiptForWorkWall(ctx, ws); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("GetExecutionReceiptForWorkWall: %v", err)
 	}
 
 	svc := NewService(q)

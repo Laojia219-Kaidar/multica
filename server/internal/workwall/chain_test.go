@@ -3,6 +3,7 @@ package workwall
 import (
 	"context"
 	"errors"
+	"reflect"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -13,34 +14,38 @@ import (
 // fakeChainStore is an in-memory chainStore. Workspace scoping is modelled
 // exactly like the SQL: a lookup whose workspace does not match returns
 // pgx.ErrNoRows, so tests prove the walk never falls back across workspaces.
+// It stores only the narrow rows the production queries load, mirroring the
+// narrow-read contract of the Work Wall chain.
 type fakeChainStore struct {
-	workspace    db.Workspace
+	workspaceID  pgtype.UUID
+	issuePrefix  string
 	issues       map[string]db.Issue   // key: workspace|issue
 	projects     map[string]db.Project // key: workspace|project
-	profiles     map[string]db.RuntimeProfile
-	receipts     map[string]db.ExecutionReceipt
-	crossCalls   int // lookups whose workspace arg mismatched the stored row
+	profiles     map[string]db.GetRuntimeProfileForWorkWallRow
+	receipts     map[string]db.GetExecutionReceiptForWorkWallRow // key: task
+	crossCalls   int                                             // lookups whose workspace arg mismatched the stored row
 	issueCalls   []string
 	receiptCalls []pgtype.UUID
 }
 
 func newFakeChainStore() *fakeChainStore {
 	return &fakeChainStore{
-		workspace: db.Workspace{ID: tu, IssuePrefix: "HIV"},
-		issues:    map[string]db.Issue{},
-		projects:  map[string]db.Project{},
-		profiles:  map[string]db.RuntimeProfile{},
-		receipts:  map[string]db.ExecutionReceipt{},
+		workspaceID: tu,
+		issuePrefix: "HIV",
+		issues:      map[string]db.Issue{},
+		projects:    map[string]db.Project{},
+		profiles:    map[string]db.GetRuntimeProfileForWorkWallRow{},
+		receipts:    map[string]db.GetExecutionReceiptForWorkWallRow{},
 	}
 }
 
 func key(ws pgtype.UUID, id pgtype.UUID) string { return uuidStr(ws) + "|" + uuidStr(id) }
 
-func (f *fakeChainStore) GetWorkspace(_ context.Context, id pgtype.UUID) (db.Workspace, error) {
-	if id != f.workspace.ID {
-		return db.Workspace{}, pgx.ErrNoRows
+func (f *fakeChainStore) GetWorkspaceIssuePrefix(_ context.Context, id pgtype.UUID) (string, error) {
+	if id != f.workspaceID {
+		return "", pgx.ErrNoRows
 	}
-	return f.workspace, nil
+	return f.issuePrefix, nil
 }
 
 func (f *fakeChainStore) GetIssueInWorkspace(_ context.Context, arg db.GetIssueInWorkspaceParams) (db.Issue, error) {
@@ -72,19 +77,19 @@ func (f *fakeChainStore) GetProjectInWorkspace(_ context.Context, arg db.GetProj
 	return project, nil
 }
 
-func (f *fakeChainStore) GetRuntimeProfileForWorkspace(_ context.Context, arg db.GetRuntimeProfileForWorkspaceParams) (db.RuntimeProfile, error) {
+func (f *fakeChainStore) GetRuntimeProfileForWorkWall(_ context.Context, arg db.GetRuntimeProfileForWorkWallParams) (db.GetRuntimeProfileForWorkWallRow, error) {
 	profile, ok := f.profiles[key(arg.WorkspaceID, arg.ID)]
 	if !ok {
-		return db.RuntimeProfile{}, pgx.ErrNoRows
+		return db.GetRuntimeProfileForWorkWallRow{}, pgx.ErrNoRows
 	}
 	return profile, nil
 }
 
-func (f *fakeChainStore) GetExecutionReceipt(_ context.Context, taskID pgtype.UUID) (db.ExecutionReceipt, error) {
+func (f *fakeChainStore) GetExecutionReceiptForWorkWall(_ context.Context, taskID pgtype.UUID) (db.GetExecutionReceiptForWorkWallRow, error) {
 	f.receiptCalls = append(f.receiptCalls, taskID)
 	receipt, ok := f.receipts[uuidStr(taskID)]
 	if !ok {
-		return db.ExecutionReceipt{}, pgx.ErrNoRows
+		return db.GetExecutionReceiptForWorkWallRow{}, pgx.ErrNoRows
 	}
 	return receipt, nil
 }
@@ -109,15 +114,10 @@ func TestResolveExecutionChain_PositiveHydration(t *testing.T) {
 	store := newFakeChainStore()
 	store.issues[key(tu, tu)] = seededIssue()
 	store.projects[key(tu, tu)] = db.Project{ID: tu, WorkspaceID: tu, Title: "HIVECREW 自我开发项目"}
-	store.profiles[key(tu, tu)] = db.RuntimeProfile{ID: tu, WorkspaceID: tu, DisplayName: "glm-5.3 运行档案", Enabled: true}
+	store.profiles[key(tu, tu)] = db.GetRuntimeProfileForWorkWallRow{ID: tu, WorkspaceID: tu, DisplayName: "glm-5.3 运行档案"}
 	task := seededChainTask()
 	task.AutopilotRunID = pgtype.UUID{Bytes: [16]byte{7}, Valid: true}
-	store.receipts[uuidStr(tu)] = db.ExecutionReceipt{
-		TaskID: tu, WorkspaceID: tu, IssueID: tu,
-		TerminalStatus: pgtype.Text{String: "completed", Valid: true},
-		ResultSnapshot: []byte(`{"secret":"must-not-be-read"}`),
-		TerminalError:  pgtype.Text{String: "postgres://u:secret@h/db", Valid: true},
-	}
+	store.receipts[uuidStr(tu)] = seededReceipt("completed")
 
 	chain, err := resolveExecutionChain(context.Background(), store, tu, "HIV", seededRuntime(), task)
 	if err != nil {
@@ -209,8 +209,8 @@ func TestResolveExecutionChain_CrossWorkspaceFailClosed(t *testing.T) {
 	other := otherWorkspace()
 	store.issues[key(other, tu)] = seededIssue()
 	store.projects[key(other, tu)] = db.Project{ID: tu, WorkspaceID: other, Title: "别的工作区项目"}
-	store.profiles[key(other, tu)] = db.RuntimeProfile{ID: tu, WorkspaceID: other, DisplayName: "别的工作区档案"}
-	store.receipts[uuidStr(tu)] = db.ExecutionReceipt{
+	store.profiles[key(other, tu)] = db.GetRuntimeProfileForWorkWallRow{ID: tu, WorkspaceID: other, DisplayName: "别的工作区档案"}
+	store.receipts[uuidStr(tu)] = db.GetExecutionReceiptForWorkWallRow{
 		TaskID: tu, WorkspaceID: other, IssueID: tu,
 		TerminalStatus: pgtype.Text{String: "completed", Valid: true},
 	}
@@ -242,17 +242,17 @@ func TestResolveExecutionChain_ReceiptLineageMismatchHidesReceipt(t *testing.T) 
 
 	tests := []struct {
 		name    string
-		receipt db.ExecutionReceipt
+		receipt db.GetExecutionReceiptForWorkWallRow
 	}{
-		{"receipt issue differs", db.ExecutionReceipt{
+		{"receipt issue differs", db.GetExecutionReceiptForWorkWallRow{
 			TaskID: tu, WorkspaceID: tu,
 			IssueID:        pgtype.UUID{Bytes: [16]byte{5}, Valid: true},
 			TerminalStatus: pgtype.Text{String: "completed", Valid: true},
 		}},
-		{"unfinalized claim has no terminal status", db.ExecutionReceipt{
+		{"unfinalized claim has no terminal status", db.GetExecutionReceiptForWorkWallRow{
 			TaskID: tu, WorkspaceID: tu, IssueID: tu,
 		}},
-		{"terminal status outside closed set", db.ExecutionReceipt{
+		{"terminal status outside closed set", db.GetExecutionReceiptForWorkWallRow{
 			TaskID: tu, WorkspaceID: tu, IssueID: tu,
 			TerminalStatus: pgtype.Text{String: "mostly_done", Valid: true},
 		}},
@@ -272,16 +272,17 @@ func TestResolveExecutionChain_ReceiptLineageMismatchHidesReceipt(t *testing.T) 
 	}
 }
 
-func TestResolveExecutionChain_ReceiptNeverCarriesPayloadFields(t *testing.T) {
-	store := newFakeChainStore()
-	store.receipts[uuidStr(tu)] = db.ExecutionReceipt{
+// seededReceipt builds the narrow receipt row the production query loads.
+func seededReceipt(status string) db.GetExecutionReceiptForWorkWallRow {
+	return db.GetExecutionReceiptForWorkWallRow{
 		TaskID: tu, WorkspaceID: tu, IssueID: tu,
-		TerminalStatus:  pgtype.Text{String: "failed", Valid: true},
-		RuntimeSnapshot: []byte(`{"env":{"OPENAI_API_KEY":"sk-secret"}}`),
-		ResultSnapshot:  []byte(`{"stdout":"DATABASE_URL=postgres://u:p@h/db"}`),
-		TerminalError:   pgtype.Text{String: "leaked secret text", Valid: true},
-		WorkOrderDigest: "digest-secret",
+		TerminalStatus: pgtype.Text{String: status, Valid: true},
 	}
+}
+
+func TestResolveExecutionChain_ReceiptSurfacesOnlyRefAndStatus(t *testing.T) {
+	store := newFakeChainStore()
+	store.receipts[uuidStr(tu)] = seededReceipt("failed")
 	chain, err := resolveExecutionChain(context.Background(), store, tu, "HIV", nil, seededChainTask())
 	if err != nil {
 		t.Fatalf("resolveExecutionChain: %v", err)
@@ -294,13 +295,31 @@ func TestResolveExecutionChain_ReceiptNeverCarriesPayloadFields(t *testing.T) {
 	if chain.ExecutionReceiptRef != "receipt://"+uuidStr(tu) {
 		t.Fatalf("receipt ref = %q", chain.ExecutionReceiptRef)
 	}
-	for _, forbidden := range []string{"sk-secret", "postgres://", "leaked secret text", "digest-secret"} {
-		for _, field := range []string{chain.ExecutionReceiptRef, chain.ExecutionReceiptStatus, chain.IssueTitle, chain.ProjectTitle, chain.RuntimeProfileName} {
-			if field == forbidden {
-				t.Fatalf("chain leaked receipt payload %q", forbidden)
+}
+
+// TestWorkWallNarrowProjectionsStayNarrow pins the generated narrow row
+// shapes the chain reads rely on. If someone widens these queries back to
+// SELECT * — reintroducing receipt snapshots/digests/errors, profile
+// fixed_args or workspace settings into the Work Wall process path — this
+// test fails before any runtime path can load those columns.
+func TestWorkWallNarrowProjectionsStayNarrow(t *testing.T) {
+	wantFields := func(t *testing.T, typ reflect.Type, want ...string) {
+		t.Helper()
+		got := map[string]bool{}
+		for i := 0; i < typ.NumField(); i++ {
+			got[typ.Field(i).Name] = true
+		}
+		if len(got) != len(want) {
+			t.Fatalf("%s carries %d fields (%v), want exactly %v", typ.Name(), len(got), got, want)
+		}
+		for _, w := range want {
+			if !got[w] {
+				t.Fatalf("%s is missing required field %q", typ.Name(), w)
 			}
 		}
 	}
+	wantFields(t, reflect.TypeOf(db.GetRuntimeProfileForWorkWallRow{}), "ID", "WorkspaceID", "DisplayName")
+	wantFields(t, reflect.TypeOf(db.GetExecutionReceiptForWorkWallRow{}), "TaskID", "WorkspaceID", "IssueID", "TerminalStatus")
 }
 
 func TestResolveExecutionChain_IssueIdentifierNeedsStoredPrefix(t *testing.T) {
