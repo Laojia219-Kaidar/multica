@@ -161,13 +161,9 @@ func ClassifyProject(in ProjectLifecycleInput) ProjectLifecycleClassification {
 		c.ClosureBlockers = append(c.ClosureBlockers, "ACCOUNTABLE_LEAD_REQUIRED")
 	}
 
-	// Missing lead is a hard gate: no active/closure/ready branch may return
-	// owner_decision. The owner must assign an accountable lead first.
-	if !in.HasLead {
-		c.Disposition = DispositionOwnerDecision
-		c.NextAction = "assign an accountable lead before any dispatch or closure"
-		return c
-	}
+	// Health classification (A–G). The if/else-if chain ensures exactly one
+	// branch fires; execution then falls through to the missing-lead override
+	// so that Health is always preserved while Disposition can be dominated.
 
 	// E: frozen duplicate/superseded disposition (contract seed).
 	if in.DuplicateOfProjectID != "" {
@@ -177,84 +173,73 @@ func ClassifyProject(in ProjectLifecycleInput) ProjectLifecycleClassification {
 		c.Flags = append(c.Flags, "duplicate_or_superseded")
 		c.NextAction = "owner must decide keep / merge / supersede against the duplicate project"
 		c.ClosureBlockers = append(c.ClosureBlockers, "DUPLICATE_AUTHORITY_OWNER_DECISION")
-		return c
-	}
-
-	// A: real live work beats everything else.
-	if in.ActiveTaskCount > 0 {
+	} else if in.ActiveTaskCount > 0 {
+		// A: real live work beats everything else.
 		c.Health = HealthActiveWithFrontier
 		c.Disposition = DispositionReady
 		c.Flags = append(c.Flags, "active")
 		c.NextAction = fmt.Sprintf("active: %d nonterminal task(s); keep WIP and await receipts", in.ActiveTaskCount)
-		// Closure gate 3: nonterminal Task/Run must be empty before close.
 		c.ClosureBlockers = append(c.ClosureBlockers, "ACTIVE_TASKS_PRESENT")
-		return c
-	}
-
-	// C: a review/blocked gate with no live task is review_or_repair_blocked.
-	//
-	// Operationalization note (Quinn review F2, accepted): the frozen HIV-553
-	// table judged a few in_review-only projects as B (stalled). Because the
-	// structured REVISE/failed-repair signals do not yet exist, this read model
-	// conservatively surfaces ANY in_review backlog as C so a review queue is
-	// never silently hidden as "stalled". This is a deliberate, fail-closed
-	// operationalization, recorded in EVIDENCE (Quinn review F2 note).
-	if in.BlockedIssueCount > 0 {
+	} else if in.BlockedIssueCount > 0 {
+		// C: a review/blocked gate with no live task is review_or_repair_blocked.
+		//
+		// Operationalization note (Quinn review F2, accepted): the frozen HIV-553
+		// table judged a few in_review-only projects as B (stalled). Because the
+		// structured REVISE/failed-repair signals do not yet exist, this read model
+		// conservatively surfaces ANY in_review backlog as C so a review queue is
+		// never silently hidden as "stalled". This is a deliberate, fail-closed
+		// operationalization, recorded in EVIDENCE (Quinn review F2 note).
 		c.Health = HealthReviewOrRepairBlocked
 		c.Disposition = DispositionBlocked
 		c.Flags = append(c.Flags, "blocked")
 		c.NextAction = fmt.Sprintf("blocked: %d blocked issue(s); resolve the block before dispatch", in.BlockedIssueCount)
 		c.ClosureBlockers = append(c.ClosureBlockers, "BLOCKED_ISSUES")
-		return c
-	}
-	if in.ReviewIssueCount > 0 {
+	} else if in.ReviewIssueCount > 0 {
 		c.Health = HealthReviewOrRepairBlocked
 		c.Disposition = DispositionBlocked
 		c.Flags = append(c.Flags, "review_backlog")
 		c.NextAction = fmt.Sprintf("review backlog: %d in_review issue(s) with no live review task; create a review/disposition task", in.ReviewIssueCount)
 		c.ClosureBlockers = append(c.ClosureBlockers, "REVIEW_BACKLOG")
-		return c
-	}
-
-	// C: a failed task whose issue is still open is a repair gate (contract C
-	// includes "failed repair/re-review has not yet formed a live task").
-	if in.FailedRepairGapCount > 0 {
+	} else if in.FailedRepairGapCount > 0 {
+		// C: a failed task whose issue is still open is a repair gate (contract C
+		// includes "failed repair/re-review has not yet formed a live task").
 		c.Health = HealthReviewOrRepairBlocked
 		c.Disposition = DispositionBlocked
 		c.Flags = append(c.Flags, "repair_gap")
 		c.NextAction = fmt.Sprintf("repair gap: %d failed task(s) on open issue(s) with no live task; create a repair/re-review task", in.FailedRepairGapCount)
 		c.ClosureBlockers = append(c.ClosureBlockers, "FAILED_REPAIR_GAP")
-		return c
-	}
-
-	// G: all issues terminal but no confirmed outcome — closure evidence
-	// cannot be read back, so the project is source_gap, not closable.
-	if in.NonterminalIssueCount == 0 && in.ConfirmedOutcomeCount == 0 {
+	} else if in.NonterminalIssueCount == 0 && in.ConfirmedOutcomeCount == 0 {
+		// G: all issues terminal but no confirmed outcome — closure evidence
+		// cannot be read back, so the project is source_gap, not closable.
 		c.Health = HealthSourceGap
 		c.Disposition = DispositionSourceGap
 		c.Flags = append(c.Flags, "source_gap")
 		c.NextAction = "all issues terminal but no confirmed outcome; map issues to outcomes and generate a closure package"
 		c.ClosureBlockers = append(c.ClosureBlockers, "OUTCOME_COVERAGE_INCOMPLETE", "CLOSURE_PACKAGE_MISSING")
-		return c
-	}
-
-	// B: nonterminal issues remain but no live task and no review/block gate.
-	// This is dispatch demand, not a terminal block: the next work-conserving
-	// provider can consume it as ready work.
-	if in.NonterminalIssueCount > 0 {
+	} else if in.NonterminalIssueCount > 0 {
+		// B: nonterminal issues remain but no live task and no review/block gate.
+		// This is dispatch demand, not a terminal block: the next work-conserving
+		// provider can consume it as ready work.
 		c.Health = HealthStalledNoOpenTask
 		c.Disposition = DispositionReady
 		c.Flags = append(c.Flags, "stalled")
 		c.NextAction = fmt.Sprintf("stalled: %d nonterminal issue(s) with no live task; resume the ready frontier or pause explicitly", in.NonterminalIssueCount)
 		c.ClosureBlockers = append(c.ClosureBlockers, "ISSUES_WITHOUT_DISPOSITION")
-		return c
+	} else {
+		// D: every issue terminal and at least one confirmed outcome.
+		c.Health = HealthReadyForClosure
+		c.Disposition = DispositionReady
+		c.Flags = append(c.Flags, "ready_for_closure")
+		c.NextAction = "ready for closure: generate the closure package"
 	}
 
-	// D: every issue terminal and at least one confirmed outcome.
-	c.Health = HealthReadyForClosure
-	c.Disposition = DispositionReady
-	c.Flags = append(c.Flags, "ready_for_closure")
-	c.NextAction = "ready for closure: generate the closure package"
+	// Missing-lead override: owner_decision dominates the final Disposition
+	// but the A-G Health classification above is preserved intact.
+	if c.OwnerDecisionRequired && !in.HasLead {
+		c.Disposition = DispositionOwnerDecision
+		c.NextAction = "assign an accountable lead before any dispatch or closure"
+	}
+
 	return c
 }
 

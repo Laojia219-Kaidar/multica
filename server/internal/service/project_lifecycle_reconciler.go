@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -127,6 +128,11 @@ func (r *ProjectLifecycleReconciler) Diagnose(ctx context.Context, workspaceID p
 // action per finding (the "handle" half of VC-12). Deduplication is handled
 // atomically by the IssueService duplicate guard (advisory lock + normalized
 // title match inside the create transaction), not by a separate check-then-create.
+//
+// The title is stable (kind + project ID only) so the duplicate guard key
+// does not shift when project counts change after the first repair Issue.
+// Structured provenance (finding_kind, disposition, source_issue_ids,
+// source_gap) is persisted as issue metadata in a follow-up transaction.
 func (r *ProjectLifecycleReconciler) ReconcileWorkspace(ctx context.Context, workspaceID pgtype.UUID, issueSvc *IssueService, creatorType string, creatorID pgtype.UUID) (int, error) {
 	findings, err := r.Diagnose(ctx, workspaceID)
 	if err != nil {
@@ -134,11 +140,8 @@ func (r *ProjectLifecycleReconciler) ReconcileWorkspace(ctx context.Context, wor
 	}
 	created := 0
 	for _, f := range findings {
-		title := "[自愈] " + f.Kind + " · " + f.Summary
-		if len(title) > 200 {
-			title = title[:200]
-		}
-		_, err = issueSvc.Create(ctx, IssueCreateParams{
+		title := "[自愈] " + f.Kind + " · " + f.ProjectID
+		result, err := issueSvc.Create(ctx, IssueCreateParams{
 			WorkspaceID: workspaceID,
 			Title:       title,
 			Description: pgtype.Text{String: f.NextAction, Valid: f.NextAction != ""},
@@ -155,6 +158,42 @@ func (r *ProjectLifecycleReconciler) ReconcileWorkspace(ctx context.Context, wor
 			return created, fmt.Errorf("create reconcile action for %s/%s: %w", f.ProjectID, f.Kind, err)
 		}
 		created++
+
+		// Persist structured provenance as issue metadata.
+		r.setFindingMetadata(ctx, result.Issue, f)
 	}
 	return created, nil
+}
+
+// setFindingMetadata persists the reconciler finding's structured provenance
+// in the issue's metadata JSONB using the existing SetIssueMetadataKey seam.
+func (r *ProjectLifecycleReconciler) setFindingMetadata(ctx context.Context, issue db.Issue, f ReconcileFinding) {
+	if v, err := json.Marshal(f.Kind); err == nil {
+		r.Queries.SetIssueMetadataKey(ctx, db.SetIssueMetadataKeyParams{
+			Key: "finding_kind", Value: v,
+			ID: issue.ID, WorkspaceID: issue.WorkspaceID,
+		})
+	}
+	if v, err := json.Marshal(f.Disposition); err == nil {
+		r.Queries.SetIssueMetadataKey(ctx, db.SetIssueMetadataKeyParams{
+			Key: "disposition", Value: v,
+			ID: issue.ID, WorkspaceID: issue.WorkspaceID,
+		})
+	}
+	if f.FrontierIssueIDs != nil {
+		if v, err := json.Marshal(f.FrontierIssueIDs); err == nil {
+			r.Queries.SetIssueMetadataKey(ctx, db.SetIssueMetadataKeyParams{
+				Key: "source_issue_ids", Value: v,
+				ID: issue.ID, WorkspaceID: issue.WorkspaceID,
+			})
+		}
+	}
+	if f.Disposition == string(DispositionSourceGap) {
+		if v, err := json.Marshal([]string{"goal", "work_order"}); err == nil {
+			r.Queries.SetIssueMetadataKey(ctx, db.SetIssueMetadataKeyParams{
+				Key: "source_gap", Value: v,
+				ID: issue.ID, WorkspaceID: issue.WorkspaceID,
+			})
+		}
+	}
 }

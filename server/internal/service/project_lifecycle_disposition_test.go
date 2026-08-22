@@ -125,6 +125,9 @@ func TestDisposition_MissingLead_ActiveTask(t *testing.T) {
 	c := ClassifyProject(ProjectLifecycleInput{
 		ProjectID: "p1", HasLead: false, ActiveTaskCount: 3, NonterminalIssueCount: 5,
 	})
+	if c.Health != HealthActiveWithFrontier {
+		t.Fatalf("missing-lead + active: health = %q, want %q", c.Health, HealthActiveWithFrontier)
+	}
 	if c.Disposition != DispositionOwnerDecision {
 		t.Fatalf("missing-lead + active: disposition = %q, want %q", c.Disposition, DispositionOwnerDecision)
 	}
@@ -137,6 +140,9 @@ func TestDisposition_MissingLead_StalledWork(t *testing.T) {
 	c := ClassifyProject(ProjectLifecycleInput{
 		ProjectID: "p1", HasLead: false, ActiveTaskCount: 0, NonterminalIssueCount: 4,
 	})
+	if c.Health != HealthStalledNoOpenTask {
+		t.Fatalf("missing-lead + stalled: health = %q, want %q", c.Health, HealthStalledNoOpenTask)
+	}
 	if c.Disposition != DispositionOwnerDecision {
 		t.Fatalf("missing-lead + stalled: disposition = %q, want %q", c.Disposition, DispositionOwnerDecision)
 	}
@@ -146,6 +152,9 @@ func TestDisposition_MissingLead_ClosureReady(t *testing.T) {
 	c := ClassifyProject(ProjectLifecycleInput{
 		ProjectID: "p1", HasLead: false, NonterminalIssueCount: 0, ConfirmedOutcomeCount: 1,
 	})
+	if c.Health != HealthReadyForClosure {
+		t.Fatalf("missing-lead + closure-ready: health = %q, want %q", c.Health, HealthReadyForClosure)
+	}
 	if c.Disposition != DispositionOwnerDecision {
 		t.Fatalf("missing-lead + closure-ready: disposition = %q, want %q", c.Disposition, DispositionOwnerDecision)
 	}
