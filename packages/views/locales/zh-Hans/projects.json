@@ -90,6 +90,7 @@
       "blocked_description": "计划被阻塞；每个未完成 issue 都保留负责人和唤醒条件。",
       "source_gap_description": "权威快照不可用或不完整，不使用本地数据兜底。",
       "no_write": "只读 · 不创建 task、不派工、不写数据库",
+      "bounded_dispatch": "受限派发 · 一次一条、失败即关闭",
       "metrics": {
         "open": "未完成 issue",
         "planned": "已规划",
@@ -102,7 +103,31 @@
       },
       "plan_title": "当前计划证据",
       "empty_plan": "没有返回计划条目。",
-      "wake_condition": "唤醒条件"
+      "wake_condition": "唤醒条件",
+      "drain": {
+        "button": "派发下一条动作",
+        "button_pending": "派发中…",
+        "counters": {
+          "dispatched": "已派发",
+          "already_terminal": "已终结",
+          "blocked": "阻塞",
+          "conflicts": "冲突",
+          "source_gaps": "来源缺口",
+          "deferred": "暂缓"
+        },
+        "outcome": {
+          "dispatched": "已派发",
+          "already_terminal": "已终结",
+          "blocked": "阻塞",
+          "conflict": "冲突",
+          "source_gap": "来源缺口"
+        },
+        "receipt_label": "Task 凭证",
+        "toast_success": "派发完成",
+        "toast_no_ready": "没有可派发的就绪建议",
+        "toast_error": "派发失败",
+        "toast_authority_gap": "派发不可用 · 权威来源缺口"
+      }
     }
   },
   "resources": {

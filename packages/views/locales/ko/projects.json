@@ -90,6 +90,7 @@
       "blocked_description": "계획이 차단되었습니다. 각 미완료 이슈에는 담당자와 재개 조건이 있습니다.",
       "source_gap_description": "권위 스냅샷을 사용할 수 없거나 불완전합니다. 로컬 데이터를 대체로 사용하지 않습니다.",
       "no_write": "읽기 전용 · task 생성, 배정, 데이터베이스 쓰기 없음",
+      "bounded_dispatch": "제한된 실행 · 한 번에 하나씩, 실패 시 종료",
       "metrics": {
         "open": "미완료 이슈",
         "planned": "계획됨",
@@ -102,7 +103,31 @@
       },
       "plan_title": "현재 계획 증거",
       "empty_plan": "반환된 계획 항목이 없습니다.",
-      "wake_condition": "재개 조건"
+      "wake_condition": "재개 조건",
+      "drain": {
+        "button": "다음 액션 실행",
+        "button_pending": "실행 중…",
+        "counters": {
+          "dispatched": "실행됨",
+          "already_terminal": "이미 종료",
+          "blocked": "차단됨",
+          "conflicts": "충돌",
+          "source_gaps": "소스 공백",
+          "deferred": "연기됨"
+        },
+        "outcome": {
+          "dispatched": "실행됨",
+          "already_terminal": "이미 종료",
+          "blocked": "차단됨",
+          "conflict": "충돌",
+          "source_gap": "소스 공백"
+        },
+        "receipt_label": "Task 영수증",
+        "toast_success": "실행 완료",
+        "toast_no_ready": "실행 가능한 제안이 없습니다",
+        "toast_error": "실행 실패",
+        "toast_authority_gap": "실행 불가 · 권위 소스 공백"
+      }
     }
   },
   "resources": {

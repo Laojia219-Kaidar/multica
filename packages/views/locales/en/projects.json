@@ -91,6 +91,7 @@
       "blocked_description": "The plan is blocked; each open issue keeps an accountable receiver and wake condition.",
       "source_gap_description": "The authoritative snapshot is unavailable or incomplete. No local data is used as a fallback.",
       "no_write": "Read-only · no Task, dispatch, or database write",
+      "bounded_dispatch": "Bounded dispatch · one action at a time, fail-closed",
       "metrics": {
         "open": "Open issues",
         "planned": "Planned",
@@ -103,7 +104,31 @@
       },
       "plan_title": "Current plan evidence",
       "empty_plan": "No plan entries were returned.",
-      "wake_condition": "Wake condition"
+      "wake_condition": "Wake condition",
+      "drain": {
+        "button": "Dispatch next action",
+        "button_pending": "Dispatching…",
+        "counters": {
+          "dispatched": "Dispatched",
+          "already_terminal": "Already terminal",
+          "blocked": "Blocked",
+          "conflicts": "Conflicts",
+          "source_gaps": "Source gaps",
+          "deferred": "Deferred"
+        },
+        "outcome": {
+          "dispatched": "dispatched",
+          "already_terminal": "already terminal",
+          "blocked": "blocked",
+          "conflict": "conflict",
+          "source_gap": "source gap"
+        },
+        "receipt_label": "Task receipt",
+        "toast_success": "Dispatch completed",
+        "toast_no_ready": "No ready suggestions to dispatch",
+        "toast_error": "Dispatch failed",
+        "toast_authority_gap": "Dispatch unavailable — authority gap"
+      }
     }
   },
   "resources": {

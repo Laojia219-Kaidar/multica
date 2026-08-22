@@ -90,6 +90,7 @@
       "blocked_description": "プランがブロックされています。各 Issue に担当者と再開条件があります。",
       "source_gap_description": "権威スナップショットが利用できないか不完全です。ローカルデータで代替しません。",
       "no_write": "読み取り専用 · task 作成、割り当て、データベース書き込みなし",
+      "bounded_dispatch": "制限付き実行 · 1 件ずつ、失敗時はクローズ",
       "metrics": {
         "open": "未完了 Issue",
         "planned": "計画済み",
@@ -102,7 +103,31 @@
       },
       "plan_title": "現在のプラン証拠",
       "empty_plan": "プラン項目は返されませんでした。",
-      "wake_condition": "再開条件"
+      "wake_condition": "再開条件",
+      "drain": {
+        "button": "次のアクションを実行",
+        "button_pending": "実行中…",
+        "counters": {
+          "dispatched": "実行済み",
+          "already_terminal": "既に終了",
+          "blocked": "ブロック",
+          "conflicts": "コンフリクト",
+          "source_gaps": "ソース不足",
+          "deferred": "延期"
+        },
+        "outcome": {
+          "dispatched": "実行済み",
+          "already_terminal": "既に終了",
+          "blocked": "ブロック",
+          "conflict": "コンフリクト",
+          "source_gap": "ソース不足"
+        },
+        "receipt_label": "Task レシート",
+        "toast_success": "実行完了",
+        "toast_no_ready": "実行可能な提案はありません",
+        "toast_error": "実行に失敗しました",
+        "toast_authority_gap": "実行不可 · 権威ソース不足"
+      }
     }
   },
   "resources": {
