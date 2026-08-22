@@ -193,6 +193,7 @@ import type {
   CompanyOpsRosterResponse,
   CompanyOpsEmployeeDossier,
   WorkConservingProjection,
+  WorkConservingDrainResult,
 } from "../types";
 import type {
   WorkInboxItem,
@@ -1174,6 +1175,8 @@ import {
   EMPTY_ISSUE_DISPATCH_RESULT,
   WorkConservingProjectionResponseSchema,
   EMPTY_WORK_CONSERVING_PROJECTION,
+  WorkConservingDrainResultSchema,
+  EMPTY_WORK_CONSERVING_DRAIN_RESULT,
 } from "./schemas";
 
 /** Identifies the calling client to the server.
@@ -4016,6 +4019,35 @@ export class ApiClient {
       { endpoint: "GET /api/projects/:id/next-actions?projection=work_conserving" },
     );
     return parsed.workConserving;
+  }
+
+  /**
+   * Drains the next-actions queue for a project by dispatching up to
+   * `batch_size` eligible suggestions. Workspace identity comes from
+   * authHeaders; no Employee, Agent, Runtime, Provider, or model selector
+   * is accepted on the public surface — the server resolves those from
+   * the project's work-conserving projection.
+   */
+  async drainProjectNextActions(
+    id: string,
+    options?: { batch_size?: number },
+  ): Promise<WorkConservingDrainResult> {
+    const body = options?.batch_size !== undefined
+      ? { batch_size: options.batch_size }
+      : {};
+    const raw = await this.fetch<unknown>(
+      `/api/projects/${id}/next-actions/drain`,
+      {
+        method: "POST",
+        body: JSON.stringify(body),
+      },
+    );
+    return parseWithFallback(
+      raw,
+      WorkConservingDrainResultSchema,
+      EMPTY_WORK_CONSERVING_DRAIN_RESULT,
+      { endpoint: "POST /api/projects/:id/next-actions/drain" },
+    );
   }
 
   async generateClosurePackage(id: string): Promise<ProjectClosurePackage> {

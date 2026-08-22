@@ -147,6 +147,13 @@ export type {
   WorkConservingProjection,
   WorkConservingProjectionState,
   WorkConservingSuggestion,
+  ContinuousDispatchIdentity,
+  ContinuousDispatchReviewProvenance,
+  ContinuousDispatchReceipt,
+  WorkConservingDrainState,
+  WorkConservingDrainOutcome,
+  WorkConservingDrainIssueResult,
+  WorkConservingDrainResult,
 } from "./continuous-dispatch";
 export type { PinnedItem, PinnedItemType, CreatePinRequest, ReorderPinsRequest } from "./pin";
 export type {

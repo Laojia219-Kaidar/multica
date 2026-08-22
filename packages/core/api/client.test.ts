@@ -3325,3 +3325,346 @@ describe("ApiClient model discovery response schema", () => {
     expect(result.status).toBe("completed");
   });
 });
+
+describe("ApiClient project next-actions drain", () => {
+  const projectId = "11111111-1111-4111-8111-111111111111";
+  const issueId = "33333333-3333-4333-8333-333333333333";
+  const dispatchReceipt = {
+    Identity: {
+      workspace_id: "77777777-7777-4777-8777-777777777777",
+      issue_id: issueId,
+      stage: "implementation",
+      candidate_revision: "42",
+      generation: "1",
+    },
+    TaskID: "44444444-4444-4444-8444-444444444444",
+    EmployeeRef: "hivecosm://employees/DE-PIXEL-001",
+    LocalAgentID: "55555555-5555-4555-8555-555555555555",
+    RuntimeID: "66666666-6666-4666-8666-666666666666",
+    Model: "doubao-seed-2.1-turbo",
+    AccountRef: "hivecosm://accounts/volcengine-coding-plan",
+    RequestDigest: `sha256:${"a".repeat(64)}`,
+    ReviewProvenance: null,
+  };
+
+  const readyResult = {
+    state: "ready",
+    projection_state: "ready",
+    goal_id: "GOAL-HIVECREW-FAST-DEVELOPMENT-V2",
+    authority: {
+      workspace_id: "77777777-7777-4777-8777-777777777777",
+      project_id: projectId,
+      source_ref: "hivecosm://goals/fast-development-v2",
+      revision: "42",
+      observed_at: "2026-08-23T00:00:00Z",
+      expires_at: "2026-08-23T00:05:00Z",
+    },
+    batch_size: 3,
+    results: [
+      {
+        issue_id: issueId,
+        goal_id: "GOAL-HIVECREW-FAST-DEVELOPMENT-V2",
+        employee_id: "DE-PIXEL-001",
+        outcome: "dispatched",
+        receipt: dispatchReceipt,
+      },
+      {
+        issue_id: "88888888-8888-4888-8888-888888888888",
+        outcome: "blocked",
+        reason: "issue_authority_missing",
+        receiver: "project_owner",
+        wake_condition: "authority_restored",
+        not_attempted: true,
+      },
+    ],
+    deferred_suggestions: 7,
+    dispatched: 1,
+    already_terminal: 0,
+    blocked: 1,
+    conflicts: 0,
+    source_gaps: 0,
+  };
+
+  it("POSTs to the exact drain URL with empty body when no options", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(readyResult), { status: 200 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await new ApiClient("https://api.example.test")
+      .drainProjectNextActions(projectId);
+
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe(`https://api.example.test/api/projects/${projectId}/next-actions/drain`);
+    expect(init?.method).toBe("POST");
+    expect(init?.body).toBe("{}");
+  });
+
+  it("POSTs batch_size only when provided, no other selectors", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(readyResult), { status: 200 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await new ApiClient("https://api.example.test")
+      .drainProjectNextActions(projectId, { batch_size: 5 });
+
+    const [, init] = fetchMock.mock.calls[0]!;
+    const body = JSON.parse(init?.body as string);
+    expect(body).toEqual({ batch_size: 5 });
+  });
+
+  it("does not turn an explicit invalid zero into the server default", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(readyResult), { status: 200 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await new ApiClient("https://api.example.test")
+      .drainProjectNextActions(projectId, { batch_size: 0 });
+
+    const [, init] = fetchMock.mock.calls[0]!;
+    expect(JSON.parse(init?.body as string)).toEqual({ batch_size: 0 });
+  });
+
+  it("does not forward selector-shaped extras from the input object", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(readyResult), { status: 200 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const sneaky = {
+      batch_size: 2,
+      agent_id: "agent-1",
+      employee_id: "DE-001",
+      runtime_id: "rt-1",
+      model: "some-model",
+      provider: "openai",
+      workspace_id: "ws-1",
+      account_id: "acct-1",
+    };
+
+    await new ApiClient("https://api.example.test")
+      .drainProjectNextActions(projectId, sneaky as { batch_size?: number });
+
+    const [, init] = fetchMock.mock.calls[0]!;
+    const body = JSON.parse(init?.body as string);
+    expect(body).toEqual({ batch_size: 2 });
+    expect(body).not.toHaveProperty("agent_id");
+    expect(body).not.toHaveProperty("employee_id");
+    expect(body).not.toHaveProperty("runtime_id");
+    expect(body).not.toHaveProperty("model");
+    expect(body).not.toHaveProperty("provider");
+    expect(body).not.toHaveProperty("workspace_id");
+  });
+
+  it("parses the real ready drain result and nested receipt", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(new Response(JSON.stringify(readyResult), { status: 200 })),
+    );
+
+    const result = await new ApiClient("https://api.example.test")
+      .drainProjectNextActions(projectId);
+
+    expect(result.state).toBe("ready");
+    expect(result.projectionState).toBe("ready");
+    expect(result.goalId).toBe("GOAL-HIVECREW-FAST-DEVELOPMENT-V2");
+    expect(result.authority?.projectId).toBe(projectId);
+    expect(result.batchSize).toBe(3);
+    expect(result.results).toHaveLength(2);
+    expect(result.dispatched).toBe(1);
+    expect(result.blocked).toBe(1);
+    expect(result.deferredSuggestions).toBe(7);
+    expect(result.results[0]?.outcome).toBe("dispatched");
+    expect(result.results[0]?.receipt?.taskId).toBe(
+      "44444444-4444-4444-8444-444444444444",
+    );
+    expect(result.results[0]?.receipt?.identity.issueId).toBe(issueId);
+    expect(result.results[0]?.receipt?.reviewProvenance).toBeUndefined();
+    expect(result.results[1]?.notAttempted).toBe(true);
+  });
+
+  it("parses a non-null review provenance receipt", async () => {
+    const withReviewProvenance = {
+      ...readyResult,
+      results: [
+        {
+          ...readyResult.results[0],
+          receipt: {
+            ...dispatchReceipt,
+            ReviewProvenance: {
+              source_ref: "comment://review-source",
+              source_issue_id: issueId,
+              source_task_id: "99999999-9999-4999-8999-999999999999",
+              initiator_source: "owner_review",
+            },
+          },
+        },
+        readyResult.results[1],
+      ],
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify(withReviewProvenance), { status: 200 }),
+      ),
+    );
+
+    const result = await new ApiClient("https://api.example.test")
+      .drainProjectNextActions(projectId);
+
+    expect(result.results[0]?.receipt?.reviewProvenance).toEqual({
+      sourceRef: "comment://review-source",
+      sourceIssueId: issueId,
+      sourceTaskId: "99999999-9999-4999-8999-999999999999",
+      initiatorSource: "owner_review",
+    });
+  });
+
+  it("accepts blocked backlog rows beyond the dispatch batch size", async () => {
+    const blockedBeyondBatch = { ...readyResult, batch_size: 1 };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify(blockedBeyondBatch), { status: 200 }),
+      ),
+    );
+
+    const result = await new ApiClient("https://api.example.test")
+      .drainProjectNextActions(projectId);
+
+    expect(result.state).toBe("ready");
+    expect(result.batchSize).toBe(1);
+    expect(result.results).toHaveLength(2);
+  });
+
+  it.each([
+    ["counter mismatch", { ...readyResult, dispatched: 2 }],
+    [
+      "dispatched result missing receipt",
+      {
+        ...readyResult,
+        results: [
+          {
+            issue_id: issueId,
+            goal_id: "GOAL-HIVECREW-FAST-DEVELOPMENT-V2",
+            employee_id: "DE-PIXEL-001",
+            outcome: "dispatched",
+          },
+          readyResult.results[1],
+        ],
+      },
+    ],
+    ["unknown top-level field", { ...readyResult, surprise: true }],
+    [
+      "unknown result field",
+      {
+        ...readyResult,
+        results: [{ ...readyResult.results[0], surprise: true }, readyResult.results[1]],
+      },
+    ],
+    [
+      "unknown outcome",
+      {
+        ...readyResult,
+        results: [
+          { ...readyResult.results[0], outcome: "future_outcome" },
+          readyResult.results[1],
+        ],
+      },
+    ],
+    [
+      "ready state with source_gap projection",
+      { ...readyResult, projection_state: "source_gap" },
+    ],
+  ])("fails closed for %s", async (_caseName, malformed) => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify(malformed), { status: 200 }),
+      ),
+    );
+
+    const result = await new ApiClient("https://api.example.test")
+      .drainProjectNextActions(projectId);
+
+    expect(result).toEqual({
+      state: "source_gap",
+      reasonCode: "malformed_response",
+      goalId: null,
+      authority: null,
+      batchSize: 0,
+      results: [],
+      deferredSuggestions: 0,
+      dispatched: 0,
+      alreadyTerminal: 0,
+      blocked: 0,
+      conflicts: 0,
+      sourceGaps: 0,
+    });
+  });
+
+  it("fails closed to an empty source_gap result for malformed 2xx", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ state: "ready", results: null }), { status: 200 }),
+      ),
+    );
+
+    const result = await new ApiClient("https://api.example.test")
+      .drainProjectNextActions(projectId);
+
+    expect(result.state).toBe("source_gap");
+    expect(result.reasonCode).toBe("malformed_response");
+    expect(result.authority).toBeNull();
+    expect(result.batchSize).toBe(0);
+    expect(result.results).toEqual([]);
+    expect(result.dispatched).toBe(0);
+    expect(result.deferredSuggestions).toBe(0);
+  });
+
+  it("preserves the existing ApiError semantics for non-2xx source gaps", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            state: "source_gap",
+            reason_code: "projection_source_gap",
+            authority: {
+              workspace_id: "",
+              project_id: "",
+              source_ref: "",
+              revision: "",
+              observed_at: "",
+              expires_at: "",
+            },
+            batch_size: 0,
+            results: [],
+            deferred_suggestions: 0,
+            dispatched: 0,
+            already_terminal: 0,
+            blocked: 0,
+            conflicts: 0,
+            source_gaps: 0,
+          }),
+          { status: 503 },
+        ),
+      ),
+    );
+
+    const request = new ApiClient("https://api.example.test")
+      .drainProjectNextActions(projectId);
+
+    await expect(request).rejects.toBeInstanceOf(ApiError);
+    await expect(request).rejects.toMatchObject({
+      status: 503,
+      body: {
+        state: "source_gap",
+        reason_code: "projection_source_gap",
+      },
+    });
+  });
+});

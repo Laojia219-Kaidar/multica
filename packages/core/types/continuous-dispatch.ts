@@ -9,6 +9,69 @@ export interface WorkConservingAuthoritySnapshot {
   expiresAt: string;
 }
 
+export interface ContinuousDispatchIdentity {
+  workspaceId: string;
+  issueId: string;
+  stage: string;
+  candidateRevision: string;
+  generation: string;
+}
+
+export interface ContinuousDispatchReviewProvenance {
+  sourceRef: string;
+  sourceIssueId: string;
+  sourceTaskId: string;
+  initiatorSource: string;
+}
+
+export interface ContinuousDispatchReceipt {
+  identity: ContinuousDispatchIdentity;
+  taskId: string;
+  employeeRef: string;
+  localAgentId: string;
+  runtimeId: string;
+  model: string;
+  accountRef: string;
+  requestDigest: string;
+  reviewProvenance?: ContinuousDispatchReviewProvenance;
+}
+
+export type WorkConservingDrainState = "ready" | "source_gap";
+export type WorkConservingDrainOutcome =
+  | "dispatched"
+  | "already_terminal"
+  | "blocked"
+  | "conflict"
+  | "source_gap";
+
+export interface WorkConservingDrainIssueResult {
+  issueId: string;
+  goalId?: string;
+  employeeId?: string;
+  outcome: WorkConservingDrainOutcome;
+  reason?: string;
+  receiver?: string;
+  wakeCondition?: string;
+  receipt?: ContinuousDispatchReceipt;
+  notAttempted?: boolean;
+}
+
+export interface WorkConservingDrainResult {
+  state: WorkConservingDrainState;
+  reasonCode?: string;
+  projectionState?: WorkConservingProjectionState;
+  goalId: string | null;
+  authority: WorkConservingAuthoritySnapshot | null;
+  batchSize: number;
+  results: WorkConservingDrainIssueResult[];
+  deferredSuggestions: number;
+  dispatched: number;
+  alreadyTerminal: number;
+  blocked: number;
+  conflicts: number;
+  sourceGaps: number;
+}
+
 export interface WorkConservingSuggestion {
   issueId: string;
   goalId: string;

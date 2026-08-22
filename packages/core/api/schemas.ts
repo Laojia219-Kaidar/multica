@@ -38,6 +38,8 @@ import type {
   ListLabelsResponse,
   ListWebhookDeliveriesResponse,
   NotificationPreferenceResponse,
+  ContinuousDispatchReceipt,
+  WorkConservingDrainResult,
   ResourceLabelsResponse,
   RuntimeModelListRequest,
   SearchIssuesResponse,
@@ -285,6 +287,208 @@ export const EMPTY_WORK_CONSERVING_PROJECTION: WorkConservingProjection = {
   limit: 0,
   offset: 0,
   noWrite: true,
+};
+
+const ContinuousDispatchIdentityWireSchema = z
+  .object({
+    workspace_id: z.string().uuid(),
+    issue_id: z.string().uuid(),
+    stage: z.string().min(1),
+    candidate_revision: z.string().min(1),
+    generation: z.string().min(1),
+  })
+  .strict();
+
+const ContinuousDispatchReviewProvenanceWireSchema = z
+  .object({
+    source_ref: z.string().min(1),
+    source_issue_id: z.string().uuid(),
+    source_task_id: z.string().uuid(),
+    initiator_source: z.string().min(1),
+  })
+  .strict();
+
+export const ContinuousDispatchReceiptSchema = z
+  .object({
+    Identity: ContinuousDispatchIdentityWireSchema,
+    TaskID: z.string().uuid(),
+    EmployeeRef: z.string().min(1),
+    LocalAgentID: z.string().uuid(),
+    RuntimeID: z.string().uuid(),
+    Model: z.string().min(1),
+    AccountRef: z.string().min(1),
+    RequestDigest: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+    ReviewProvenance: ContinuousDispatchReviewProvenanceWireSchema.nullable(),
+  })
+  .strict()
+  .transform((receipt): ContinuousDispatchReceipt => ({
+    identity: {
+      workspaceId: receipt.Identity.workspace_id,
+      issueId: receipt.Identity.issue_id,
+      stage: receipt.Identity.stage,
+      candidateRevision: receipt.Identity.candidate_revision,
+      generation: receipt.Identity.generation,
+    },
+    taskId: receipt.TaskID,
+    employeeRef: receipt.EmployeeRef,
+    localAgentId: receipt.LocalAgentID,
+    runtimeId: receipt.RuntimeID,
+    model: receipt.Model,
+    accountRef: receipt.AccountRef,
+    requestDigest: receipt.RequestDigest,
+    reviewProvenance: receipt.ReviewProvenance
+      ? {
+          sourceRef: receipt.ReviewProvenance.source_ref,
+          sourceIssueId: receipt.ReviewProvenance.source_issue_id,
+          sourceTaskId: receipt.ReviewProvenance.source_task_id,
+          initiatorSource: receipt.ReviewProvenance.initiator_source,
+        }
+      : undefined,
+  }));
+
+const WorkConservingDrainIssueResultWireSchema = z
+  .object({
+    issue_id: z.string().min(1),
+    goal_id: z.string().min(1).optional(),
+    employee_id: z.string().min(1).optional(),
+    outcome: z.enum(["dispatched", "already_terminal", "blocked", "conflict", "source_gap"]),
+    reason: z.string().min(1).optional(),
+    receiver: z.string().min(1).optional(),
+    wake_condition: z.string().min(1).optional(),
+    receipt: ContinuousDispatchReceiptSchema.optional(),
+    not_attempted: z.literal(true).optional(),
+  })
+  .strict()
+  .superRefine((row, ctx) => {
+    if ((row.outcome === "dispatched") !== (row.receipt !== undefined)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["receipt"],
+        message: "only dispatched drain results carry a receipt",
+      });
+    }
+  });
+
+const WorkConservingDrainResultWireSchema = z
+  .object({
+    state: z.enum(["ready", "source_gap"]),
+    reason_code: z.string().min(1).optional(),
+    projection_state: z.enum(["ready", "blocked", "source_gap"]).optional(),
+    goal_id: z.string().min(1).optional(),
+    authority: WorkConservingAuthoritySnapshotSchema,
+    batch_size: z.number().int().nonnegative(),
+    results: z.array(WorkConservingDrainIssueResultWireSchema),
+    deferred_suggestions: z.number().int().nonnegative(),
+    dispatched: z.number().int().nonnegative(),
+    already_terminal: z.number().int().nonnegative(),
+    blocked: z.number().int().nonnegative(),
+    conflicts: z.number().int().nonnegative(),
+    source_gaps: z.number().int().nonnegative(),
+  })
+  .strict()
+  .superRefine((result, ctx) => {
+    const outcomeCounts = {
+      dispatched: 0,
+      already_terminal: 0,
+      blocked: 0,
+      conflict: 0,
+      source_gap: 0,
+    };
+    for (const row of result.results) outcomeCounts[row.outcome]++;
+    const countMismatch =
+      result.dispatched !== outcomeCounts.dispatched ||
+      result.already_terminal !== outcomeCounts.already_terminal ||
+      result.blocked !== outcomeCounts.blocked ||
+      result.conflicts !== outcomeCounts.conflict ||
+      result.source_gaps !== outcomeCounts.source_gap;
+    if (countMismatch) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["results"],
+        message: "work-conserving drain counters do not match results",
+      });
+    }
+    const authorityValues = Object.values(result.authority);
+    const authorityPresent = authorityValues.some(Boolean);
+    const authorityComplete = authorityValues.every(Boolean);
+    if (result.state === "ready") {
+      if (
+        !authorityComplete ||
+        result.projection_state === undefined ||
+        result.projection_state === "source_gap" ||
+        result.goal_id === undefined ||
+        result.batch_size < 1
+      ) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "ready work-conserving drain scope is incomplete",
+        });
+      }
+    }
+    if (
+      result.state === "source_gap" &&
+      (authorityPresent ||
+        result.results.length !== 0 ||
+        result.batch_size !== 0 ||
+        result.deferred_suggestions !== 0)
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "source_gap work-conserving drain must contain no executable work",
+      });
+    }
+  });
+
+export const WorkConservingDrainResultSchema = WorkConservingDrainResultWireSchema.transform(
+  (result): WorkConservingDrainResult => ({
+    state: result.state,
+    reasonCode: result.reason_code,
+    projectionState: result.projection_state,
+    goalId: result.goal_id ?? null,
+    authority: result.authority.workspace_id && result.authority.project_id
+      ? {
+          workspaceId: result.authority.workspace_id,
+          projectId: result.authority.project_id,
+          sourceRef: result.authority.source_ref,
+          revision: result.authority.revision,
+          observedAt: result.authority.observed_at,
+          expiresAt: result.authority.expires_at,
+        }
+      : null,
+    batchSize: result.batch_size,
+    results: result.results.map((row) => ({
+      issueId: row.issue_id,
+      goalId: row.goal_id,
+      employeeId: row.employee_id,
+      outcome: row.outcome,
+      reason: row.reason,
+      receiver: row.receiver,
+      wakeCondition: row.wake_condition,
+      receipt: row.receipt,
+      notAttempted: row.not_attempted,
+    })),
+    deferredSuggestions: result.deferred_suggestions,
+    dispatched: result.dispatched,
+    alreadyTerminal: result.already_terminal,
+    blocked: result.blocked,
+    conflicts: result.conflicts,
+    sourceGaps: result.source_gaps,
+  }),
+);
+
+export const EMPTY_WORK_CONSERVING_DRAIN_RESULT: WorkConservingDrainResult = {
+  state: "source_gap",
+  reasonCode: "malformed_response",
+  goalId: null,
+  authority: null,
+  batchSize: 0,
+  results: [],
+  deferredSuggestions: 0,
+  dispatched: 0,
+  alreadyTerminal: 0,
+  blocked: 0,
+  conflicts: 0,
+  sourceGaps: 0,
 };
 
 export const GitHubInstallationSchema = z.object({
