@@ -175,3 +175,121 @@ func TestWorkConservingProjectionValidationRejectsExpiredSourceAndAcceptsBlocked
 		t.Fatal("provider TTL must be positive")
 	}
 }
+
+func providerGoalSource(t *testing.T, goalID, workspaceID, projectID string, extra ...string) string {
+	t.Helper()
+	document := "schema_version: " + workConservingGoalSchemaV2 + "\nwork_conserving_authority:\n  schema_version: " + workConservingGoalSchemaV2 + "\n  goal_id: " + goalID + "\n  workspace_id: " + workspaceID + "\n  project_id: " + projectID + "\n  source_ref: /goal/CHECKLIST.yaml\n"
+	return document + strings.Join(extra, "")
+}
+
+func writeGoalSource(t *testing.T, content string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "CHECKLIST.yaml")
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+const (
+	providerGoalWorkspaceID = "00000000-0000-0000-0000-000000000001"
+	providerGoalProjectID   = "00000000-0000-0000-0000-000000000002"
+)
+
+// A second `---` document must be a source gap, not silently ignored: a stale
+// override or shadow binding after the first document would otherwise compete
+// with the explicit authority block without ever being observed.
+func TestReadWorkConservingGoalSourceRejectsMultiDocumentStream(t *testing.T) {
+	second := "schema_version: " + workConservingGoalSchemaV2 + "\nwork_conserving_authority:\n  schema_version: " + workConservingGoalSchemaV2 + "\n  goal_id: goal-2\n  workspace_id: 00000000-0000-0000-0000-000000000003\n  project_id: 00000000-0000-0000-0000-000000000004\n  source_ref: /goal/CHECKLIST.yaml\n"
+	path := writeGoalSource(t, providerGoalSource(t, "goal-1", providerGoalWorkspaceID, providerGoalProjectID, "---\n", second))
+	_, err := readWorkConservingGoalSource(path)
+	if err == nil || !errors.Is(err, ErrWorkConservingProjectionSourceGap) {
+		t.Fatalf("error = %v, want ErrWorkConservingProjectionSourceGap", err)
+	}
+	if !strings.Contains(err.Error(), "more than one YAML document") {
+		t.Fatalf("error = %v, want an explicit multi-document reason", err)
+	}
+	binding, err := ReadWorkConservingGoalBinding(path)
+	if err == nil || !errors.Is(err, ErrWorkConservingProjectionSourceGap) {
+		t.Fatalf("ReadWorkConservingGoalBinding error = %v, want fail-closed source gap", err)
+	}
+	if binding != (WorkConservingGoalSourceBinding{}) {
+		t.Fatalf("binding = %+v, want the zero binding on a multi-document stream", binding)
+	}
+}
+
+// Even an empty second document must fail closed so a truncated editor save
+// cannot silently narrow the binding to a partial stream.
+func TestReadWorkConservingGoalSourceRejectsTrailingDocumentSeparator(t *testing.T) {
+	for name, extra := range map[string]string{
+		"trailing separator":           "---\n",
+		"blank padded separator":       "\n---\n\n",
+		"end marker then separator":    "...\n---\n",
+		"separator with trailing text": "--- # stale comment\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := writeGoalSource(t, providerGoalSource(t, "goal-1", providerGoalWorkspaceID, providerGoalProjectID, extra))
+			if _, err := readWorkConservingGoalSource(path); err == nil || !errors.Is(err, ErrWorkConservingProjectionSourceGap) {
+				t.Fatalf("error = %v, want trailing document separator to fail closed", err)
+			}
+		})
+	}
+	// A legal leading separator on a single document stays readable.
+	path := writeGoalSource(t, "---\n"+providerGoalSource(t, "goal-1", providerGoalWorkspaceID, providerGoalProjectID))
+	snapshot, err := readWorkConservingGoalSource(path)
+	if err != nil {
+		t.Fatalf("single document with leading separator: %v", err)
+	}
+	if snapshot.Binding.GoalID != "goal-1" {
+		t.Fatalf("binding = %+v, want goal-1", snapshot.Binding)
+	}
+}
+
+func TestReadWorkConservingGoalBindingReturnsExactlyOneValidBinding(t *testing.T) {
+	path := writeGoalSource(t, providerGoalSource(t, "goal-1", providerGoalWorkspaceID, providerGoalProjectID))
+	binding, err := ReadWorkConservingGoalBinding(path)
+	if err != nil {
+		t.Fatalf("ReadWorkConservingGoalBinding: %v", err)
+	}
+	want := WorkConservingGoalSourceBinding{
+		SchemaVersion: workConservingGoalSchemaV2, GoalID: "goal-1",
+		WorkspaceID: providerGoalWorkspaceID, ProjectID: providerGoalProjectID, SourceRef: "/goal/CHECKLIST.yaml",
+	}
+	if binding != want {
+		t.Fatalf("binding = %+v, want %+v", binding, want)
+	}
+	snapshot, err := readWorkConservingGoalSource(path)
+	if err != nil || len(snapshot.Digest) != 64 {
+		t.Fatalf("snapshot = %+v err = %v, want the content digest preserved", snapshot, err)
+	}
+}
+
+func TestReadWorkConservingGoalBindingFailsClosedForUnusableSources(t *testing.T) {
+	valid := providerGoalSource(t, "goal-1", providerGoalWorkspaceID, providerGoalProjectID)
+	second := providerGoalSource(t, "goal-2", "00000000-0000-0000-0000-000000000003", "00000000-0000-0000-0000-000000000004")
+	tests := []struct {
+		name    string
+		content string
+	}{
+		{"multi document stream", valid + "---\n" + second},
+		{"trailing separator", valid + "---\n"},
+		{"missing authority", "schema_version: " + workConservingGoalSchemaV2 + "\n"},
+		{"empty first document", "---\n---\n" + valid},
+		{"malformed stream", "\t: [unclosed\n"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			path := writeGoalSource(t, tc.content)
+			binding, err := ReadWorkConservingGoalBinding(path)
+			if err == nil || !errors.Is(err, ErrWorkConservingProjectionSourceGap) {
+				t.Fatalf("error = %v, want fail-closed source gap", err)
+			}
+			if binding != (WorkConservingGoalSourceBinding{}) {
+				t.Fatalf("binding = %+v, want the zero binding", binding)
+			}
+		})
+	}
+	if _, err := ReadWorkConservingGoalBinding(filepath.Join(t.TempDir(), "absent.yaml")); err == nil || !errors.Is(err, ErrWorkConservingProjectionSourceGap) {
+		t.Fatalf("absent source error = %v, want fail-closed source gap", err)
+	}
+}

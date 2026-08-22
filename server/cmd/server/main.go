@@ -173,6 +173,34 @@ func envBool(name string, def bool) bool {
 	return v
 }
 
+// schedulerRegistry is the minimal registration seam the automatic
+// work-conserving drain needs; *scheduler.Manager satisfies it. Keeping the
+// seam tiny lets the default-off gate be unit-tested without a database or an
+// HTTP server.
+type schedulerRegistry interface {
+	Register(scheduler.JobSpec) error
+}
+
+// registerWorkConservingDrainJob registers the automatic work-conserving drain
+// job only when the feature flag holds the exact value "true" and a drain
+// runner is wired. The comparison is deliberately an exact string equal (not
+// ParseBool) so "1", "TRUE", or "yes" can never silently enable a job that
+// writes Tasks. Default is off; a nil registry or nil drain is a safe no-op.
+// The goal-source path is intentionally not a gate: a missing or malformed
+// source must surface as a per-tick source gap, not as a silent registration
+// skip.
+func registerWorkConservingDrainJob(reg schedulerRegistry, drain scheduler.WorkConservingDrainRunner, owners scheduler.WorkConservingDrainOwnerReader, goalPath, autoDrain string) bool {
+	if reg == nil || drain == nil || autoDrain != "true" {
+		return false
+	}
+	if err := reg.Register(scheduler.WorkConservingDrainJob(drain, owners, goalPath)); err != nil {
+		slog.Warn("scheduler: failed to register work_conserving_drain job", "error", err)
+		return false
+	}
+	slog.Info("scheduler: work_conserving_drain registered", "cadence", "1m", "batch", 1, "allow_stale_reentry", false)
+	return true
+}
+
 func main() {
 	logger.Init()
 
@@ -509,6 +537,16 @@ func main() {
 			slog.Warn("scheduler: failed to register review_drain job", "error", err)
 		}
 	}
+	// HIVECREW-WORK-CONSERVING-AUTO-DRAIN (WO-P2 R2): one scheduler-backed
+	// tick drains at most one ready Issue, so a Project with ready Issues keeps
+	// producing after every completion without William or the coordinator
+	// manually draining it. Strictly default-off: only the exact env value
+	// "true" enables it and an unwired drain never registers. The Goal-source
+	// path is not a registration gate — a missing, malformed, or multi-document
+	// source stays a truthful per-tick source gap instead of hiding here.
+	registerWorkConservingDrainJob(schedulerMgr, h.WorkConservingDrain, queries,
+		os.Getenv("HIVECREW_WORK_CONSERVING_GOAL_SOURCE"),
+		os.Getenv("HIVECREW_WORK_CONSERVING_AUTO_DRAIN"))
 	// HIVECREW-PROJECT-LIFECYCLE-CLOSURE-V1 (VC-12): periodic self-operation
 	// reconciler — diagnoses the four broken chains and creates one dedup'd
 	// traceable Issue per finding, so the system self-heals without Prime

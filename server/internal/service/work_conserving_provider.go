@@ -1,11 +1,13 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"time"
@@ -221,9 +223,21 @@ func readWorkConservingGoalSource(path string) (workConservingGoalSnapshot, erro
 	if err != nil {
 		return workConservingGoalSnapshot{}, fmt.Errorf("%w: read Goal source: %v", ErrWorkConservingProjectionSourceGap, err)
 	}
+	// The Goal source is exactly one YAML document. yaml.Unmarshal silently
+	// ignores every document after the first `---` separator, which would let
+	// a second binding (stale override or shadow block) hide behind the first
+	// one; a stream decoder makes the trailing read explicit instead.
+	decoder := yaml.NewDecoder(bytes.NewReader(raw))
 	var document WorkConservingGoalSource
-	if err := yaml.Unmarshal(raw, &document); err != nil {
+	if err := decoder.Decode(&document); err != nil {
 		return workConservingGoalSnapshot{}, fmt.Errorf("%w: parse Goal source: %v", ErrWorkConservingProjectionSourceGap, err)
+	}
+	var trailing yaml.Node
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return workConservingGoalSnapshot{}, fmt.Errorf("%w: Goal source has more than one YAML document", ErrWorkConservingProjectionSourceGap)
+		}
+		return workConservingGoalSnapshot{}, fmt.Errorf("%w: Goal source stream is malformed after the first document: %v", ErrWorkConservingProjectionSourceGap, err)
 	}
 	if document.WorkConservingAuthority == nil {
 		return workConservingGoalSnapshot{}, fmt.Errorf("%w: Goal source work_conserving_authority is missing", ErrWorkConservingProjectionSourceGap)
@@ -245,6 +259,19 @@ func readWorkConservingGoalSource(path string) (workConservingGoalSnapshot, erro
 	}
 	digest := sha256.Sum256(raw)
 	return workConservingGoalSnapshot{Binding: binding, Digest: hex.EncodeToString(digest[:])}, nil
+}
+
+// ReadWorkConservingGoalBinding resolves the one explicit Goal binding the
+// Goal source carries. It returns the zero binding and an error whenever the
+// source is missing, malformed, multi-document, or not exactly one explicit
+// hivecosm.goal-graph/v2 work_conserving_authority block. Callers that cannot
+// accept an error must fail closed instead of inferring a local binding.
+func ReadWorkConservingGoalBinding(path string) (WorkConservingGoalSourceBinding, error) {
+	snapshot, err := readWorkConservingGoalSource(path)
+	if err != nil {
+		return WorkConservingGoalSourceBinding{}, err
+	}
+	return snapshot.Binding, nil
 }
 
 func (p *FileWorkConservingProjectionProvider) readAllEmployees(ctx context.Context, workspaceID pgtype.UUID) ([]companyops.PublicEmployeeSummary, bool, error) {
