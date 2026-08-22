@@ -5,10 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-
-	"github.com/google/uuid"
+	"regexp"
 	"strings"
 	"time"
+
+	"github.com/google/uuid"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -16,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/redact"
 )
 
 // pgExecutor is the raw-SQL seam the PG store uses for tables that have no
@@ -592,15 +594,20 @@ func (p *PGStore) UpsertHeartbeat(ctx context.Context, hb HeartbeatRecord) error
 	if err != nil {
 		return ErrInvalidRequest
 	}
+	host := sanitizeHeartbeatField(hb.Host, 255)
+	sessionName := sanitizeHeartbeatField(hb.SessionName, 255)
+	if host == "" || sessionName == "" {
+		return ErrInvalidRequest
+	}
 	rows, err := p.queries.UpsertTerminalPresence(ctx, db.UpsertTerminalPresenceParams{
 		WorkspaceID:    ws,
-		Host:           hb.Host,
-		SessionName:    hb.SessionName,
+		Host:           host,
+		SessionName:    sessionName,
 		WindowIndex:    int32(hb.WindowIndex),
 		PaneIndex:      int32(hb.PaneIndex),
 		PanePid:        0,
-		CurrentCommand: hb.CurrentCommand,
-		AgentHint:      hb.ActorID,
+		CurrentCommand: sanitizeHeartbeatField(hb.CurrentCommand, 120),
+		AgentHint:      sanitizeHeartbeatField(hb.ActorID, 120),
 	})
 	if err != nil {
 		return err
@@ -609,6 +616,24 @@ func (p *PGStore) UpsertHeartbeat(ctx context.Context, hb HeartbeatRecord) error
 		return ErrConflict
 	}
 	return nil
+}
+
+var heartbeatANSIPattern = regexp.MustCompile(`\x1b(\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(\x07|\x1b\\))`)
+
+func sanitizeHeartbeatField(value string, maxRunes int) string {
+	value = heartbeatANSIPattern.ReplaceAllString(value, "")
+	var clean strings.Builder
+	for _, ch := range value {
+		if ch >= 0x20 && ch != 0x7f {
+			clean.WriteRune(ch)
+		}
+	}
+	value = strings.TrimSpace(redact.Text(clean.String()))
+	runes := []rune(value)
+	if len(runes) > maxRunes {
+		value = string(runes[:maxRunes])
+	}
+	return value
 }
 
 func (p *PGStore) SaveHandoff(ctx context.Context, h HandoffRecord) error {

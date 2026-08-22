@@ -174,6 +174,20 @@ func TestRedactBearerMCPToken(t *testing.T) {
 	}
 }
 
+func TestRedactMulticaTokens(t *testing.T) {
+	t.Parallel()
+	for _, prefix := range []string{"mul_", "mdt_", "mat_"} {
+		input := "terminal field " + prefix + "0123456789abcdef"
+		got := Text(input)
+		if strings.Contains(got, prefix) {
+			t.Fatalf("%s token not redacted: %s", prefix, got)
+		}
+		if !strings.Contains(got, "[REDACTED MULTICA TOKEN]") {
+			t.Fatalf("expected Multica token placeholder for %s, got: %s", prefix, got)
+		}
+	}
+}
+
 func TestRedactGenericCredentials(t *testing.T) {
 	t.Parallel()
 	cases := []struct {

@@ -67,6 +67,10 @@ var patterns = []secretPattern{
 	// Generic "Bearer <token>" in output
 	{regexp.MustCompile(`(?i)\bBearer\s+[A-Za-z0-9\-._~+/]+=*\b`), "Bearer [REDACTED]"},
 
+	// Multica user, daemon-task, and agent-task tokens. These are internal
+	// credentials and may appear without a TOKEN= prefix in terminal metadata.
+	{regexp.MustCompile(`\b(?:mul|mdt|mat)_[A-Za-z0-9_-]{8,}\b`), "[REDACTED MULTICA TOKEN]"},
+
 	// Connection strings with embedded passwords
 	{regexp.MustCompile(`(?i)(?:postgres|mysql|mongodb|redis|amqp)(?:ql)?://[^:\s]+:[^@\s]+@`), "[REDACTED CONNECTION STRING]@"},
 
