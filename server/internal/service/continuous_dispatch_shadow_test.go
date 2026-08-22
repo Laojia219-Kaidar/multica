@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -19,13 +20,14 @@ import (
 var shadowNow = time.Date(2026, 8, 14, 10, 0, 0, 0, time.UTC)
 
 type shadowStoreFixture struct {
-	project  db.Project
-	issues   []db.ListIssuesRow
-	agents   []db.Agent
-	runtimes []db.AgentRuntime
-	snapshot []db.AgentTaskQueue
-	tasks    map[string][]db.AgentTaskQueue
-	comments map[string][]db.Comment
+	project   db.Project
+	issues    []db.ListIssuesRow
+	issuesErr error
+	agents    []db.Agent
+	runtimes  []db.AgentRuntime
+	snapshot  []db.AgentTaskQueue
+	tasks     map[string][]db.AgentTaskQueue
+	comments  map[string][]db.Comment
 }
 
 func (f *shadowStoreFixture) GetProjectInWorkspace(context.Context, db.GetProjectInWorkspaceParams) (db.Project, error) {
@@ -47,6 +49,9 @@ func (f *shadowStoreFixture) CountIssuesByProjectAndStatus(_ context.Context, pa
 }
 
 func (f *shadowStoreFixture) ListIssues(_ context.Context, params db.ListIssuesParams) ([]db.ListIssuesRow, error) {
+	if f.issuesErr != nil {
+		return nil, f.issuesErr
+	}
 	items := make([]db.ListIssuesRow, 0, len(f.issues))
 	for _, issue := range f.issues {
 		if params.Status.Valid && issue.Status != params.Status.String {
@@ -615,17 +620,79 @@ func TestContinuousDispatchShadowFailsClosedWhenStageIsMissing(t *testing.T) {
 	}
 }
 
-func TestContinuousDispatchShadowFailsClosedWithoutOrganizationAuthority(t *testing.T) {
-	fixture, workspaceID, projectID, _, _, _ := validShadowFixture(t)
+func TestContinuousDispatchShadowDegradesGracefullyWhenDirectoryErrors(t *testing.T) {
+	fixture, workspaceID, projectID, issueID, _, _ := validShadowFixture(t)
 	service := NewContinuousDispatchShadowService(
 		fixture,
 		shadowDirectoryFixture{err: errors.New("authority unavailable")},
+		shadowQuotaFixture{},
+		shadowLeaseFixture{leases: map[string]*WriteLease{}},
+	).WithClock(fixedShadowClock{now: shadowNow})
+
+	got, err := service.InspectProject(context.Background(), workspaceID, projectID, 50, 0)
+	if err != nil {
+		t.Fatalf("InspectProject: %v", err)
+	}
+	if got.Sources.Organization {
+		t.Fatalf("sources.organization = true, want false when the directory errors")
+	}
+	if !got.Sources.Project || !got.Sources.Runtime || !got.Sources.Tasks {
+		t.Fatalf("demand/runtime/task sources must stay readable: %+v", got.Sources)
+	}
+	if len(got.Items) != 1 || got.Items[0].IssueID != uuidString(issueID) {
+		t.Fatalf("items = %+v, want the project issue to stay visible", got.Items)
+	}
+	action := got.Items[0].NextAction
+	if action.State != continuousdispatch.StateBlocked || len(action.Reasons) == 0 ||
+		action.Reasons[0] != continuousdispatch.ReasonNoEligibleCandidate {
+		t.Fatalf("action = %+v, want blocked no_eligible_candidate without employees", action)
+	}
+	if action.Selected != nil || len(action.Candidates) != 0 {
+		t.Fatalf("dispatch must stay fail-closed without employees: %+v", action)
+	}
+}
+
+func TestContinuousDispatchShadowDegradesGracefullyWithoutDirectoryAdapter(t *testing.T) {
+	fixture, workspaceID, projectID, issueID, _, _ := validShadowFixture(t)
+	service := NewContinuousDispatchShadowService(
+		fixture,
 		nil,
 		nil,
-	)
-	_, err := service.InspectProject(context.Background(), workspaceID, projectID, 50, 0)
-	if !errors.Is(err, ErrContinuousDispatchSourceGap) {
-		t.Fatalf("error = %v, want source gap", err)
+		nil,
+	).WithClock(fixedShadowClock{now: shadowNow})
+
+	got, err := service.InspectProject(context.Background(), workspaceID, projectID, 50, 0)
+	if err != nil {
+		t.Fatalf("InspectProject: %v", err)
+	}
+	if got.Sources.Organization {
+		t.Fatalf("sources.organization = true, want false without a directory adapter")
+	}
+	if !got.Sources.Project || !got.Sources.Runtime || !got.Sources.Tasks {
+		t.Fatalf("demand/runtime/task sources must stay readable: %+v", got.Sources)
+	}
+	if len(got.Items) != 1 || got.Items[0].IssueID != uuidString(issueID) {
+		t.Fatalf("items = %+v, want the project issue to stay visible", got.Items)
+	}
+	action := got.Items[0].NextAction
+	if action.State != continuousdispatch.StateBlocked || action.Selected != nil || len(action.Candidates) != 0 {
+		t.Fatalf("action = %+v, want fail-closed blocked dispatch without employees", action)
+	}
+}
+
+func TestContinuousDispatchShadowStillFailsClosedOnDatabaseReadErrorsWithoutDirectory(t *testing.T) {
+	fixture, workspaceID, projectID, _, _, _ := validShadowFixture(t)
+	fixture.issuesErr = errors.New("issues table unavailable")
+	service := NewContinuousDispatchShadowService(
+		fixture,
+		nil,
+		nil,
+		nil,
+	).WithClock(fixedShadowClock{now: shadowNow})
+
+	if _, err := service.InspectProject(context.Background(), workspaceID, projectID, 50, 0); err == nil ||
+		!strings.Contains(err.Error(), "read project issues") {
+		t.Fatalf("error = %v, want the project issue database read to still fail closed", err)
 	}
 }
 

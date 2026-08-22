@@ -6,14 +6,18 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	companyopsapi "github.com/multica-ai/multica/server/internal/companyops"
 	"github.com/multica-ai/multica/server/internal/continuousdispatch"
 	"github.com/multica-ai/multica/server/internal/service"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 type shadowInspectorFixture struct {
@@ -356,6 +360,207 @@ func TestGetProjectNextActionsRejectsUnknownOrNonCanonicalPagination(t *testing.
 				t.Fatalf("status = %d body=%s", w.Code, w.Body.String())
 			}
 		})
+	}
+}
+
+// gracefulShadowStoreFixture is the handler-local store backing the real
+// ContinuousDispatchShadowService in the graceful-read tests. It mirrors the
+// minimal production read shape: one readable project, one in-progress issue,
+// one bound agent/runtime pair, and no task or comment rows.
+type gracefulShadowStoreFixture struct {
+	project  db.Project
+	issues   []db.ListIssuesRow
+	agents   []db.Agent
+	runtimes []db.AgentRuntime
+}
+
+func (f *gracefulShadowStoreFixture) GetProjectInWorkspace(context.Context, db.GetProjectInWorkspaceParams) (db.Project, error) {
+	return f.project, nil
+}
+
+func (f *gracefulShadowStoreFixture) CountIssuesByProject(context.Context, pgtype.UUID) (int64, error) {
+	return int64(len(f.issues)), nil
+}
+
+func (f *gracefulShadowStoreFixture) ListIssues(context.Context, db.ListIssuesParams) ([]db.ListIssuesRow, error) {
+	return append([]db.ListIssuesRow(nil), f.issues...), nil
+}
+
+func (f *gracefulShadowStoreFixture) ListAllAgents(context.Context, pgtype.UUID) ([]db.Agent, error) {
+	return append([]db.Agent(nil), f.agents...), nil
+}
+
+func (f *gracefulShadowStoreFixture) ListAgentRuntimes(context.Context, pgtype.UUID) ([]db.AgentRuntime, error) {
+	return append([]db.AgentRuntime(nil), f.runtimes...), nil
+}
+
+func (f *gracefulShadowStoreFixture) ListWorkspaceAgentTaskSnapshot(context.Context, pgtype.UUID) ([]db.AgentTaskQueue, error) {
+	return nil, nil
+}
+
+func (f *gracefulShadowStoreFixture) ListTasksByIssue(context.Context, pgtype.UUID) ([]db.AgentTaskQueue, error) {
+	return nil, nil
+}
+
+func (f *gracefulShadowStoreFixture) ListCommentsForIssue(context.Context, db.ListCommentsForIssueParams) ([]db.Comment, error) {
+	return nil, nil
+}
+
+type gracefulLeaseReader struct{}
+
+func (gracefulLeaseReader) Read(context.Context, string) (*service.WriteLease, error) {
+	return nil, service.ErrLeaseNotFound
+}
+
+type gracefulDirectoryFixture struct{}
+
+func (gracefulDirectoryFixture) GetEmployees(_ context.Context, workspaceID pgtype.UUID, _, _ string, _, _ int) (*service.EmployeesResult, error) {
+	return &service.EmployeesResult{
+		WorkspaceID: uuid.UUID(workspaceID.Bytes).String(),
+		Items: []companyopsapi.PublicEmployeeSummary{{
+			EmployeeID: "DE-PRIMARY", DisplayName: "Primary", PositionTitle: "全栈工程师", PositionID: "implementation",
+			Availability: companyopsapi.AvailabilityAvailable, HiveCrewAgentID: gracefulPrimaryAgentID,
+			LocalAgent: &companyopsapi.PublicLocalAgent{ID: gracefulPrimaryAgentID, RuntimeStatus: "online"},
+		}},
+		Total: 1, Limit: 500,
+	}, nil
+}
+
+const gracefulPrimaryAgentID = "00000000-0000-0000-0000-000000000401"
+
+func newGracefulShadowFixture(t *testing.T) (store *gracefulShadowStoreFixture, projectID string) {
+	t.Helper()
+	parsedWorkspace, err := uuid.Parse(testWorkspaceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspaceID := pgtype.UUID{Bytes: parsedWorkspace, Valid: true}
+	parsedProject, err := uuid.Parse("00000000-0000-0000-0000-000000000201")
+	if err != nil {
+		t.Fatal(err)
+	}
+	projectID = parsedProject.String()
+	projectUUID := pgtype.UUID{Bytes: parsedProject, Valid: true}
+	parsedAgent, err := uuid.Parse(gracefulPrimaryAgentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	agentUUID := pgtype.UUID{Bytes: parsedAgent, Valid: true}
+	parsedRuntime, err := uuid.Parse("00000000-0000-0000-0000-000000000501")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtimeUUID := pgtype.UUID{Bytes: parsedRuntime, Valid: true}
+	store = &gracefulShadowStoreFixture{
+		project: db.Project{ID: projectUUID, WorkspaceID: workspaceID, Title: "Graceful read project"},
+		issues: []db.ListIssuesRow{{
+			ID:           pgtype.UUID{Bytes: parsedProject, Valid: true},
+			WorkspaceID:  workspaceID,
+			ProjectID:    projectUUID,
+			Title:        "Keep demand readable",
+			Status:       "in_progress",
+			AssigneeType: pgtype.Text{String: "agent", Valid: true},
+			AssigneeID:   agentUUID,
+			Metadata:     []byte(`{"stage":"implementation","generation":"g-1","candidate_revision":"abc123","write_mutex_key":"repo:main"}`),
+		}},
+		agents: []db.Agent{{
+			ID: agentUUID, WorkspaceID: workspaceID, Name: "Primary", RuntimeID: runtimeUUID,
+			Status: "idle", MaxConcurrentTasks: 1, Model: pgtype.Text{String: "glm-5.2", Valid: true}, Kind: "user",
+		}},
+		runtimes: []db.AgentRuntime{{
+			ID: runtimeUUID, WorkspaceID: workspaceID, Status: "online",
+			DaemonID:   pgtype.Text{String: "base-a", Valid: true},
+			LastSeenAt: pgtype.Timestamptz{Time: time.Now().UTC().Add(-time.Minute), Valid: true},
+		}},
+	}
+	return store, projectID
+}
+
+func TestGetProjectNextActionsDegradesGracefullyWhenDirectoryUnavailable(t *testing.T) {
+	store, projectID := newGracefulShadowFixture(t)
+	shadow := service.NewContinuousDispatchShadowService(store, nil, nil, gracefulLeaseReader{})
+	h := &Handler{ContinuousDispatchShadow: shadow}
+	req := newRequest(http.MethodGet, "/api/projects/"+projectID+"/next-actions?workspace_id="+testWorkspaceID, nil)
+	req = withURLParam(req, "id", projectID)
+	w := httptest.NewRecorder()
+
+	h.GetProjectNextActions(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s, want 200 instead of a whole-projection 503", w.Code, w.Body.String())
+	}
+	var body service.ContinuousDispatchShadowResult
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Sources.Organization {
+		t.Fatalf("sources.organization = true, want false without a directory adapter")
+	}
+	if !body.Sources.Project || !body.Sources.Runtime || !body.Sources.Tasks {
+		t.Fatalf("sources = %+v, want project/runtime/tasks to stay readable", body.Sources)
+	}
+	if len(body.Items) != 1 {
+		t.Fatalf("items = %+v, want the project issue to stay visible", body.Items)
+	}
+	action := body.Items[0].NextAction
+	if action.State != continuousdispatch.StateBlocked || action.Selected != nil || len(action.Candidates) != 0 {
+		t.Fatalf("next action = %+v, want blocked fail-closed dispatch without employees", action)
+	}
+}
+
+func TestGetProjectNextActionsWorkConservingStaysSourceGapWhenDirectoryUnavailable(t *testing.T) {
+	store, projectID := newGracefulShadowFixture(t)
+	shadow := service.NewContinuousDispatchShadowService(store, nil, nil, gracefulLeaseReader{})
+	goalPath := filepath.Join(t.TempDir(), "CHECKLIST.yaml")
+	h := &Handler{
+		ContinuousDispatchShadow: shadow,
+		// The file provider itself must keep refusing to plan without the
+		// employee directory, so the handler keeps the stable source_gap
+		// projection instead of any suggestion.
+		WorkConservingProjection: service.NewFileWorkConservingProjectionProvider(shadow, goalPath),
+	}
+	req := newRequest(http.MethodGet, "/api/projects/"+projectID+"/next-actions?workspace_id="+testWorkspaceID+"&projection=work_conserving", nil)
+	req = withURLParam(req, "id", projectID)
+	w := httptest.NewRecorder()
+
+	h.GetProjectNextActions(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s, want 200 with a degraded read instead of 503", w.Code, w.Body.String())
+	}
+	var body service.ContinuousDispatchShadowResult
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Sources.Organization {
+		t.Fatalf("sources.organization = true, want false without a directory adapter")
+	}
+	if body.WorkConserving == nil {
+		t.Fatal("missing work_conserving projection")
+	}
+	projection := body.WorkConserving
+	if projection.State != service.WorkConservingProjectionSourceGap || !projection.NoWrite ||
+		len(projection.Suggestions) != 0 || len(projection.BlockedBacklog) != 0 {
+		t.Fatalf("projection = %+v, want source_gap no-write projection without suggestions", *projection)
+	}
+}
+
+func TestGetProjectNextActionsConfiguredDirectoryKeepsOrganizationSource(t *testing.T) {
+	store, projectID := newGracefulShadowFixture(t)
+	shadow := service.NewContinuousDispatchShadowService(store, gracefulDirectoryFixture{}, nil, gracefulLeaseReader{})
+	h := &Handler{ContinuousDispatchShadow: shadow}
+	req := newRequest(http.MethodGet, "/api/projects/"+projectID+"/next-actions?workspace_id="+testWorkspaceID, nil)
+	req = withURLParam(req, "id", projectID)
+	w := httptest.NewRecorder()
+
+	h.GetProjectNextActions(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", w.Code, w.Body.String())
+	}
+	var body service.ContinuousDispatchShadowResult
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if !body.Sources.Organization {
+		t.Fatalf("sources.organization = false, want true with a configured directory")
 	}
 }
 

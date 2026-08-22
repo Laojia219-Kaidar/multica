@@ -190,7 +190,10 @@ func (s *ContinuousDispatchShadowService) inspectProject(
 	offset int,
 	status pgtype.Text,
 ) (*ContinuousDispatchShadowResult, error) {
-	if s == nil || s.store == nil || s.directory == nil {
+	// The employee directory adapter is intentionally absent from this hard
+	// guard: workforce supply degrades gracefully below while Project/Issue
+	// demand truth stays readable with sources.organization=false.
+	if s == nil || s.store == nil {
 		return nil, fmt.Errorf("%w: required adapter unavailable", ErrContinuousDispatchSourceGap)
 	}
 	project, err := s.store.GetProjectInWorkspace(ctx, db.GetProjectInWorkspaceParams{ID: projectID, WorkspaceID: workspaceID})
@@ -200,10 +203,7 @@ func (s *ContinuousDispatchShadowService) inspectProject(
 		}
 		return nil, fmt.Errorf("read project: %w", err)
 	}
-	employees, err := s.directory.GetEmployees(ctx, workspaceID, "", "", 500, 0)
-	if err != nil {
-		return nil, fmt.Errorf("%w: organization directory unavailable", ErrContinuousDispatchSourceGap)
-	}
+	employees, organizationComplete := s.readEmployeeDirectory(ctx, workspaceID)
 	issues, err := s.store.ListIssues(ctx, db.ListIssuesParams{
 		WorkspaceID: workspaceID,
 		ProjectID:   projectID,
@@ -256,7 +256,7 @@ func (s *ContinuousDispatchShadowService) inspectProject(
 		}
 	}
 	wip := composeShadowWIP(agents, runtimesByID, snapshot, now)
-	candidates, preferredByAgent, quotaComplete := s.buildCandidates(ctx, employees.Items, agentsByID, runtimesByID, activeWIP)
+	candidates, preferredByAgent, quotaComplete := s.buildCandidates(ctx, employees, agentsByID, runtimesByID, activeWIP)
 
 	items := make([]ContinuousDispatchShadowItem, 0, len(issues))
 	leaseComplete := true
@@ -323,11 +323,29 @@ func (s *ContinuousDispatchShadowService) inspectProject(
 		WorkspaceID:   shadowUUIDString(workspaceID), ProjectID: shadowUUIDString(projectID), ProjectTitle: project.Title,
 		GeneratedAt: now.Format(time.RFC3339Nano),
 		Sources: ContinuousDispatchShadowSources{
-			Project: true, Organization: true, Runtime: true, Tasks: true,
+			Project: true, Organization: organizationComplete, Runtime: true, Tasks: true,
 			Quota: quotaComplete, WriteLease: leaseComplete, WIP: wip.Known && wip.Reconciled,
 		},
 		Items: items, Total: int(total), Limit: limit, Offset: offset,
 	}, nil
+}
+
+// readEmployeeDirectory reads the authoritative HiveCosm employee directory
+// and degrades gracefully. An absent directory adapter, an unavailable
+// authority, or a nil result yields zero employees with
+// organizationComplete=false: the Project and its Issues stay readable and the
+// planner fails closed with no eligible dispatch candidate instead of
+// inventing a local workforce. Only this authority read degrades; unrelated
+// Project/Issue/Task database failures still fail closed in inspectProject.
+func (s *ContinuousDispatchShadowService) readEmployeeDirectory(ctx context.Context, workspaceID pgtype.UUID) ([]companyopsapi.PublicEmployeeSummary, bool) {
+	if s == nil || s.directory == nil {
+		return nil, false
+	}
+	result, err := s.directory.GetEmployees(ctx, workspaceID, "", "", 500, 0)
+	if err != nil || result == nil {
+		return nil, false
+	}
+	return result.Items, true
 }
 
 type reviewSourceLineage struct {
