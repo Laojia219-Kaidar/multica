@@ -319,3 +319,116 @@ func TestListTasksByIssue_ProjectRepos_CrossWorkspaceResourceIsolated(t *testing
 		t.Fatalf("run repos = %+v, want empty (foreign-workspace resource must be isolated)", run.Repos)
 	}
 }
+
+// TestListTasksByIssue_ProjectRepos_ForeignWorkspaceProjectFailsClosed verifies
+// that an issue whose project_id points at a project owned by ANOTHER workspace
+// projects no repositories (repo_source=none). The foreign project's
+// github_repo resources must not leak, and the workspace fallback must not
+// apply — the project row is unresolvable from the issue's workspace exactly
+// like claim-time resolution, so the read surface stays fail-closed instead of
+// emitting an empty provenance label.
+func TestListTasksByIssue_ProjectRepos_ForeignWorkspaceProjectFailsClosed(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+
+	// Workspace repos exist, but must NOT be inherited when the issue's project
+	// lives in a foreign workspace.
+	setHandlerTestWorkspaceRepos(t, []map[string]string{
+		{"url": "https://github.com/example/workspace-repo-a", "description": "ws a"},
+	})
+
+	// A real foreign workspace owns the project referenced by the issue.
+	var foreignWS string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO workspace (name, slug, description, issue_prefix)
+		VALUES ($1, $2, $3, $4)
+		RETURNING id
+	`, "Foreign project workspace", "foreign-project-ws", "Foreign-workspace project isolation", "FPW").Scan(&foreignWS); err != nil {
+		t.Fatalf("create foreign workspace: %v", err)
+	}
+	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM workspace WHERE id = $1`, foreignWS) })
+
+	var projectID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO project (workspace_id, title, repo_inheritance_policy) VALUES ($1, $2, 'workspace_fallback') RETURNING id
+	`, foreignWS, "Task-runs foreign-workspace project").Scan(&projectID); err != nil {
+		t.Fatalf("create foreign project: %v", err)
+	}
+	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM project WHERE id = $1`, projectID) })
+	if _, err := testPool.Exec(ctx, `
+		INSERT INTO project_resource (project_id, workspace_id, resource_type, resource_ref, position)
+		VALUES ($1, $2, 'github_repo', $3::jsonb, 0)
+	`, projectID, foreignWS, `{"url":"https://github.com/example/foreign-project-repo","ref":"release/v3"}`); err != nil {
+		t.Fatalf("create foreign project github_repo resource: %v", err)
+	}
+
+	var issueID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO issue (workspace_id, project_id, title, status, priority, creator_id, creator_type)
+		VALUES ($1, $2, 'task-runs foreign project', 'todo', 'medium', $3, 'member')
+		RETURNING id
+	`, testWorkspaceID, projectID, testUserID).Scan(&issueID); err != nil {
+		t.Fatalf("create issue: %v", err)
+	}
+	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM issue WHERE id = $1`, issueID) })
+
+	agentID := createHandlerTestAgent(t, "TaskRunForeignProjectAgent", []byte("[]"))
+	var taskID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO agent_task_queue (agent_id, runtime_id, issue_id, status, priority)
+		VALUES ($1, (SELECT runtime_id FROM agent WHERE id = $1), $2, 'completed', 0)
+		RETURNING id
+	`, agentID, issueID).Scan(&taskID); err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE id = $1`, taskID) })
+
+	w := httptest.NewRecorder()
+	req := newRequest("GET", "/api/issues/"+issueID+"/task-runs", nil)
+	req = withURLParam(req, "id", issueID)
+	testHandler.ListTasksByIssue(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("ListTasksByIssue: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp []AgentTaskResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode task list: %v", err)
+	}
+	if len(resp) != 1 {
+		t.Fatalf("expected 1 run, got %d", len(resp))
+	}
+	run := resp[0]
+	if run.RepoSource != "none" {
+		t.Errorf("run repo_source = %q, want none (foreign-workspace project must fail closed)", run.RepoSource)
+	}
+	if run.RepoInheritancePolicy != "" {
+		t.Errorf("run repo_inheritance_policy = %q, want empty (no project truth in this workspace)", run.RepoInheritancePolicy)
+	}
+	if len(run.Repos) != 0 {
+		t.Fatalf("run repos = %+v, want empty (foreign project repo / workspace fallback leaked)", run.Repos)
+	}
+}
+
+// TestIssueTaskRepoProjection_UnknownPolicyFailsClosed verifies the pure policy
+// classification used by ListTasksByIssue. The production column currently has
+// a CHECK constraint, so this future-policy behavior must be exercised without
+// dropping or altering that schema during tests.
+func TestIssueTaskRepoProjection_UnknownPolicyFailsClosed(t *testing.T) {
+	const unknownPolicy = "future_policy_rendering"
+	projection, known := issueTaskRepoProjectionForProjectPolicy(unknownPolicy)
+	if known {
+		t.Fatal("unknown project repo inheritance policy classified as known")
+	}
+	if projection.repoSource != "none" {
+		t.Errorf("repo_source = %q, want none", projection.repoSource)
+	}
+	if projection.repoInheritancePolicy != unknownPolicy {
+		t.Errorf("repo_inheritance_policy = %q, want %q", projection.repoInheritancePolicy, unknownPolicy)
+	}
+	if len(projection.repos) != 0 {
+		t.Fatalf("repos = %+v, want empty for unknown policy", projection.repos)
+	}
+}

@@ -4245,6 +4245,21 @@ type issueTaskRepoProjection struct {
 	repoInheritancePolicy string
 }
 
+// issueTaskRepoProjectionForProjectPolicy establishes the fail-closed read
+// projection for one resolved Project before any repository resource is read.
+// Keeping the policy classification pure lets unknown future values be tested
+// without mutating the database schema that currently constrains the column.
+func issueTaskRepoProjectionForProjectPolicy(policy string) (issueTaskRepoProjection, bool) {
+	out := issueTaskRepoProjection{repos: []RepoData{}, repoInheritancePolicy: policy}
+	switch policy {
+	case projectRepoInheritancePolicyWorkspaceFallback, projectRepoInheritancePolicyProjectOnly:
+		return out, true
+	default:
+		out.repoSource = "none"
+		return out, false
+	}
+}
+
 // resolveIssueTaskRepoProjection computes the CURRENT repo projection for an
 // issue, replicating claim-time precedence exactly (see ClaimTaskByRuntime):
 //
@@ -4253,8 +4268,9 @@ type issueTaskRepoProjection struct {
 //   - absent project repos, the workspace fallback applies only when the issue
 //     has no project, or the project's repo_inheritance_policy is
 //     workspace_fallback;
-//   - a project_only policy (or a project that cannot be resolved / carries an
-//     unknown future policy) declines the fallback and yields no repos —
+//   - a project_only policy, a project that cannot be resolved (absent or in a
+//     foreign workspace), or an unknown future inheritance policy declines the
+//     fallback and yields no repos with an explicit repo_source = "none" —
 //     fail-closed like claim, which never lets a broken project degrade to the
 //     workspace list.
 func (h *Handler) resolveIssueTaskRepoProjection(ctx context.Context, projectID, workspaceID pgtype.UUID) issueTaskRepoProjection {
@@ -4266,17 +4282,19 @@ func (h *Handler) resolveIssueTaskRepoProjection(ctx context.Context, projectID,
 	}
 	proj, err := h.Queries.GetProjectInWorkspace(ctx, db.GetProjectInWorkspaceParams{ID: projectID, WorkspaceID: workspaceID})
 	if err != nil {
-		return out
-	}
-	switch proj.RepoInheritancePolicy {
-	case projectRepoInheritancePolicyWorkspaceFallback, projectRepoInheritancePolicyProjectOnly:
-		// Known policy — proceed.
-	default:
-		// Unknown future policy fails closed, mirroring claim-time handling.
+		// Absent or foreign-workspace project truth fails closed: emit an
+		// explicit repo_source=none instead of an empty provenance label, and
+		// never fall back to the workspace repositories.
 		out.repoSource = "none"
 		return out
 	}
-	out.repoInheritancePolicy = proj.RepoInheritancePolicy
+	// Surface the project's current inheritance policy exactly like claim-time,
+	// including policy values this server does not yet know. Unknown values fail
+	// closed before any project or workspace repository is read.
+	out, knownPolicy := issueTaskRepoProjectionForProjectPolicy(proj.RepoInheritancePolicy)
+	if !knownPolicy {
+		return out
+	}
 
 	rows := h.listProjectResourcesForProject(ctx, proj.ID, workspaceID)
 	for _, row := range rows {
