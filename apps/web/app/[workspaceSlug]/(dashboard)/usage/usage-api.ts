@@ -1,5 +1,16 @@
 import { getApi } from "@multica/core/api";
 
+export interface QuotaWindowView {
+  kind: string;
+  total_tokens?: number;
+  used_tokens: number;
+  remaining_tokens?: number;
+  percentage?: number;
+  reset_at?: string;
+  source: string;
+  observed_at?: string;
+}
+
 export interface QuotaState {
   cycle: string;
   total_tokens?: number;
@@ -9,6 +20,9 @@ export interface QuotaState {
   reset_at?: string;
   reset_day?: number;
   local_model: boolean;
+  windows?: QuotaWindowView[];
+  source?: string;
+  observed_at?: string;
 }
 
 export interface TaskUsage {
@@ -69,6 +83,17 @@ export interface UsageHierarchy {
   providers: ProviderUsage[];
 }
 
+export interface ProviderUsageQuotaInput {
+  provider: string;
+  plan: string;
+  account: string;
+  api_key_label?: string;
+  cycle: string;
+  total_tokens: number;
+  reset_day?: number;
+  local_model?: boolean;
+}
+
 export async function fetchUsageHierarchy(
   slug: string,
   days: number,
@@ -90,4 +115,59 @@ export async function fetchUsageHierarchy(
     throw new Error(message);
   }
   return (await res.json()) as UsageHierarchy;
+}
+
+export async function upsertProviderUsageQuota(
+  slug: string,
+  input: ProviderUsageQuotaInput,
+): Promise<void> {
+  const api = getApi();
+  const base = api.getBaseUrl();
+  const res = await fetch(`${base}/api/company-ops/usage/quota`, {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Workspace-Slug": slug,
+    },
+    credentials: "include",
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) {
+    let message = `API error: ${res.status} ${res.statusText}`;
+    try {
+      const body = (await res.json()) as { error?: string };
+      if (body?.error) message = body.error;
+    } catch {
+      // keep the status message
+    }
+    throw new Error(message);
+  }
+}
+
+export function quotaSourceLabel(source?: string): string {
+  switch (source) {
+    case "live_vendor":
+      return "厂商 API";
+    case "manual_cap":
+      return "手动上限";
+    case "hivecosm":
+      return "HiveCosm";
+    case "task_usage":
+      return "task_usage";
+    default:
+      return source ?? "—";
+  }
+}
+
+export function windowKindLabel(kind: string): string {
+  switch (kind) {
+    case "5h":
+      return "5 小时";
+    case "7d":
+      return "7 天";
+    case "monthly":
+      return "每月";
+    default:
+      return kind;
+  }
 }
