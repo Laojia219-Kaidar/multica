@@ -2361,7 +2361,17 @@ func (h *Handler) routeConversationContinuationToAgent(ctx context.Context, issu
 	return trigger, true
 }
 
+// isTerminalIssueStatus reports whether an issue status means no further
+// implicit agent work should start. Done and cancelled are terminal: a plain
+// comment on such an issue must not re-enqueue the former assignee.
+func isTerminalIssueStatus(status string) bool {
+	return status == "done" || status == "cancelled"
+}
+
 func (h *Handler) routeAssigneeFallback(ctx context.Context, issue db.Issue, authorType, authorID string, opts commentTriggerComputeOptions) (commentAgentTrigger, bool) {
+	if isTerminalIssueStatus(issue.Status) {
+		return commentAgentTrigger{}, false
+	}
 	if !issue.AssigneeType.Valid || !issue.AssigneeID.Valid {
 		return commentAgentTrigger{}, false
 	}
