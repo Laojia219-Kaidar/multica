@@ -94,3 +94,126 @@ describe("WorkWallPage SSE integration", () => {
     expect(source?.closed).toBe(true);
   });
 });
+
+describe("WorkWallPage SSE fallback polling", () => {
+  function setup() {
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false, gcTime: Infinity, staleTime: 0 } },
+    });
+    const view = render(
+      <QueryClientProvider client={client}>
+        <WorkWallPage />
+      </QueryClientProvider>,
+    );
+    const source = FakeEventSource.instances[0];
+    return { client, view, source };
+  }
+
+  beforeEach(() => {
+    FakeEventSource.instances = [];
+    apiMock.workWallSnapshot.mockClear();
+    apiMock.listTerminalPresence.mockClear();
+    vi.stubGlobal("EventSource", FakeEventSource);
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  it("uses 5000ms snapshot polling while connecting (initial state)", async () => {
+    const { source } = setup();
+    expect(source).toBeDefined();
+
+    await act(async () => {
+      vi.advanceTimersToNextTimer();
+    });
+
+    const initialCallCount = apiMock.workWallSnapshot.mock.calls.length;
+    expect(initialCallCount).toBeGreaterThanOrEqual(1);
+
+    await act(async () => {
+      vi.advanceTimersByTime(5000);
+    });
+
+    expect(apiMock.workWallSnapshot).toHaveBeenCalledTimes(initialCallCount + 1);
+  });
+
+  it("stops snapshot polling after SSE open", async () => {
+    const { source } = setup();
+
+    await act(async () => {
+      vi.advanceTimersToNextTimer();
+    });
+
+    const beforeOpen = apiMock.workWallSnapshot.mock.calls.length;
+    expect(beforeOpen).toBeGreaterThanOrEqual(1);
+
+    act(() => {
+      source?.emit("open", new Event("open"));
+    });
+
+    await act(async () => {
+      vi.advanceTimersByTime(20000);
+    });
+
+    expect(apiMock.workWallSnapshot).toHaveBeenCalledTimes(beforeOpen);
+  });
+
+  it("restores 5000ms snapshot polling after an SSE transport error", async () => {
+    const { source } = setup();
+
+    act(() => {
+      source?.emit("open", new Event("open"));
+    });
+
+    await act(async () => {
+      vi.advanceTimersByTime(10000);
+    });
+    const afterOpen = apiMock.workWallSnapshot.mock.calls.length;
+
+    act(() => {
+      source?.emit("error", new Event("error"));
+    });
+
+    await act(async () => {
+      vi.advanceTimersByTime(5000);
+    });
+
+    expect(apiMock.workWallSnapshot).toHaveBeenCalledTimes(afterOpen + 1);
+  });
+
+  it("restores 5000ms snapshot polling after a malformed snapshot frame", async () => {
+    const { source } = setup();
+
+    act(() => {
+      source?.emit("open", new Event("open"));
+    });
+
+    await act(async () => {
+      vi.advanceTimersByTime(10000);
+    });
+    const afterOpen = apiMock.workWallSnapshot.mock.calls.length;
+
+    act(() => {
+      source?.emit(
+        "snapshot",
+        new MessageEvent("snapshot", { data: "not-json" }),
+      );
+    });
+
+    await act(async () => {
+      vi.advanceTimersByTime(5000);
+    });
+
+    expect(apiMock.workWallSnapshot).toHaveBeenCalledTimes(afterOpen + 1);
+  });
+
+  it("closes the EventSource on unmount", () => {
+    const { view, source } = setup();
+    expect(source?.closed).toBe(false);
+    view.unmount();
+    expect(source?.closed).toBe(true);
+  });
+});
