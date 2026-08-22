@@ -144,6 +144,9 @@ export interface WorkWallStreamHandlers {
   onSnapshot: (snapshot: EmployeeLiveActivityV1[]) => void;
   onStateChange?: (state: WorkWallStreamState) => void;
   onError?: (error: unknown) => void;
+  /** Called with the SSE `id:` field from each snapshot frame. EventSource
+   *  also tracks this internally for Last-Event-ID on reconnect. */
+  onEventID?: (lastEventId: string) => void;
 }
 
 type WorkWallEventSource = Pick<EventSource, "addEventListener" | "close">;
@@ -174,6 +177,9 @@ export function subscribeWorkWallStream(
     try {
       const snapshot = parseWorkWallSnapshot(JSON.parse(event.data));
       handlers.onSnapshot(snapshot);
+      if (event.lastEventId) {
+        handlers.onEventID?.(event.lastEventId);
+      }
       handlers.onStateChange?.("open");
     } catch (error) {
       handlers.onError?.(error);

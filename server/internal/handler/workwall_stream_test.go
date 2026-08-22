@@ -52,8 +52,9 @@ func snapshotActivity(agentID, displayName string) liveactivity.EmployeeLiveActi
 	}
 }
 
-// sseFrame is one parsed SSE event block (event name + concatenated data lines).
+// sseFrame is one parsed SSE event block (id + event name + concatenated data lines).
 type sseFrame struct {
+	id    string
 	event string
 	data  string
 }
@@ -70,7 +71,9 @@ func readSSEFrame(br *bufio.Reader) (sseFrame, error) {
 		if line == "" {
 			return f, nil
 		}
-		if strings.HasPrefix(line, "event: ") {
+		if strings.HasPrefix(line, "id: ") {
+			f.id = strings.TrimPrefix(line, "id: ")
+		} else if strings.HasPrefix(line, "event: ") {
 			f.event = strings.TrimPrefix(line, "event: ")
 		} else if strings.HasPrefix(line, "data: ") {
 			if f.data != "" {
@@ -380,5 +383,108 @@ func TestGetWorkWallStream_ContextCancellationClosesStream(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatalf("stream did not close within 3s after context cancellation")
+	}
+}
+
+// TestWriteWorkWallSnapshotFrame_EventIDPresent verifies that every snapshot
+// SSE frame carries a non-empty `id:` field with a monotonic identifier.
+func TestWriteWorkWallSnapshotFrame_EventIDPresent(t *testing.T) {
+	prov := &stubWorkWallProvider{
+		snap: []liveactivity.EmployeeLiveActivityV1{
+			snapshotActivity("11111111-1111-1111-1111-111111111111", "Agent"),
+		},
+	}
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "http://example.test/api/work-wall/stream", nil)
+
+	if cont := writeWorkWallSnapshotFrame(w, w, r, prov, "99999999-9999-9999-9999-999999999999", map[string]struct{}{
+		"11111111-1111-1111-1111-111111111111": {},
+	}); !cont {
+		t.Fatalf("writeWorkWallSnapshotFrame returned continue=false")
+	}
+
+	br := bufio.NewReader(strings.NewReader(w.Body.String()))
+	frame, err := readSSEFrame(br)
+	if err != nil {
+		t.Fatalf("read frame: %v", err)
+	}
+	if frame.id == "" {
+		t.Fatalf("snapshot frame has empty id field; body=%q", w.Body.String())
+	}
+	if frame.event != "snapshot" {
+		t.Fatalf("event = %q, want snapshot", frame.event)
+	}
+}
+
+// TestWriteWorkWallSnapshotFrame_EventIDMonotonic verifies that successive
+// snapshot frames carry strictly increasing event IDs.
+func TestWriteWorkWallSnapshotFrame_EventIDMonotonic(t *testing.T) {
+	prov := &stubWorkWallProvider{
+		snap: []liveactivity.EmployeeLiveActivityV1{
+			snapshotActivity("11111111-1111-1111-1111-111111111111", "Agent"),
+		},
+	}
+	allowed := map[string]struct{}{"11111111-1111-1111-1111-111111111111": {}}
+
+	var ids []string
+	for i := 0; i < 3; i++ {
+		w := httptest.NewRecorder()
+		r := httptest.NewRequest(http.MethodGet, "http://example.test/api/work-wall/stream", nil)
+		if cont := writeWorkWallSnapshotFrame(w, w, r, prov, "99999999-9999-9999-9999-999999999999", allowed); !cont {
+			t.Fatalf("frame %d: continue=false", i)
+		}
+		br := bufio.NewReader(strings.NewReader(w.Body.String()))
+		frame, err := readSSEFrame(br)
+		if err != nil {
+			t.Fatalf("frame %d: read: %v", i, err)
+		}
+		if frame.id == "" {
+			t.Fatalf("frame %d: empty id", i)
+		}
+		ids = append(ids, frame.id)
+	}
+
+	for i := 1; i < len(ids); i++ {
+		if ids[i] <= ids[i-1] {
+			t.Fatalf("event IDs not strictly increasing: ids[%d]=%q <= ids[%d]=%q", i, ids[i], i-1, ids[i-1])
+		}
+	}
+}
+
+// TestGetWorkWallStream_LastEventIDReconnect verifies that when a client
+// reconnects with a Last-Event-ID header, the server still responds with a
+// current full snapshot (no historical delta replay) and the new frame carries
+// a fresh event ID.
+func TestGetWorkWallStream_LastEventIDReconnect(t *testing.T) {
+	srv := workWallStreamTestServer(t)
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, srv.URL+"/api/work-wall/stream", nil)
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	req.Header.Set("X-User-ID", testUserID)
+	req.Header.Set("Last-Event-ID", "1234567890")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("do request: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+
+	br := bufio.NewReader(resp.Body)
+	frame, err := readSSEFrame(br)
+	if err != nil {
+		t.Fatalf("read first frame: %v", err)
+	}
+	if frame.event != "snapshot" {
+		t.Fatalf("event = %q, want snapshot (reconnect should still get a full snapshot)", frame.event)
+	}
+	if frame.id == "" {
+		t.Fatalf("reconnect frame has empty id")
+	}
+	if frame.id == "1234567890" {
+		t.Fatalf("reconnect frame reused the client's Last-Event-ID as its own id")
 	}
 }

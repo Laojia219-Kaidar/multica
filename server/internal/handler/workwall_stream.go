@@ -47,9 +47,13 @@ type workWallSnapshotProvider interface {
 // GetWorkWallStream is the workspace-level SSE stream for the "工作现场"
 // (work wall). It emits one access-filtered snapshot event as soon as the
 // connection is established — no longer gated behind the first poll interval —
-// and then one event every cadence until the client disconnects. Client
-// reconnect is inherent (each connection starts a fresh loop); Last-Event-ID +
-// delta compensation are left as a future enhancement over this v1 baseline.
+// and then one event every cadence until the client disconnects.
+//
+// Each snapshot frame carries a monotonically increasing `id:` field (SSE
+// spec). On reconnect the browser sends the last seen ID via the
+// Last-Event-ID header; the server always responds with a current full
+// snapshot (no historical delta replay). The ID lets clients confirm they
+// received a fresh snapshot and detect stale caches.
 //
 // Route wiring (one line in router.go) is left to the mainline integrator.
 func (h *Handler) GetWorkWallStream(w http.ResponseWriter, r *http.Request) {
@@ -141,9 +145,18 @@ func writeWorkWallSnapshotFrame(w io.Writer, flusher http.Flusher, r *http.Reque
 	if err != nil {
 		return !requestContextDone(r)
 	}
-	fmt.Fprintf(w, "event: snapshot\ndata: %s\n\n", payload)
+	eventID := workWallSnapshotEventID()
+	fmt.Fprintf(w, "id: %s\nevent: snapshot\ndata: %s\n\n", eventID, payload)
 	flusher.Flush()
 	return !requestContextDone(r)
+}
+
+// workWallSnapshotEventID returns a monotonically increasing string identifier
+// suitable for the SSE `id:` field. It uses the wall-clock nanosecond timestamp,
+// which is safe because snapshot frames are emitted sequentially within a
+// stream and each connection starts a fresh timeline.
+func workWallSnapshotEventID() string {
+	return fmt.Sprintf("%d", time.Now().UnixNano())
 }
 
 // requestContextDone reports whether the request context is already cancelled.

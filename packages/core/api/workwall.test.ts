@@ -189,4 +189,61 @@ describe("subscribeWorkWallStream", () => {
     expect(errors).toHaveLength(2);
     expect(states).toEqual(["connecting", "error", "error"]);
   });
+
+  it("forwards the SSE event id via onEventID when present", () => {
+    const source = new FakeEventSource();
+    const eventIDs: string[] = [];
+    const snapshots: unknown[] = [];
+
+    subscribeWorkWallStream(
+      "ws",
+      {
+        onSnapshot: (s) => snapshots.push(s),
+        onEventID: (id) => eventIDs.push(id),
+      },
+      () => source as unknown as EventSource,
+    );
+
+    source.emit(
+      "snapshot",
+      new MessageEvent("snapshot", {
+        data: JSON.stringify([valid]),
+        lastEventId: "1724300000000000000",
+      }),
+    );
+    source.emit(
+      "snapshot",
+      new MessageEvent("snapshot", {
+        data: JSON.stringify([valid]),
+        lastEventId: "1724300005000000000",
+      }),
+    );
+
+    expect(snapshots).toHaveLength(2);
+    expect(eventIDs).toEqual([
+      "1724300000000000000",
+      "1724300005000000000",
+    ]);
+  });
+
+  it("does not call onEventID when lastEventId is empty", () => {
+    const source = new FakeEventSource();
+    const eventIDs: string[] = [];
+
+    subscribeWorkWallStream(
+      "ws",
+      {
+        onSnapshot: () => {},
+        onEventID: (id) => eventIDs.push(id),
+      },
+      () => source as unknown as EventSource,
+    );
+
+    source.emit(
+      "snapshot",
+      new MessageEvent("snapshot", { data: JSON.stringify([valid]) }),
+    );
+
+    expect(eventIDs).toEqual([]);
+  });
 });
