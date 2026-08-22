@@ -127,6 +127,26 @@
         "toast_no_ready": "没有可派发的就绪建议",
         "toast_error": "派发失败",
         "toast_authority_gap": "派发不可用 · 权威来源缺口"
+      },
+      "organization_source": {
+        "label": {
+          "base_missing": "未配置组织权威源",
+          "base_invalid": "组织权威源配置无效",
+          "token_unavailable": "权威凭据不可用",
+          "tenant_missing": "未选择权威租户",
+          "directory_constructor_error": "目录适配器初始化失败",
+          "directory_request_error": "组织目录暂时不可达",
+          "empty_authoritative_workforce": "权威源报告空员工名录"
+        },
+        "explanation": {
+          "base_missing": "本部署未接入 HiveCosm 组织权威。请运维配置；需求侧保持只读。",
+          "base_invalid": "配置的组织权威地址无效。运维修复配置前派发不会恢复。",
+          "token_unavailable": "无法加载权威凭据。不显示任何密钥内容；需运维恢复凭据访问。",
+          "tenant_missing": "缺少权威租户选择器，无法限定员工目录范围。需运维设置。",
+          "directory_constructor_error": "员工目录适配器在启动构造时失败。需求仍可见；派发保持关闭。",
+          "directory_request_error": "本次请求未能访问员工目录。通常为瞬时故障；可重试或请运维检查权威服务。",
+          "empty_authoritative_workforce": "权威源当前报告零员工。派发前请先在权威侧确认员工注册。"
+        }
       }
     }
   },

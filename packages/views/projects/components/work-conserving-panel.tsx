@@ -12,7 +12,32 @@ import { useAuthStore } from "@multica/core/auth";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { memberListOptions } from "@multica/core/workspace/queries";
 import { projectKeys, projectWorkConservingOptions } from "@multica/core/projects/queries";
-import type { WorkConservingDrainResult, WorkConservingProjection } from "@multica/core/types";
+import type { OrganizationSourceState, WorkConservingDrainResult, WorkConservingProjection } from "@multica/core/types";
+
+/**
+ * Renders the localized organization-source notice for the seven unhealthy
+ * classification constants. `healthy` is neutral and never rendered (it does
+ * not imply dispatch); `null` means the strict parser degraded to the generic
+ * source-gap treatment, which must not display any specific state.
+ */
+function OrganizationSourceNotice({ state }: { state: OrganizationSourceState | null }) {
+  const { t } = useT("projects");
+  if (state === null || state === "healthy") return null;
+  return (
+    <div
+      className="mt-3 rounded-md border border-muted bg-muted/20 px-3 py-2"
+      data-testid="organization-source-notice"
+      data-organization-source-state={state}
+    >
+      <div className="text-xs font-medium">
+        {t(($) => $.detail.work_conserving.organization_source.label[state])}
+      </div>
+      <p className="mt-0.5 text-[11px] text-muted-foreground">
+        {t(($) => $.detail.work_conserving.organization_source.explanation[state])}
+      </p>
+    </div>
+  );
+}
 import { useT } from "../../i18n";
 
 function StateIcon({ state }: { state: WorkConservingProjection["state"] }) {
@@ -96,6 +121,7 @@ export function WorkConservingPanel({ projectId }: { projectId: string }) {
         blocked: true,
         goalId: null,
         authority: null,
+        organizationSourceState: null,
         suggestions: [],
         blockedBacklog: [],
         mismatch: {
@@ -115,6 +141,9 @@ export function WorkConservingPanel({ projectId }: { projectId: string }) {
     ? {
         ...rawProjection,
         authority: null,
+        // A degraded query/parse must not surface any specific organization
+        // classification together with the generic empty source-gap shape.
+        organizationSourceState: rawProjection.organizationSourceState,
         suggestions: [],
         blockedBacklog: [],
         total: 0,
@@ -164,6 +193,8 @@ export function WorkConservingPanel({ projectId }: { projectId: string }) {
             : t(($) => $.detail.work_conserving.no_write)}
         </div>
       </div>
+
+      <OrganizationSourceNotice state={projection.organizationSourceState} />
 
       <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
         <Metric label={t(($) => $.detail.work_conserving.metrics.open)} value={projection.mismatch.openIssues} />

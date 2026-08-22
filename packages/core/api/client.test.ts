@@ -164,6 +164,121 @@ describe("ApiClient work-conserving projection", () => {
     });
   });
 
+  it("reads organization_source_state only from the top-level sources block", async () => {
+    for (const state of [
+      "base_missing",
+      "base_invalid",
+      "token_unavailable",
+      "tenant_missing",
+      "directory_constructor_error",
+      "directory_request_error",
+      "empty_authoritative_workforce",
+      "healthy",
+    ]) {
+      const response = {
+        ...readyResponse,
+        sources: {
+          project: true,
+          organization: state !== "base_missing",
+          organization_source_state: state,
+          runtime: true,
+          tasks: true,
+        },
+      };
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockResolvedValue(new Response(JSON.stringify(response), { status: 200 })),
+      );
+      await expect(
+        new ApiClient("https://api.example.test").getProjectWorkConservingProjection("project-1"),
+      ).resolves.toMatchObject({ organizationSourceState: state });
+    }
+  });
+
+  it("degrades to a null organization state and the generic source-gap projection when sources is absent", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(new Response(JSON.stringify(readyResponse), { status: 200 })),
+    );
+    await expect(
+      new ApiClient("https://api.example.test").getProjectWorkConservingProjection("project-1"),
+    ).resolves.toMatchObject({ organizationSourceState: null });
+  });
+
+  it("rejects an unknown organization_source_state value to the generic fallback", async () => {
+    const response = {
+      ...readyResponse,
+      sources: { organization_source_state: "https://authority.example" },
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(new Response(JSON.stringify(response), { status: 200 })),
+    );
+    await expect(
+      new ApiClient("https://api.example.test").getProjectWorkConservingProjection("project-1"),
+    ).resolves.toMatchObject({
+      state: "source_gap",
+      organizationSourceState: null,
+      suggestions: [],
+      noWrite: true,
+    });
+  });
+
+  it("rejects a nested-only organization_source_state that is not on the top-level sources block", async () => {
+    const response = {
+      ...readyResponse,
+      work_conserving: {
+        ...readyResponse.work_conserving,
+        // A value smuggled into the projection body must not surface as a
+        // classification: only the top-level sources block is authoritative.
+        organization_source_state: "tenant_missing",
+      },
+      sources: { organization: true },
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(new Response(JSON.stringify(response), { status: 200 })),
+    );
+    // The nested key is unknown to the strict projection schema, so the whole
+    // parse fails closed to the EMPTY source-gap projection.
+    await expect(
+      new ApiClient("https://api.example.test").getProjectWorkConservingProjection("project-1"),
+    ).resolves.toMatchObject({
+      state: "source_gap",
+      organizationSourceState: null,
+    });
+  });
+
+  it("rejects a malformed non-string organization_source_state to the generic fallback", async () => {
+    const response = {
+      ...readyResponse,
+      sources: { organization_source_state: { code: 503 } },
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(new Response(JSON.stringify(response), { status: 200 })),
+    );
+    await expect(
+      new ApiClient("https://api.example.test").getProjectWorkConservingProjection("project-1"),
+    ).resolves.toMatchObject({
+      state: "source_gap",
+      organizationSourceState: null,
+    });
+  });
+
+  it("propagates a query error instead of synthesizing a projection or state", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(new Response(JSON.stringify({ error: "boom" }), { status: 503 })),
+    );
+    // The transport error propagates as an ApiError; the panel's query-error
+    // branch renders the generic source-gap treatment with a null state and
+    // never a specific classification (covered in the component tests).
+    await expect(
+      new ApiClient("https://api.example.test").getProjectWorkConservingProjection("project-1"),
+    ).rejects.toMatchObject({ status: 503 });
+  });
+
   it("fails closed when source_gap carries a non-empty plan or metrics", async () => {
     const invalidSourceGap = {
       ...readyResponse.work_conserving,

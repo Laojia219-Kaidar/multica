@@ -128,11 +128,15 @@ function renderPanel() {
   );
 }
 
-function projection(state: WorkConservingProjection["state"]): WorkConservingProjection {
+function projection(
+  state: WorkConservingProjection["state"],
+  organizationSourceState: WorkConservingProjection["organizationSourceState"] = null,
+): WorkConservingProjection {
   return {
     schemaVersion: "hivecrew.work-conserving-projection/v1",
     state,
     blocked: state === "blocked",
+    organizationSourceState,
     goalId: "goal-1",
     authority: {
       workspaceId: "workspace-1",
@@ -554,5 +558,109 @@ describe("WorkConservingPanel", () => {
       expect(screen.queryByText("sensitive-error-details")).toBeNull();
       expect(screen.queryByText("503")).toBeNull();
     });
+  });
+});
+
+describe("WorkConservingPanel organization source notice", () => {
+  beforeEach(() => {
+    mockQueryResult.workConserving = null;
+    mockQueryResult.members = null;
+    mutationShared.isPending = false;
+    mutationShared.invalidateQueries.mockClear();
+    mutationShared.onSuccessCalled = 0;
+    mockDrain.mockReset();
+  });
+
+  const UNHEALTHY = [
+    "base_missing",
+    "base_invalid",
+    "token_unavailable",
+    "tenant_missing",
+    "directory_constructor_error",
+    "directory_request_error",
+    "empty_authoritative_workforce",
+  ] as const;
+
+  it.each([...UNHEALTHY])("renders the localized notice for %s without raw diagnostics", (state) => {
+    mockQueryResult.workConserving = {
+      data: projection("blocked", state),
+      isLoading: false,
+      isError: false,
+    };
+    mockQueryResult.members = {
+      data: [{ user_id: "user-1", role: "owner" }],
+      isLoading: false,
+      isError: false,
+    };
+    const { container } = renderPanel();
+
+    const notice = screen.getByTestId("organization-source-notice");
+    expect(notice).toHaveAttribute("data-organization-source-state", state);
+    expect(enProjects.detail.work_conserving.organization_source.label[state]).toBeTruthy();
+    expect(
+      screen.getByText(enProjects.detail.work_conserving.organization_source.label[state]),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(enProjects.detail.work_conserving.organization_source.explanation[state]),
+    ).toBeInTheDocument();
+    // No raw error, URL, tenant value or credential material may leak: the
+    // notice may name the classification (which includes the word
+    // "credential" in its localized label) but must not carry URLs or
+    // secret-shaped values anywhere in the panel.
+    expect(notice.textContent).not.toMatch(/https?:\/\//i);
+    expect(notice.textContent).not.toMatch(/(sk-|Bearer\s|keychain:|tenant[=:]\s*\S)/i);
+    expect(container.textContent).not.toMatch(/https?:\/\//i);
+  });
+
+  it("healthy state renders no notice and never implies dispatch", () => {
+    mockQueryResult.workConserving = {
+      data: projection("ready", "healthy"),
+      isLoading: false,
+      isError: false,
+    };
+    mockQueryResult.members = {
+      data: [{ user_id: "user-1", role: "owner" }],
+      isLoading: false,
+      isError: false,
+    };
+    renderPanel();
+
+    expect(screen.queryByTestId("organization-source-notice")).toBeNull();
+    // Drain remains gated on suggestions; healthy alone does not enable it.
+    expect(screen.queryByRole("button", { name: /dispatch next action/i })).toBeInTheDocument();
+  });
+
+  it("a degraded query error renders the generic source-gap treatment with no specific state", () => {
+    mockQueryResult.workConserving = { isLoading: false, isError: true };
+    mockQueryResult.members = {
+      data: [{ user_id: "user-1", role: "owner" }],
+      isLoading: false,
+      isError: false,
+    };
+    renderPanel();
+
+    expect(screen.queryByTestId("organization-source-notice")).toBeNull();
+    expect(screen.getByText(/source gap/i)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /dispatch next action/i })).toBeNull();
+  });
+
+  it("hides the drain action on a source-gap projection even with an unhealthy organization state", () => {
+    mockQueryResult.workConserving = {
+      data: projection("source_gap", "tenant_missing"),
+      isLoading: false,
+      isError: false,
+    };
+    mockQueryResult.members = {
+      data: [{ user_id: "user-1", role: "owner" }],
+      isLoading: false,
+      isError: false,
+    };
+    renderPanel();
+
+    expect(screen.getByTestId("organization-source-notice")).toHaveAttribute(
+      "data-organization-source-state",
+      "tenant_missing",
+    );
+    expect(screen.queryByRole("button", { name: /dispatch next action/i })).toBeNull();
   });
 });

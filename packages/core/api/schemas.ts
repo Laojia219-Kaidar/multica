@@ -210,9 +210,42 @@ const WorkConservingProjectionWireSchema = z.object({
   }
 });
 
+const ORGANIZATION_SOURCE_STATES = [
+  "base_missing",
+  "base_invalid",
+  "token_unavailable",
+  "tenant_missing",
+  "directory_constructor_error",
+  "directory_request_error",
+  "empty_authoritative_workforce",
+  "healthy",
+] as const;
+
+/**
+ * The organization-source classification is read ONLY from the top-level
+ * sources.organization_source_state wire field. The surrounding sources
+ * object may carry the other source flags (project, runtime, tasks, quota,
+ * write_lease, wip) which are not consumed here, but when
+ * organization_source_state IS present it must be exactly one of the eight
+ * frozen constants: any other value (unknown, malformed, nested-only, or a
+ * value placed anywhere other than the top-level sources block) fails the
+ * strict enum parse, so parseWithFallback degrades to the generic EMPTY
+ * source-gap projection with a null state — never a synthesized specific
+ * state such as base_missing.
+ */
+const OrganizationSourceStateWireSchema = z.enum(ORGANIZATION_SOURCE_STATES);
+
+const WorkConservingSourcesWireSchema = z
+  .object({
+    organization_source_state: OrganizationSourceStateWireSchema,
+  })
+  .partial()
+  .loose();
+
 export const WorkConservingProjectionResponseSchema = z.object({
   work_conserving: WorkConservingProjectionWireSchema,
-}).loose().transform(({ work_conserving: projection }) => ({
+  sources: WorkConservingSourcesWireSchema.optional(),
+}).loose().transform(({ work_conserving: projection, sources }) => ({
   workConserving: {
     schemaVersion: projection.schema_version,
     state: projection.state,
@@ -261,6 +294,7 @@ export const WorkConservingProjectionResponseSchema = z.object({
     total: projection.total,
     limit: projection.limit,
     offset: projection.offset,
+    organizationSourceState: sources?.organization_source_state ?? null,
     noWrite: true as const,
   } satisfies WorkConservingProjection,
 }));
@@ -272,6 +306,7 @@ export const EMPTY_WORK_CONSERVING_PROJECTION: WorkConservingProjection = {
   blocked: true,
   goalId: null,
   authority: null,
+  organizationSourceState: null,
   suggestions: [],
   blockedBacklog: [],
   mismatch: {

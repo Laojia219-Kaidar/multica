@@ -144,6 +144,7 @@ export type {
   WorkConservingAuthoritySnapshot,
   WorkConservingBlockedIssue,
   WorkConservingMismatch,
+  OrganizationSourceState,
   WorkConservingProjection,
   WorkConservingProjectionState,
   WorkConservingSuggestion,

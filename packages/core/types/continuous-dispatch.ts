@@ -1,5 +1,25 @@
 export type WorkConservingProjectionState = "ready" | "blocked" | "source_gap";
 
+/**
+ * Frozen, sanitized classification of the HiveCosm organization (workforce
+ * authority) source, read ONLY from the top-level
+ * `sources.organization_source_state` wire field. The value is a wire-stable
+ * enum; it never carries a URL, tenant value, token source name, credential
+ * reference, raw response, raw error or log content. `null` means the strict
+ * parser did not observe a valid field (missing, unknown, malformed, or the
+ * query itself failed): the UI must render only the existing generic
+ * source-gap treatment and must never synthesize a specific state.
+ */
+export type OrganizationSourceState =
+  | "base_missing"
+  | "base_invalid"
+  | "token_unavailable"
+  | "tenant_missing"
+  | "directory_constructor_error"
+  | "directory_request_error"
+  | "empty_authoritative_workforce"
+  | "healthy";
+
 export interface WorkConservingAuthoritySnapshot {
   workspaceId: string;
   projectId: string;
@@ -111,6 +131,12 @@ export interface WorkConservingProjection {
   blocked: boolean;
   goalId: string | null;
   authority: WorkConservingAuthoritySnapshot | null;
+  /**
+   * Sanitized organization-source classification from the same response's
+   * top-level sources block, or null when the strict parser degraded to the
+   * generic source-gap state (missing/unknown/malformed/query error).
+   */
+  organizationSourceState: OrganizationSourceState | null;
   suggestions: WorkConservingSuggestion[];
   blockedBacklog: WorkConservingBlockedIssue[];
   mismatch: WorkConservingMismatch;

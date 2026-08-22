@@ -127,6 +127,26 @@
         "toast_no_ready": "실행 가능한 제안이 없습니다",
         "toast_error": "실행 실패",
         "toast_authority_gap": "실행 불가 · 권위 소스 공백"
+      },
+      "organization_source": {
+        "label": {
+          "base_missing": "조직 권한 소스가 구성되지 않았습니다",
+          "base_invalid": "조직 권한 소스 구성이 잘못되었습니다",
+          "token_unavailable": "권한 자격 증명을 사용할 수 없습니다",
+          "tenant_missing": "권한 테넌트가 선택되지 않았습니다",
+          "directory_constructor_error": "디렉터리 어댑터 초기화에 실패했습니다",
+          "directory_request_error": "조직 디렉터리에 일시적으로 연결할 수 없습니다",
+          "empty_authoritative_workforce": "권한 소스가 빈 직원 명단을 보고하고 있습니다"
+        },
+        "explanation": {
+          "base_missing": "이 배포에는 HiveCosm 조직 권한이 연결되어 있지 않습니다. 운영자에게 구성을 요청하세요. 수요는 읽기 전용으로 유지됩니다.",
+          "base_invalid": "구성된 조직 권한 주소가 잘못되었습니다. 운영자가 구성을 수정하기 전까지 파견이 재개되지 않습니다.",
+          "token_unavailable": "권한 자격 증명을 불러올 수 없습니다. 비밀은 표시되지 않으며 운영자가 자격 증명 접근을 복구해야 합니다.",
+          "tenant_missing": "권한 테넌트 선택기가 없어 직원 디렉터리 범위를 지정할 수 없습니다. 운영자가 설정해야 합니다.",
+          "directory_constructor_error": "직원 디렉터리 어댑터가 시작 구성 중 실패했습니다. 수요는 계속 표시되며 파견은 유지됩니다.",
+          "directory_request_error": "이 요청에서 직원 디렉터리에 접근할 수 없습니다. 대개 일시적 문제입니다. 재시도하거나 운영자에게 권한 서비스 점검을 요청하세요.",
+          "empty_authoritative_workforce": "권한 소스가 현재 직원 0명을 보고하고 있습니다. 파견 전에 권한 측 직원 등록을 확인하세요."
+        }
       }
     }
   },

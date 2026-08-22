@@ -127,6 +127,26 @@
         "toast_no_ready": "実行可能な提案はありません",
         "toast_error": "実行に失敗しました",
         "toast_authority_gap": "実行不可 · 権威ソース不足"
+      },
+      "organization_source": {
+        "label": {
+          "base_missing": "組織オーソリティ源が未設定です",
+          "base_invalid": "組織オーソリティ源の設定が無効です",
+          "token_unavailable": "オーソリティ資格情報を利用できません",
+          "tenant_missing": "オーソリティテナントが未選択です",
+          "directory_constructor_error": "ディレクトリアダプタの初期化に失敗しました",
+          "directory_request_error": "組織ディレクトリに一時的に接続できません",
+          "empty_authoritative_workforce": "オーソリティが空の従業員名簿を報告しています"
+        },
+        "explanation": {
+          "base_missing": "このデプロイでは HiveCosm 組織オーソリティが接続されていません。運用者に設定を依頼してください。需要は読み取り専用のままです。",
+          "base_invalid": "構成された組織オーソリティのアドレスが無効です。運用者が構成を修復するまで派発は再開されません。",
+          "token_unavailable": "オーソリティ資格情報を読み込めませんでした。秘密は表示されません。運用者が資格情報アクセスを復元する必要があります。",
+          "tenant_missing": "オーソリティテナントセレクターが欠落しているため、従業員ディレクトリの範囲を特定できません。運用者が設定する必要があります。",
+          "directory_constructor_error": "従業員ディレクトリアダプタが起動時の構築に失敗しました。需要は引き続き表示され、派発は閉じたままです。",
+          "directory_request_error": "このリクエストでは従業員ディレクトリに到達できませんでした。多くは一時的な障害です。再試行するか運用者にオーソリティサービスの確認を依頼してください。",
+          "empty_authoritative_workforce": "オーソリティは現在従業員ゼロを報告しています。派発前にオーソリティ側で従業員登録を確認してください。"
+        }
       }
     }
   },

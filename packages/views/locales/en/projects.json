@@ -128,6 +128,26 @@
         "toast_no_ready": "No ready suggestions to dispatch",
         "toast_error": "Dispatch failed",
         "toast_authority_gap": "Dispatch unavailable — authority gap"
+      },
+      "organization_source": {
+        "label": {
+          "base_missing": "Organization source not configured",
+          "base_invalid": "Organization source misconfigured",
+          "token_unavailable": "Authority credential unavailable",
+          "tenant_missing": "Authority tenant not selected",
+          "directory_constructor_error": "Directory adapter failed to initialize",
+          "directory_request_error": "Organization directory unreachable",
+          "empty_authoritative_workforce": "Authority reports an empty workforce"
+        },
+        "explanation": {
+          "base_missing": "The HiveCosm organization authority is not wired on this deployment. Ask the operator to configure it; demand stays read-only.",
+          "base_invalid": "The configured organization authority address is invalid. The operator must repair the configuration before dispatch can resume.",
+          "token_unavailable": "The authority credential could not be loaded. No secret is shown; the operator must restore credential access.",
+          "tenant_missing": "The authority tenant selector is missing, so the workforce directory cannot be scoped. The operator must set it.",
+          "directory_constructor_error": "The workforce directory adapter failed during startup construction. Demand remains visible; dispatch stays closed.",
+          "directory_request_error": "The workforce directory could not be reached for this request. This is usually transient; retry or ask the operator to check the authority service.",
+          "empty_authoritative_workforce": "The authority currently reports zero workforce employees. Confirm the workforce registration on the authority side before dispatching."
+        }
       }
     }
   },
