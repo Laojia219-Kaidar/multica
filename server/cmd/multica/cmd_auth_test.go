@@ -1,12 +1,21 @@
 package main
 
 import (
+	"encoding/json"
 	"net"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/spf13/cobra"
+
+	"github.com/multica-ai/multica/server/internal/cli"
 )
 
 func TestMain(m *testing.M) {
@@ -17,6 +26,7 @@ func TestMain(m *testing.M) {
 		"MULTICA_DAEMON_PORT",
 		"MULTICA_WORKSPACE_ID",
 		"MULTICA_SERVER_URL",
+		taskTokenCapabilityFileEnv,
 	} {
 		os.Unsetenv(key)
 	}
@@ -392,5 +402,247 @@ func TestValidateLoginTokenPrefix(t *testing.T) {
 		if !strings.Contains(err.Error(), p) {
 			t.Errorf("error %q does not mention prefix %q", err.Error(), p)
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// HIV-806: capability-gated recovery of the task-scoped token over the
+// daemon's loopback health listener. All tokens and capabilities below are
+// dummy test values only.
+// ---------------------------------------------------------------------------
+
+const dummyTaskTokenCapability = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+func writeTaskTokenCapabilityFile(t *testing.T, contents string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "task-token-capability")
+	if err := os.WriteFile(path, []byte(contents), 0o400); err != nil {
+		t.Fatalf("write capability file: %v", err)
+	}
+	return path
+}
+
+// taskTokenRecoveryTestServer fakes POST /task-token. Only requests carrying
+// the dummy capability and the exact task id succeed; everything else gets
+// the same refusal the real daemon emits.
+func taskTokenRecoveryTestServer(t *testing.T, status int, token string) (*httptest.Server, *int32) {
+	t.Helper()
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		w.Header().Set("Cache-Control", "no-store")
+		if r.Method != http.MethodPost || r.URL.Path != taskTokenRecoveryPath || r.URL.RawQuery != "" {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if got := r.Header.Get(taskTokenCapabilityHeader); got != dummyTaskTokenCapability {
+			http.Error(w, "task token unavailable", http.StatusUnauthorized)
+			return
+		}
+		var req struct {
+			TaskID string `json:"task_id"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.TaskID != "task-recover-1" {
+			http.Error(w, "task token unavailable", http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if status != http.StatusOK {
+			w.WriteHeader(status)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]string{"token": token})
+	}))
+	t.Cleanup(srv.Close)
+	return srv, &calls
+}
+
+func loopbackPort(t *testing.T, rawURL string) string {
+	t.Helper()
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		t.Fatalf("parse %q: %v", rawURL, err)
+	}
+	_, port, err := net.SplitHostPort(u.Host)
+	if err != nil {
+		t.Fatalf("split host:port of %q: %v", u.Host, err)
+	}
+	return port
+}
+
+func closedLoopbackPort(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve port: %v", err)
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+	if err := ln.Close(); err != nil {
+		t.Fatalf("close listener: %v", err)
+	}
+	return strconv.Itoa(port)
+}
+
+func setTaskTokenRecoveryEnv(t *testing.T, port, capabilityFile string) {
+	t.Helper()
+	t.Setenv("MULTICA_TOKEN", "")
+	t.Setenv("MULTICA_AGENT_ID", "agent-recover")
+	t.Setenv("MULTICA_TASK_ID", "task-recover-1")
+	t.Setenv("MULTICA_DAEMON_PORT", port)
+	if capabilityFile == "" {
+		t.Setenv(taskTokenCapabilityFileEnv, "")
+	} else {
+		t.Setenv(taskTokenCapabilityFileEnv, capabilityFile)
+	}
+}
+
+func TestResolveTokenRecoversTaskTokenFromDaemon(t *testing.T) {
+	srv, calls := taskTokenRecoveryTestServer(t, http.StatusOK, "mat_recovered_task_token")
+	capFile := writeTaskTokenCapabilityFile(t, dummyTaskTokenCapability)
+	setTaskTokenRecoveryEnv(t, loopbackPort(t, srv.URL), capFile)
+
+	if got := resolveToken(testCmd()); got != "mat_recovered_task_token" {
+		t.Fatalf("resolveToken() = %q, want recovered task-scoped token", got)
+	}
+	if atomic.LoadInt32(calls) == 0 {
+		t.Fatal("recovery never reached the daemon endpoint")
+	}
+}
+
+func TestResolveTokenEnvTokenStillWinsOverRecovery(t *testing.T) {
+	srv, calls := taskTokenRecoveryTestServer(t, http.StatusOK, "mat_recovered_task_token")
+	capFile := writeTaskTokenCapabilityFile(t, dummyTaskTokenCapability)
+	setTaskTokenRecoveryEnv(t, loopbackPort(t, srv.URL), capFile)
+	t.Setenv("MULTICA_TOKEN", "mat_from_env")
+
+	if got := resolveToken(testCmd()); got != "mat_from_env" {
+		t.Fatalf("resolveToken() = %q, want MULTICA_TOKEN to win", got)
+	}
+	if atomic.LoadInt32(calls) != 0 {
+		t.Fatal("env token present but recovery was still attempted")
+	}
+}
+
+func TestResolveTokenRecoveryFailuresNeverFallBack(t *testing.T) {
+	validCap := writeTaskTokenCapabilityFile(t, dummyTaskTokenCapability)
+
+	t.Run("daemon down", func(t *testing.T) {
+		setTaskTokenRecoveryEnv(t, closedLoopbackPort(t), validCap)
+		if got := resolveToken(testCmd()); got != "" {
+			t.Fatalf("resolveToken() = %q, want empty when daemon is unreachable", got)
+		}
+	})
+
+	t.Run("invalid port value", func(t *testing.T) {
+		setTaskTokenRecoveryEnv(t, "not-a-port", validCap)
+		if got := resolveToken(testCmd()); got != "" {
+			t.Fatalf("resolveToken() = %q, want empty for non-numeric port", got)
+		}
+	})
+
+	t.Run("capability env missing means no recovery attempt", func(t *testing.T) {
+		srv, calls := taskTokenRecoveryTestServer(t, http.StatusOK, "mat_recovered_task_token")
+		setTaskTokenRecoveryEnv(t, loopbackPort(t, srv.URL), "")
+		if got := resolveToken(testCmd()); got != "" {
+			t.Fatalf("resolveToken() = %q, want empty without capability pointer", got)
+		}
+		if atomic.LoadInt32(calls) != 0 {
+			t.Fatal("recovery attempted without capability env")
+		}
+	})
+
+	t.Run("capability file missing", func(t *testing.T) {
+		srv, _ := taskTokenRecoveryTestServer(t, http.StatusOK, "mat_recovered_task_token")
+		setTaskTokenRecoveryEnv(t, loopbackPort(t, srv.URL), filepath.Join(t.TempDir(), "absent"))
+		if got := resolveToken(testCmd()); got != "" {
+			t.Fatalf("resolveToken() = %q, want empty when capability file is missing", got)
+		}
+	})
+
+	t.Run("empty capability file", func(t *testing.T) {
+		srv, _ := taskTokenRecoveryTestServer(t, http.StatusOK, "mat_recovered_task_token")
+		setTaskTokenRecoveryEnv(t, loopbackPort(t, srv.URL), writeTaskTokenCapabilityFile(t, "   \n"))
+		if got := resolveToken(testCmd()); got != "" {
+			t.Fatalf("resolveToken() = %q, want empty for empty capability", got)
+		}
+	})
+
+	t.Run("capability file larger than the cap", func(t *testing.T) {
+		srv, _ := taskTokenRecoveryTestServer(t, http.StatusOK, "mat_recovered_task_token")
+		setTaskTokenRecoveryEnv(t, loopbackPort(t, srv.URL), writeTaskTokenCapabilityFile(t, strings.Repeat("x", maxTaskTokenCapabilityBytes+1)))
+		if got := resolveToken(testCmd()); got != "" {
+			t.Fatalf("resolveToken() = %q, want empty for oversized capability file", got)
+		}
+	})
+
+	t.Run("wrong capability rejected by daemon", func(t *testing.T) {
+		srv, _ := taskTokenRecoveryTestServer(t, http.StatusOK, "mat_recovered_task_token")
+		setTaskTokenRecoveryEnv(t, loopbackPort(t, srv.URL), writeTaskTokenCapabilityFile(t, "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"))
+		if got := resolveToken(testCmd()); got != "" {
+			t.Fatalf("resolveToken() = %q, want empty when daemon refuses the capability", got)
+		}
+	})
+
+	t.Run("non-200 daemon response", func(t *testing.T) {
+		srv, _ := taskTokenRecoveryTestServer(t, http.StatusInternalServerError, "")
+		setTaskTokenRecoveryEnv(t, loopbackPort(t, srv.URL), validCap)
+		if got := resolveToken(testCmd()); got != "" {
+			t.Fatalf("resolveToken() = %q, want empty on 500", got)
+		}
+	})
+
+	t.Run("non mat_ token in response is refused", func(t *testing.T) {
+		srv, _ := taskTokenRecoveryTestServer(t, http.StatusOK, "mul_member_pat")
+		setTaskTokenRecoveryEnv(t, loopbackPort(t, srv.URL), validCap)
+		if got := resolveToken(testCmd()); got != "" {
+			t.Fatalf("resolveToken() = %q, want empty: only mat_ tokens are acceptable", got)
+		}
+	})
+
+	// The recovery failure must not fall back to the user-global config
+	// token — that is the wrong-actor path resolveToken's daemon gate exists
+	// to prevent. Seed a config with a member PAT and keep recovery failing.
+	t.Run("no member PAT fallback through failed recovery", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		if err := cli.SaveCLIConfig(cli.CLIConfig{Token: "mul_profile_token"}); err != nil {
+			t.Fatalf("seed config: %v", err)
+		}
+		setTaskTokenRecoveryEnv(t, closedLoopbackPort(t), validCap)
+		if got := resolveToken(testCmd()); got != "" {
+			t.Fatalf("resolveToken() = %q, want empty: recovery failure must not reach the profile PAT", got)
+		}
+	})
+}
+
+// TestRecoverTaskTokenFromDaemonRequiresDaemonIdentity pins that recovery
+// only runs with the full triple (task id, daemon port, capability pointer):
+// a workdir marker alone must never trigger a loopback attempt.
+func TestRecoverTaskTokenFromDaemonRequiresDaemonIdentity(t *testing.T) {
+	cases := []struct {
+		name  string
+		setup func(t *testing.T) string // returns port
+	}{
+		{name: "no task id", setup: func(t *testing.T) string {
+			t.Setenv("MULTICA_TASK_ID", "")
+			t.Setenv("MULTICA_DAEMON_PORT", "29501")
+			t.Setenv(taskTokenCapabilityFileEnv, writeTaskTokenCapabilityFile(t, dummyTaskTokenCapability))
+			return "29501"
+		}},
+		{name: "no daemon port", setup: func(t *testing.T) string {
+			t.Setenv("MULTICA_TASK_ID", "task-recover-1")
+			t.Setenv("MULTICA_DAEMON_PORT", "")
+			t.Setenv(taskTokenCapabilityFileEnv, writeTaskTokenCapabilityFile(t, dummyTaskTokenCapability))
+			return "29501"
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("MULTICA_AGENT_ID", "agent-recover")
+			t.Setenv("MULTICA_TOKEN", "")
+			tc.setup(t)
+			if got := recoverTaskTokenFromDaemon(); got != "" {
+				t.Fatalf("recoverTaskTokenFromDaemon() = %q, want empty", got)
+			}
+		})
 	}
 }

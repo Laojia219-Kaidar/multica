@@ -2,16 +2,20 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -20,6 +24,7 @@ import (
 
 	"github.com/multica-ai/multica/server/internal/auth"
 	"github.com/multica-ai/multica/server/internal/cli"
+	"github.com/multica-ai/multica/server/internal/daemon"
 )
 
 // loginTokenPrefixes are the token prefixes `multica login --token` accepts.
@@ -70,6 +75,102 @@ func init() {
 	authCmd.AddCommand(authLogoutCmd)
 }
 
+// Task-scoped token recovery over the daemon's loopback health listener
+// (HIV-806). Credential-shaped env scrubbers — the DeepSeek Harness removes
+// env names matching KEY|PASSWORD|SECRET|TOKEN from tool subprocesses — strip
+// MULTICA_TOKEN even though the daemon injected it. The daemon therefore also
+// injects a scrub-resistant pointer env var to a task-owned 0400 file holding
+// a random recovery capability; presenting that capability plus the exact
+// task id releases the task-scoped mat_ token, and only while that exact task
+// is still running. The env/header names are the wire contract with
+// server/internal/daemon/tasktoken.go, referenced through the daemon package
+// constants so the two sides cannot drift.
+const (
+	taskTokenCapabilityFileEnv = daemon.TaskTokenCapabilityFileEnv
+	taskTokenCapabilityHeader  = daemon.TaskTokenCapabilityHeader
+	taskTokenRecoveryPath      = daemon.TaskTokenPath
+
+	// taskTokenRecoveryTimeout bounds the single loopback recovery attempt so
+	// a wedged daemon can never stall an agent CLI call.
+	taskTokenRecoveryTimeout = 2 * time.Second
+
+	// maxTaskTokenCapabilityBytes caps the capability file read; the real
+	// capability is 64 hex bytes.
+	maxTaskTokenCapabilityBytes = 512
+	// maxTaskTokenResponseBytes caps the accepted response body.
+	maxTaskTokenResponseBytes = 64 << 10
+)
+
+// recoverTaskTokenFromDaemon attempts the HIV-806 loopback recovery exactly
+// once: daemon port + exact task id + capability file. It returns "" on any
+// missing precondition, transport failure, non-200 status, or non-mat_
+// payload — callers must never fall back to the profile/member PAT from here.
+func recoverTaskTokenFromDaemon() string {
+	taskID := strings.TrimSpace(os.Getenv("MULTICA_TASK_ID"))
+	if taskID == "" {
+		return ""
+	}
+	port := strings.TrimSpace(os.Getenv("MULTICA_DAEMON_PORT"))
+	if port == "" {
+		return ""
+	}
+	if _, err := strconv.Atoi(port); err != nil {
+		return ""
+	}
+	capabilityFile := strings.TrimSpace(os.Getenv(taskTokenCapabilityFileEnv))
+	if capabilityFile == "" {
+		return ""
+	}
+	info, err := os.Stat(capabilityFile)
+	if err != nil || !info.Mode().IsRegular() || info.Size() > maxTaskTokenCapabilityBytes {
+		return ""
+	}
+	raw, err := os.ReadFile(capabilityFile)
+	if err != nil {
+		return ""
+	}
+	capability := strings.TrimSpace(string(raw))
+	if capability == "" || strings.ContainsAny(capability, " \t\r\n") {
+		return ""
+	}
+	payload, err := json.Marshal(map[string]string{"task_id": taskID})
+	if err != nil {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), taskTokenRecoveryTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		"http://127.0.0.1:"+port+taskTokenRecoveryPath, bytes.NewReader(payload))
+	if err != nil {
+		return ""
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(taskTokenCapabilityHeader, capability)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return ""
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxTaskTokenResponseBytes))
+	if err != nil {
+		return ""
+	}
+	var parsed struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return ""
+	}
+	token := strings.TrimSpace(parsed.Token)
+	if !strings.HasPrefix(token, "mat_") {
+		return ""
+	}
+	return token
+}
+
 func resolveToken(cmd *cobra.Command) string {
 	if v := strings.TrimSpace(os.Getenv("MULTICA_TOKEN")); v != "" {
 		return v
@@ -79,7 +180,11 @@ func resolveToken(cmd *cobra.Command) string {
 	// inDaemonManagedExecutionContext already covers the MULTICA_DAEMON_PORT
 	// signal for subprocesses that lost MULTICA_AGENT_ID / MULTICA_TASK_ID.
 	if inDaemonManagedExecutionContext() {
-		return ""
+		// HIV-806: an env scrubber may have removed MULTICA_TOKEN from this
+		// subprocess even though the daemon injected it. Attempt exactly one
+		// short-timeout loopback recovery of the task-scoped mat_ token; any
+		// failure stays empty — never fall back to the profile/member PAT.
+		return recoverTaskTokenFromDaemon()
 	}
 	profile := resolveProfile(cmd)
 	cfg, _ := cli.LoadCLIConfigForProfile(profile)

@@ -337,6 +337,12 @@ type Daemon struct {
 	writerLeaseModes    map[string]string
 	writerLeaseSessions map[string]*writerLeaseCheckoutSession
 	mutationBroker      *mutationbroker.Registry
+	// taskTokens gates POST /task-token recovery of the in-memory
+	// task-scoped mat_ token behind per-task opaque capabilities (HIV-806).
+	// A live record exists only while its task is running. New() always sets
+	// it; hand-built test fixtures may leave it nil, which the handler treats
+	// as fail-closed and runTask lazily initializes (like mutationBroker).
+	taskTokens *taskTokenRegistry
 
 	// batchClaimUnsupported is set once a batch claim gets a 404 from the
 	// server (no /api/daemon/tasks/claim route — an un-upgraded server), so
@@ -477,6 +483,7 @@ func New(cfg Config, logger *slog.Logger) *Daemon {
 		writerLeaseModes:          make(map[string]string),
 		writerLeaseSessions:       make(map[string]*writerLeaseCheckoutSession),
 		mutationBroker:            mutationbroker.New(),
+		taskTokens:                newTaskTokenRegistry(),
 	}
 	d.activeEnvRootsCond = sync.NewCond(&d.activeEnvRootsMu)
 	d.activeCodexStoresCond = sync.NewCond(&d.activeCodexStoresMu)
@@ -5320,6 +5327,22 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		taskLog.Error("task auth token invalid; refusing to start agent", "error", err)
 		return TaskResult{}, err
 	}
+	// HIV-806: credential-shaped env scrubbers (the DeepSeek Harness removes
+	// KEY|PASSWORD|SECRET|TOKEN-named env vars from tool subprocesses; Codex's
+	// default secret guard does the same) can strip MULTICA_TOKEN from the
+	// agent's shell tools even though we inject it below. Register a
+	// task-local recovery capability before the child launch: its pointer env
+	// name survives those scrubs, the capability lives only in a task-owned
+	// 0400 file, and the mat_ token itself stays in daemon memory — the CLI
+	// can recover it over the loopback health listener while this exact task
+	// is running. The registration and the capability file are removed when
+	// the task exits, so nothing outlives the task.
+	taskTokenCapabilityFile := d.registerTaskTokenRecovery(task.ID, agentToken, capDir, taskLog)
+	defer func() {
+		if err := d.taskTokens.Revoke(task.ID); err != nil {
+			taskLog.Warn("task token recovery revoke failed", "error", err)
+		}
+	}()
 	agentEnv := map[string]string{
 		"MULTICA_TOKEN":        agentToken,
 		"MULTICA_SERVER_URL":   d.cfg.ServerBaseURL,
@@ -5339,6 +5362,9 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	}
 	if mutationCapabilityFile != "" {
 		agentEnv["MULTICA_MUTATION_CAPABILITY_FILE"] = mutationCapabilityFile
+	}
+	if taskTokenCapabilityFile != "" {
+		agentEnv[TaskTokenCapabilityFileEnv] = taskTokenCapabilityFile
 	}
 	if task.AutopilotRunID != "" {
 		agentEnv["MULTICA_AUTOPILOT_RUN_ID"] = task.AutopilotRunID
