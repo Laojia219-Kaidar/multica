@@ -45,6 +45,22 @@ func TestSnapshotQueriesRunAgainstRealSchema(t *testing.T) {
 	if _, err := q.ListActivitiesForIssue(ctx, db.ListActivitiesForIssueParams{IssueID: ws, Limit: 5}); err != nil {
 		t.Fatalf("ListActivitiesForIssue: %v", err)
 	}
+	// Execution-chain reads (HIV-797) must also be valid against the schema.
+	if _, err := q.GetWorkspace(ctx, ws); err != nil {
+		t.Fatalf("GetWorkspace: %v", err)
+	}
+	if _, err := q.GetIssueInWorkspace(ctx, db.GetIssueInWorkspaceParams{ID: ws, WorkspaceID: ws}); err != nil {
+		t.Fatalf("GetIssueInWorkspace: %v", err)
+	}
+	if _, err := q.GetProjectInWorkspace(ctx, db.GetProjectInWorkspaceParams{ID: ws, WorkspaceID: ws}); err != nil {
+		t.Fatalf("GetProjectInWorkspace: %v", err)
+	}
+	if _, err := q.GetRuntimeProfileForWorkspace(ctx, db.GetRuntimeProfileForWorkspaceParams{ID: ws, WorkspaceID: ws}); err != nil {
+		t.Fatalf("GetRuntimeProfileForWorkspace: %v", err)
+	}
+	if _, err := q.GetExecutionReceipt(ctx, ws); err != nil {
+		t.Fatalf("GetExecutionReceipt: %v", err)
+	}
 
 	svc := NewService(q)
 	snap, err := svc.Snapshot(ctx, ws)
@@ -89,6 +105,40 @@ func TestSnapshotWithSeededAgent(t *testing.T) {
 		t.Fatalf("seed agent: %v", err)
 	}
 
+	// Full chain seed: workspace prefix, runtime profile, issue (in a
+	// project) and a running task for the agent. No receipt row exists.
+	if _, err := pool.Exec(ctx,
+		`UPDATE workspace SET issue_prefix = 'HIV' WHERE id = $1`, wsID); err != nil {
+		t.Fatalf("seed issue prefix: %v", err)
+	}
+	var profileID string
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO runtime_profile (workspace_id, display_name, protocol_family, command_name, enabled) VALUES ($1, 'glm-5.3 运行档案', 'http', 'glm', true) RETURNING id::text`,
+		wsID).Scan(&profileID); err != nil {
+		t.Fatalf("seed profile: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`UPDATE agent_runtime SET profile_id = $2 WHERE id = $1`, rtID, profileID); err != nil {
+		t.Fatalf("bind profile: %v", err)
+	}
+	var projectID string
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO project (workspace_id, title) VALUES ($1, 'HIVECREW 自我开发项目') RETURNING id::text`,
+		wsID).Scan(&projectID); err != nil {
+		t.Fatalf("seed project: %v", err)
+	}
+	var issueID string
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO issue (workspace_id, title, status, number, project_id) VALUES ($1, '[DEV] Work Wall complete execution-chain projection', 'in_progress', 797, $2) RETURNING id::text`,
+		wsID, projectID).Scan(&issueID); err != nil {
+		t.Fatalf("seed issue: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO agent_task_queue (agent_id, issue_id, status) VALUES ($1, $2, 'running')`,
+		agentID, issueID); err != nil {
+		t.Fatalf("seed task: %v", err)
+	}
+
 	var wsUUID pgtype.UUID
 	if err := wsUUID.Scan(wsID); err != nil {
 		t.Fatalf("parse ws uuid: %v", err)
@@ -103,6 +153,21 @@ func TestSnapshotWithSeededAgent(t *testing.T) {
 		t.Fatalf("expected 1 employee, got %d", len(snap))
 	}
 	dto := snap[0]
+	if dto.IssueID != issueID || dto.IssueIdentifier != "HIV-797" || dto.IssueTitle != "[DEV] Work Wall complete execution-chain projection" {
+		t.Fatalf("issue chain = %q / %q / %q", dto.IssueID, dto.IssueIdentifier, dto.IssueTitle)
+	}
+	if dto.ProjectID != projectID || dto.ProjectTitle != "HIVECREW 自我开发项目" {
+		t.Fatalf("project chain = %q / %q", dto.ProjectID, dto.ProjectTitle)
+	}
+	if dto.RuntimeProfileID != profileID || dto.RuntimeProfileName != "glm-5.3 运行档案" {
+		t.Fatalf("profile chain = %q / %q", dto.RuntimeProfileID, dto.RuntimeProfileName)
+	}
+	if dto.RunID != "" {
+		t.Fatalf("direct task must have no separate Run ID in this version, got %q", dto.RunID)
+	}
+	if dto.ExecutionReceiptRef != "" || dto.ExecutionReceiptStatus != "" {
+		t.Fatalf("unseeded receipt must stay absent, got %q / %q", dto.ExecutionReceiptRef, dto.ExecutionReceiptStatus)
+	}
 	if dto.DisplayName != "Emory" {
 		t.Fatalf("display_name = %q", dto.DisplayName)
 	}

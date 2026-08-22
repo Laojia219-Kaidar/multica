@@ -54,6 +54,41 @@ describe("EmployeeLiveActivityV1Schema", () => {
   });
 
 
+  it("parses the execution-chain projection fields (HIV-797)", () => {
+    const parsed = EmployeeLiveActivityV1Schema.parse({
+      ...valid,
+      issue_id: "issue-797",
+      issue_identifier: "HIV-797",
+      issue_title: "[DEV] Work Wall complete execution-chain projection",
+      project_id: "proj-1",
+      project_title: "HIVECREW 自我开发项目",
+      task_id: "task-1",
+      runtime_profile_id: "profile-1",
+      runtime_profile_name: "glm-5.3 运行档案",
+      execution_receipt_ref: "receipt://task-1",
+      execution_receipt_status: "completed",
+    });
+    expect(parsed.issue_identifier).toBe("HIV-797");
+    expect(parsed.runtime_profile_name).toBe("glm-5.3 运行档案");
+    expect(parsed.execution_receipt_status).toBe("completed");
+  });
+
+  it("keeps chain fields optional so missing evidence parses as absent", () => {
+    const parsed = EmployeeLiveActivityV1Schema.parse(valid);
+    expect(parsed.issue_identifier).toBeUndefined();
+    expect(parsed.runtime_profile_id).toBeUndefined();
+    expect(parsed.execution_receipt_ref).toBeUndefined();
+  });
+
+  it("rejects non-string chain fields", () => {
+    expect(() =>
+      EmployeeLiveActivityV1Schema.parse({ ...valid, execution_receipt_status: 42 }),
+    ).toThrow();
+    expect(() =>
+      EmployeeLiveActivityV1Schema.parse({ ...valid, runtime_profile_id: {} }),
+    ).toThrow();
+  });
+
   it("codifies the 19-kind event protocol", () => {
     const kinds = [
       "task.queued", "task.dispatched", "run.started", "run.heartbeat",

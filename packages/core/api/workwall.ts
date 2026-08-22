@@ -105,6 +105,13 @@ export const EmployeeLiveActivityV1Schema = z
     runtime_provider: z.string().optional(),
     model_name: z.string().optional(),
 
+    // Execution-chain projection (HIV-797). Absent = no authoritative row;
+    // the server never fabricates a registration or a run reference.
+    runtime_profile_id: z.string().optional(),
+    runtime_profile_name: z.string().optional(),
+    execution_receipt_ref: z.string().optional(),
+    execution_receipt_status: z.string().optional(),
+
     queued_at: z.string().optional(),
     started_at: z.string().optional(),
     last_heartbeat_at: z.string().optional(),

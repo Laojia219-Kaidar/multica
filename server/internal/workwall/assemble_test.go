@@ -77,7 +77,7 @@ func TestAssembleAgent_PresenceMatrix(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := AssembleAgent(agent(), tt.rt, tt.active, tt.lastOutcome, nil, now, 0)
+			got := AssembleAgent(agent(), tt.rt, tt.active, tt.lastOutcome, nil, nil, now, 0)
 			if got.PresenceState != tt.want {
 				t.Fatalf("presence = %q, want %q", got.PresenceState, tt.want)
 			}
@@ -90,7 +90,7 @@ func TestAssembleAgent_PresenceMatrix(t *testing.T) {
 
 func TestAssembleAgent_IdentityAndRefs(t *testing.T) {
 	now := time.Now().UTC()
-	got := AssembleAgent(agent(), rt("online", now.Add(-time.Second)), nil, nil, nil, now, 0)
+	got := AssembleAgent(agent(), rt("online", now.Add(-time.Second)), nil, nil, nil, nil, now, 0)
 	if got.DisplayName != "Emory" {
 		t.Fatalf("display_name = %q", got.DisplayName)
 	}
@@ -114,7 +114,7 @@ func TestAssembleAgent_PopulatesRecentActivity(t *testing.T) {
 			CreatedAt: pgtype.Timestamptz{Time: now.Add(-time.Minute), Valid: true},
 		},
 	}
-	got := AssembleAgent(agent(), rt("online", now.Add(-time.Second)), nil, nil, acts, now, 0)
+	got := AssembleAgent(agent(), rt("online", now.Add(-time.Second)), nil, nil, nil, acts, now, 0)
 	if len(got.RecentEvents) != 1 {
 		t.Fatalf("expected 1 recent event, got %d", len(got.RecentEvents))
 	}
@@ -123,5 +123,102 @@ func TestAssembleAgent_PopulatesRecentActivity(t *testing.T) {
 	}
 	if got.ActivitySummary != "任务完成" {
 		t.Fatalf("activity_summary = %q", got.ActivitySummary)
+	}
+}
+
+// chainFixture builds a fully hydrated chain for the chain-overlay tests.
+func chainFixture() *ExecutionChain {
+	return &ExecutionChain{
+		TaskID:                 uuidStr(tu),
+		IssueID:                uuidStr(tu),
+		IssueIdentifier:        "HIV-797",
+		IssueTitle:             "[DEV] Work Wall complete execution-chain projection",
+		ProjectID:              uuidStr(tu),
+		ProjectTitle:           "HiveCrew",
+		RuntimeProfileID:       uuidStr(tu),
+		RuntimeProfileName:     "glm-5.3-profile",
+		RunID:                  uuidStr(tu),
+		ExecutionReceiptRef:    "receipt://" + uuidStr(tu),
+		ExecutionReceiptStatus: "completed",
+	}
+}
+
+func TestAssembleAgent_ChainOverlayHydratesIdentifiers(t *testing.T) {
+	now := time.Now().UTC()
+	got := AssembleAgent(agent(), rt("online", now.Add(-time.Second)), task("running", now.Add(-time.Minute)), nil, chainFixture(), nil, now, 0)
+
+	if got.IssueIdentifier != "HIV-797" {
+		t.Fatalf("issue_identifier = %q", got.IssueIdentifier)
+	}
+	if got.IssueTitle != "[DEV] Work Wall complete execution-chain projection" {
+		t.Fatalf("issue_title = %q", got.IssueTitle)
+	}
+	if got.ProjectID != uuidStr(tu) || got.ProjectTitle != "HiveCrew" {
+		t.Fatalf("project chain = %q / %q", got.ProjectID, got.ProjectTitle)
+	}
+	if got.RuntimeProfileID != uuidStr(tu) || got.RuntimeProfileName != "glm-5.3-profile" {
+		t.Fatalf("runtime profile chain = %q / %q", got.RuntimeProfileID, got.RuntimeProfileName)
+	}
+	if got.RunID != uuidStr(tu) {
+		t.Fatalf("run_id = %q", got.RunID)
+	}
+	if got.ExecutionReceiptRef != "receipt://"+uuidStr(tu) || got.ExecutionReceiptStatus != "completed" {
+		t.Fatalf("receipt = %q / %q", got.ExecutionReceiptRef, got.ExecutionReceiptStatus)
+	}
+
+	refs := map[string]bool{}
+	for _, r := range got.SourceRefs {
+		refs[r] = true
+	}
+	for _, want := range []string{"issue://" + uuidStr(tu), "project://" + uuidStr(tu), "profile://" + uuidStr(tu), "receipt://" + uuidStr(tu)} {
+		if !refs[want] {
+			t.Fatalf("source_refs missing %q: %v", want, got.SourceRefs)
+		}
+	}
+}
+
+func TestAssembleAgent_NilChainLeavesIdentifiersAbsent(t *testing.T) {
+	now := time.Now().UTC()
+	got := AssembleAgent(agent(), rt("online", now.Add(-time.Second)), task("running", now.Add(-time.Minute)), nil, nil, nil, now, 0)
+	if got.IssueIdentifier != "" || got.IssueTitle != "" || got.ProjectID != "" || got.ProjectTitle != "" {
+		t.Fatalf("issue/project identifiers must stay absent without chain evidence: %+v", got)
+	}
+	if got.RuntimeProfileID != "" || got.RuntimeProfileName != "" || got.RunID != "" {
+		t.Fatalf("profile/run identifiers must stay absent without chain evidence: %+v", got)
+	}
+	if got.ExecutionReceiptRef != "" || got.ExecutionReceiptStatus != "" {
+		t.Fatalf("receipt must stay absent without chain evidence: %+v", got)
+	}
+	if got.PresenceState != liveactivity.PresenceWorking {
+		t.Fatalf("presence derivation must be untouched, got %q", got.PresenceState)
+	}
+}
+
+func TestAssembleAgent_RecentTerminalTaskTracesTaskAndChain(t *testing.T) {
+	now := time.Now().UTC()
+	outcome := task("completed", now.Add(-time.Minute))
+	chain := chainFixture()
+	got := AssembleAgent(agent(), rt("online", now.Add(-time.Second)), nil, outcome, chain, nil, now, 0)
+
+	if got.PresenceState != liveactivity.PresenceRecentlyCompleted {
+		t.Fatalf("presence = %q, want recently_completed", got.PresenceState)
+	}
+	if got.TaskID != chain.TaskID {
+		t.Fatalf("task_id = %q, want the recent terminal task %q", got.TaskID, chain.TaskID)
+	}
+	if got.IssueIdentifier != "HIV-797" {
+		t.Fatalf("issue_identifier = %q for the recent terminal task", got.IssueIdentifier)
+	}
+	if got.ExecutionReceiptStatus != "completed" {
+		t.Fatalf("receipt status = %q", got.ExecutionReceiptStatus)
+	}
+}
+
+func TestAssembleAgent_EmptyChainEvidenceStaysEmpty(t *testing.T) {
+	now := time.Now().UTC()
+	chain := &ExecutionChain{TaskID: uuidStr(tu)} // task exists, every link missing
+	got := AssembleAgent(agent(), rt("online", now.Add(-time.Second)), task("running", now.Add(-time.Minute)), nil, chain, nil, now, 0)
+	if got.IssueIdentifier != "" || got.ProjectTitle != "" || got.RuntimeProfileName != "" || got.RunID != "" || got.ExecutionReceiptRef != "" {
+		t.Fatalf("missing evidence must render empty, got %+v", got)
 	}
 }

@@ -77,7 +77,7 @@ export function WorkWall({ employees }: WorkWallProps) {
     if (runtimeFilter !== "all" && e.runtime_provider !== runtimeFilter) return false;
     if (modelFilter !== "all" && e.model_name !== modelFilter) return false;
     if (q !== "") {
-      const hay = [e.display_name, e.project_title, e.issue_title, e.model_name]
+      const hay = [e.display_name, e.project_title, e.issue_identifier, e.issue_title, e.model_name]
         .filter((v): v is string => !!v)
         .join(" ")
         .toLowerCase();
@@ -184,6 +184,69 @@ function StatusBar({ employees }: { employees: EmployeeLiveActivityV1[] }) {
   );
 }
 
+const RECEIPT_STATUS_LABEL: Record<string, string> = {
+  completed: "已完成",
+  failed: "失败",
+  cancelled: "已取消",
+};
+
+// ExecutionChainBlock renders the Owner-traceable execution chain
+// (Project -> Issue -> Task -> Run -> Receipt + runtime profile) in the
+// expanded card. Every value is an identifier the server resolved from an
+// authoritative row; absent evidence renders nothing rather than a guess.
+function ExecutionChainBlock({ employee: e }: { employee: EmployeeLiveActivityV1 }) {
+  const hasAny =
+    !!e.issue_id ||
+    !!e.project_id ||
+    !!e.task_id ||
+    !!e.runtime_profile_id ||
+    !!e.execution_receipt_ref;
+  if (!hasAny) return null;
+  return (
+    <div className="mb-2 flex flex-col gap-0.5" data-testid="terminal-card-chain">
+      <div className="text-green-500">执行链</div>
+      {e.project_id ? (
+        <div className="truncate">
+          Project {e.project_title ?? ""}
+          <span className="text-green-700"> {e.project_id}</span>
+        </div>
+      ) : null}
+      {e.issue_id ? (
+        <div className="truncate">
+          Issue {e.issue_identifier ? `${e.issue_identifier} · ` : ""}
+          {e.issue_title ?? ""}
+          <span className="text-green-700"> {e.issue_id}</span>
+        </div>
+      ) : null}
+      {e.task_id ? (
+        <div className="truncate">
+          Task <span className="text-green-700">{e.task_id}</span>
+          {e.run_id ? (
+            <>
+              {" · Run "}
+              <span className="text-green-700">{e.run_id}</span>
+            </>
+          ) : (
+            <span className="text-green-700"> · 无独立 Run ID（直发任务）</span>
+          )}
+        </div>
+      ) : null}
+      {e.runtime_profile_id ? (
+        <div className="truncate">
+          Profile {e.runtime_profile_name ?? ""}
+          <span className="text-green-700"> {e.runtime_profile_id}</span>
+        </div>
+      ) : null}
+      {e.execution_receipt_ref ? (
+        <div className="truncate">
+          Receipt {RECEIPT_STATUS_LABEL[e.execution_receipt_status ?? ""] ?? e.execution_receipt_status ?? ""}
+          <span className="text-green-700"> {e.execution_receipt_ref}</span>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function TerminalCard({
   employee: e,
   expanded,
@@ -221,7 +284,10 @@ function TerminalCard({
           <div className="truncate">项目：{e.project_title}</div>
         ) : null}
         {e.issue_title ? (
-          <div className="truncate">议题：{e.issue_title}</div>
+          <div className="truncate">
+            议题：{e.issue_identifier ? `${e.issue_identifier} · ` : ""}
+            {e.issue_title}
+          </div>
         ) : null}
         {e.work_stage !== "none" ? (
           <div>阶段：{STAGE_LABEL[e.work_stage] ?? e.work_stage}</div>
@@ -232,6 +298,7 @@ function TerminalCard({
 
       {expanded ? (
         <div className="border-t border-green-900 px-3 py-2 text-xs" data-testid="terminal-card-expanded">
+          <ExecutionChainBlock employee={e} />
           {e.recent_events.length > 0 ? (
             <div className="flex flex-col gap-1">
               {e.recent_events.slice(-5).map((ev) => (

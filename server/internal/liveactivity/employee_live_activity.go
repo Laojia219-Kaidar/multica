@@ -62,6 +62,17 @@ type EmployeeLiveActivityV1 struct {
 	RuntimeProvider string `json:"runtime_provider,omitempty"`
 	ModelName       string `json:"model_name,omitempty"`
 
+	// Execution-chain projection (HIV-797). RuntimeProfileID/Name are the
+	// registered runtime_profile row bound to the agent's runtime; they are
+	// empty when no profile applies (built-in runtime) or the referenced row
+	// is missing. ExecutionReceiptRef/Status expose only a safe reference to
+	// the authoritative execution_receipt row and its closed terminal status;
+	// snapshots, digests, errors and other receipt payloads are never copied.
+	RuntimeProfileID       string `json:"runtime_profile_id,omitempty"`
+	RuntimeProfileName     string `json:"runtime_profile_name,omitempty"`
+	ExecutionReceiptRef    string `json:"execution_receipt_ref,omitempty"`
+	ExecutionReceiptStatus string `json:"execution_receipt_status,omitempty"`
+
 	QueuedAt        *time.Time `json:"queued_at,omitempty"`
 	StartedAt       *time.Time `json:"started_at,omitempty"`
 	LastHeartbeatAt *time.Time `json:"last_heartbeat_at,omitempty"`
@@ -92,18 +103,24 @@ type SnapshotInput struct {
 	DepartmentName string
 	PositionName   string
 
-	ProjectID    string
-	ProjectTitle string
-	IssueID      string
-	IssueTitle   string
-	TaskID       string
-	RunID        string
+	ProjectID       string
+	ProjectTitle    string
+	IssueID         string
+	IssueIdentifier string
+	IssueTitle      string
+	TaskID          string
+	RunID           string
 
-	RuntimeID       string
-	RuntimeProvider string
-	ModelName       string
-	BaseID          string
-	BaseName        string
+	RuntimeID          string
+	RuntimeProvider    string
+	ModelName          string
+	BaseID             string
+	BaseName           string
+	RuntimeProfileID   string
+	RuntimeProfileName string
+
+	ExecutionReceiptRef    string
+	ExecutionReceiptStatus string
 
 	Derivation    Inputs
 	StageHint     WorkStage
@@ -166,6 +183,7 @@ func BuildDTO(s SnapshotInput, observedAt time.Time) EmployeeLiveActivityV1 {
 		ProjectID:       s.ProjectID,
 		ProjectTitle:    s.ProjectTitle,
 		IssueID:         s.IssueID,
+		IssueIdentifier: s.IssueIdentifier,
 		IssueTitle:      s.IssueTitle,
 		TaskID:          s.TaskID,
 		RunID:           s.RunID,
@@ -179,18 +197,23 @@ func BuildDTO(s SnapshotInput, observedAt time.Time) EmployeeLiveActivityV1 {
 		RuntimeID:       s.RuntimeID,
 		RuntimeProvider: s.RuntimeProvider,
 		ModelName:       s.ModelName,
-		QueuedAt:        s.QueuedAt,
-		StartedAt:       s.StartedAt,
-		LastHeartbeatAt: s.LastHeartbeatAt,
-		LastEventAt:     s.LastEventAt,
-		CompletedAt:     s.CompletedAt,
-		TokenUsage:      s.TokenUsage,
-		CostAmount:      s.CostAmount,
-		BlockedReason:   deriv.BlockedReason,
-		NextAction:      s.NextAction,
-		SourceRefs:      refs,
-		ObservedAt:      observedAt,
-		FreshnessState:  s.FreshnessState,
+
+		RuntimeProfileID:       s.RuntimeProfileID,
+		RuntimeProfileName:     s.RuntimeProfileName,
+		ExecutionReceiptRef:    s.ExecutionReceiptRef,
+		ExecutionReceiptStatus: s.ExecutionReceiptStatus,
+		QueuedAt:               s.QueuedAt,
+		StartedAt:              s.StartedAt,
+		LastHeartbeatAt:        s.LastHeartbeatAt,
+		LastEventAt:            s.LastEventAt,
+		CompletedAt:            s.CompletedAt,
+		TokenUsage:             s.TokenUsage,
+		CostAmount:             s.CostAmount,
+		BlockedReason:          deriv.BlockedReason,
+		NextAction:             s.NextAction,
+		SourceRefs:             refs,
+		ObservedAt:             observedAt,
+		FreshnessState:         s.FreshnessState,
 	}
 	if dto.FreshnessState == "" {
 		dto.FreshnessState = FreshnessFresh

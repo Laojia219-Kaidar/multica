@@ -139,3 +139,80 @@ describe("WorkWall", () => {
     fireEvent.change(screen.getByTestId("work-wall-search"), { target: { value: "" } });
     expect(screen.getByText("Coco")).toBeDefined();
   });
+
+describe("WorkWall execution chain", () => {
+  it("renders the full execution chain in the expanded card", () => {
+    render(
+      <WorkWall
+        employees={[
+          emp({
+            issue_id: "11111111-1111-1111-1111-111111111111",
+            issue_identifier: "HIV-797",
+            issue_title: "[DEV] Work Wall complete execution-chain projection",
+            project_id: "22222222-2222-2222-2222-222222222222",
+            project_title: "HIVECREW 自我开发项目",
+            task_id: "33333333-3333-3333-3333-333333333333",
+            run_id: "44444444-4444-4444-4444-444444444444",
+            runtime_profile_id: "55555555-5555-5555-5555-555555555555",
+            runtime_profile_name: "glm-5.3 运行档案",
+            execution_receipt_ref: "receipt://33333333-3333-3333-3333-333333333333",
+            execution_receipt_status: "completed",
+          }),
+        ]}
+      />,
+    );
+    expect(screen.queryByTestId("terminal-card-chain")).toBeNull();
+    fireEvent.click(screen.getByText("Emory"));
+    const chain = screen.getByTestId("terminal-card-chain");
+    expect(chain.textContent).toContain("HIV-797");
+    expect(chain.textContent).toContain("[DEV] Work Wall complete execution-chain projection");
+    expect(chain.textContent).toContain("11111111-1111-1111-1111-111111111111");
+    expect(chain.textContent).toContain("HIVECREW 自我开发项目");
+    expect(chain.textContent).toContain("33333333-3333-3333-3333-333333333333");
+    expect(chain.textContent).toContain("44444444-4444-4444-4444-444444444444");
+    expect(chain.textContent).toContain("glm-5.3 运行档案");
+    expect(chain.textContent).toContain("receipt://33333333-3333-3333-3333-333333333333");
+    expect(chain.textContent).toContain("已完成");
+  });
+
+  it("labels a direct task without fabricating a Run reference", () => {
+    render(
+      <WorkWall
+        employees={[
+          emp({
+            issue_id: "11111111-1111-1111-1111-111111111111",
+            issue_identifier: "HIV-797",
+            issue_title: "[DEV] Work Wall complete execution-chain projection",
+            task_id: "33333333-3333-3333-3333-333333333333",
+          }),
+        ]}
+      />,
+    );
+    fireEvent.click(screen.getByText("Emory"));
+    const chain = screen.getByTestId("terminal-card-chain");
+    expect(chain.textContent).toContain("无独立 Run ID");
+    expect(chain.textContent).not.toContain("44444444");
+    // No receipt evidence: nothing rendered, no invented status.
+    expect(chain.textContent).not.toContain("Receipt");
+  });
+
+  it("renders no chain block when no evidence exists", () => {
+    render(<WorkWall employees={[emp()]} />);
+    fireEvent.click(screen.getByText("Emory"));
+    expect(screen.queryByTestId("terminal-card-chain")).toBeNull();
+  });
+
+  it("shows the issue identifier on the collapsed card", () => {
+    render(
+      <WorkWall
+        employees={[
+          emp({
+            issue_identifier: "HIV-797",
+            issue_title: "[DEV] Work Wall complete execution-chain projection",
+          }),
+        ]}
+      />,
+    );
+    expect(screen.getByText(/HIV-797 · /)).toBeDefined();
+  });
+});

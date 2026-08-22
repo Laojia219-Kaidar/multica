@@ -94,3 +94,67 @@ func TestBuildDTO_ClosedEnumsAndSchemaVersion(t *testing.T) {
 		t.Fatalf("default freshness = %q", dto.FreshnessState)
 	}
 }
+
+func TestBuildDTO_CopiesExecutionChainFields(t *testing.T) {
+	now := time.Now().UTC()
+	in := SnapshotInput{
+		WorkspaceID:            "ws-1",
+		EmployeeID:             "EMP-01",
+		AgentID:                "AGT-01",
+		DisplayName:            "Kai",
+		IssueID:                "issue-797",
+		IssueIdentifier:        "HIV-797",
+		IssueTitle:             "[DEV] Work Wall complete execution-chain projection",
+		ProjectID:              "proj-1",
+		ProjectTitle:           "HIVECREW 自我开发项目",
+		TaskID:                 "task-1",
+		RunID:                  "run-1",
+		RuntimeProfileID:       "profile-1",
+		RuntimeProfileName:     "glm-5.3 运行档案",
+		ExecutionReceiptRef:    "receipt://task-1",
+		ExecutionReceiptStatus: "completed",
+		SourceRefs:             []string{"agent://AGT-01"},
+	}
+	dto := BuildDTO(in, now)
+
+	if dto.IssueIdentifier != "HIV-797" {
+		t.Fatalf("issue_identifier = %q", dto.IssueIdentifier)
+	}
+	if dto.IssueTitle != in.IssueTitle || dto.ProjectID != in.ProjectID || dto.ProjectTitle != in.ProjectTitle {
+		t.Fatalf("issue/project projection = %+v", dto)
+	}
+	if dto.RuntimeProfileID != "profile-1" || dto.RuntimeProfileName != in.RuntimeProfileName {
+		t.Fatalf("runtime profile projection = %+v", dto)
+	}
+	if dto.RunID != "run-1" {
+		t.Fatalf("run_id = %q", dto.RunID)
+	}
+	if dto.ExecutionReceiptRef != "receipt://task-1" || dto.ExecutionReceiptStatus != "completed" {
+		t.Fatalf("receipt projection = %+v", dto)
+	}
+
+	b, err := json.Marshal(dto)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	raw := string(b)
+	for _, key := range []string{`"issue_identifier":"HIV-797"`, `"runtime_profile_id":"profile-1"`, `"execution_receipt_ref":"receipt://task-1"`, `"execution_receipt_status":"completed"`} {
+		if !strings.Contains(raw, key) {
+			t.Fatalf("wire JSON missing %s in: %s", key, raw)
+		}
+	}
+}
+
+func TestBuildDTO_EmptyChainFieldsOmitFromWire(t *testing.T) {
+	dto := BuildDTO(SnapshotInput{WorkspaceID: "w", EmployeeID: "e", AgentID: "a"}, time.Now().UTC())
+	b, err := json.Marshal(dto)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	raw := string(b)
+	for _, key := range []string{"issue_identifier", "runtime_profile_id", "runtime_profile_name", "execution_receipt_ref", "execution_receipt_status", "run_id", "project_id"} {
+		if strings.Contains(raw, key) {
+			t.Fatalf("absent chain evidence must be omitted from the wire, found %q in: %s", key, raw)
+		}
+	}
+}

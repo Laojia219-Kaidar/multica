@@ -36,7 +36,10 @@ func (s *Service) threshold() time.Duration {
 }
 
 // Snapshot returns one EmployeeLiveActivityV1 per user-authored agent in the
-// workspace. Read-only; sources: agent, agent_runtime, agent_task_queue.
+// workspace. Read-only; sources: agent, agent_runtime, agent_task_queue, plus
+// the execution-chain reads (workspace, issue, project, runtime_profile,
+// execution_receipt) that hydrate the card's Project/Issue/Run/Receipt/Profile
+// identifiers. Every chain lookup stays workspace-scoped.
 func (s *Service) Snapshot(ctx context.Context, workspaceID pgtype.UUID) ([]liveactivity.EmployeeLiveActivityV1, error) {
 	agents, err := s.Q.ListAgents(ctx, workspaceID)
 	if err != nil {
@@ -47,6 +50,12 @@ func (s *Service) Snapshot(ctx context.Context, workspaceID pgtype.UUID) ([]live
 		return nil, err
 	}
 	tasks, err := s.Q.ListWorkspaceAgentTaskSnapshot(ctx, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+
+	chainReads := chainStoreFor(s.Q)
+	issuePrefix, err := resolveIssuePrefix(ctx, chainReads, workspaceID)
 	if err != nil {
 		return nil, err
 	}
@@ -88,11 +97,25 @@ func (s *Service) Snapshot(ctx context.Context, workspaceID pgtype.UUID) ([]live
 	for i := range agents {
 		a := agents[i]
 		aid := uuidStr(a.ID)
+		rt := rtByID[uuidStr(a.RuntimeID)]
+
+		// Hydrate the chain for the task the card shows: the active task
+		// when working/queued, otherwise the most recent terminal task.
+		shown := activeByAgent[aid]
+		if shown == nil {
+			shown = outcomeByAgent[aid]
+		}
+		chain, err := resolveExecutionChain(ctx, chainReads, workspaceID, issuePrefix, rt, shown)
+		if err != nil {
+			return nil, err
+		}
+
 		out = append(out, AssembleAgent(
 			a,
-			rtByID[uuidStr(a.RuntimeID)],
+			rt,
 			activeByAgent[aid],
 			outcomeByAgent[aid],
+			chain,
 			activityByAgent[aid],
 			now,
 			s.threshold(),

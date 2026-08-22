@@ -78,6 +78,11 @@ func classifyRuntime(rt *db.AgentRuntime, now time.Time, threshold time.Duration
 // into a sanitized EmployeeLiveActivityV1. It is a pure function (no I/O) so
 // the derivation is unit-testable without a database.
 //
+// chain carries the hydrated Project/Issue/Run/Receipt/Profile evidence for
+// the task currently shown (active, or the recent terminal task when idle);
+// it may be nil (no task / no evidence) and never overrides task-owned
+// identifiers.
+//
 // Employee identity note: in HiveCrew the "digital employee" is the Agent row;
 // the formal HiveCosm Employee<->Agent binding is owned by P4 / HiveCosm and is
 // intentionally not synthesized here (employee_id mirrors agent_id for v0).
@@ -86,6 +91,7 @@ func AssembleAgent(
 	rt *db.AgentRuntime,
 	activeTask *db.AgentTaskQueue,
 	lastOutcome *db.AgentTaskQueue,
+	chain *ExecutionChain,
 	activities []db.ActivityLog,
 	now time.Time,
 	staleThreshold time.Duration,
@@ -138,7 +144,15 @@ func AssembleAgent(
 		in.QueuedAt = tsPtr(activeTask.DispatchedAt)
 		in.StartedAt = tsPtr(activeTask.StartedAt)
 		in.SourceRefs = append(in.SourceRefs, "task://"+in.TaskID)
+	} else if chain != nil && chain.TaskID != "" {
+		// Recently completed/failed: the card still traces the exact task
+		// that produced the outcome (presence derivation is untouched;
+		// IssueID comes from the chain overlay below when evidence exists).
+		in.TaskID = chain.TaskID
+		in.SourceRefs = append(in.SourceRefs, "task://"+in.TaskID)
+	}
 
+	if activeTask != nil {
 		switch activeTask.Status {
 		case "queued", "dispatched":
 			der.TaskQueued = true
@@ -163,6 +177,36 @@ func AssembleAgent(
 			der.RecentlyCompleted = true
 		}
 		in.LastEventAt = tsPtr(lastOutcome.CompletedAt)
+	}
+
+	// Execution-chain projection (HIV-797): overlay the hydrated
+	// Project/Issue/Run/Receipt/Profile evidence. Chain fields are empty when
+	// the authoritative row is absent; they never fabricate identifiers.
+	if chain != nil {
+		if chain.IssueID != "" {
+			in.IssueID = chain.IssueID
+		}
+		in.IssueIdentifier = chain.IssueIdentifier
+		in.IssueTitle = chain.IssueTitle
+		in.ProjectID = chain.ProjectID
+		in.ProjectTitle = chain.ProjectTitle
+		in.RunID = chain.RunID
+		in.RuntimeProfileID = chain.RuntimeProfileID
+		in.RuntimeProfileName = chain.RuntimeProfileName
+		in.ExecutionReceiptRef = chain.ExecutionReceiptRef
+		in.ExecutionReceiptStatus = chain.ExecutionReceiptStatus
+		if chain.IssueID != "" {
+			in.SourceRefs = append(in.SourceRefs, "issue://"+chain.IssueID)
+		}
+		if chain.ProjectID != "" {
+			in.SourceRefs = append(in.SourceRefs, "project://"+chain.ProjectID)
+		}
+		if chain.RuntimeProfileID != "" {
+			in.SourceRefs = append(in.SourceRefs, "profile://"+chain.RuntimeProfileID)
+		}
+		if chain.ExecutionReceiptRef != "" {
+			in.SourceRefs = append(in.SourceRefs, chain.ExecutionReceiptRef)
+		}
 	}
 
 	if len(activities) > 0 {
