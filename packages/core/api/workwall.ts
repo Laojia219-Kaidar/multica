@@ -131,6 +131,56 @@ export function parseWorkWallSnapshot(input: unknown): EmployeeLiveActivityV1[] 
   return z.array(EmployeeLiveActivityV1Schema).parse(input);
 }
 
+export type WorkWallStreamState = "connecting" | "open" | "error";
+
+export interface WorkWallStreamHandlers {
+  onSnapshot: (snapshot: EmployeeLiveActivityV1[]) => void;
+  onStateChange?: (state: WorkWallStreamState) => void;
+  onError?: (error: unknown) => void;
+}
+
+type WorkWallEventSource = Pick<EventSource, "addEventListener" | "close">;
+type WorkWallEventSourceFactory = (url: string) => WorkWallEventSource;
+
+/**
+ * Subscribe to the authenticated, same-origin Work Wall snapshot stream.
+ *
+ * EventSource owns reconnect/backoff. Callers should keep their existing
+ * snapshot query as the initial load and as a fallback while this stream is
+ * connecting or unhealthy. No token is placed in the URL.
+ */
+export function subscribeWorkWallStream(
+  workspaceSlug: string,
+  handlers: WorkWallStreamHandlers,
+  createEventSource: WorkWallEventSourceFactory = (url) =>
+    new EventSource(url, { withCredentials: true }),
+): () => void {
+  handlers.onStateChange?.("connecting");
+  const source = createEventSource(
+    `/api/work-wall/stream?workspace_slug=${encodeURIComponent(workspaceSlug)}`,
+  );
+
+  source.addEventListener("open", () => {
+    handlers.onStateChange?.("open");
+  });
+  source.addEventListener("snapshot", ((event: MessageEvent<string>) => {
+    try {
+      const snapshot = parseWorkWallSnapshot(JSON.parse(event.data));
+      handlers.onSnapshot(snapshot);
+      handlers.onStateChange?.("open");
+    } catch (error) {
+      handlers.onError?.(error);
+      handlers.onStateChange?.("error");
+    }
+  }) as EventListener);
+  source.addEventListener("error", (event) => {
+    handlers.onError?.(event);
+    handlers.onStateChange?.("error");
+  });
+
+  return () => source.close();
+}
+
 // Terminal presence: read-only projection of live host terminal panes,
 // upserted by the host-side collector (10s heartbeat, 15min freshness).
 export const TerminalPaneSchema = z

@@ -3,6 +3,7 @@ import {
   ActivityEventKindSchema,
   EmployeeLiveActivityV1Schema,
   parseWorkWallSnapshot,
+  subscribeWorkWallStream,
 } from "./workwall";
 
 const valid = {
@@ -71,5 +72,86 @@ describe("EmployeeLiveActivityV1Schema", () => {
     const parsed = parseWorkWallSnapshot([valid]);
     expect(parsed).toHaveLength(1);
     expect(parsed[0]?.presence_state).toBe("working");
+  });
+});
+
+class FakeEventSource {
+  readonly listeners = new Map<string, EventListener[]>();
+  closed = false;
+
+  addEventListener(type: string, listener: EventListenerOrEventListenerObject) {
+    const fn = typeof listener === "function" ? listener : listener.handleEvent.bind(listener);
+    this.listeners.set(type, [...(this.listeners.get(type) ?? []), fn]);
+  }
+
+  emit(type: string, event: Event) {
+    for (const listener of this.listeners.get(type) ?? []) listener(event);
+  }
+
+  close() {
+    this.closed = true;
+  }
+}
+
+describe("subscribeWorkWallStream", () => {
+  it("uses the governed same-origin endpoint and accepts snapshot events", () => {
+    const source = new FakeEventSource();
+    const states: string[] = [];
+    const snapshots: unknown[] = [];
+    let requestedURL = "";
+
+    const unsubscribe = subscribeWorkWallStream(
+      "team/space",
+      {
+        onSnapshot: (snapshot) => snapshots.push(snapshot),
+        onStateChange: (state) => states.push(state),
+      },
+      (url) => {
+        requestedURL = url;
+        return source as unknown as EventSource;
+      },
+    );
+
+    source.emit("open", new Event("open"));
+    source.emit(
+      "snapshot",
+      new MessageEvent("snapshot", { data: JSON.stringify([valid]) }),
+    );
+
+    expect(requestedURL).toBe("/api/work-wall/stream?workspace_slug=team%2Fspace");
+    expect(requestedURL).not.toContain("token");
+    expect(states).toEqual(["connecting", "open", "open"]);
+    expect(snapshots).toEqual([[valid]]);
+    unsubscribe();
+    expect(source.closed).toBe(true);
+  });
+
+  it("rejects malformed or non-contract frames and leaves fallback enabled", () => {
+    const source = new FakeEventSource();
+    const states: string[] = [];
+    const errors: unknown[] = [];
+    const snapshots: unknown[] = [];
+
+    subscribeWorkWallStream(
+      "acme",
+      {
+        onSnapshot: (snapshot) => snapshots.push(snapshot),
+        onStateChange: (state) => states.push(state),
+        onError: (error) => errors.push(error),
+      },
+      () => source as unknown as EventSource,
+    );
+
+    source.emit("snapshot", new MessageEvent("snapshot", { data: "not-json" }));
+    source.emit(
+      "snapshot",
+      new MessageEvent("snapshot", {
+        data: JSON.stringify([{ ...valid, secret_field: "must-not-pass" }]),
+      }),
+    );
+
+    expect(snapshots).toEqual([]);
+    expect(errors).toHaveLength(2);
+    expect(states).toEqual(["connecting", "error", "error"]);
   });
 });
