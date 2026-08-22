@@ -2220,6 +2220,11 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			r.Route("/api/runtimes", func(r chi.Router) {
 				r.Get("/", h.ListAgentRuntimes)
 				r.Get("/bases", h.ListRuntimeBases)
+				// Read-only secret-safe Employee->Runtime registration
+				// inventory (HIV-792). Registered before the /{runtimeId}
+				// subtree; chi resolves the static segment first, so
+				// "inventory" never collides with a runtime id.
+				r.Get("/inventory", h.GetRuntimeInventory)
 				r.Route("/{runtimeId}", func(r chi.Router) {
 					r.Patch("/", h.UpdateAgentRuntime)
 					r.Post("/migrate", h.MigrateRuntimeAgents)
