@@ -63,15 +63,73 @@ def sanitize(text: str) -> str:
     text = "".join(ch if ch in "\n\t" or ord(ch) >= 0x20 else "" for ch in text)
     return text[-20000:]
 
-def agent_hint(session: str, cmd: str, tail: str) -> str:
-    """从会话名/输出里猜当前执行载体（只作展示提示，非身份绑定）。"""
-    for kw in ("codex", "zcode", "opencode", "claude", "cursor", "qoder", "kimi", "nova"):
-        if kw in session.lower():
-            return kw
-    for kw in ("codex", "zcode", "opencode", "claude", "cursor"):
-        if kw in tail[-3000:].lower():
-            return kw
+KNOWN_CARRIERS = (
+    "codex", "zcode", "opencode", "claude", "cursor", "qoder",
+    "kimi", "nova", "qwen", "glm", "hermes", "prime",
+)
+
+KNOWN_EMPLOYEES = (
+    "kai", "raven", "atlas", "pixel", "gauss",
+    "michael", "prism", "coco", "emory", "william",
+)
+
+EMPLOYEE_SESSION_MARKERS = {
+    "api", "backend", "codex", "dev", "dgx", "frontend", "glm", "hermes",
+    "kimi", "opencode", "orchestrator", "prime", "qwen", "review", "run",
+    "task", "test", "work",
+}
+
+ISSUE_ID_RE = re.compile(r"\b(HIV|MUL|HDEO)-(\d{2,6})\b", re.IGNORECASE)
+
+def _tokens(text: str) -> list[str]:
+    return [token for token in re.split(r"[^a-z0-9]+", text.lower()) if token]
+
+def _has_token(text: str, value: str) -> bool:
+    return value in _tokens(text)
+
+def detect_carrier(session: str, cmd: str, tail: str) -> str:
+    """Identify a carrier from delimiter-bounded tokens, never substrings."""
+    for text in (session, cmd, tail[-3000:]):
+        for carrier in KNOWN_CARRIERS:
+            if _has_token(text, carrier):
+                return carrier
     return ""
+
+def detect_employee(session: str) -> str:
+    """Infer an employee only from a strict, auditable tmux naming shape."""
+    tokens = _tokens(session)
+    if len(tokens) >= 2 and tokens[0] == "agent" and tokens[1] in KNOWN_EMPLOYEES:
+        return tokens[1]
+    if len(tokens) >= 2 and tokens[0] in KNOWN_EMPLOYEES:
+        if any(token in EMPLOYEE_SESSION_MARKERS for token in tokens[1:]):
+            return tokens[0]
+    return ""
+
+def detect_task_clue(session: str, tail: str) -> str:
+    """Find only admitted HiveCrew/HiveCosm issue prefixes."""
+    for text in (session, tail[-3000:]):
+        match = ISSUE_ID_RE.search(text)
+        if match:
+            return f"{match.group(1).upper()}-{match.group(2)}"
+    return ""
+
+def build_agent_hint(session: str, cmd: str, tail: str) -> str:
+    """Compose a bounded hint; this remains a display clue, not identity truth."""
+    parts = []
+    carrier = detect_carrier(session, cmd, tail)
+    if carrier:
+        parts.append(f"carrier={carrier}")
+    employee = detect_employee(session)
+    if employee:
+        parts.append(f"emp={employee}")
+    task = detect_task_clue(session, tail)
+    if task:
+        parts.append(f"task={task}")
+    return "|".join(parts)[:120]
+
+def agent_hint(session: str, cmd: str, tail: str) -> str:
+    """Backward-compatible entrypoint for the collector pane shape."""
+    return build_agent_hint(session, cmd, tail)
 
 def collect():
     try:
