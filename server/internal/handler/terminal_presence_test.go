@@ -26,6 +26,14 @@ func TestSanitizeTail_StripsControlCharsAndKeepsNewlineTab(t *testing.T) {
 	}
 }
 
+func TestSanitizeTail_StripsOSCSequences(t *testing.T) {
+	in := "before\x1b]0;secret-shaped-window-title\x07middle\x1b]2;other-title\x1b\\after"
+	got := sanitizeTail(in, 1000)
+	if got != "beforemiddleafter" {
+		t.Fatalf("OSC escapes should be removed completely, got %q", got)
+	}
+}
+
 func TestSanitizeTail_TruncatesFromEnd(t *testing.T) {
 	in := strings.Repeat("a", 50)
 	got := sanitizeTail(in, 10)

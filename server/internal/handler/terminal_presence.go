@@ -27,8 +27,8 @@ type terminalPresenceDTO struct {
 }
 
 type upsertTerminalPresenceRequest struct {
-	WorkspaceSlug string                `json:"workspace_slug"`
-	Host          string                `json:"host"`
+	WorkspaceSlug string                 `json:"workspace_slug"`
+	Host          string                 `json:"host"`
 	Sessions      []terminalPresencePane `json:"sessions"`
 }
 
@@ -161,4 +161,4 @@ func sanitizeTail(s string, max int) string {
 
 // ansiEscapePattern matches CSI/OSC ANSI escape sequences (e.g. tmux colour
 // codes captured by pane tails).
-var ansiEscapePattern = regexp.MustCompile(`\x1b\[[0-9;?]*[a-zA-Z]`)
+var ansiEscapePattern = regexp.MustCompile(`\x1b(\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(\x07|\x1b\\))`)
