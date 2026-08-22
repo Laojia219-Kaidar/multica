@@ -349,12 +349,12 @@ export const ContinuousDispatchReceiptSchema = z
 const WorkConservingDrainIssueResultWireSchema = z
   .object({
     issue_id: z.string().min(1),
-    goal_id: z.string().min(1).optional(),
+    goal_id: z.string().min(1),
     employee_id: z.string().min(1).optional(),
     outcome: z.enum(["dispatched", "already_terminal", "blocked", "conflict", "source_gap"]),
     reason: z.string().min(1).optional(),
-    receiver: z.string().min(1).optional(),
-    wake_condition: z.string().min(1).optional(),
+    receiver: z.string().min(1),
+    wake_condition: z.string().min(1),
     receipt: ContinuousDispatchReceiptSchema.optional(),
     not_attempted: z.literal(true).optional(),
   })
@@ -372,6 +372,42 @@ const WorkConservingDrainIssueResultWireSchema = z
         code: z.ZodIssueCode.custom,
         path: ["not_attempted"],
         message: "dispatched drain results must have been attempted",
+      });
+    }
+    if (row.outcome === "dispatched" && row.reason !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["reason"],
+        message: "dispatched drain results must not carry a failure reason",
+      });
+    }
+    if (row.outcome !== "dispatched" && row.reason === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["reason"],
+        message: "non-dispatched drain results require a reason",
+      });
+    }
+    const blockedBacklog =
+      row.outcome === "blocked" &&
+      row.not_attempted === true &&
+      row.employee_id === undefined;
+    if (
+      row.not_attempted === true &&
+      !blockedBacklog &&
+      row.outcome !== "source_gap"
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["not_attempted"],
+        message: "not_attempted is only valid for blocked backlog or a predispatch source gap",
+      });
+    }
+    if (!blockedBacklog && row.employee_id === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["employee_id"],
+        message: "attempted drain results require an employee",
       });
     }
   });
@@ -425,6 +461,24 @@ const WorkConservingDrainResultWireSchema = z
         message: "attempted work-conserving drain results exceed batch_size",
       });
     }
+    const seenIssueIDs = new Set<string>();
+    for (const [index, row] of result.results.entries()) {
+      if (seenIssueIDs.has(row.issue_id)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["results", index, "issue_id"],
+          message: "work-conserving drain result issue identities must be unique",
+        });
+      }
+      seenIssueIDs.add(row.issue_id);
+      if (result.goal_id !== undefined && row.goal_id !== result.goal_id) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["results", index, "goal_id"],
+          message: "work-conserving drain result goal does not match the drain goal",
+        });
+      }
+    }
     const authorityValues = Object.values(result.authority);
     const authorityPresent = authorityValues.some(Boolean);
     const authorityComplete = authorityValues.every(Boolean);
@@ -433,6 +487,7 @@ const WorkConservingDrainResultWireSchema = z
         !authorityComplete ||
         result.projection_state === undefined ||
         result.projection_state === "source_gap" ||
+        result.reason_code !== undefined ||
         result.goal_id === undefined ||
         result.batch_size < 1
       ) {
@@ -461,7 +516,10 @@ const WorkConservingDrainResultWireSchema = z
     }
     if (
       result.state === "source_gap" &&
-      (authorityPresent ||
+      (result.reason_code === undefined ||
+        result.goal_id !== undefined ||
+        result.projection_state !== undefined ||
+        authorityPresent ||
         result.results.length !== 0 ||
         result.batch_size !== 0 ||
         result.deferred_suggestions !== 0)

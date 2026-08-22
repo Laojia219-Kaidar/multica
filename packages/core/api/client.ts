@@ -4042,11 +4042,23 @@ export class ApiClient {
         body: JSON.stringify(body),
       },
     );
-    return parseWithFallback(
+    const parsed = parseWithFallback(
       raw,
       WorkConservingDrainResultSchema,
       EMPTY_WORK_CONSERVING_DRAIN_RESULT,
       { endpoint: "POST /api/projects/:id/next-actions/drain" },
+    );
+    return parseWithFallback(
+      parsed,
+      z.custom<WorkConservingDrainResult>(
+        (value) => {
+          const result = value as WorkConservingDrainResult;
+          return result.state !== "ready" || result.authority?.projectId === id;
+        },
+        "work-conserving drain authority project does not match the request",
+      ),
+      EMPTY_WORK_CONSERVING_DRAIN_RESULT,
+      { endpoint: "POST /api/projects/:id/next-actions/drain [project binding]" },
     );
   }
 

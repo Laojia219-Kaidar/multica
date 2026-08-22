@@ -3328,6 +3328,7 @@ describe("ApiClient model discovery response schema", () => {
 
 describe("ApiClient project next-actions drain", () => {
   const projectId = "11111111-1111-4111-8111-111111111111";
+  const otherProjectId = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
   const issueId = "33333333-3333-4333-8333-333333333333";
   const otherIssueId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
   const workspaceId = "77777777-7777-4777-8777-777777777777";
@@ -3369,10 +3370,13 @@ describe("ApiClient project next-actions drain", () => {
         goal_id: "GOAL-HIVECREW-FAST-DEVELOPMENT-V2",
         employee_id: "DE-PIXEL-001",
         outcome: "dispatched",
+        receiver: "runtime_dispatch",
+        wake_condition: "task_created",
         receipt: dispatchReceipt,
       },
       {
         issue_id: "88888888-8888-4888-8888-888888888888",
+        goal_id: "GOAL-HIVECREW-FAST-DEVELOPMENT-V2",
         outcome: "blocked",
         reason: "issue_authority_missing",
         receiver: "project_owner",
@@ -3387,6 +3391,28 @@ describe("ApiClient project next-actions drain", () => {
     conflicts: 0,
     source_gaps: 0,
   };
+  const sourceGapResult = {
+    state: "source_gap",
+    reason_code: "projection_source_gap",
+    authority: {
+      workspace_id: "",
+      project_id: "",
+      source_ref: "",
+      revision: "",
+      observed_at: "",
+      expires_at: "",
+    },
+    batch_size: 0,
+    results: [],
+    deferred_suggestions: 0,
+    dispatched: 0,
+    already_terminal: 0,
+    blocked: 0,
+    conflicts: 0,
+    source_gaps: 0,
+  };
+  const omit = (value: object, key: string): Record<string, unknown> =>
+    Object.fromEntries(Object.entries(value).filter(([candidate]) => candidate !== key));
 
   it("POSTs to the exact drain URL with empty body when no options", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
@@ -3542,6 +3568,41 @@ describe("ApiClient project next-actions drain", () => {
     expect(result.results).toHaveLength(2);
   });
 
+  it("accepts a predispatch source gap as an attempted suggestion row", async () => {
+    const predispatchGap = {
+      ...readyResult,
+      batch_size: 2,
+      results: [
+        readyResult.results[0],
+        {
+          issue_id: otherIssueId,
+          goal_id: "GOAL-HIVECREW-FAST-DEVELOPMENT-V2",
+          employee_id: "DE-PIXEL-002",
+          outcome: "source_gap",
+          reason: "suggestion issue id is not a canonical uuid",
+          receiver: "project_owner",
+          wake_condition: "authority_repaired",
+          not_attempted: true,
+        },
+      ],
+      blocked: 0,
+      source_gaps: 1,
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify(predispatchGap), { status: 200 }),
+      ),
+    );
+
+    const result = await new ApiClient("https://api.example.test")
+      .drainProjectNextActions(projectId);
+
+    expect(result.state).toBe("ready");
+    expect(result.results[1]?.outcome).toBe("source_gap");
+    expect(result.results[1]?.notAttempted).toBe(true);
+  });
+
   it.each([
     ["counter mismatch", { ...readyResult, dispatched: 2 }],
     [
@@ -3554,6 +3615,8 @@ describe("ApiClient project next-actions drain", () => {
             goal_id: "GOAL-HIVECREW-FAST-DEVELOPMENT-V2",
             employee_id: "DE-PIXEL-001",
             outcome: "dispatched",
+            receiver: "runtime_dispatch",
+            wake_condition: "task_created",
           },
           readyResult.results[1],
         ],
@@ -3571,6 +3634,8 @@ describe("ApiClient project next-actions drain", () => {
             goal_id: "GOAL-HIVECREW-FAST-DEVELOPMENT-V2",
             employee_id: "DE-PIXEL-002",
             outcome: "dispatched",
+            receiver: "runtime_dispatch",
+            wake_condition: "task_created",
             receipt: {
               ...dispatchReceipt,
               Identity: { ...dispatchReceipt.Identity, issue_id: otherIssueId },
@@ -3595,6 +3660,8 @@ describe("ApiClient project next-actions drain", () => {
             employee_id: "DE-PIXEL-002",
             outcome: "source_gap",
             reason: "suggestion issue id is not a canonical uuid",
+            receiver: "project_owner",
+            wake_condition: "authority_repaired",
             not_attempted: true,
           },
         ],
@@ -3646,6 +3713,115 @@ describe("ApiClient project next-actions drain", () => {
           readyResult.results[1],
         ],
       },
+    ],
+    [
+      "authority project does not match requested project",
+      {
+        ...readyResult,
+        authority: { ...readyResult.authority, project_id: otherProjectId },
+      },
+    ],
+    [
+      "result goal does not match the drain goal",
+      {
+        ...readyResult,
+        results: [
+          { ...readyResult.results[0], goal_id: "GOAL-OTHER" },
+          readyResult.results[1],
+        ],
+      },
+    ],
+    [
+      "duplicate result issue identity",
+      {
+        ...readyResult,
+        results: [
+          readyResult.results[0],
+          { ...readyResult.results[1], issue_id: issueId },
+        ],
+      },
+    ],
+    [
+      "result missing goal",
+      {
+        ...readyResult,
+        results: [omit(readyResult.results[0]!, "goal_id"), readyResult.results[1]],
+      },
+    ],
+    [
+      "result missing receiver",
+      {
+        ...readyResult,
+        results: [omit(readyResult.results[0]!, "receiver"), readyResult.results[1]],
+      },
+    ],
+    [
+      "result missing wake condition",
+      {
+        ...readyResult,
+        results: [omit(readyResult.results[0]!, "wake_condition"), readyResult.results[1]],
+      },
+    ],
+    [
+      "attempted non-source-gap result marked not_attempted",
+      {
+        ...readyResult,
+        results: [
+          readyResult.results[0],
+          {
+            issue_id: otherIssueId,
+            goal_id: "GOAL-HIVECREW-FAST-DEVELOPMENT-V2",
+            employee_id: "DE-PIXEL-002",
+            outcome: "already_terminal",
+            reason: "issue is already terminal",
+            receiver: "project_owner",
+            wake_condition: "issue_reopened",
+            not_attempted: true,
+          },
+        ],
+        already_terminal: 1,
+        blocked: 0,
+      },
+    ],
+    [
+      "blocked backlog carries an employee",
+      {
+        ...readyResult,
+        results: [
+          readyResult.results[0],
+          { ...readyResult.results[1], employee_id: "DE-PIXEL-002" },
+        ],
+      },
+    ],
+    [
+      "dispatched result carries a reason",
+      {
+        ...readyResult,
+        results: [
+          { ...readyResult.results[0], reason: "impossible success reason" },
+          readyResult.results[1],
+        ],
+      },
+    ],
+    [
+      "non-dispatched result omits its reason",
+      {
+        ...readyResult,
+        results: [readyResult.results[0], omit(readyResult.results[1]!, "reason")],
+      },
+    ],
+    ["ready result carries reason_code", { ...readyResult, reason_code: "impossible" }],
+    [
+      "source_gap result omits reason_code",
+      { ...sourceGapResult, reason_code: undefined },
+    ],
+    [
+      "source_gap result carries goal metadata",
+      { ...sourceGapResult, goal_id: "GOAL-HIVECREW-FAST-DEVELOPMENT-V2" },
+    ],
+    [
+      "source_gap result carries projection metadata",
+      { ...sourceGapResult, projection_state: "source_gap" },
     ],
     ["unknown top-level field", { ...readyResult, surprise: true }],
     [
