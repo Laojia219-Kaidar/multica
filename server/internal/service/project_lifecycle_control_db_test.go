@@ -603,3 +603,157 @@ func TestReconcileWorkspaceDedup(t *testing.T) {
 		t.Fatalf("second reconcile created %d duplicate actions, want 0", n2)
 	}
 }
+
+// HIV-807 repair #5: ReconcileWorkspace must create issues with typed
+// origin (reconciler), not concatenated provenance in Description.
+func TestReconcileWorkspaceIssueCarriesTypedOrigin(t *testing.T) {
+	pool, workspaceID, _, _ := seedPausedProjectFixture(t, "in_progress")
+	q := db.New(pool)
+	svc := &TaskService{Queries: q, TxStarter: pool, Bus: events.New()}
+	issueSvc := NewIssueService(q, pool, events.New(), nil, svc)
+	reconciler := NewProjectLifecycleReconciler(q)
+	ctx := context.Background()
+	wsUUID := util.MustParseUUID(workspaceID)
+
+	var ownerID string
+	if err := pool.QueryRow(ctx, `SELECT user_id::text FROM member WHERE workspace_id=$1 AND role='owner' LIMIT 1`, workspaceID).Scan(&ownerID); err != nil {
+		t.Fatalf("load owner: %v", err)
+	}
+
+	n, err := reconciler.ReconcileWorkspace(ctx, wsUUID, issueSvc, "member", util.MustParseUUID(ownerID))
+	if err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if n == 0 {
+		t.Fatal("reconcile created 0 issues, want >= 1")
+	}
+
+	// Read back the created issue(s) and verify typed identification via title
+	// prefix and clean description (no concatenated provenance).
+	var title, description string
+	if err := pool.QueryRow(ctx, `
+		SELECT title, COALESCE(description,'')
+		FROM issue
+		WHERE workspace_id=$1 AND title LIKE '[自愈] %%'
+		ORDER BY created_at DESC LIMIT 1`, workspaceID).Scan(&title, &description); err != nil {
+		t.Fatalf("read back reconciler issue: %v", err)
+	}
+	if !strings.HasPrefix(title, "[自愈] ") {
+		t.Fatalf("title = %q, want [自愈] prefix", title)
+	}
+	// Description must NOT contain concatenated provenance fields.
+	if strings.Contains(description, "disposition:") {
+		t.Fatalf("description contains concatenated disposition: %q", description)
+	}
+	if strings.Contains(description, "frontier_issues:") {
+		t.Fatalf("description contains concatenated frontier_issues: %q", description)
+	}
+	if strings.Contains(description, "project:") {
+		t.Fatalf("description contains concatenated project: %q", description)
+	}
+}
+
+// HIV-807 repair #5: concurrent ReconcileWorkspace calls must create exactly
+// one repair issue per finding (atomic duplicate guard, not check-then-create).
+func TestReconcileWorkspaceConcurrentCreatesSingleIssue(t *testing.T) {
+	pool, workspaceID, _, _ := seedPausedProjectFixture(t, "in_progress")
+	q := db.New(pool)
+	svc := &TaskService{Queries: q, TxStarter: pool, Bus: events.New()}
+	issueSvc := NewIssueService(q, pool, events.New(), nil, svc)
+	reconciler := NewProjectLifecycleReconciler(q)
+	ctx := context.Background()
+	wsUUID := util.MustParseUUID(workspaceID)
+
+	var ownerID string
+	if err := pool.QueryRow(ctx, `SELECT user_id::text FROM member WHERE workspace_id=$1 AND role='owner' LIMIT 1`, workspaceID).Scan(&ownerID); err != nil {
+		t.Fatalf("load owner: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	errs := make(chan error, 2)
+	totalCreated := make(chan int, 2)
+	for range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			n, err := reconciler.ReconcileWorkspace(ctx, wsUUID, issueSvc, "member", util.MustParseUUID(ownerID))
+			errs <- err
+			totalCreated <- n
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	close(totalCreated)
+
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent reconcile: %v", err)
+		}
+	}
+	var sum int
+	for n := range totalCreated {
+		sum += n
+	}
+
+	// Count actual reconciler issues in the DB (identified by [自愈] title prefix).
+	var issueCount int
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*) FROM issue
+		WHERE workspace_id=$1 AND title LIKE '[自愈] %%'`, workspaceID).Scan(&issueCount); err != nil {
+		t.Fatalf("count reconciler issues: %v", err)
+	}
+	// The fixture produces exactly one stalled finding. Both callers together
+	// must have created exactly 1 issue (one applies, the other gets duplicate).
+	if issueCount != 1 {
+		t.Fatalf("reconciler issue count = %d, want 1 (atomic dedup)", issueCount)
+	}
+}
+
+// HIV-807 repair #5: Diagnose must execute against the real DB and return
+// findings that match the seeded fixture state.
+func TestDiagnoseReturnsActualFindings(t *testing.T) {
+	pool, workspaceID, projectID, issueID := seedPausedProjectFixture(t, "in_progress")
+	q := db.New(pool)
+	reconciler := NewProjectLifecycleReconciler(q)
+	ctx := context.Background()
+	wsUUID := util.MustParseUUID(workspaceID)
+
+	// The fixture has one nonterminal issue and no active tasks → stalled.
+	findings, err := reconciler.Diagnose(ctx, wsUUID)
+	if err != nil {
+		t.Fatalf("diagnose: %v", err)
+	}
+	found := false
+	for _, f := range findings {
+		if f.Kind == FindingStalledNoTask && f.ProjectID == projectID {
+			found = true
+			if f.Disposition != string(DispositionReady) {
+				t.Fatalf("stalled finding disposition = %q, want %q", f.Disposition, DispositionReady)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("no stalled finding for project %s in %v", projectID, findings)
+	}
+
+	// Mark the issue done and verify the finding changes to source_gap.
+	if _, err := pool.Exec(ctx, `UPDATE issue SET status='done' WHERE id=$1`, issueID); err != nil {
+		t.Fatalf("mark done: %v", err)
+	}
+	findings2, err := reconciler.Diagnose(ctx, wsUUID)
+	if err != nil {
+		t.Fatalf("diagnose after done: %v", err)
+	}
+	foundGap := false
+	for _, f := range findings2 {
+		if f.Kind == FindingTerminalNoPackage && f.ProjectID == projectID {
+			foundGap = true
+			if f.Disposition != string(DispositionSourceGap) {
+				t.Fatalf("source_gap finding disposition = %q, want %q", f.Disposition, DispositionSourceGap)
+			}
+		}
+	}
+	if !foundGap {
+		t.Fatalf("no source_gap finding for project %s after marking issue done", projectID)
+	}
+}

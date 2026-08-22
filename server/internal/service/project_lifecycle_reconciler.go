@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/jackc/pgx/v5/pgtype"
@@ -12,11 +13,13 @@ import (
 // ReconcileFinding is one detected broken chain (VC-12 diagnostic). The
 // reconciler only DIAGNOSES + suggests a traceable action; it never writes.
 type ReconcileFinding struct {
-	Kind       string  `json:"kind"`
-	ProjectID  string  `json:"project_id"`
-	IssueID    *string `json:"issue_id,omitempty"`
-	Summary    string  `json:"summary"`
-	NextAction string  `json:"next_action"`
+	Kind             string   `json:"kind"`
+	ProjectID        string   `json:"project_id"`
+	Disposition      string   `json:"disposition"`
+	IssueID          *string  `json:"issue_id,omitempty"`
+	FrontierIssueIDs []string `json:"frontier_issue_ids,omitempty"`
+	Summary          string   `json:"summary"`
+	NextAction       string   `json:"next_action"`
 }
 
 // Reconcile finding kinds (the VC-12 broken-chain detectors plus the
@@ -62,17 +65,21 @@ func (r *ProjectLifecycleReconciler) Diagnose(ctx context.Context, workspaceID p
 	for _, snap := range snaps {
 		if snap.TerminalProjectionInconsistent {
 			findings = append(findings, ReconcileFinding{
-				Kind:       FindingTerminalProjectionInconsistent,
-				ProjectID:  snap.ProjectID,
-				Summary:    fmt.Sprintf("project status %q disagrees with live projection (%s): %d nonterminal issue(s), %d active task(s)", snap.Status, snap.TerminalProjectionFinding, snap.NonterminalIssueCount, snap.ActiveTaskCount),
-				NextAction: snap.TerminalProjectionNextAction,
+				Kind:             FindingTerminalProjectionInconsistent,
+				ProjectID:        snap.ProjectID,
+				Disposition:      snap.Disposition,
+				FrontierIssueIDs: snap.FrontierIssueIDs,
+				Summary:          fmt.Sprintf("project status %q disagrees with live projection (%s): %d nonterminal issue(s), %d active task(s)", snap.Status, snap.TerminalProjectionFinding, snap.NonterminalIssueCount, snap.ActiveTaskCount),
+				NextAction:       snap.TerminalProjectionNextAction,
 			})
 		}
 		switch snap.Health {
 		case string(HealthStalledNoOpenTask):
 			findings = append(findings, ReconcileFinding{
-				Kind:      FindingStalledNoTask,
-				ProjectID: snap.ProjectID,
+				Kind:             FindingStalledNoTask,
+				ProjectID:        snap.ProjectID,
+				Disposition:      snap.Disposition,
+				FrontierIssueIDs: snap.FrontierIssueIDs,
 				Summary: fmt.Sprintf("%d nonterminal issue(s), 0 live task(s)",
 					snap.NonterminalIssueCount),
 				NextAction: "resume the ready frontier or pause explicitly",
@@ -82,8 +89,10 @@ func (r *ProjectLifecycleReconciler) Diagnose(ctx context.Context, workspaceID p
 			// a failed repair gap without a live repair task.
 			if snap.ReviewIssueCount > 0 && snap.ActiveTaskCount == 0 {
 				findings = append(findings, ReconcileFinding{
-					Kind:      FindingReviewNoReviewer,
-					ProjectID: snap.ProjectID,
+					Kind:             FindingReviewNoReviewer,
+					ProjectID:        snap.ProjectID,
+					Disposition:      snap.Disposition,
+					FrontierIssueIDs: snap.FrontierIssueIDs,
 					Summary: fmt.Sprintf("%d in_review issue(s), no live review task",
 						snap.ReviewIssueCount),
 					NextAction: "create an independent review/disposition task",
@@ -91,16 +100,20 @@ func (r *ProjectLifecycleReconciler) Diagnose(ctx context.Context, workspaceID p
 			}
 			if n := repairByProject[snap.ProjectID]; n > 0 {
 				findings = append(findings, ReconcileFinding{
-					Kind:       FindingRepairNoRepair,
-					ProjectID:  snap.ProjectID,
-					Summary:    fmt.Sprintf("%d failed task(s) on open issue(s), no live repair task", n),
-					NextAction: "create a repair/re-review task",
+					Kind:             FindingRepairNoRepair,
+					ProjectID:        snap.ProjectID,
+					Disposition:      snap.Disposition,
+					FrontierIssueIDs: snap.FrontierIssueIDs,
+					Summary:          fmt.Sprintf("%d failed task(s) on open issue(s), no live repair task", n),
+					NextAction:       "create a repair/re-review task",
 				})
 			}
 		case string(HealthSourceGap):
 			findings = append(findings, ReconcileFinding{
-				Kind:      FindingTerminalNoPackage,
-				ProjectID: snap.ProjectID,
+				Kind:             FindingTerminalNoPackage,
+				ProjectID:        snap.ProjectID,
+				Disposition:      snap.Disposition,
+				FrontierIssueIDs: snap.FrontierIssueIDs,
 				Summary: fmt.Sprintf("all %d issue(s) terminal but no confirmed outcome / closure package",
 					snap.TerminalIssueCount),
 				NextAction: "map issues to outcomes and generate a closure package",
@@ -111,8 +124,9 @@ func (r *ProjectLifecycleReconciler) Diagnose(ctx context.Context, workspaceID p
 }
 
 // ReconcileWorkspace runs the diagnosis and creates one dedup'd traceable
-// action per finding (the "handle" half of VC-12). A finding is skipped when an
-// open "[自愈] <kind>" issue already exists for the project (idempotent).
+// action per finding (the "handle" half of VC-12). Deduplication is handled
+// atomically by the IssueService duplicate guard (advisory lock + normalized
+// title match inside the create transaction), not by a separate check-then-create.
 func (r *ProjectLifecycleReconciler) ReconcileWorkspace(ctx context.Context, workspaceID pgtype.UUID, issueSvc *IssueService, creatorType string, creatorID pgtype.UUID) (int, error) {
 	findings, err := r.Diagnose(ctx, workspaceID)
 	if err != nil {
@@ -120,30 +134,24 @@ func (r *ProjectLifecycleReconciler) ReconcileWorkspace(ctx context.Context, wor
 	}
 	created := 0
 	for _, f := range findings {
-		prefix := "[自愈] " + f.Kind + " · %"
-		exists, err := r.Queries.HasOpenReconcileIssue(ctx, db.HasOpenReconcileIssueParams{
-			ProjectID: util.MustParseUUID(f.ProjectID),
-			Title:     prefix,
-		})
-		if err != nil || exists {
-			continue
-		}
 		title := "[自愈] " + f.Kind + " · " + f.Summary
 		if len(title) > 200 {
 			title = title[:200]
 		}
 		_, err = issueSvc.Create(ctx, IssueCreateParams{
-			WorkspaceID:    workspaceID,
-			Title:          title,
-			Description:    pgtype.Text{String: f.NextAction, Valid: true},
-			Status:         "backlog",
-			Priority:       "medium",
-			CreatorType:    creatorType,
-			CreatorID:      creatorID,
-			ProjectID:      util.MustParseUUID(f.ProjectID),
-			AllowDuplicate: true,
+			WorkspaceID: workspaceID,
+			Title:       title,
+			Description: pgtype.Text{String: f.NextAction, Valid: f.NextAction != ""},
+			Status:      "backlog",
+			Priority:    "medium",
+			CreatorType: creatorType,
+			CreatorID:   creatorID,
+			ProjectID:   util.MustParseUUID(f.ProjectID),
 		}, IssueCreateOpts{})
 		if err != nil {
+			if errors.Is(err, ErrActiveDuplicate) {
+				continue
+			}
 			return created, fmt.Errorf("create reconcile action for %s/%s: %w", f.ProjectID, f.Kind, err)
 		}
 		created++

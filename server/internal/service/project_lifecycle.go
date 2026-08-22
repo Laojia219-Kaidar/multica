@@ -41,6 +41,28 @@ const (
 	HealthSourceGap             ProjectHealth = "source_gap"
 )
 
+// ProjectDisposition is the structured, deterministic ready/block disposition
+// that work-conserving planning can consume. It replaces the prose-only
+// NextAction as the primary planning signal while preserving NextAction for
+// backward compatibility.
+//
+//   - ready: the project has live frontier work or is ready for closure; a
+//     planner may dispatch or finalize.
+//   - blocked: a review, repair, or stall gate prevents forward progress; a
+//     planner must NOT dispatch until the gate resolves.
+//   - owner_decision: an ambiguity (duplicate authority, missing lead) requires
+//     an owner/admin decision before any automated action.
+//   - source_gap: closure evidence cannot be read back; the project is not
+//     dispatchable and not closable until outcomes are mapped.
+type ProjectDisposition string
+
+const (
+	DispositionReady         ProjectDisposition = "ready"
+	DispositionBlocked       ProjectDisposition = "blocked"
+	DispositionOwnerDecision ProjectDisposition = "owner_decision"
+	DispositionSourceGap     ProjectDisposition = "source_gap"
+)
+
 // TerminalProjectionFinding identifies a project status that disagrees with
 // the live issue/task projection. It is a diagnostic finding, not a lifecycle
 // status and never authorizes dispatch by itself.
@@ -103,6 +125,7 @@ type ProjectLifecycleInput struct {
 // ProjectLifecycleClassification is the deterministic classification output.
 type ProjectLifecycleClassification struct {
 	Health                       ProjectHealth
+	Disposition                  ProjectDisposition
 	OwnerDecisionRequired        bool
 	Flags                        []string
 	NextAction                   string
@@ -138,9 +161,18 @@ func ClassifyProject(in ProjectLifecycleInput) ProjectLifecycleClassification {
 		c.ClosureBlockers = append(c.ClosureBlockers, "ACCOUNTABLE_LEAD_REQUIRED")
 	}
 
+	// Missing lead is a hard gate: no active/closure/ready branch may return
+	// owner_decision. The owner must assign an accountable lead first.
+	if !in.HasLead {
+		c.Disposition = DispositionOwnerDecision
+		c.NextAction = "assign an accountable lead before any dispatch or closure"
+		return c
+	}
+
 	// E: frozen duplicate/superseded disposition (contract seed).
 	if in.DuplicateOfProjectID != "" {
 		c.Health = HealthDuplicateOrSuperseded
+		c.Disposition = DispositionOwnerDecision
 		c.OwnerDecisionRequired = true
 		c.Flags = append(c.Flags, "duplicate_or_superseded")
 		c.NextAction = "owner must decide keep / merge / supersede against the duplicate project"
@@ -151,6 +183,7 @@ func ClassifyProject(in ProjectLifecycleInput) ProjectLifecycleClassification {
 	// A: real live work beats everything else.
 	if in.ActiveTaskCount > 0 {
 		c.Health = HealthActiveWithFrontier
+		c.Disposition = DispositionReady
 		c.Flags = append(c.Flags, "active")
 		c.NextAction = fmt.Sprintf("active: %d nonterminal task(s); keep WIP and await receipts", in.ActiveTaskCount)
 		// Closure gate 3: nonterminal Task/Run must be empty before close.
@@ -168,6 +201,7 @@ func ClassifyProject(in ProjectLifecycleInput) ProjectLifecycleClassification {
 	// operationalization, recorded in EVIDENCE (Quinn review F2 note).
 	if in.BlockedIssueCount > 0 {
 		c.Health = HealthReviewOrRepairBlocked
+		c.Disposition = DispositionBlocked
 		c.Flags = append(c.Flags, "blocked")
 		c.NextAction = fmt.Sprintf("blocked: %d blocked issue(s); resolve the block before dispatch", in.BlockedIssueCount)
 		c.ClosureBlockers = append(c.ClosureBlockers, "BLOCKED_ISSUES")
@@ -175,6 +209,7 @@ func ClassifyProject(in ProjectLifecycleInput) ProjectLifecycleClassification {
 	}
 	if in.ReviewIssueCount > 0 {
 		c.Health = HealthReviewOrRepairBlocked
+		c.Disposition = DispositionBlocked
 		c.Flags = append(c.Flags, "review_backlog")
 		c.NextAction = fmt.Sprintf("review backlog: %d in_review issue(s) with no live review task; create a review/disposition task", in.ReviewIssueCount)
 		c.ClosureBlockers = append(c.ClosureBlockers, "REVIEW_BACKLOG")
@@ -185,6 +220,7 @@ func ClassifyProject(in ProjectLifecycleInput) ProjectLifecycleClassification {
 	// includes "failed repair/re-review has not yet formed a live task").
 	if in.FailedRepairGapCount > 0 {
 		c.Health = HealthReviewOrRepairBlocked
+		c.Disposition = DispositionBlocked
 		c.Flags = append(c.Flags, "repair_gap")
 		c.NextAction = fmt.Sprintf("repair gap: %d failed task(s) on open issue(s) with no live task; create a repair/re-review task", in.FailedRepairGapCount)
 		c.ClosureBlockers = append(c.ClosureBlockers, "FAILED_REPAIR_GAP")
@@ -195,6 +231,7 @@ func ClassifyProject(in ProjectLifecycleInput) ProjectLifecycleClassification {
 	// cannot be read back, so the project is source_gap, not closable.
 	if in.NonterminalIssueCount == 0 && in.ConfirmedOutcomeCount == 0 {
 		c.Health = HealthSourceGap
+		c.Disposition = DispositionSourceGap
 		c.Flags = append(c.Flags, "source_gap")
 		c.NextAction = "all issues terminal but no confirmed outcome; map issues to outcomes and generate a closure package"
 		c.ClosureBlockers = append(c.ClosureBlockers, "OUTCOME_COVERAGE_INCOMPLETE", "CLOSURE_PACKAGE_MISSING")
@@ -202,8 +239,11 @@ func ClassifyProject(in ProjectLifecycleInput) ProjectLifecycleClassification {
 	}
 
 	// B: nonterminal issues remain but no live task and no review/block gate.
+	// This is dispatch demand, not a terminal block: the next work-conserving
+	// provider can consume it as ready work.
 	if in.NonterminalIssueCount > 0 {
 		c.Health = HealthStalledNoOpenTask
+		c.Disposition = DispositionReady
 		c.Flags = append(c.Flags, "stalled")
 		c.NextAction = fmt.Sprintf("stalled: %d nonterminal issue(s) with no live task; resume the ready frontier or pause explicitly", in.NonterminalIssueCount)
 		c.ClosureBlockers = append(c.ClosureBlockers, "ISSUES_WITHOUT_DISPOSITION")
@@ -212,6 +252,7 @@ func ClassifyProject(in ProjectLifecycleInput) ProjectLifecycleClassification {
 
 	// D: every issue terminal and at least one confirmed outcome.
 	c.Health = HealthReadyForClosure
+	c.Disposition = DispositionReady
 	c.Flags = append(c.Flags, "ready_for_closure")
 	c.NextAction = "ready for closure: generate the closure package"
 	return c
@@ -222,6 +263,7 @@ type ProjectLifecycleSnapshot struct {
 	ProjectID                      string         `json:"project_id"`
 	Status                         string         `json:"status"`
 	Health                         string         `json:"health"`
+	Disposition                    string         `json:"disposition"`
 	OwnerDecisionRequired          bool           `json:"owner_decision_required"`
 	Flags                          []string       `json:"flags"`
 	LeadType                       *string        `json:"lead_type"`
@@ -447,6 +489,7 @@ func (p *ProjectLifecycleProjector) ListPortfolio(ctx context.Context, workspace
 			ProjectID:                      pid,
 			Status:                         proj.Status,
 			Health:                         string(class.Health),
+			Disposition:                    string(class.Disposition),
 			OwnerDecisionRequired:          class.OwnerDecisionRequired,
 			Flags:                          class.Flags,
 			LeadType:                       textOrNil(proj.LeadType),
