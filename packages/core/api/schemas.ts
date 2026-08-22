@@ -367,6 +367,13 @@ const WorkConservingDrainIssueResultWireSchema = z
         message: "only dispatched drain results carry a receipt",
       });
     }
+    if (row.outcome === "dispatched" && row.not_attempted === true) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["not_attempted"],
+        message: "dispatched drain results must have been attempted",
+      });
+    }
   });
 
 const WorkConservingDrainResultWireSchema = z
@@ -408,6 +415,16 @@ const WorkConservingDrainResultWireSchema = z
         message: "work-conserving drain counters do not match results",
       });
     }
+    const attemptedRows = result.results.filter(
+      (row) => !(row.outcome === "blocked" && row.not_attempted === true),
+    );
+    if (attemptedRows.length > result.batch_size) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["results"],
+        message: "attempted work-conserving drain results exceed batch_size",
+      });
+    }
     const authorityValues = Object.values(result.authority);
     const authorityPresent = authorityValues.some(Boolean);
     const authorityComplete = authorityValues.every(Boolean);
@@ -423,6 +440,23 @@ const WorkConservingDrainResultWireSchema = z
           code: z.ZodIssueCode.custom,
           message: "ready work-conserving drain scope is incomplete",
         });
+      }
+      for (const [index, row] of result.results.entries()) {
+        if (!row.receipt) continue;
+        if (row.receipt.identity.issueId !== row.issue_id) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["results", index, "receipt", "Identity", "issue_id"],
+            message: "dispatch receipt issue identity does not match its result row",
+          });
+        }
+        if (row.receipt.identity.workspaceId !== result.authority.workspace_id) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["results", index, "receipt", "Identity", "workspace_id"],
+            message: "dispatch receipt workspace identity does not match drain authority",
+          });
+        }
       }
     }
     if (

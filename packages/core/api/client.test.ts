@@ -3329,9 +3329,12 @@ describe("ApiClient model discovery response schema", () => {
 describe("ApiClient project next-actions drain", () => {
   const projectId = "11111111-1111-4111-8111-111111111111";
   const issueId = "33333333-3333-4333-8333-333333333333";
+  const otherIssueId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  const workspaceId = "77777777-7777-4777-8777-777777777777";
+  const otherWorkspaceId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
   const dispatchReceipt = {
     Identity: {
-      workspace_id: "77777777-7777-4777-8777-777777777777",
+      workspace_id: workspaceId,
       issue_id: issueId,
       stage: "implementation",
       candidate_revision: "42",
@@ -3352,7 +3355,7 @@ describe("ApiClient project next-actions drain", () => {
     projection_state: "ready",
     goal_id: "GOAL-HIVECREW-FAST-DEVELOPMENT-V2",
     authority: {
-      workspace_id: "77777777-7777-4777-8777-777777777777",
+      workspace_id: workspaceId,
       project_id: projectId,
       source_ref: "hivecosm://goals/fast-development-v2",
       revision: "42",
@@ -3552,6 +3555,94 @@ describe("ApiClient project next-actions drain", () => {
             employee_id: "DE-PIXEL-001",
             outcome: "dispatched",
           },
+          readyResult.results[1],
+        ],
+      },
+    ],
+    [
+      "two attempted dispatches above batch_size",
+      {
+        ...readyResult,
+        batch_size: 1,
+        results: [
+          readyResult.results[0],
+          {
+            issue_id: otherIssueId,
+            goal_id: "GOAL-HIVECREW-FAST-DEVELOPMENT-V2",
+            employee_id: "DE-PIXEL-002",
+            outcome: "dispatched",
+            receipt: {
+              ...dispatchReceipt,
+              Identity: { ...dispatchReceipt.Identity, issue_id: otherIssueId },
+              TaskID: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+            },
+          },
+        ],
+        dispatched: 2,
+        blocked: 0,
+      },
+    ],
+    [
+      "not-attempted source gap still consumes the suggestion batch",
+      {
+        ...readyResult,
+        batch_size: 1,
+        results: [
+          readyResult.results[0],
+          {
+            issue_id: otherIssueId,
+            goal_id: "GOAL-HIVECREW-FAST-DEVELOPMENT-V2",
+            employee_id: "DE-PIXEL-002",
+            outcome: "source_gap",
+            reason: "suggestion issue id is not a canonical uuid",
+            not_attempted: true,
+          },
+        ],
+        blocked: 0,
+        source_gaps: 1,
+      },
+    ],
+    [
+      "dispatch receipt issue mismatch",
+      {
+        ...readyResult,
+        results: [
+          {
+            ...readyResult.results[0],
+            receipt: {
+              ...dispatchReceipt,
+              Identity: { ...dispatchReceipt.Identity, issue_id: otherIssueId },
+            },
+          },
+          readyResult.results[1],
+        ],
+      },
+    ],
+    [
+      "dispatch receipt workspace mismatch",
+      {
+        ...readyResult,
+        results: [
+          {
+            ...readyResult.results[0],
+            receipt: {
+              ...dispatchReceipt,
+              Identity: {
+                ...dispatchReceipt.Identity,
+                workspace_id: otherWorkspaceId,
+              },
+            },
+          },
+          readyResult.results[1],
+        ],
+      },
+    ],
+    [
+      "dispatched result marked not_attempted",
+      {
+        ...readyResult,
+        results: [
+          { ...readyResult.results[0], not_attempted: true },
           readyResult.results[1],
         ],
       },
