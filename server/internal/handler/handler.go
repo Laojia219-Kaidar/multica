@@ -226,6 +226,13 @@ type Handler struct {
 	ContinuousDispatchTrigger interface {
 		DispatchIssue(context.Context, pgtype.UUID, pgtype.UUID, pgtype.UUID, pgtype.UUID, string) (service.ContinuousDispatchTriggerResult, error)
 	}
+	// WorkConservingDrain is the explicit Owner/Admin bounded drain command.
+	// It accepts only server-derived workspace/project/actor identities plus a
+	// batch bound; route selection remains owned by the projection and exact
+	// continuous-dispatch trigger. Nil fails closed at the HTTP boundary.
+	WorkConservingDrain interface {
+		Drain(context.Context, service.WorkConservingDrainRequest) (service.WorkConservingDrainResult, error)
+	}
 	// ReviewDispatch is the bounded Owner/Admin review-drain coordinator. It
 	// uses the existing Shadow and exact Task+receipt dispatcher; it does not
 	// create a second scheduler or review queue.

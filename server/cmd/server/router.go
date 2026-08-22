@@ -900,6 +900,12 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			continuousDispatchTrigger = continuousDispatchTrigger.WithAuthorityReviewDispatchGate(nil, nil)
 		}
 		h.ContinuousDispatchTrigger = continuousDispatchTrigger
+		if h.WorkConservingProjection != nil {
+			h.WorkConservingDrain = service.NewWorkConservingDrainService(
+				h.WorkConservingProjection,
+				continuousDispatchTrigger,
+			)
+		}
 		h.ReviewDispatch = service.NewReviewDispatchBatchService(
 			continuousDispatchShadow,
 			continuousDispatchTrigger,
@@ -1986,6 +1992,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Route("/{id}", func(r chi.Router) {
 					r.Get("/", h.GetProject)
 					r.Get("/next-actions", h.GetProjectNextActions)
+					r.Post("/next-actions/drain", h.DrainProjectNextActions)
 					r.Post("/next-actions/{issueId}/dispatch", h.DispatchProjectNextAction)
 					r.Get("/review-dispatch/preview", h.GetProjectReviewDispatchPreview)
 					r.Post("/review-dispatch/dispatch", h.DispatchProjectReviewBatch)
