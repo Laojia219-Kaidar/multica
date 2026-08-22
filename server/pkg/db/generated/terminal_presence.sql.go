@@ -51,19 +51,19 @@ func (q *Queries) ListFreshTerminalPresence(ctx context.Context, workspaceID pgt
 	return items, nil
 }
 
-const upsertTerminalPresence = `-- name: UpsertTerminalPresence :exec
+const upsertTerminalPresence = `-- name: UpsertTerminalPresence :execrows
 
 INSERT INTO terminal_presence
     (workspace_id, host, session_name, window_index, pane_index, pane_pid,
      current_command, agent_hint, tail_text, heartbeat_at)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now())
 ON CONFLICT (host, session_name, window_index, pane_index) DO UPDATE SET
-    workspace_id = EXCLUDED.workspace_id,
     pane_pid = EXCLUDED.pane_pid,
     current_command = EXCLUDED.current_command,
     agent_hint = EXCLUDED.agent_hint,
     tail_text = EXCLUDED.tail_text,
     heartbeat_at = now()
+WHERE terminal_presence.workspace_id = EXCLUDED.workspace_id
 `
 
 type UpsertTerminalPresenceParams struct {
@@ -79,8 +79,8 @@ type UpsertTerminalPresenceParams struct {
 }
 
 // 372 terminal presence: host collector upsert + work wall read-back.
-func (q *Queries) UpsertTerminalPresence(ctx context.Context, arg UpsertTerminalPresenceParams) error {
-	_, err := q.db.Exec(ctx, upsertTerminalPresence,
+func (q *Queries) UpsertTerminalPresence(ctx context.Context, arg UpsertTerminalPresenceParams) (int64, error) {
+	result, err := q.db.Exec(ctx, upsertTerminalPresence,
 		arg.WorkspaceID,
 		arg.Host,
 		arg.SessionName,
@@ -91,5 +91,8 @@ func (q *Queries) UpsertTerminalPresence(ctx context.Context, arg UpsertTerminal
 		arg.AgentHint,
 		arg.TailText,
 	)
-	return err
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }

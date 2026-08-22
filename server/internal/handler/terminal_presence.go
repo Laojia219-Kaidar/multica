@@ -69,15 +69,25 @@ func (h *Handler) ReportTerminalPresence(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusBadRequest, "host required")
 		return
 	}
+	host := sanitizeTail(req.Host, 255)
+	if strings.TrimSpace(host) == "" {
+		writeError(w, http.StatusBadRequest, "valid host required")
+		return
+	}
 	workspaceUUID := parseUUID(workspaceID)
+	accepted := 0
 	for _, p := range req.Sessions {
 		if p.SessionName == "" || len(p.TailText) > 20000 {
 			continue
 		}
-		_ = h.Queries.UpsertTerminalPresence(r.Context(), db.UpsertTerminalPresenceParams{
+		sessionName := sanitizeTail(p.SessionName, 255)
+		if strings.TrimSpace(sessionName) == "" {
+			continue
+		}
+		rows, err := h.Queries.UpsertTerminalPresence(r.Context(), db.UpsertTerminalPresenceParams{
 			WorkspaceID:    workspaceUUID,
-			Host:           req.Host,
-			SessionName:    p.SessionName,
+			Host:           host,
+			SessionName:    sessionName,
 			WindowIndex:    int32(p.WindowIndex),
 			PaneIndex:      int32(p.PaneIndex),
 			PanePid:        int32(p.PanePID),
@@ -85,8 +95,17 @@ func (h *Handler) ReportTerminalPresence(w http.ResponseWriter, r *http.Request)
 			AgentHint:      sanitizeTail(p.AgentHint, 120),
 			TailText:       sanitizeTail(p.TailText, 20000),
 		})
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to report terminal presence")
+			return
+		}
+		if rows == 0 {
+			writeError(w, http.StatusConflict, "terminal pane belongs to another workspace")
+			return
+		}
+		accepted++
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"panes": len(req.Sessions)})
+	writeJSON(w, http.StatusOK, map[string]any{"panes": accepted})
 }
 
 // ListTerminalPresence GET /api/work-wall/terminal-presence — fresh panes only
@@ -122,11 +141,11 @@ func (h *Handler) ListTerminalPresence(w http.ResponseWriter, r *http.Request) {
 // scripts/terminal-presence-collector.py so the server is a true second-pass
 // defense even if the collector is bypassed or misconfigured.
 var terminalPresenceSecretPatterns = []*regexp.Regexp{
-	regexp.MustCompile(`\b(sk-[A-Za-z0-9_\-]{8,})`),
-	regexp.MustCompile(`\b(gla-[A-Za-z0-9_\-]{8,})`),
-	regexp.MustCompile(`\b(mul-[A-Za-z0-9_\-]{8,})`),
+	regexp.MustCompile(`\b(sk[-_][A-Za-z0-9_\-]{8,})`),
+	regexp.MustCompile(`\b(gla[-_][A-Za-z0-9_\-]{8,})`),
+	regexp.MustCompile(`\b((?:mul|mdt|mat)[-_][A-Za-z0-9_\-]{8,})`),
 	regexp.MustCompile(`\b(AKIA[0-9A-Z]{16})`),
-	regexp.MustCompile(`(Bearer\s+)[A-Za-z0-9._\-]{16,}`),
+	regexp.MustCompile(`(?i)(bearer\s+)[A-Za-z0-9._\-]{16,}`),
 	regexp.MustCompile(`(?i)(password|passwd|secret|token)\s*[=:]\s*\S+`),
 }
 

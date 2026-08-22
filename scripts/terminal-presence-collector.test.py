@@ -54,6 +54,10 @@ class TestSanitize(unittest.TestCase):
         for value in (
             "key=sk-abcdefgh12345678",
             "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.abc",
+            "authorization: bearer eyJhbGciOiJIUzI1NiJ9.lower",
+            "task_token=mul_0123456789abcdef",
+            "daemon_token=mdt_0123456789abcdef",
+            "agent_token=mat_0123456789abcdef",
             "password=supersecret",
             "aws_key=AKIAIOSFODNN7EXAMPLE",
         ):
@@ -62,6 +66,12 @@ class TestSanitize(unittest.TestCase):
 
     def test_strips_ansi_and_control_characters(self):
         self.assertEqual(collector.sanitize("\x1b[31ma\x1b[0m\x00b\nc\td"), "ab\nc\td")
+
+    def test_strips_osc_sequences(self):
+        self.assertEqual(
+            collector.sanitize("before\x1b]0;secret-title\x07middle\x1b]2;other\x1b\\after"),
+            "beforemiddleafter",
+        )
 
     def test_truncates_tail(self):
         self.assertEqual(len(collector.sanitize("x" * 30000)), 20000)

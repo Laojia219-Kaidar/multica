@@ -54,8 +54,12 @@ func TestSanitizeTail_RedactsObviousSecretShapes(t *testing.T) {
 		{"sk-prefix", "export OPENAI_API_KEY=sk-abcdef1234567890 done"},
 		{"gla-prefix", "token gla-ABCDEF1234567890 tail"},
 		{"mul-prefix", "pat mul-0123456789abcdef tail"},
+		{"mul-task-token", "pat mul_0123456789abcdef tail"},
+		{"mdt-daemon-token", "pat mdt_0123456789abcdef tail"},
+		{"mat-agent-token", "pat mat_0123456789abcdef tail"},
 		{"aws-akia", "AWS_KEY=AKIAIOSFODNN7EXAMPLE more"},
 		{"bearer", "Authorization: Bearer abcdefghijklmnopqrst"},
+		{"lowercase-bearer", "authorization: bearer abcdefghijklmnopqrst"},
 		{"password-kv", `password=hunter2 things`},
 		{"secret-colon", `client_secret: abcdef0123456789 trailing`},
 		{"token-uppercase", `TOKEN=supersecretvalue9999 trailing`},
@@ -71,6 +75,9 @@ func TestSanitizeTail_RedactsObviousSecretShapes(t *testing.T) {
 				"sk-abcdef1234567890",
 				"gla-ABCDEF1234567890",
 				"mul-0123456789abcdef",
+				"mul_0123456789abcdef",
+				"mdt_0123456789abcdef",
+				"mat_0123456789abcdef",
 				"AKIAIOSFODNN7EXAMPLE",
 				"abcdefghijklmnopqrst",
 				"hunter2",
@@ -202,6 +209,93 @@ func TestReportTerminalPresence_IgnoresBodyWorkspaceSlug(t *testing.T) {
 	}
 	if !strings.Contains(gotTail, "[REDACTED]") {
 		t.Fatalf("expected [REDACTED] in stored tail, got %q", gotTail)
+	}
+}
+
+func TestReportTerminalPresence_RejectsCrossWorkspacePaneCollision(t *testing.T) {
+	if testPool == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	var foreignWorkspaceID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO workspace (name, slug, description, issue_prefix)
+		VALUES ('Foreign Collision WS', 'foreign-terminal-collision', 'foreign', 'FTC')
+		RETURNING id
+	`).Scan(&foreignWorkspaceID); err != nil {
+		t.Fatalf("seed foreign workspace: %v", err)
+	}
+	const host = "test-host-cross-workspace-collision"
+	const session = "session-cross-workspace-collision"
+	t.Cleanup(func() {
+		testPool.Exec(ctx, `DELETE FROM terminal_presence WHERE host = $1`, host)
+		testPool.Exec(ctx, `DELETE FROM workspace WHERE id = $1`, foreignWorkspaceID)
+	})
+	if _, err := testPool.Exec(ctx, `
+		INSERT INTO terminal_presence
+			(workspace_id, host, session_name, window_index, pane_index, pane_pid,
+			 current_command, agent_hint, tail_text, heartbeat_at)
+		VALUES ($1, $2, $3, 0, 0, 7, 'foreign-cmd', '', 'foreign-tail', now())
+	`, foreignWorkspaceID, host, session); err != nil {
+		t.Fatalf("seed foreign presence row: %v", err)
+	}
+
+	body := map[string]any{
+		"host": host,
+		"sessions": []map[string]any{{
+			"session_name": session, "window_index": 0, "pane_index": 0,
+			"pane_pid": 8, "current_command": "attacker-cmd", "tail_text": "attacker-tail",
+		}},
+	}
+	w := httptest.NewRecorder()
+	testHandler.ReportTerminalPresence(w, newRequest("POST", "/api/work-wall/terminal-presence", body))
+	if w.Code != http.StatusConflict {
+		t.Fatalf("expected 409 for cross-workspace pane collision, got %d: %s", w.Code, w.Body.String())
+	}
+	var gotWorkspace, gotTail string
+	if err := testPool.QueryRow(ctx, `
+		SELECT workspace_id, tail_text FROM terminal_presence
+		WHERE host = $1 AND session_name = $2 AND window_index = 0 AND pane_index = 0
+	`, host, session).Scan(&gotWorkspace, &gotTail); err != nil {
+		t.Fatalf("query foreign row: %v", err)
+	}
+	if gotWorkspace != foreignWorkspaceID || gotTail != "foreign-tail" {
+		t.Fatalf("foreign pane was reassigned: workspace=%q tail=%q", gotWorkspace, gotTail)
+	}
+}
+
+func TestReportTerminalPresence_SanitizesHostAndSessionName(t *testing.T) {
+	if testPool == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	const cleanHost = "test-host-redacted"
+	const cleanSession = "session-redacted"
+	t.Cleanup(func() {
+		testPool.Exec(ctx, `DELETE FROM terminal_presence WHERE host = $1`, cleanHost)
+	})
+	body := map[string]any{
+		"host": cleanHost + "\x1b]0;mul_0123456789abcdef\x07",
+		"sessions": []map[string]any{{
+			"session_name": cleanSession + "\x1b]0;mdt_0123456789abcdef\x07",
+			"window_index": 0, "pane_index": 0, "pane_pid": 9,
+			"current_command": "go test", "tail_text": "PASS",
+		}},
+	}
+	w := httptest.NewRecorder()
+	testHandler.ReportTerminalPresence(w, newRequest("POST", "/api/work-wall/terminal-presence", body))
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var host, session string
+	if err := testPool.QueryRow(ctx, `
+		SELECT host, session_name FROM terminal_presence
+		WHERE workspace_id = $1 AND host = $2
+	`, testWorkspaceID, cleanHost).Scan(&host, &session); err != nil {
+		t.Fatalf("query sanitized pane: %v", err)
+	}
+	if host != cleanHost || session != cleanSession {
+		t.Fatalf("host/session not sanitized: host=%q session=%q", host, session)
 	}
 }
 

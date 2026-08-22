@@ -34,15 +34,15 @@ WORKSPACE_SLUG = os.environ.get("TERMINAL_PRESENCE_WORKSPACE", "hivecosm")
 CONFIG = os.environ.get("TERMINAL_PRESENCE_CONFIG", os.path.expanduser("~/.multica/config.json"))
 
 SECRET_PATTERNS = [
-    re.compile(r"\b(sk-[A-Za-z0-9_\-]{8,})"),
-    re.compile(r"\b(gla-[A-Za-z0-9_\-]{8,})"),
-    re.compile(r"\b(mul-[A-Za-z0-9_\-]{8,})"),
+    re.compile(r"\b(sk[-_][A-Za-z0-9_\-]{8,})"),
+    re.compile(r"\b(gla[-_][A-Za-z0-9_\-]{8,})"),
+    re.compile(r"\b((?:mul|mdt|mat)[-_][A-Za-z0-9_\-]{8,})"),
     re.compile(r"\b(AKIA[0-9A-Z]{16})"),
-    re.compile(r"(Bearer\s+)[A-Za-z0-9._\-]{16,}"),
+    re.compile(r"(bearer\s+)[A-Za-z0-9._\-]{16,}", re.IGNORECASE),
     re.compile(r"(?i)(password|passwd|secret|token)\s*[=:]\s*\S+"),
 ]
 
-ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]")
+ANSI_RE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\))")
 
 def _find_tmux() -> str:
     """launchd 环境的 PATH 只有系统目录，homebrew 的 tmux 需要显式解析。"""

@@ -592,7 +592,7 @@ func (p *PGStore) UpsertHeartbeat(ctx context.Context, hb HeartbeatRecord) error
 	if err != nil {
 		return ErrInvalidRequest
 	}
-	return p.queries.UpsertTerminalPresence(ctx, db.UpsertTerminalPresenceParams{
+	rows, err := p.queries.UpsertTerminalPresence(ctx, db.UpsertTerminalPresenceParams{
 		WorkspaceID:    ws,
 		Host:           hb.Host,
 		SessionName:    hb.SessionName,
@@ -602,6 +602,13 @@ func (p *PGStore) UpsertHeartbeat(ctx context.Context, hb HeartbeatRecord) error
 		CurrentCommand: hb.CurrentCommand,
 		AgentHint:      hb.ActorID,
 	})
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
+		return ErrConflict
+	}
+	return nil
 }
 
 func (p *PGStore) SaveHandoff(ctx context.Context, h HandoffRecord) error {
