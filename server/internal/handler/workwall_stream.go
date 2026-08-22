@@ -14,31 +14,25 @@ import (
 )
 
 const (
-	// workWallStreamInterval is the default server-side poll cadence for the
+	// workWallStreamInterval is the fixed production poll cadence for the
 	// workspace-wide SSE stream. One stream per workspace (NOT per employee).
 	workWallStreamInterval = 5 * time.Second
-	// workWallStreamMinInterval floors a per-request `?interval=` override so a
-	// client cannot spin the stream into a hot loop. Tests use the override to
-	// drive a controllable cadence.
-	workWallStreamMinInterval = 100 * time.Millisecond
-	// workWallStreamMaxInterval caps a per-request `?interval=` override so a
-	// stale client cannot pin a workspace to stale snapshots forever.
+	// The remaining bounds apply only to an unexported context seam used by
+	// same-package tests. HTTP clients cannot select the cadence.
+	workWallStreamMinInterval = 10 * time.Millisecond
 	workWallStreamMaxInterval = 1 * time.Hour
 )
 
-// workWallStreamIntervalFor returns the SSE cadence for this request. A valid
-// `?interval=` duration overrides the baseline, clamped to a safe range.
+type workWallStreamIntervalContextKey struct{}
+
+// workWallStreamIntervalFor returns the fixed production cadence. Tests in
+// this package may inject a bounded duration through an unexported context key;
+// query parameters are deliberately ignored to avoid a client-controlled DB
+// polling amplifier.
 func workWallStreamIntervalFor(r *http.Request) time.Duration {
-	if raw := r.URL.Query().Get("interval"); raw != "" {
-		if d, err := time.ParseDuration(raw); err == nil {
-			if d < workWallStreamMinInterval {
-				d = workWallStreamMinInterval
-			}
-			if d > workWallStreamMaxInterval {
-				d = workWallStreamMaxInterval
-			}
-			return d
-		}
+	if d, ok := r.Context().Value(workWallStreamIntervalContextKey{}).(time.Duration); ok &&
+		d >= workWallStreamMinInterval && d <= workWallStreamMaxInterval {
+		return d
 	}
 	return workWallStreamInterval
 }

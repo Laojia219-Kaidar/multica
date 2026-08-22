@@ -81,27 +81,22 @@ func readSSEFrame(br *bufio.Reader) (sseFrame, error) {
 	}
 }
 
-// TestWorkWallStreamIntervalFor covers the controllable-cadence knob: default,
-// override, floor clamp, cap clamp, and invalid input fallback.
+// TestWorkWallStreamIntervalFor proves HTTP query parameters cannot control
+// cadence while a bounded same-package context seam remains available to tests.
 func TestWorkWallStreamIntervalFor(t *testing.T) {
-	mkReq := func(q string) *http.Request {
-		return httptest.NewRequest(http.MethodGet, "http://example.test/api/work-wall/stream?"+q, nil)
-	}
-
-	if got := workWallStreamIntervalFor(mkReq("")); got != workWallStreamInterval {
+	r := httptest.NewRequest(http.MethodGet, "http://example.test/api/work-wall/stream?interval=1ms", nil)
+	if got := workWallStreamIntervalFor(r); got != workWallStreamInterval {
 		t.Fatalf("default interval = %v, want %v", got, workWallStreamInterval)
 	}
-	if got := workWallStreamIntervalFor(mkReq("interval=150ms")); got != 150*time.Millisecond {
-		t.Fatalf("override interval = %v, want 150ms", got)
+	ctx := context.WithValue(r.Context(), workWallStreamIntervalContextKey{}, 150*time.Millisecond)
+	if got := workWallStreamIntervalFor(r.WithContext(ctx)); got != 150*time.Millisecond {
+		t.Fatalf("test interval = %v, want 150ms", got)
 	}
-	if got := workWallStreamIntervalFor(mkReq("interval=1ns")); got != workWallStreamMinInterval {
-		t.Fatalf("under-floor interval = %v, want floor %v", got, workWallStreamMinInterval)
-	}
-	if got := workWallStreamIntervalFor(mkReq("interval=1000h")); got != workWallStreamMaxInterval {
-		t.Fatalf("over-cap interval = %v, want cap %v", got, workWallStreamMaxInterval)
-	}
-	if got := workWallStreamIntervalFor(mkReq("interval=not-a-duration")); got != workWallStreamInterval {
-		t.Fatalf("invalid interval = %v, want default %v", got, workWallStreamInterval)
+	for _, invalid := range []time.Duration{time.Nanosecond, 2 * time.Hour} {
+		ctx := context.WithValue(r.Context(), workWallStreamIntervalContextKey{}, invalid)
+		if got := workWallStreamIntervalFor(r.WithContext(ctx)); got != workWallStreamInterval {
+			t.Fatalf("out-of-bounds test interval %v = %v, want default %v", invalid, got, workWallStreamInterval)
+		}
 	}
 }
 
@@ -207,7 +202,7 @@ func TestWriteWorkWallSnapshotFrame_ContextCancelled(t *testing.T) {
 
 // workWallStreamTestServer mounts GetWorkWallStream on an httptest server with
 // a member context already injected, mirroring the router wiring.
-func workWallStreamTestServer(t *testing.T) *httptest.Server {
+func workWallStreamTestServer(t *testing.T, testInterval ...time.Duration) *httptest.Server {
 	t.Helper()
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
@@ -222,7 +217,11 @@ func workWallStreamTestServer(t *testing.T) *httptest.Server {
 
 	rt := chi.NewRouter()
 	rt.Get("/api/work-wall/stream", func(w http.ResponseWriter, r *http.Request) {
-		r = r.WithContext(middleware.SetMemberContext(r.Context(), testWorkspaceID, memberRow))
+		ctx := middleware.SetMemberContext(r.Context(), testWorkspaceID, memberRow)
+		if len(testInterval) == 1 {
+			ctx = context.WithValue(ctx, workWallStreamIntervalContextKey{}, testInterval[0])
+		}
+		r = r.WithContext(ctx)
 		testHandler.GetWorkWallStream(w, r)
 	})
 	srv := httptest.NewServer(rt)
@@ -236,7 +235,7 @@ func workWallStreamTestServer(t *testing.T) *httptest.Server {
 func TestGetWorkWallStream_EmitsImmediately(t *testing.T) {
 	srv := workWallStreamTestServer(t)
 
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, srv.URL+"/api/work-wall/stream?interval=3s", nil)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, srv.URL+"/api/work-wall/stream", nil)
 	if err != nil {
 		t.Fatalf("build request: %v", err)
 	}
@@ -265,13 +264,12 @@ func TestGetWorkWallStream_EmitsImmediately(t *testing.T) {
 	}
 }
 
-// TestGetWorkWallStream_ControllableCadence verifies that subsequent snapshots
-// follow the requested cadence (interval=150ms) rather than firing as fast as
-// possible or hanging on the default interval.
+// TestGetWorkWallStream_ControllableCadence verifies subsequent snapshots use
+// the same-package test cadence without exposing a client-controlled knob.
 func TestGetWorkWallStream_ControllableCadence(t *testing.T) {
-	srv := workWallStreamTestServer(t)
+	srv := workWallStreamTestServer(t, 150*time.Millisecond)
 
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, srv.URL+"/api/work-wall/stream?interval=150ms", nil)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, srv.URL+"/api/work-wall/stream", nil)
 	if err != nil {
 		t.Fatalf("build request: %v", err)
 	}
