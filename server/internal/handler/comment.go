@@ -2375,6 +2375,13 @@ func (h *Handler) routeAssigneeFallback(ctx context.Context, issue db.Issue, aut
 	if !issue.AssigneeType.Valid || !issue.AssigneeID.Valid {
 		return commentAgentTrigger{}, false
 	}
+	// A plain comment from the ordinary agent that already owns the issue is
+	// not new work. Keep this guard on the implicit fallback itself so every
+	// caller gets the same anti-loop boundary; explicit @agent mentions are
+	// resolved by the mention path before this fallback is considered.
+	if issue.AssigneeType.String == "agent" && authorType == "agent" && authorID == uuidToString(issue.AssigneeID) {
+		return commentAgentTrigger{}, false
+	}
 	switch issue.AssigneeType.String {
 	case "agent":
 		agent, hasPending, ok := h.assigneeFallbackAgent(ctx, issue, authorType, authorID, opts)

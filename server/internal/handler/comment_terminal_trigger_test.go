@@ -131,3 +131,30 @@ func TestNonTerminalIssue_PlainCommentStillTriggersAssignee(t *testing.T) {
 		})
 	}
 }
+
+// TestAssigneeFallback_OrdinaryAgentSelfCommentDoesNotTrigger verifies that
+// an ordinary agent's plain self-comment never re-enters the implicit
+// assignee route. This is intentionally tested at the fallback boundary so
+// every caller gets the guard, while explicit mention routing remains separate.
+func TestAssigneeFallback_OrdinaryAgentSelfCommentDoesNotTrigger(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+
+	ctx := context.Background()
+	assigneeID := createHandlerTestAgent(t, "Ordinary Self Comment Assignee", nil)
+	for _, status := range []string{"backlog", "todo", "in_progress", "in_review", "blocked"} {
+		t.Run(status, func(t *testing.T) {
+			issueID := createCommentTriggerPreviewIssue(t, "ordinary self comment "+status, "agent", assigneeID)
+			setIssueStatus(t, issueID, status)
+
+			issue, err := testHandler.Queries.GetIssue(ctx, parseUUID(issueID))
+			if err != nil {
+				t.Fatalf("load issue: %v", err)
+			}
+			if trigger, ok := testHandler.routeAssigneeFallback(ctx, issue, "agent", assigneeID, commentTriggerComputeOptions{}); ok {
+				t.Fatalf("self-comment fallback returned trigger %+v for status %s", trigger, status)
+			}
+		})
+	}
+}
