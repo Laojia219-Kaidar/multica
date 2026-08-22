@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"sync"
@@ -34,6 +35,29 @@ type receiptFailureTx struct {
 func (t *receiptFailureTx) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
 	if strings.Contains(sql, "INSERT INTO project_lifecycle_receipt") {
 		return receiptFailureRow{err: errors.New("injected lifecycle receipt failure")}
+	}
+	return t.Tx.QueryRow(ctx, sql, args...)
+}
+
+type reconcileMetadataFailureTxStarter struct {
+	pool *pgxpool.Pool
+}
+
+func (s *reconcileMetadataFailureTxStarter) Begin(ctx context.Context) (pgx.Tx, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &reconcileMetadataFailureTx{Tx: tx}, nil
+}
+
+type reconcileMetadataFailureTx struct {
+	pgx.Tx
+}
+
+func (t *reconcileMetadataFailureTx) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
+	if strings.Contains(sql, "metadata = jsonb_set") {
+		return receiptFailureRow{err: errors.New("injected reconcile metadata failure")}
 	}
 	return t.Tx.QueryRow(ctx, sql, args...)
 }
@@ -604,10 +628,11 @@ func TestReconcileWorkspaceDedup(t *testing.T) {
 	}
 }
 
-// HIV-807 repair #5: ReconcileWorkspace must create issues with typed
-// origin (reconciler), not concatenated provenance in Description.
-func TestReconcileWorkspaceIssueCarriesTypedOrigin(t *testing.T) {
-	pool, workspaceID, _, _ := seedPausedProjectFixture(t, "in_progress")
+// HIV-807 repair #5: ReconcileWorkspace must atomically persist typed Project
+// and source-Issue provenance, while keeping unavailable Goal/WorkOrder
+// authority explicit as source_gap.
+func TestReconcileWorkspaceIssueCarriesTypedProvenance(t *testing.T) {
+	pool, workspaceID, projectID, sourceIssueID := seedPausedProjectFixture(t, "in_progress")
 	q := db.New(pool)
 	svc := &TaskService{Queries: q, TxStarter: pool, Bus: events.New()}
 	issueSvc := NewIssueService(q, pool, events.New(), nil, svc)
@@ -628,18 +653,44 @@ func TestReconcileWorkspaceIssueCarriesTypedOrigin(t *testing.T) {
 		t.Fatal("reconcile created 0 issues, want >= 1")
 	}
 
-	// Read back the created issue(s) and verify typed identification via title
-	// prefix and clean description (no concatenated provenance).
-	var title, description string
+	// Read back the created Issue and its typed provenance. The title remains a
+	// stable dedup key, but is not accepted as provenance evidence.
+	var title, description, storedProjectID string
+	var metadata []byte
 	if err := pool.QueryRow(ctx, `
-		SELECT title, COALESCE(description,'')
+		SELECT title, COALESCE(description,''), project_id::text, metadata
 		FROM issue
 		WHERE workspace_id=$1 AND title LIKE '[自愈] %%'
-		ORDER BY created_at DESC LIMIT 1`, workspaceID).Scan(&title, &description); err != nil {
+		ORDER BY created_at DESC LIMIT 1`, workspaceID).Scan(&title, &description, &storedProjectID, &metadata); err != nil {
 		t.Fatalf("read back reconciler issue: %v", err)
+	}
+	if storedProjectID != projectID {
+		t.Fatalf("project_id = %q, want %q", storedProjectID, projectID)
 	}
 	if !strings.HasPrefix(title, "[自愈] ") {
 		t.Fatalf("title = %q, want [自愈] prefix", title)
+	}
+	var envelope struct {
+		Provenance projectReconcileProvenance `json:"project_reconcile_provenance"`
+	}
+	if err := json.Unmarshal(metadata, &envelope); err != nil {
+		t.Fatalf("decode metadata: %v", err)
+	}
+	p := envelope.Provenance
+	if p.SchemaVersion != "hivecrew.project-reconcile-provenance/v1" || p.ProjectID != projectID {
+		t.Fatalf("provenance identity = %+v", p)
+	}
+	if p.FindingKind != FindingStalledNoTask || p.Disposition != string(DispositionReady) {
+		t.Fatalf("provenance finding/disposition = %q/%q", p.FindingKind, p.Disposition)
+	}
+	if len(p.SourceIssueIDs) != 1 || p.SourceIssueIDs[0] != sourceIssueID {
+		t.Fatalf("source_issue_ids = %v, want [%s]", p.SourceIssueIDs, sourceIssueID)
+	}
+	if p.GoalID != nil || p.WorkOrderRef != nil {
+		t.Fatalf("unavailable Goal/WorkOrder must remain null: goal=%v work_order=%v", p.GoalID, p.WorkOrderRef)
+	}
+	if len(p.SourceGap) != 2 || p.SourceGap[0] != "goal" || p.SourceGap[1] != "work_order" {
+		t.Fatalf("source_gap = %v, want [goal work_order]", p.SourceGap)
 	}
 	// Description must NOT contain concatenated provenance fields.
 	if strings.Contains(description, "disposition:") {
@@ -650,6 +701,35 @@ func TestReconcileWorkspaceIssueCarriesTypedOrigin(t *testing.T) {
 	}
 	if strings.Contains(description, "project:") {
 		t.Fatalf("description contains concatenated project: %q", description)
+	}
+}
+
+func TestReconcileWorkspaceProvenanceFailureRollsBackIssue(t *testing.T) {
+	pool, workspaceID, _, _ := seedPausedProjectFixture(t, "in_progress")
+	q := db.New(pool)
+	txStarter := &reconcileMetadataFailureTxStarter{pool: pool}
+	svc := &TaskService{Queries: q, TxStarter: txStarter, Bus: events.New()}
+	issueSvc := NewIssueService(q, txStarter, events.New(), nil, svc)
+	reconciler := NewProjectLifecycleReconciler(q)
+	ctx := context.Background()
+
+	var ownerID string
+	if err := pool.QueryRow(ctx, `SELECT user_id::text FROM member WHERE workspace_id=$1 AND role='owner' LIMIT 1`, workspaceID).Scan(&ownerID); err != nil {
+		t.Fatalf("load owner: %v", err)
+	}
+	created, err := reconciler.ReconcileWorkspace(ctx, util.MustParseUUID(workspaceID), issueSvc, "member", util.MustParseUUID(ownerID))
+	if err == nil || !strings.Contains(err.Error(), "persist reconcile provenance") {
+		t.Fatalf("reconcile error = %v, want provenance persistence failure", err)
+	}
+	if created != 0 {
+		t.Fatalf("created = %d, want 0 after atomic rollback", created)
+	}
+	var repairIssues int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM issue WHERE workspace_id=$1 AND title LIKE '[自愈] %%'`, workspaceID).Scan(&repairIssues); err != nil {
+		t.Fatalf("count repair Issues: %v", err)
+	}
+	if repairIssues != 0 {
+		t.Fatalf("repair Issue count = %d, want 0 after metadata failure", repairIssues)
 	}
 }
 

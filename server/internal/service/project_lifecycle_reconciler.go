@@ -23,6 +23,22 @@ type ReconcileFinding struct {
 	NextAction       string   `json:"next_action"`
 }
 
+const maxReconcileSourceIssues = 10000
+
+// projectReconcileProvenance is the typed, durable source record attached to a
+// reconciler-created Issue. Goal and WorkOrder are explicit nullable fields:
+// the lifecycle DB read model cannot infer either authority from a Project.
+type projectReconcileProvenance struct {
+	SchemaVersion  string   `json:"schema_version"`
+	ProjectID      string   `json:"project_id"`
+	FindingKind    string   `json:"finding_kind"`
+	Disposition    string   `json:"disposition"`
+	SourceIssueIDs []string `json:"source_issue_ids"`
+	GoalID         *string  `json:"goal_id"`
+	WorkOrderRef   *string  `json:"work_order_ref"`
+	SourceGap      []string `json:"source_gap"`
+}
+
 // Reconcile finding kinds (the VC-12 broken-chain detectors plus the
 // terminal-projection consistency detector).
 const (
@@ -131,8 +147,8 @@ func (r *ProjectLifecycleReconciler) Diagnose(ctx context.Context, workspaceID p
 //
 // The title is stable (kind + project ID only) so the duplicate guard key
 // does not shift when project counts change after the first repair Issue.
-// Structured provenance (finding_kind, disposition, source_issue_ids,
-// source_gap) is persisted as issue metadata in a follow-up transaction.
+// Structured provenance and the Issue row are committed in one transaction;
+// missing Goal/WorkOrder authority remains an explicit source_gap.
 func (r *ProjectLifecycleReconciler) ReconcileWorkspace(ctx context.Context, workspaceID pgtype.UUID, issueSvc *IssueService, creatorType string, creatorID pgtype.UUID) (int, error) {
 	findings, err := r.Diagnose(ctx, workspaceID)
 	if err != nil {
@@ -140,60 +156,99 @@ func (r *ProjectLifecycleReconciler) ReconcileWorkspace(ctx context.Context, wor
 	}
 	created := 0
 	for _, f := range findings {
-		title := "[自愈] " + f.Kind + " · " + f.ProjectID
-		result, err := issueSvc.Create(ctx, IssueCreateParams{
-			WorkspaceID: workspaceID,
-			Title:       title,
-			Description: pgtype.Text{String: f.NextAction, Valid: f.NextAction != ""},
-			Status:      "backlog",
-			Priority:    "medium",
-			CreatorType: creatorType,
-			CreatorID:   creatorID,
-			ProjectID:   util.MustParseUUID(f.ProjectID),
-		}, IssueCreateOpts{})
+		wasCreated, err := r.createFindingIssue(ctx, workspaceID, issueSvc, creatorType, creatorID, f)
 		if err != nil {
-			if errors.Is(err, ErrActiveDuplicate) {
-				continue
-			}
 			return created, fmt.Errorf("create reconcile action for %s/%s: %w", f.ProjectID, f.Kind, err)
 		}
-		created++
-
-		// Persist structured provenance as issue metadata.
-		r.setFindingMetadata(ctx, result.Issue, f)
+		if wasCreated {
+			created++
+		}
 	}
 	return created, nil
 }
 
-// setFindingMetadata persists the reconciler finding's structured provenance
-// in the issue's metadata JSONB using the existing SetIssueMetadataKey seam.
-func (r *ProjectLifecycleReconciler) setFindingMetadata(ctx context.Context, issue db.Issue, f ReconcileFinding) {
-	if v, err := json.Marshal(f.Kind); err == nil {
-		r.Queries.SetIssueMetadataKey(ctx, db.SetIssueMetadataKeyParams{
-			Key: "finding_kind", Value: v,
-			ID: issue.ID, WorkspaceID: issue.WorkspaceID,
-		})
+func (r *ProjectLifecycleReconciler) createFindingIssue(
+	ctx context.Context,
+	workspaceID pgtype.UUID,
+	issueSvc *IssueService,
+	creatorType string,
+	creatorID pgtype.UUID,
+	f ReconcileFinding,
+) (bool, error) {
+	if issueSvc == nil || issueSvc.Queries == nil || issueSvc.TxStarter == nil {
+		return false, errors.New("issue service transaction writer is unavailable")
 	}
-	if v, err := json.Marshal(f.Disposition); err == nil {
-		r.Queries.SetIssueMetadataKey(ctx, db.SetIssueMetadataKeyParams{
-			Key: "disposition", Value: v,
-			ID: issue.ID, WorkspaceID: issue.WorkspaceID,
-		})
+	tx, err := issueSvc.TxStarter.Begin(ctx)
+	if err != nil {
+		return false, fmt.Errorf("begin reconcile Issue transaction: %w", err)
 	}
-	if f.FrontierIssueIDs != nil {
-		if v, err := json.Marshal(f.FrontierIssueIDs); err == nil {
-			r.Queries.SetIssueMetadataKey(ctx, db.SetIssueMetadataKeyParams{
-				Key: "source_issue_ids", Value: v,
-				ID: issue.ID, WorkspaceID: issue.WorkspaceID,
-			})
+	defer tx.Rollback(ctx)
+	qtx := issueSvc.Queries.WithTx(tx)
+	projectID := util.MustParseUUID(f.ProjectID)
+
+	// Capture the real pre-existing Project Issue set before creating the
+	// repair Issue. This is a typed source chain, not a title/description hint.
+	sourceRows, err := qtx.ListIssues(ctx, db.ListIssuesParams{
+		WorkspaceID: workspaceID,
+		ProjectID:   projectID,
+		Limit:       maxReconcileSourceIssues,
+	})
+	if err != nil {
+		return false, fmt.Errorf("list reconcile source Issues: %w", err)
+	}
+	if len(sourceRows) == maxReconcileSourceIssues {
+		return false, fmt.Errorf("reconcile source Issue set reached safety limit %d", maxReconcileSourceIssues)
+	}
+	sourceIssueIDs := make([]string, 0, len(sourceRows))
+	for _, row := range sourceRows {
+		if id := util.UUIDToString(row.ID); id != "" {
+			sourceIssueIDs = append(sourceIssueIDs, id)
 		}
 	}
-	if f.Disposition == string(DispositionSourceGap) {
-		if v, err := json.Marshal([]string{"goal", "work_order"}); err == nil {
-			r.Queries.SetIssueMetadataKey(ctx, db.SetIssueMetadataKeyParams{
-				Key: "source_gap", Value: v,
-				ID: issue.ID, WorkspaceID: issue.WorkspaceID,
-			})
-		}
+	sourceGap := []string{"goal", "work_order"}
+	if len(sourceIssueIDs) == 0 {
+		sourceGap = append(sourceGap, "source_issue")
 	}
+	provenance, err := json.Marshal(projectReconcileProvenance{
+		SchemaVersion:  "hivecrew.project-reconcile-provenance/v1",
+		ProjectID:      f.ProjectID,
+		FindingKind:    f.Kind,
+		Disposition:    f.Disposition,
+		SourceIssueIDs: sourceIssueIDs,
+		SourceGap:      sourceGap,
+	})
+	if err != nil {
+		return false, fmt.Errorf("encode reconcile provenance: %w", err)
+	}
+
+	params := IssueCreateParams{
+		WorkspaceID: workspaceID,
+		Title:       "[自愈] " + f.Kind + " · " + f.ProjectID,
+		Description: pgtype.Text{String: f.NextAction, Valid: f.NextAction != ""},
+		Status:      "backlog",
+		Priority:    "medium",
+		CreatorType: creatorType,
+		CreatorID:   creatorID,
+		ProjectID:   projectID,
+	}
+	result, err := issueSvc.createInTransaction(ctx, tx, qtx, params)
+	if err != nil {
+		if errors.Is(err, ErrActiveDuplicate) {
+			return false, nil
+		}
+		return false, err
+	}
+	if _, err := qtx.SetIssueMetadataKey(ctx, db.SetIssueMetadataKeyParams{
+		Key:         "project_reconcile_provenance",
+		Value:       provenance,
+		ID:          result.Issue.ID,
+		WorkspaceID: workspaceID,
+	}); err != nil {
+		return false, fmt.Errorf("persist reconcile provenance: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, fmt.Errorf("commit reconcile Issue transaction: %w", err)
+	}
+	issueSvc.finishCreate(ctx, params, IssueCreateOpts{}, result)
+	return true, nil
 }
