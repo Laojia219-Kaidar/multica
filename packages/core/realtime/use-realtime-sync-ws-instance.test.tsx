@@ -10,6 +10,9 @@ import { defaultStorage } from "../platform/storage";
 import { issueKeys } from "../issues/queries";
 import { workspaceWorkingAgentsKeys } from "../agents/queries";
 import { workspaceKeys } from "../workspace/queries";
+import { projectKeys } from "../projects/queries";
+import type { ProjectPipelineResponse } from "../projects/pipeline-types";
+import type { ProjectLifecycleSnapshot } from "../types";
 import {
   markWorkspaceDeletePending,
   unmarkWorkspaceDeletePending,
@@ -221,6 +224,55 @@ describe("useRealtimeSync — ws instance change", () => {
   });
 });
 
+// Seed payloads for Project read models — just enough of the wire shape for
+// setQueryData to register the query so a later isInvalidated check is
+// meaningful (invalidateQueries only flips caches that exist).
+function pipelineResponse(projectId: string): ProjectPipelineResponse {
+  return {
+    project_id: projectId,
+    project_status: "in_progress",
+    project_title: `Project ${projectId}`,
+    updated_at: "2026-08-22T00:00:00Z",
+    columns: {},
+    issues: {},
+    capability_flags: {
+      cancel_task: false,
+      rerun_issue: false,
+      update_status: false,
+      dispatch_preview: false,
+      dispatch: false,
+      project_start: false,
+    },
+  };
+}
+
+function lifecycleSnapshot(projectId: string): ProjectLifecycleSnapshot {
+  return {
+    project_id: projectId,
+    status: "in_progress",
+    health: "active_with_frontier",
+    owner_decision_required: false,
+    flags: [],
+    lead_type: null,
+    lead_id: null,
+    frontier_issue_ids: [],
+    frontier_tasks: [],
+    active_task_count: 0,
+    nonterminal_issue_count: 0,
+    blocked_issue_count: 0,
+    review_issue_count: 0,
+    terminal_issue_count: 0,
+    last_progress_at: null,
+    next_action: "",
+    outcome_confirmed: 0,
+    outcome_total: 0,
+    closure_ready: false,
+    closure_blockers: [],
+    duplicate_of_project_id: null,
+    terminal_projection_inconsistent: false,
+  };
+}
+
 describe("useRealtimeSync — Table server membership invalidation", () => {
   let qc: QueryClient;
   let stores: RealtimeSyncStores;
@@ -238,6 +290,15 @@ describe("useRealtimeSync — Table server membership invalidation", () => {
     vi.useFakeTimers();
     const ws = createMockWs();
     const invalidate = vi.spyOn(qc, "invalidateQueries");
+    // Seed Project read models so the invalidation has a live cache to flip:
+    // the pipeline board, the lifecycle detail, and another workspace's
+    // pipeline to prove the scope stays pinned to the exact workspace.
+    const pipelineKey = projectKeys.pipeline("ws-1", "proj-1");
+    const lifecycleKey = projectKeys.lifecycleDetail("ws-1", "proj-1");
+    const otherWsPipelineKey = projectKeys.pipeline("ws-2", "proj-1");
+    qc.setQueryData(pipelineKey, pipelineResponse("proj-1"));
+    qc.setQueryData(lifecycleKey, lifecycleSnapshot("proj-1"));
+    qc.setQueryData(otherWsPipelineKey, pipelineResponse("proj-1"));
     renderHook(() => useRealtimeSync(ws, stores), {
       wrapper: createWrapper(qc),
     });
@@ -245,6 +306,8 @@ describe("useRealtimeSync — Table server membership invalidation", () => {
     expect(onAny).toBeDefined();
 
     onAny!({ type: "task:completed", payload: {} } as never);
+    // Not yet — the shared task-prefix debounce has not elapsed.
+    expect(qc.getQueryState(pipelineKey)?.isInvalidated).toBe(false);
     vi.advanceTimersByTime(100);
 
     expect(invalidate).toHaveBeenCalledWith({
@@ -253,6 +316,41 @@ describe("useRealtimeSync — Table server membership invalidation", () => {
     expect(invalidate).toHaveBeenCalledWith({
       queryKey: workspaceWorkingAgentsKeys.all("ws-1"),
     });
+    // Project rollup: task:completed invalidates projectKeys.all for the
+    // exact workspace after the same 100ms task-prefix debounce, so list /
+    // detail / pipeline / lifecycle / work-conserving refetch server truth.
+    expect(invalidate).toHaveBeenCalledWith({
+      queryKey: projectKeys.all("ws-1"),
+    });
+    expect(qc.getQueryState(pipelineKey)?.isInvalidated).toBe(true);
+    expect(qc.getQueryState(lifecycleKey)?.isInvalidated).toBe(true);
+    // Exact workspace scope: another workspace's project cache stays valid.
+    expect(qc.getQueryState(otherWsPipelineKey)?.isInvalidated).toBe(false);
+  });
+
+  it("does not invalidate Project queries from task:message streaming", () => {
+    // task:message fires per streamed message during long runs and must stay
+    // out of the task-prefix path — invalidating project read models there
+    // would recreate the invalidation storm the exclusion exists to prevent.
+    vi.useFakeTimers();
+    const ws = createMockWs();
+    const invalidate = vi.spyOn(qc, "invalidateQueries");
+    const pipelineKey = projectKeys.pipeline("ws-1", "proj-1");
+    qc.setQueryData(pipelineKey, pipelineResponse("proj-1"));
+    renderHook(() => useRealtimeSync(ws, stores), {
+      wrapper: createWrapper(qc),
+    });
+    const onAny = vi.mocked(ws.onAny).mock.calls[0]?.[0];
+    expect(onAny).toBeDefined();
+
+    onAny!({ type: "task:message", payload: {} } as never);
+    vi.advanceTimersByTime(500);
+
+    const calls = invalidate.mock.calls.map((call) => call[0]?.queryKey);
+    expect(
+      calls.some((key) => Array.isArray(key) && key[0] === "projects"),
+    ).toBe(false);
+    expect(qc.getQueryState(pipelineKey)?.isInvalidated).toBe(false);
   });
 
   it("invalidates Table queries after a property definition changes", () => {

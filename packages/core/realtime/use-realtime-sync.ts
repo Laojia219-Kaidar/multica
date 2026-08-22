@@ -710,6 +710,17 @@ export function useRealtimeSync(
         // so rows/groups/facets cannot remain on an old task transition while
         // the projection refetches (global staleTime is Infinity).
         qc.invalidateQueries({ queryKey: issueKeys.tableAll(wsId) });
+        // Project list/detail/pipeline/lifecycle/work-conserving read models
+        // are server-derived from completed Tasks and task-linked receipt
+        // comments, so any task lifecycle transition (queued / dispatch /
+        // running / waiting / completed / failed / cancelled) can shift
+        // project progress. Invalidate this workspace's whole project tree
+        // (prefix covers every project read model) so mounted views refetch
+        // current server truth — refresh only, never an optimistic progress
+        // write and never a client-side Issue/Project status flip.
+        // task:message never enters this prefix path (specificEvents), so
+        // streaming during long runs cannot storm these refetches.
+        qc.invalidateQueries({ queryKey: projectKeys.all(wsId) });
         // 30d activity series shares the same lifecycle signal — any task
         // completion / failure shifts the histogram. (Dispatch alone
         // doesn't change a completed_at-anchored series, but invalidating
