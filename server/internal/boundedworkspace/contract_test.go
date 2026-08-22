@@ -69,6 +69,32 @@ func TestReadOnlyMarkerUsesClosedQuinnRoute(t *testing.T) {
 	}
 }
 
+func TestDevelopmentMarkerHasNoCallBudgetAndAdmitsLocalTests(t *testing.T) {
+	preMarker, err := CanonicalMarker(DevelopmentToolPolicy, testDispatchKey, testIssueID, testWorkspaceID, "Edit the exact files and run repository-local tests.", WorktreeRoot+"pilot", testRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, marker, err := BindTask(preMarker, testDispatchKey, testTaskID, testIssueID, testWorkspaceID)
+	if err != nil || state != Valid {
+		t.Fatalf("BindTask state=%v err=%v", state, err)
+	}
+	state, contract := Parse(marker, Provider, TaskKind, testTaskID, testIssueID, testWorkspaceID)
+	if state != Valid || contract.ToolPolicy != DevelopmentToolPolicy || contract.MaxToolCalls != DevelopmentMaxToolCalls {
+		t.Fatalf("state=%v contract=%+v", state, contract)
+	}
+	prompt := Prompt(contract)
+	for _, required := range []string{"read_file", "edit", "write_file", "run_shell_command", "repository-local tests"} {
+		if !strings.Contains(prompt, required) {
+			t.Fatalf("development prompt missing %q: %s", required, prompt)
+		}
+	}
+	for _, forbidden := range []string{"--max-tool-calls", "multica issue", "comment add", "Start by running"} {
+		if strings.Contains(prompt, forbidden) {
+			t.Fatalf("development prompt contains forbidden mandate %q: %s", forbidden, prompt)
+		}
+	}
+}
+
 func TestMarkerContextAndTaskUUIDMismatchFailClosed(t *testing.T) {
 	preMarker, err := CanonicalMarker(WorkspaceToolPolicy, testDispatchKey, testIssueID, testWorkspaceID, "Edit the named pilot fixture.", WorktreeRoot+"pilot", testRequest)
 	if err != nil {

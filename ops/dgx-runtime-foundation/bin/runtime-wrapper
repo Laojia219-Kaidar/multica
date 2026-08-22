@@ -12,7 +12,7 @@ if [[ "$provider" == qwen ]]; then
   [[ "$cmd" == qwen ]] || { echo 'qwen profile command mismatch' >&2; exit 77; }
   [[ "${HIVECREW_QWEN_LANDLOCK_REQUIRED:-}" == 1 ]] || { echo 'qwen landlock required' >&2; exit 77; }
   case "${HIVECREW_QWEN_TOOL_POLICY:-}" in
-    deny|bounded_read|bounded_workspace_noshell) ;;
+    deny|bounded_read|bounded_workspace_noshell|bounded_workspace) ;;
     *) echo 'qwen governed tool policy missing' >&2; exit 77 ;;
   esac
   for override in \

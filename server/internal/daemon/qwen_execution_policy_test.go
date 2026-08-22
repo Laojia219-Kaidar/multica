@@ -42,11 +42,23 @@ func TestDecodeAgentExecutionPolicyQwenBoundedWorkspaceNoShell(t *testing.T) {
 	}
 }
 
+func TestDecodeAgentExecutionPolicyQwenWorkspaceDevelopment(t *testing.T) {
+	policy, err := decodeAgentExecutionPolicy("qwen", &AgentData{RuntimeConfig: json.RawMessage(`{
+		"execution_policy":{"tools":"bounded_workspace","sandbox":"required"}
+	}`)})
+	if err != nil {
+		t.Fatalf("decode policy: %v", err)
+	}
+	if !policy.GovernedTools || !policy.SandboxRequired || policy.ToolPolicy != "bounded_workspace" {
+		t.Fatalf("policy = %+v", policy)
+	}
+}
+
 func TestDecodeAgentExecutionPolicyRejectsPartialQwenPolicy(t *testing.T) {
 	for _, raw := range []string{
 		`{"execution_policy":{"tools":"deny"}}`,
 		`{"execution_policy":{"tools":"allow","sandbox":"required"}}`,
-		`{"execution_policy":{"tools":"bounded_workspace","sandbox":"required"}}`,
+		`{"execution_policy":{"tools":"bounded_workspace_shell","sandbox":"required"}}`,
 		`{"execution_policy":{"tools":"bounded_read","sandbox":"optional"}}`,
 		`{"execution_policy":{"tools":"deny","sandbox":"optional"}}`,
 	} {

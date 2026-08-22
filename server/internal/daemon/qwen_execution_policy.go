@@ -43,9 +43,9 @@ func decodeAgentExecutionPolicy(provider string, data *AgentData) (agentExecutio
 		return agentExecutionPolicy{}, errors.New("qwen execution_policy sandbox must be required")
 	}
 	switch cfg.ExecutionPolicy.Tools {
-	case "deny", "bounded_read", "bounded_workspace_noshell":
+	case "deny", "bounded_read", "bounded_workspace_noshell", "bounded_workspace":
 		return agentExecutionPolicy{ToolPolicy: cfg.ExecutionPolicy.Tools, GovernedTools: true, SandboxRequired: true}, nil
 	default:
-		return agentExecutionPolicy{}, errors.New("qwen execution_policy tools must be deny, bounded_read, or bounded_workspace_noshell")
+		return agentExecutionPolicy{}, errors.New("qwen execution_policy tools must be deny, bounded_read, bounded_workspace_noshell, or bounded_workspace")
 	}
 }

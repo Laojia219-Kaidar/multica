@@ -18,6 +18,8 @@ readonly QWEN_BOUNDED_READ_ALLOWED_TOOLS='read_file,glob,grep_search,list_direct
 readonly QWEN_BOUNDED_READ_EXCLUDED_TOOLS='zoom_image,write_file,edit,notebook_edit,run_shell_command,todo_write,save_memory,agent,skill,exit_plan_mode,enter_plan_mode,web_fetch,web_search,image_gen,lsp,ask_user_question,cron_create,cron_list,cron_delete,loop_wakeup,create_sub_session,list_agents,task_stop,task_create,task_update,task_list,team_create,team_delete,team_plan_approval,send_message,structured_output,monitor,tool_search,read_mcp_resource,enter_worktree,exit_worktree,workflow,artifact,record_artifact,get_goal,update_goal,display_image,computer_use__*'
 readonly QWEN_BOUNDED_WORKSPACE_ALLOWED_TOOLS='read_file,glob,grep_search,list_directory,edit,write_file'
 readonly QWEN_BOUNDED_WORKSPACE_EXCLUDED_TOOLS='zoom_image,notebook_edit,run_shell_command,todo_write,save_memory,agent,skill,exit_plan_mode,enter_plan_mode,web_fetch,web_search,image_gen,lsp,ask_user_question,cron_create,cron_list,cron_delete,loop_wakeup,create_sub_session,list_agents,task_stop,task_create,task_update,task_list,team_create,team_delete,team_plan_approval,send_message,structured_output,monitor,tool_search,read_mcp_resource,enter_worktree,exit_worktree,workflow,artifact,record_artifact,get_goal,update_goal,display_image,computer_use__*'
+readonly QWEN_WORKSPACE_ALLOWED_TOOLS='read_file,glob,grep_search,list_directory,edit,write_file,run_shell_command'
+readonly QWEN_WORKSPACE_EXCLUDED_TOOLS='zoom_image,notebook_edit,todo_write,save_memory,agent,skill,exit_plan_mode,enter_plan_mode,web_fetch,web_search,image_gen,lsp,ask_user_question,cron_create,cron_list,cron_delete,loop_wakeup,create_sub_session,list_agents,task_stop,task_create,task_update,task_list,team_create,team_delete,team_plan_approval,send_message,structured_output,monitor,tool_search,read_mcp_resource,enter_worktree,exit_worktree,workflow,artifact,record_artifact,get_goal,update_goal,display_image,computer_use__*'
 QWEN_CREDENTIAL_API_KEY=''
 QWEN_SANDBOX_ROOT=''
 
@@ -207,6 +209,14 @@ run_qwen_landlock_launcher() {
         --sandbox
         --allowed-tools "$QWEN_BOUNDED_WORKSPACE_ALLOWED_TOOLS"
         --exclude-tools "$QWEN_BOUNDED_WORKSPACE_EXCLUDED_TOOLS"
+      )
+      ;;
+    bounded_workspace)
+      governed_args=(
+        --approval-mode auto-edit
+        --sandbox
+        --allowed-tools "$QWEN_WORKSPACE_ALLOWED_TOOLS"
+        --exclude-tools "$QWEN_WORKSPACE_EXCLUDED_TOOLS"
       )
       ;;
     *)

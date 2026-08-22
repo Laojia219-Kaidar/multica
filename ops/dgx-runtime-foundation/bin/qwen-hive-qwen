@@ -4,6 +4,7 @@ root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 profile=${HIVECREW_QWEN_PROFILE_ID:-qwen-hive-qwen}
 readonly bounded_read_tools='read_file,glob,grep_search,list_directory'
 readonly bounded_workspace_tools='read_file,glob,grep_search,list_directory,edit,write_file'
+readonly workspace_tools='read_file,glob,grep_search,list_directory,edit,write_file,run_shell_command'
 model_seen=0
 approval_seen=0
 approval_value=''
@@ -83,14 +84,15 @@ while (( $# > 0 )); do
   esac
 done
 
-[[ "$model_seen" == 1 && "$approval_seen" == 1 && "$max_tools_seen" == 1 && "$sandbox_seen" == 1 ]] || {
+[[ "$model_seen" == 1 && "$approval_seen" == 1 && "$sandbox_seen" == 1 ]] || {
   echo governed-qwen-flags-missing >&2
   exit 77
 }
-case "${approval_value}|${max_tools_value}|${allowed_tools_seen}|${allowed_tools_value}" in
-  'plan|0|0|') HIVECREW_QWEN_TOOL_POLICY=deny ;;
-  "plan|8|1|${bounded_read_tools}") HIVECREW_QWEN_TOOL_POLICY=bounded_read ;;
-  "auto-edit|12|1|${bounded_workspace_tools}") HIVECREW_QWEN_TOOL_POLICY=bounded_workspace_noshell ;;
+case "${approval_value}|${max_tools_seen}|${max_tools_value}|${allowed_tools_seen}|${allowed_tools_value}" in
+  'plan|1|0|0|') HIVECREW_QWEN_TOOL_POLICY=deny ;;
+  "plan|1|8|1|${bounded_read_tools}") HIVECREW_QWEN_TOOL_POLICY=bounded_read ;;
+  "auto-edit|1|12|1|${bounded_workspace_tools}") HIVECREW_QWEN_TOOL_POLICY=bounded_workspace_noshell ;;
+  "auto-edit|0||1|${workspace_tools}") HIVECREW_QWEN_TOOL_POLICY=bounded_workspace ;;
   *) echo governed-qwen-policy-mismatch >&2; exit 77 ;;
 esac
 export HIVECREW_QWEN_TOOL_POLICY

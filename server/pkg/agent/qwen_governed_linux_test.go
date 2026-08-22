@@ -179,6 +179,41 @@ func TestQwenBoundedWorkspaceNoShellUsesGovernedEntrypointEndToEnd(t *testing.T)
 	}
 }
 
+func TestQwenWorkspaceDevelopmentUsesGovernedEntrypointWithoutCallBudget(t *testing.T) {
+	backend, argsFile, _ := governedQwenFixture(t, 0o600, false, false)
+	session, err := backend.Execute(context.Background(), "reply PONG", ExecOptions{
+		Cwd: t.TempDir(), Model: "qwen3.7-plus", ToolPolicy: "bounded_workspace", SandboxRequired: true, Timeout: 5 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	_, result := awaitQwenResult(t, session)
+	if result.Status != "completed" || result.Output != "PONG" {
+		t.Fatalf("result = %+v", result)
+	}
+	argv, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(strings.Fields(string(argv)), " ")
+	for _, want := range []string{
+		"--approval-mode auto-edit",
+		"--sandbox",
+		"--allowed-tools " + strings.Join(qwenWorkspaceAllowedTools, ","),
+		"--exclude-tools",
+		"run_shell_command",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("workspace development argv missing %q: %s", want, joined)
+		}
+	}
+	for _, forbidden := range []string{"--max-tool-calls", "--yolo", "--safe-mode", "owner-reference-only", "placeholder-reference-only"} {
+		if strings.Contains(joined, forbidden) {
+			t.Fatalf("workspace development argv leaked %q: %s", forbidden, joined)
+		}
+	}
+}
+
 func TestQwenNoToolRejectsRawExecutable(t *testing.T) {
 	raw := filepath.Join(t.TempDir(), "qwen")
 	writeTestExecutable(t, raw, []byte("#!/bin/sh\nexit 0\n"))

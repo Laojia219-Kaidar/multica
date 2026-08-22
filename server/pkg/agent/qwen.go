@@ -75,8 +75,18 @@ var qwenBoundedWorkspaceAllowedTools = []string{
 	"write_file",
 }
 
+var qwenWorkspaceAllowedTools = []string{
+	"read_file",
+	"glob",
+	"grep_search",
+	"list_directory",
+	"edit",
+	"write_file",
+	"run_shell_command",
+}
+
 func isGovernedQwenToolPolicy(policy string) bool {
-	return policy == "deny" || policy == "bounded_read" || policy == "bounded_workspace_noshell"
+	return policy == "deny" || policy == "bounded_read" || policy == "bounded_workspace_noshell" || policy == "bounded_workspace"
 }
 
 func buildQwenArgs(prompt string, opts ExecOptions, logger *slog.Logger) []string {
@@ -116,6 +126,18 @@ func buildQwenArgs(prompt string, opts ExecOptions, logger *slog.Logger) []strin
 			"--approval-mode", "auto-edit",
 			"--max-tool-calls", qwenBoundedWorkspaceMaxToolCalls,
 			"--allowed-tools", strings.Join(qwenBoundedWorkspaceAllowedTools, ","),
+		)
+		if opts.SandboxRequired {
+			args = append(args, "--sandbox")
+		}
+	case "bounded_workspace":
+		// The staging development policy keeps the exact allowlist and sandbox
+		// while intentionally omitting --max-tool-calls. Landlock confines writes
+		// to the assigned worktree and the launcher retains its network/tool
+		// deny-complement; run_shell_command is admitted only for local tests.
+		args = append(args,
+			"--approval-mode", "auto-edit",
+			"--allowed-tools", strings.Join(qwenWorkspaceAllowedTools, ","),
 		)
 		if opts.SandboxRequired {
 			args = append(args, "--sandbox")

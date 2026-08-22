@@ -143,18 +143,24 @@ for forbidden_tool in run_shell_command web_fetch web_search read_mcp_resource c
   case "${workspace_args}" in *"${forbidden_tool}"*) ;; *) exit 1 ;; esac
 done
 
-set +e
+mkdir -p "${test_root}/workspace-development"
 (
-  cd "${test_root}/allowed"
+  cd "${test_root}/workspace-development"
+  EXPECTED_API_KEY_SHA256="${synthetic_api_key_sha256}" \
+  REAL_HOME="${test_root}/real-home" \
+  FORBIDDEN="${test_root}/forbidden" \
   HIVECREW_QWEN_TOOL_POLICY=bounded_workspace \
-  LANDLOCK_CALL_MARKER="${test_root}/invalid-policy-landlock-called" \
-    "${rendered_forbidden_launcher:-${rendered_launcher}}"
-) >"${test_root}/invalid-policy.stdout" 2>"${test_root}/invalid-policy.stderr"
-invalid_policy_rc=$?
-set -e
-test "${invalid_policy_rc}" = 77
-grep -Fx -- 'qwen governed tool policy invalid' "${test_root}/invalid-policy.stderr" >/dev/null
-test ! -e "${test_root}/invalid-policy-landlock-called"
+    "${rendered_launcher}"
+)
+development_args="$(paste -sd ' ' "${test_root}/workspace-development/launcher-args")"
+case "${development_args}" in
+  *'--approval-mode auto-edit --sandbox --allowed-tools read_file,glob,grep_search,list_directory,edit,write_file,run_shell_command --exclude-tools '*) ;;
+  *) echo "workspace-development launcher args mismatch: ${development_args}" >&2; exit 1 ;;
+esac
+case "${development_args}" in *'--max-tool-calls'*|*'--yolo'*|*'--safe-mode'*) exit 1 ;; esac
+for forbidden_tool in web_fetch web_search read_mcp_resource create_sub_session agent; do
+  case "${development_args}" in *"${forbidden_tool}"*) ;; *) exit 1 ;; esac
+done
 
 while IFS= read -r candidate; do
   if grep -Fq -- "${synthetic_api_key}" "${candidate}"; then

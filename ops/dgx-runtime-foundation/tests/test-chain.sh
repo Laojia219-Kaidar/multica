@@ -215,6 +215,19 @@ done
 grep -Fx -- 'openai_api_key_present=true' "$tmp/workspace-auth" >/dev/null
 grep -Fx -- 'provider_request_count=0' "$tmp/workspace-auth" >/dev/null
 
+PATH="$tmp/bin:$PATH" HIVECREW_CANARY_MODE=1 HIVECREW_AUTH_TOKEN_REF=ref HIVECREW_WORK_ORDER=WO-TEST AUTH_LOG="$tmp/development-auth" CHAIN_LOG="$tmp/development-argv" "$installed_foundation/bin/qwen-hive-qwen" -p prompt --output-format stream-json --model qwen3.7-plus --approval-mode auto-edit --allowed-tools read_file,glob,grep_search,list_directory,edit,write_file,run_shell_command --sandbox
+development_argv="$(cat "$tmp/development-argv")"
+case "$development_argv" in
+  *'--auth-type openai --model qwen3.7-plus --approval-mode auto-edit --sandbox --allowed-tools read_file,glob,grep_search,list_directory,edit,write_file,run_shell_command --exclude-tools '*'-p prompt --output-format stream-json') ;;
+  *) echo "workspace-development argv mismatch: $development_argv" >&2; exit 1 ;;
+esac
+case "$development_argv" in *'--max-tool-calls'*|*'--yolo'*|*'--safe-mode'*) exit 1 ;; esac
+for forbidden_tool in web_fetch web_search read_mcp_resource create_sub_session agent; do
+  case "$development_argv" in *"$forbidden_tool"*) ;; *) echo "workspace-development deny complement missing $forbidden_tool" >&2; exit 1 ;; esac
+done
+grep -Fx -- 'openai_api_key_present=true' "$tmp/development-auth" >/dev/null
+grep -Fx -- 'provider_request_count=0' "$tmp/development-auth" >/dev/null
+
 set +e
 PATH="$tmp/bin:$PATH" HIVECREW_CANARY_MODE=1 HIVECREW_AUTH_TOKEN_REF=ref HIVECREW_WORK_ORDER=WO-TEST AUTH_LOG="$tmp/bounded-override-auth" CHAIN_LOG="$tmp/bounded-override-argv" "$installed_foundation/bin/qwen-hive-qwen" -p prompt --output-format stream-json --model qwen3.7-plus --approval-mode plan --max-tool-calls 8 --allowed-tools read_file,run_shell_command --sandbox >/dev/null 2>&1
 bounded_override_rc=$?
@@ -238,4 +251,4 @@ while IFS= read -r candidate; do
     exit 45
   fi
 done < <(find "$tmp" -type f ! -path '*/.qwen/.env' ! -path '*/tests/test-chain.sh' -print)
-echo 'qwen-chain-v8=pass daemon_entrypoint_preflight_launcher_qwen_governed_deny_bounded_read_and_bounded_workspace_noshell'
+echo 'qwen-chain-v9=pass daemon_entrypoint_preflight_launcher_qwen_governed_deny_bounded_read_bounded_workspace_noshell_and_workspace_development'

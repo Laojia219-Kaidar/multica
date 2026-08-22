@@ -8,8 +8,9 @@ case "$profile" in
   *) echo 'qwen-chain accepts only Qwen profiles' >&2; exit 1 ;;
 esac
 # Direct chain callers retain the historical fail-closed no-tool behavior.
-# The daemon-owned entrypoint sets bounded_read or bounded_workspace_noshell
-# only after validating its exact finite budget and allowlist arguments.
+# The daemon-owned entrypoint sets a governed bounded policy only after
+# validating its exact budget/allowlist arguments. The staging development
+# policy deliberately omits a tool-call budget while retaining its allowlist.
 : "${HIVECREW_QWEN_TOOL_POLICY:=deny}"
 export HIVECREW_QWEN_TOOL_POLICY
 "$root/bin/resolve-runtime" "$profile" --dry-run >/dev/null

@@ -24,8 +24,10 @@ const (
 	PilotID                 = "WO-C1-04-HIV719-QWEN-P3-BOUNDED-WORKSPACE-PILOT-003"
 	TaskKind                = "work"
 	WorkspaceToolPolicy     = "bounded_workspace_noshell"
+	DevelopmentToolPolicy   = "bounded_workspace"
 	ReadOnlyToolPolicy      = "bounded_read"
 	WorkspaceMaxToolCalls   = 12
+	DevelopmentMaxToolCalls = -1
 	ReadOnlyMaxToolCalls    = 8
 	Provider                = "qwen"
 	WorktreeRoot            = "/srv/hivecosm/12-development-workspaces/users/williamdev/worktrees/"
@@ -197,6 +199,8 @@ func policyContract(toolPolicy string) (maxToolCalls int, deliveryPrefix string,
 	switch toolPolicy {
 	case WorkspaceToolPolicy:
 		return WorkspaceMaxToolCalls, WorkspaceDeliveryPrefix, true
+	case DevelopmentToolPolicy:
+		return DevelopmentMaxToolCalls, WorkspaceDeliveryPrefix, true
 	case ReadOnlyToolPolicy:
 		return ReadOnlyMaxToolCalls, ReadOnlyDeliveryPrefix, true
 	default:
@@ -252,6 +256,15 @@ func Prompt(contract Contract) string {
 			"Do not modify any file. Your final stdout is HiveCrew's automatic task delivery. It must be non-empty, begin exactly with " + contract.DeliveryPrefix + ", and summarize findings without including raw file contents or secrets.\n\n" +
 			"Pilot ID: " + contract.PilotID + "\nRequest SHA256: " + contract.RequestSHA256 + "\n"
 	}
+	if contract.ToolPolicy == DevelopmentToolPolicy {
+		return "You are executing the governed HiveCrew staging bounded workspace development task.\n\n" +
+			"Work only inside this exact assigned worktree: " + contract.Worktree + "\n" +
+			"Use only read_file, glob, grep_search, list_directory, edit, write_file, and run_shell_command. " +
+			"Use run_shell_command only for repository-local tests. Do not use network tools, MCP, agent, skill, task-management, sudo, Docker, systemctl, package-manager, home, credential, secret, runtime, daemon, or sibling paths.\n\n" +
+			"Objective: " + contract.Objective + "\n\n" +
+			"Make the smallest correct edits and run only the necessary repository-local tests. Your final stdout is HiveCrew's automatic task delivery. It must be non-empty, begin exactly with " + contract.DeliveryPrefix + ", and summarize changed files and tests without including raw secrets.\n\n" +
+			"Pilot ID: " + contract.PilotID + "\nRequest SHA256: " + contract.RequestSHA256 + "\n"
+	}
 	return "You are executing the governed HiveCrew Phase-3 bounded workspace pilot.\n\n" +
 		"Work only inside this exact assigned worktree: " + contract.Worktree + "\n" +
 		"Use only read_file, glob, grep_search, list_directory, edit, and write_file. " +
@@ -276,6 +289,12 @@ func RuntimeBrief(state State, contract Contract) string {
 		return "# HiveCrew Phase-3 Bounded Read Runtime\n\n" +
 			"Read only in the exact assigned worktree using read_file, glob, grep_search, and list_directory. " +
 			"Edits, writes, shell, network, MCP, custom runtime inputs, and Multica CLI comments are outside this pilot.\n\n" +
+			"Complete only the per-turn objective; final stdout must begin with " + contract.DeliveryPrefix + ".\n"
+	}
+	if contract.ToolPolicy == DevelopmentToolPolicy {
+		return "# HiveCrew Staging Bounded Workspace Development Runtime\n\n" +
+			"Work only in the exact assigned worktree using read_file, glob, grep_search, list_directory, edit, write_file, and run_shell_command. " +
+			"Shell is limited to repository-local tests; network, MCP, sudo, Docker, systemd, package managers, secret paths, custom runtime inputs, and Multica CLI comments remain outside this task.\n\n" +
 			"Complete only the per-turn objective; final stdout must begin with " + contract.DeliveryPrefix + ".\n"
 	}
 	return "# HiveCrew Phase-3 Bounded Workspace Runtime\n\n" +
