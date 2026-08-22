@@ -4212,9 +4212,19 @@ func (h *Handler) ListTasksByIssue(w http.ResponseWriter, r *http.Request) {
 	}
 
 	workspaceID := uuidToString(issue.WorkspaceID)
+	// The task row carries no repo snapshot (that would require a schema
+	// migration), so the read surface hydrates every run from the issue's
+	// CURRENT Project state — the same resolution claim-time uses. The
+	// repo_source / repo_inheritance_policy labels below make it explicit
+	// that this is a current Project projection, not an immutable historical
+	// claim snapshot.
+	projection := h.resolveIssueTaskRepoProjection(r.Context(), issue.ProjectID, issue.WorkspaceID)
 	resp := make([]AgentTaskResponse, len(tasks))
 	for i, t := range tasks {
 		resp[i] = taskToResponse(t, workspaceID)
+		resp[i].Repos = projection.repos
+		resp[i].RepoSource = projection.repoSource
+		resp[i].RepoInheritancePolicy = projection.repoInheritancePolicy
 	}
 	// Execution-log rows render the "on behalf of <member>" badge, so this
 	// issue-facing surface must resolve initiator/originator names (departed-safe,
@@ -4222,6 +4232,89 @@ func (h *Handler) ListTasksByIssue(w http.ResponseWriter, r *http.Request) {
 	h.hydrateTaskAttributions(r.Context(), attributionsOf(resp))
 
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// issueTaskRepoProjection is the current repository projection applied to an
+// issue's task runs. It mirrors claim-time repo resolution but is a READ-side
+// current Project projection, deliberately not an immutable historical claim
+// snapshot — repoSource / repoInheritancePolicy make that provenance explicit
+// on the wire.
+type issueTaskRepoProjection struct {
+	repos                 []RepoData
+	repoSource            string // "project" | "workspace_fallback" | "none"
+	repoInheritancePolicy string
+}
+
+// resolveIssueTaskRepoProjection computes the CURRENT repo projection for an
+// issue, replicating claim-time precedence exactly (see ClaimTaskByRuntime):
+//
+//   - project github_repo resources override the workspace repositories
+//     (repo_source = "project");
+//   - absent project repos, the workspace fallback applies only when the issue
+//     has no project, or the project's repo_inheritance_policy is
+//     workspace_fallback;
+//   - a project_only policy (or a project that cannot be resolved / carries an
+//     unknown future policy) declines the fallback and yields no repos —
+//     fail-closed like claim, which never lets a broken project degrade to the
+//     workspace list.
+func (h *Handler) resolveIssueTaskRepoProjection(ctx context.Context, projectID, workspaceID pgtype.UUID) issueTaskRepoProjection {
+	out := issueTaskRepoProjection{repos: []RepoData{}}
+	if !projectID.Valid {
+		out.repoSource = projectRepoInheritancePolicyWorkspaceFallback
+		out.repos = h.projectedWorkspaceRepos(ctx, workspaceID)
+		return out
+	}
+	proj, err := h.Queries.GetProjectInWorkspace(ctx, db.GetProjectInWorkspaceParams{ID: projectID, WorkspaceID: workspaceID})
+	if err != nil {
+		return out
+	}
+	switch proj.RepoInheritancePolicy {
+	case projectRepoInheritancePolicyWorkspaceFallback, projectRepoInheritancePolicyProjectOnly:
+		// Known policy — proceed.
+	default:
+		// Unknown future policy fails closed, mirroring claim-time handling.
+		out.repoSource = "none"
+		return out
+	}
+	out.repoInheritancePolicy = proj.RepoInheritancePolicy
+
+	rows := h.listProjectResourcesForProject(ctx, proj.ID, workspaceID)
+	for _, row := range rows {
+		if row.ResourceType != "github_repo" {
+			continue
+		}
+		var payload struct {
+			URL string `json:"url"`
+			Ref string `json:"ref,omitempty"`
+		}
+		if json.Unmarshal(row.ResourceRef, &payload) == nil && payload.URL != "" {
+			out.repos = append(out.repos, RepoData{URL: payload.URL, Ref: strings.TrimSpace(payload.Ref)})
+		}
+	}
+	if len(out.repos) > 0 {
+		out.repoSource = "project"
+		return out
+	}
+	if projectAllowsWorkspaceRepoFallback(proj.RepoInheritancePolicy) {
+		out.repoSource = projectRepoInheritancePolicyWorkspaceFallback
+		out.repos = h.projectedWorkspaceRepos(ctx, workspaceID)
+		return out
+	}
+	out.repoSource = "none"
+	return out
+}
+
+// projectedWorkspaceRepos loads and decodes a workspace's `repos` JSON for the
+// repo projection surface, returning an empty list when the workspace has no
+// usable repos. Mirrors the claim-time workspace fallback read.
+func (h *Handler) projectedWorkspaceRepos(ctx context.Context, workspaceID pgtype.UUID) []RepoData {
+	if ws, err := h.Queries.GetWorkspace(ctx, workspaceID); err == nil && ws.Repos != nil {
+		var repos []RepoData
+		if json.Unmarshal(ws.Repos, &repos) == nil && len(repos) > 0 {
+			return repos
+		}
+	}
+	return []RepoData{}
 }
 
 // ListTaskMessagesByUser returns task messages for a task.
