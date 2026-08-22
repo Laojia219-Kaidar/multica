@@ -9,7 +9,11 @@ import (
 
 // GetWorkWallSnapshot returns the workspace "工作现场" (work wall) snapshot:
 // one sanitized EmployeeLiveActivityV1 per accessible agent, derived read-only
-// from agent / agent_runtime / agent_task_queue.
+// from agent / agent_runtime / agent_task_queue plus the execution-chain and
+// CompanyOps Employee directory projections. Formal Employee identity is
+// overlaid only from verified authority evidence; a missing, malformed or
+// conflicting authority keeps the Agent card with cleared formal fields and a
+// non-fresh gap state (HIV-854).
 //
 // Route wiring (one line in server/cmd/server/router.go) is intentionally left
 // to the mainline integrator: router.go is a shared file across W1/W2/W3 lanes.
@@ -20,7 +24,10 @@ func (h *Handler) GetWorkWallSnapshot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	svc := workwall.NewService(h.Queries)
+	// Bind the CompanyOps Employee directory service when it was configured
+	// at startup; a nil directory is valid and degrades every card to the
+	// authority-gap state instead of fabricating Employee identity.
+	svc := workwall.NewService(h.Queries, h.CompanyOpsDirectory)
 	snapshot, err := svc.Snapshot(r.Context(), parseUUID(workspaceID))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to assemble work wall snapshot")

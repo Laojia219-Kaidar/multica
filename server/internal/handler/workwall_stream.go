@@ -47,7 +47,9 @@ type workWallSnapshotProvider interface {
 // GetWorkWallStream is the workspace-level SSE stream for the "工作现场"
 // (work wall). It emits one access-filtered snapshot event as soon as the
 // connection is established — no longer gated behind the first poll interval —
-// and then one event every cadence until the client disconnects.
+// and then one event every cadence until the client disconnects. Snapshot
+// frames carry the same Employee authority overlay semantics as the snapshot
+// endpoint: verified formal identity only, fail-closed gap state otherwise.
 //
 // Each snapshot frame carries a monotonically increasing `id:` field (SSE
 // spec). On reconnect the browser sends the last seen ID via the
@@ -76,7 +78,12 @@ func (h *Handler) GetWorkWallStream(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	flusher.Flush()
 
-	svc := workwall.NewService(h.Queries)
+	// Bind the CompanyOps Employee directory service when it was configured
+	// at startup; a nil directory is valid and degrades every card to the
+	// authority-gap state instead of fabricating Employee identity. The seam
+	// is bound once per connection; every frame re-reads it like the snapshot
+	// endpoint so authority recovery is picked up while streaming.
+	svc := workwall.NewService(h.Queries, h.CompanyOpsDirectory)
 
 	// First frame right after the handshake, before the cadence ticker starts,
 	// so clients see a workspace snapshot immediately instead of after a full

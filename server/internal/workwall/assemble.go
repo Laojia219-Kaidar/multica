@@ -1,7 +1,9 @@
 // Package workwall assembles the W4 "工作现场" (work wall) snapshot from the
 // HiveCrew execution projection (agent / agent_runtime / agent_task_queue).
 // It is a read projection: it never writes state and never becomes a second
-// source of truth.
+// source of truth. Formal Employee identity is overlaid from the CompanyOps
+// directory authority (HIV-854); it is never synthesized from local rows,
+// terminal hints, process names or tail text.
 package workwall
 
 import (
@@ -74,24 +76,93 @@ func classifyRuntime(rt *db.AgentRuntime, now time.Time, threshold time.Duration
 	return runtimeState{online: true}
 }
 
-// AssembleAgent maps one agent + its runtime + its active task / last outcome
-// into a sanitized EmployeeLiveActivityV1. It is a pure function (no I/O) so
-// the derivation is unit-testable without a database.
-//
-// chain carries the hydrated Project/Issue/Run/Receipt/Profile evidence for
-// the task currently shown (active, or the recent terminal task when idle);
-// it may be nil (no task / no evidence) and never overrides task-owned
-// identifiers.
-//
-// Employee identity note: in HiveCrew the "digital employee" is the Agent row;
-// the formal HiveCosm Employee<->Agent binding is owned by P4 / HiveCosm and is
-// intentionally not synthesized here (employee_id mirrors agent_id for v0).
+// EmployeeAuthorityState classifies the formal Employee identity evidence for
+// one Agent card, resolved from the CompanyOps directory seam.
+type EmployeeAuthorityState int
+
+const (
+	// EmployeeAuthorityNone: no authority row names this Agent. The card stays
+	// a legitimate Agent-only projection; authority itself is healthy, so the
+	// runtime freshness semantics are untouched.
+	EmployeeAuthorityNone EmployeeAuthorityState = iota
+	// EmployeeAuthorityVerified: exactly one complete, exact and unambiguous
+	// Employee↔Agent pairing exists across both directory reads.
+	EmployeeAuthorityVerified
+	// EmployeeAuthorityGap: the authority evidence for this card failed —
+	// unavailable, malformed, incomplete, duplicated or conflicting. The card
+	// is preserved as an Agent-only projection, formal fields stay cleared,
+	// and the card can never look `fresh`.
+	EmployeeAuthorityGap
+)
+
+// EmployeeIdentity is the formal Employee evidence overlaid on one card. Every
+// field is copied verbatim from an authoritative CompanyOps row; nothing is
+// inferred or defaulted.
+type EmployeeIdentity struct {
+	// EmployeeID is the formal DE-… employee identifier.
+	EmployeeID string
+	// DisplayName is the formal employee display name.
+	DisplayName string
+	// DepartmentID / DepartmentName / PositionID / PositionTitle are the
+	// formal organization fields from the employee summary.
+	DepartmentID   string
+	DepartmentName string
+	PositionID     string
+	PositionTitle  string
+	// BaseMachineTitle is the verified Base from the workforce base-runtime
+	// join: the observed execution location derived from the bound runtime's
+	// device info. The join carries no separate Base registry ID, so the DTO
+	// BaseID stays empty rather than being fabricated.
+	BaseMachineTitle string
+}
+
+// EmployeeAuthority carries the resolved Employee authority evidence for one
+// Agent card. A nil *EmployeeAuthority means EmployeeAuthorityNone.
+type EmployeeAuthority struct {
+	State    EmployeeAuthorityState
+	Identity *EmployeeIdentity // non-nil only for EmployeeAuthorityVerified
+}
+
+// AssembleAgent is the frozen v0 assembler entry point kept for existing
+// callers: it assembles an Agent-only card with no Employee authority
+// evidence (authority nil). employee_id stays empty — it no longer mirrors
+// agent_id; the formal identity is applied only by AssembleAgentCard with
+// verified authority evidence.
 func AssembleAgent(
 	agent db.Agent,
 	rt *db.AgentRuntime,
 	activeTask *db.AgentTaskQueue,
 	lastOutcome *db.AgentTaskQueue,
 	chain *ExecutionChain,
+	activities []db.ActivityLog,
+	now time.Time,
+	staleThreshold time.Duration,
+) liveactivity.EmployeeLiveActivityV1 {
+	return AssembleAgentCard(agent, rt, activeTask, lastOutcome, chain, nil, activities, now, staleThreshold)
+}
+
+// AssembleAgentCard maps one agent + its runtime + its active task / last
+// outcome into a sanitized EmployeeLiveActivityV1. It is a pure function
+// (no I/O) so the derivation is unit-testable without a database.
+//
+// chain carries the hydrated Project/Issue/Run/Receipt/Profile evidence for
+// the task currently shown (active, or the recent terminal task when idle);
+// it may be nil (no task / no evidence) and never overrides task-owned
+// identifiers.
+//
+// authority carries the CompanyOps Employee directory evidence (HIV-854).
+// Verified evidence overlays ONLY the formal Employee fields (employee id,
+// name, department, position, verified Base) and appends one employee://
+// source ref; it never overrides Agent-owned identifiers or the execution
+// chain. A gap degrades the generic freshness state (never `fresh`) but
+// leaves presence, chain and events untouched.
+func AssembleAgentCard(
+	agent db.Agent,
+	rt *db.AgentRuntime,
+	activeTask *db.AgentTaskQueue,
+	lastOutcome *db.AgentTaskQueue,
+	chain *ExecutionChain,
+	authority *EmployeeAuthority,
 	activities []db.ActivityLog,
 	now time.Time,
 	staleThreshold time.Duration,
@@ -109,9 +180,11 @@ func AssembleAgent(
 		runtimeID = uuidStr(agent.RuntimeID)
 	}
 
+	// Formal Employee identity starts cleared. It is filled only from
+	// verified CompanyOps authority evidence below — never mirrored from the
+	// Agent row and never guessed from terminal hints or process names.
 	in := liveactivity.SnapshotInput{
 		WorkspaceID: uuidStr(agent.WorkspaceID),
-		EmployeeID:  agentID,
 		AgentID:     agentID,
 		DisplayName: agent.Name,
 		AvatarURL:   textStr(agent.AvatarUrl),
@@ -206,6 +279,31 @@ func AssembleAgent(
 		}
 		if chain.ExecutionReceiptRef != "" {
 			in.SourceRefs = append(in.SourceRefs, chain.ExecutionReceiptRef)
+		}
+	}
+
+	// Employee authority overlay (HIV-854). Verified evidence overlays only
+	// the formal Employee fields; every failed-evidence state keeps the card
+	// as an Agent-only projection with the formal fields cleared. A gap can
+	// never leave the card looking `fresh`: the generic degraded freshness
+	// state (conflict, already localized on the wall) replaces `fresh`, while
+	// stricter runtime classifications (stale, missing) stay as they are.
+	if authority != nil {
+		switch authority.State {
+		case EmployeeAuthorityVerified:
+			if identity := authority.Identity; identity != nil {
+				in.EmployeeID = identity.EmployeeID
+				in.DisplayName = identity.DisplayName
+				in.DepartmentID = identity.DepartmentID
+				in.DepartmentName = identity.DepartmentName
+				in.PositionName = identity.PositionTitle
+				in.BaseName = identity.BaseMachineTitle
+				in.SourceRefs = append(in.SourceRefs, "employee://"+identity.EmployeeID)
+			}
+		case EmployeeAuthorityGap:
+			if in.FreshnessState == liveactivity.FreshnessFresh {
+				in.FreshnessState = liveactivity.FreshnessConflict
+			}
 		}
 	}
 
