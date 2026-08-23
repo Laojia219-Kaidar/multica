@@ -72,5 +72,33 @@
     "multiple_active_conflict": "여러 활성 바인딩이 있습니다. 배정 전에 HiveCosm에서 충돌을 해결하세요.",
     "local_agent_missing_or_invalid": "바인딩된 에이전트를 로컬 실행 에이전트로 확인할 수 없습니다.",
     "source_gap": "권위 투영에 연결할 수 없어 사용할 수 있는 작업이 없습니다."
+  },
+  "employees_page": {
+    "header_title": "디지털 직원 팩토리",
+    "header_description": "직원 신분(직위 요구→신분→바인딩→카나리아→온보딩). 로컬 실행 투영이며, 회사 정식 신원의 기준 권위는 외부 HiveCosm 권위입니다.",
+    "create_title": "새 직원 신분(직위 요구)",
+    "name_placeholder": "이름",
+    "position_placeholder": "직위(예: 풀스택 엔지니어)",
+    "department_placeholder": "부서(예: 엔지니어링 기지)",
+    "create_action": "생성",
+    "list_title": "직원 목록",
+    "loading": "로딩 중…",
+    "empty": "직원이 없습니다",
+    "id_label": "ID",
+    "no_department": "부서 미설정",
+    "agent_label": "에이전트",
+    "status_draft": "초안",
+    "status_onboarding": "온보딩",
+    "status_canary": "카나리아",
+    "status_active": "활성",
+    "status_retired": "은퇴",
+    "create_success": "직원 신분이 생성되었습니다",
+    "create_failed": "생성에 실패했습니다",
+    "bind_success": "온보딩되었습니다",
+    "bind_failed": "온보딩에 실패했습니다",
+    "base_label": "기지",
+    "base_checking": "기지 확인 중…",
+    "base_not_verified": "기지가 검증되지 않았습니다",
+    "base_authority_gap": "기지 권위를 사용할 수 없습니다"
   }
 }

@@ -72,5 +72,33 @@
     "multiple_active_conflict": "存在多条生效绑定，需先在 HiveCosm 解决冲突。",
     "local_agent_missing_or_invalid": "绑定的智能体无法解析为本地执行智能体。",
     "source_gap": "权威投影不可达，当前无可执行操作。"
+  },
+  "employees_page": {
+    "header_title": "数字员工工厂",
+    "header_description": "Employee 身份（岗位需求→身份→绑定→Canary→上岗）。本地执行投影；公司正式身份真源=外部 HiveCosm 权威。",
+    "create_title": "新员工身份（岗位需求）",
+    "name_placeholder": "姓名",
+    "position_placeholder": "岗位（如 全栈工程师）",
+    "department_placeholder": "部门（如 工程基地）",
+    "create_action": "创建",
+    "list_title": "员工列表",
+    "loading": "加载中…",
+    "empty": "暂无员工",
+    "id_label": "id",
+    "no_department": "未设部门",
+    "agent_label": "agent",
+    "status_draft": "草稿",
+    "status_onboarding": "入职中",
+    "status_canary": "灰度中",
+    "status_active": "在岗",
+    "status_retired": "已退役",
+    "create_success": "员工身份已创建",
+    "create_failed": "创建失败",
+    "bind_success": "已上岗",
+    "bind_failed": "上岗失败",
+    "base_label": "基地",
+    "base_checking": "正在核验基地…",
+    "base_not_verified": "基地未核验",
+    "base_authority_gap": "基地权威不可用"
   }
 }

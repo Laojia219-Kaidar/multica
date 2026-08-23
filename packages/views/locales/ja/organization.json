@@ -72,5 +72,33 @@
     "multiple_active_conflict": "アクティブなバインディングが複数あります。割り当て前に HiveCosm で競合を解決してください。",
     "local_agent_missing_or_invalid": "バインドされたエージェントをローカル実行エージェントとして解決できません。",
     "source_gap": "権威プロジェクションに接続できないため、操作は利用できません。"
+  },
+  "employees_page": {
+    "header_title": "デジタル従業員ファクトリー",
+    "header_description": "従業員アイデンティティ（ポジション要件 → アイデンティティ → バインド → カナリア → オンボーディング）。ローカル実行プロジェクションであり、会社の正式アイデンティティの信頼できるソースは外部 HiveCosm 権威です。",
+    "create_title": "新規従業員アイデンティティ（ポジション要件）",
+    "name_placeholder": "氏名",
+    "position_placeholder": "ポジション（例：フルスタックエンジニア）",
+    "department_placeholder": "部門（例：エンジニアリング基地）",
+    "create_action": "作成",
+    "list_title": "従業員一覧",
+    "loading": "読み込み中…",
+    "empty": "従業員がいません",
+    "id_label": "ID",
+    "no_department": "部門未設定",
+    "agent_label": "エージェント",
+    "status_draft": "ドラフト",
+    "status_onboarding": "オンボーディング",
+    "status_canary": "カナリア",
+    "status_active": "アクティブ",
+    "status_retired": "リタイア",
+    "create_success": "従業員アイデンティティを作成しました",
+    "create_failed": "作成に失敗しました",
+    "bind_success": "オンボーディングが完了しました",
+    "bind_failed": "オンボーディングに失敗しました",
+    "base_label": "基地",
+    "base_checking": "基地を確認中…",
+    "base_not_verified": "基地は未検証です",
+    "base_authority_gap": "基地権威を利用できません"
   }
 }
