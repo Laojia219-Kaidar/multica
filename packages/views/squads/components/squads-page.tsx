@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from "react";
 import {
+  AlertCircle,
   ArrowDown,
   ArrowUp,
   ChevronDown,
@@ -481,7 +482,8 @@ function SquadListToolbar({
   const sortLabel = SORT_LABELS[sortField];
 
   return (
-    <div className="flex h-12 shrink-0 items-center justify-between gap-2 px-5">
+    <div className="h-12 shrink-0 overflow-x-auto px-5 [-webkit-overflow-scrolling:touch]">
+      <div className="flex h-full w-max min-w-full items-center justify-between gap-2">
       <div className="flex min-w-0 items-center gap-2">
         <div className="hidden shrink-0 items-center gap-1 md:flex">
           {SQUAD_SCOPES.map((s) => (
@@ -743,6 +745,55 @@ function SquadListToolbar({
         </PopoverContent>
       </Popover>
       </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Error state — shared CollectionPageState with destructive tone, matching
+// the agents-page ListError pattern.
+// ---------------------------------------------------------------------------
+
+function ListError({
+  onCreate,
+  listError,
+  onRetry,
+}: {
+  onCreate: () => void;
+  listError: unknown;
+  onRetry: () => void;
+}) {
+  const { t } = useT("squads");
+  return (
+    <div className="flex flex-1 min-h-0 flex-col">
+      <CollectionPageHeader
+        icon={Users}
+        title={t(($) => $.page.title)}
+        actions={
+          <CollectionPageHeaderAction
+            icon={Plus}
+            label={t(($) => $.page.new_button)}
+            onClick={onCreate}
+          />
+        }
+      />
+      <CollectionPageState
+        role="alert"
+        tone="destructive"
+        icon={AlertCircle}
+        title={t(($) => $.page.list_load_failed)}
+        description={
+          listError instanceof Error
+            ? listError.message
+            : t(($) => $.page.list_load_failed_default)
+        }
+        actions={
+          <Button type="button" variant="outline" size="sm" onClick={onRetry}>
+            {t(($) => $.page.try_again)}
+          </Button>
+        }
+      />
     </div>
   );
 }
@@ -759,7 +810,12 @@ export function SquadsPage() {
   const rowLink = useRowLink();
   const currentUser = useAuthStore((s) => s.user);
 
-  const { data: squads = [], isLoading } = useQuery({
+  const {
+    data: squads = [],
+    isLoading,
+    error: listError,
+    refetch: refetchList,
+  } = useQuery({
     ...squadListOptions(wsId),
     enabled: !!wsId,
   });
@@ -889,6 +945,16 @@ export function SquadsPage() {
     [isWorkspaceAdmin, rows, currentUser],
   );
 
+  if (listError) {
+    return (
+      <ListError
+        onCreate={() => useModalStore.getState().open("create-squad")}
+        listError={listError}
+        onRetry={() => refetchList()}
+      />
+    );
+  }
+
   return (
     <div className="flex flex-1 min-h-0 flex-col">
       <CollectionPageHeader
@@ -905,11 +971,14 @@ export function SquadsPage() {
       />
 
       {isLoading ? (
-        <LoadingSkeleton />
+        <div className="min-h-0 flex-1 overflow-auto @container">
+          <LoadingSkeleton />
+        </div>
       ) : squads.length === 0 ? (
         <CollectionPageState
           icon={Users}
-          title={t(($) => $.page.empty_no_squads)}
+          title={t(($) => $.page.empty_title)}
+          description={t(($) => $.page.empty_description)}
           actions={
             <Button
               size="sm"
@@ -955,8 +1024,12 @@ export function SquadsPage() {
                 isColVisible={isColVisible}
               />
               {rows.length === 0 ? (
-                <div className="col-span-full py-16 text-center text-sm text-muted-foreground">
-                  {t(($) => $.page.no_matches)}
+                <div className="col-span-full">
+                  <CollectionPageState
+                    icon={Filter}
+                    title={t(($) => $.page.no_matches)}
+                    description={t(($) => $.page.no_matches_description)}
+                  />
                 </div>
               ) : (
                 rows.map((squad) => (
@@ -1016,7 +1089,6 @@ export function SquadsPage() {
 
 function LoadingSkeleton() {
   return (
-    <div className="min-h-0 flex-1 overflow-auto @container">
       <ListGrid
         className={GRID_COLS}
         style={columnTrackVars(
@@ -1060,6 +1132,5 @@ function LoadingSkeleton() {
           </ListGridRow>
         ))}
       </ListGrid>
-    </div>
   );
 }

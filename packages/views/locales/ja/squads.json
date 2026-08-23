@@ -3,7 +3,13 @@
     "title": "スクワッド",
     "new_button": "新規スクワッド",
     "empty_no_squads": "スクワッドはまだありません。作成して始めましょう。",
+    "empty_title": "スクワッドはまだありません",
+    "empty_description": "スクワッドを作成して、エージェントとメンバーを共通の作業でグループ化しましょう。",
     "empty_no_match": "フィルターに一致するスクワッドはありません。",
+    "no_matches_description": "フィルターやスコープを調整して、お探しのものを見つけてください。",
+    "list_load_failed": "スクワッドの読み込みに失敗しました",
+    "list_load_failed_default": "スクワッドリストの読み込み中に予期しないエラーが発生しました。",
+    "try_again": "再試行",
     "table": {
       "name": "スカッド",
       "leader": "リーダー",

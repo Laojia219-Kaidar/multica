@@ -3,7 +3,13 @@
     "title": "组织部门",
     "new_button": "新建组织部门",
     "empty_no_squads": "还没有组织部门，创建一个开始吧。",
+    "empty_title": "还没有组织部门",
+    "empty_description": "创建一个组织部门来将智能体和成员围绕共同工作分组。",
     "empty_no_match": "没有匹配筛选条件的组织部门。",
+    "no_matches_description": "尝试调整筛选条件或范围来查找所需内容。",
+    "list_load_failed": "加载组织部门失败",
+    "list_load_failed_default": "加载组织部门列表时发生意外错误。",
+    "try_again": "重试",
     "table": {
       "name": "组织部门",
       "leader": "部门负责人",

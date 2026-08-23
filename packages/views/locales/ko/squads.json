@@ -3,7 +3,13 @@
     "title": "스쿼드",
     "new_button": "새 스쿼드",
     "empty_no_squads": "아직 스쿼드가 없습니다. 하나 만들어 시작하세요.",
+    "empty_title": "아직 스쿼드가 없습니다",
+    "empty_description": "스쿼드를 만들어 에이전트와 멤버를 공통 작업으로 그룹화하세요.",
     "empty_no_match": "필터와 일치하는 스쿼드가 없습니다.",
+    "no_matches_description": "필터나 범위를 조정하여 원하는 것을 찾아보세요.",
+    "list_load_failed": "스쿼드 로드 실패",
+    "list_load_failed_default": "스쿼드 목록을 로드하는 중 예기치 않은 오류가 발생했습니다.",
+    "try_again": "다시 시도",
     "table": {
       "name": "스쿼드",
       "leader": "리더",

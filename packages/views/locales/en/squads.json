@@ -3,7 +3,13 @@
     "title": "Squads",
     "new_button": "New Squad",
     "empty_no_squads": "No squads yet. Create one to get started.",
+    "empty_title": "No squads yet",
+    "empty_description": "Create a squad to group agents and humans around shared work.",
     "empty_no_match": "No squads match your filters.",
+    "no_matches_description": "Try adjusting your filters or scope to find what you're looking for.",
+    "list_load_failed": "Failed to load squads",
+    "list_load_failed_default": "An unexpected error occurred while loading the squad list.",
+    "try_again": "Try again",
     "table": {
       "name": "Squad",
       "leader": "Leader",
