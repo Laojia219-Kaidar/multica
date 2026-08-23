@@ -1,0 +1,1 @@
+malicious profile command injection fixture: rejected by jq profile schema

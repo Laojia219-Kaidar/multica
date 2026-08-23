@@ -75,10 +75,10 @@ func TestBuildUsageHierarchy_RollsUpCorrectly(t *testing.T) {
 
 	rows := []UsageObservation{
 		// Two tasks from the same qwen employee+model; one cache-read token.
-		obs("qwen", "qwen3.7-plus", "t1", "i1", "a1", "Alice", "qwen", "qwen-token", "cloud", 100, 20, 5, 0),
-		obs("qwen", "qwen3.7-plus", "t2", "i1", "a1", "Alice", "qwen", "qwen-token", "cloud", 50, 10, 0, 0),
+		obs("qwen", "qwen3.7-plus", "t1", "i1", "a1", "Alice", "qwen", "qwen-coding", "cloud", 100, 20, 5, 0),
+		obs("qwen", "qwen3.7-plus", "t2", "i1", "a1", "Alice", "qwen", "qwen-coding", "cloud", 50, 10, 0, 0),
 		// A different employee, different model, same provider+plan.
-		obs("qwen", "glm-5.2", "t3", "i2", "a2", "Bob", "qwen", "qwen-token", "cloud", 200, 40, 0, 0),
+		obs("qwen", "glm-5.2", "t3", "i2", "a2", "Bob", "qwen", "qwen-coding", "cloud", 200, 40, 0, 0),
 		// A codex task.
 		obs("codex", "gpt-5.6-sol", "t4", "i3", "a1", "Alice", "codex", "codex", "cloud", 300, 60, 0, 0),
 		// A local model task.
@@ -89,9 +89,9 @@ func TestBuildUsageHierarchy_RollsUpCorrectly(t *testing.T) {
 		{
 			ID:          "q1",
 			WorkspaceID: ws,
-			Provider:    "阿里云 · Qwen",
-			Plan:        "Qwen Token Plan",
-			Account:     "qwen-token",
+			Provider:    "阿里云百炼",
+			Plan:        "Coding Pro",
+			Account:     "qwen-coding",
 			Cycle:       "monthly",
 			TotalTokens: 1000,
 		},
@@ -114,7 +114,7 @@ func TestBuildUsageHierarchy_RollsUpCorrectly(t *testing.T) {
 		byProvider[p.Provider] = p
 	}
 
-	qwen := byProvider["阿里云 · Qwen"]
+	qwen := byProvider["阿里云百炼"]
 	if qwen.UsedTokens != 100+20+5+50+10+200+40 {
 		t.Fatalf("qwen provider used = %d", qwen.UsedTokens)
 	}
@@ -122,7 +122,7 @@ func TestBuildUsageHierarchy_RollsUpCorrectly(t *testing.T) {
 		t.Fatalf("qwen plan count = %d, want 1", len(qwen.Plans))
 	}
 	plan := qwen.Plans[0]
-	if plan.Plan != "Qwen Token Plan" {
+	if plan.Plan != "Coding Pro" {
 		t.Fatalf("plan = %q", plan.Plan)
 	}
 	if plan.Quota == nil {

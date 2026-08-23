@@ -51,9 +51,9 @@ func TestBuildQwenArgsKeepsProtocolManaged(t *testing.T) {
 			t.Fatalf("args[%d] = %q, want %q; all=%v", i, args[i], want, args)
 		}
 	}
-	if !strings.Contains(joined, "--sandbox") || !strings.Contains(joined, "--debug") ||
-		!strings.Contains(joined, "--allowed-tools read_file") || !strings.Contains(joined, "--exclude-tools monitor") {
-		t.Fatalf("non-managed custom args missing from %v", args)
+	if strings.Contains(joined, "--sandbox") || strings.Contains(joined, "--allowed-tools") ||
+		strings.Contains(joined, "--exclude-tools") || !strings.Contains(joined, "--debug") {
+		t.Fatalf("managed sandbox filtering or non-managed custom args are wrong in %v", args)
 	}
 	// daemon-owned --yolo must be present; user's --yolo/-y must be stripped so
 	// it appears exactly once regardless of what custom_args contain.
@@ -69,6 +69,28 @@ func TestBuildQwenArgsYoloAlwaysPresent(t *testing.T) {
 	args := buildQwenArgs("task", ExecOptions{}, slog.Default())
 	if !strings.Contains(strings.Join(args, " "), "--yolo") {
 		t.Fatalf("--yolo missing from base args %v", args)
+	}
+}
+
+func TestBuildQwenArgsNoToolSandboxPolicyCannotBeOverridden(t *testing.T) {
+	args := buildQwenArgs("task", ExecOptions{
+		ToolPolicy:      "deny",
+		SandboxRequired: true,
+		CustomArgs: []string{
+			"--yolo", "--sandbox=false", "--max-tool-calls", "99",
+			"--approval-mode", "yolo", "--allowed-tools", "run_shell_command",
+		},
+	}, slog.Default())
+	joined := strings.Join(args, " ")
+	for _, want := range []string{"--sandbox", "--max-tool-calls 0", "--approval-mode plan"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("managed no-tool argument %q missing from %v", want, args)
+		}
+	}
+	for _, forbidden := range []string{"--yolo", "sandbox=false", "99", "run_shell_command"} {
+		if strings.Contains(joined, forbidden) {
+			t.Fatalf("override %q leaked into %v", forbidden, args)
+		}
 	}
 }
 

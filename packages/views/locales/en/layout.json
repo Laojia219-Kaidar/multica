@@ -1,5 +1,6 @@
 {
   "nav": {
+    "command": "Command Center",
     "inbox": "Inbox",
     "chat": "Chat",
     "my_issues": "My Issues",
@@ -20,6 +21,18 @@
     "employees": "Employees",
     "datasets": "Datasets",
     "workflow": "Workflow"
+  },
+  "command": {
+    "title": "CEO Command Center",
+    "subtitle": "Live operating view of work, projects, employees and runtimes.",
+    "open_work": "Open work",
+    "in_review": "In review",
+    "active_projects": "Active projects",
+    "online_runtimes": "Online runtimes",
+    "working_agents": "Working agents",
+    "loading": "Loading live operating data…",
+    "degraded": "Some live data could not be loaded. Open the linked surface for details.",
+    "open_surface": "Open"
   },
   "tab": {
     "issue": "Issue",

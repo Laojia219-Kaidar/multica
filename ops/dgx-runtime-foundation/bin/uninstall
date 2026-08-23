@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+set -euo pipefail
+root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+prefix=${HIVECREW_RUNTIME_PREFIX:-"$root/.installed"}; mode=${1:---preview}
+if [[ "$mode" == --preview ]]; then echo rollback_preview=restore_receipt; exit 0; fi
+receipt="$prefix/state/install.receipt"; [[ -f "$receipt" ]] || exit 1
+backup=$(awk -F= '$1=="backup"{print $2}' "$receipt")
+rm -rf "$prefix"; [[ -d "$backup" ]] && { mkdir -p "$prefix"; cp -a "$backup/." "$prefix/"; }
+echo rollback_restored=true

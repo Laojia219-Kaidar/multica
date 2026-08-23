@@ -34,6 +34,7 @@ export interface IssueSortParam {
 
 export const issueKeys = {
   all: (wsId: string) => ["issues", wsId] as const,
+  commandMetrics: (wsId: string) => [...issueKeys.all(wsId), "command-metrics"] as const,
   /** PREFIX for invalidation — no sort. */
   list: (wsId: string) => [...issueKeys.all(wsId), "list"] as const,
   /** FULL KEY for queryOptions — includes sort. */
@@ -599,6 +600,44 @@ export function issueListOptions(wsId: string, sort?: IssueSortParam) {
     queryFn: () => fetchFirstPages({}, sort),
     select: flattenIssueBuckets,
     placeholderData: keepPreviousData,
+  });
+}
+
+const COMMAND_OPEN_STATUSES: readonly IssueStatus[] = [
+  "backlog",
+  "todo",
+  "in_progress",
+  "in_review",
+  "blocked",
+];
+
+export interface CommandIssueMetrics {
+  openWork: number;
+  inReview: number;
+}
+
+/**
+ * Exact issue totals for the CEO command surface. The regular issue list
+ * query intentionally fetches only the first page of each status, so counting
+ * its selected rows would under-report any workspace with more than 50 items
+ * in a lane. This projection uses the API totals while retrieving only one
+ * row per lane.
+ */
+export function commandIssueMetricsOptions(wsId: string) {
+  return queryOptions<CommandIssueMetrics>({
+    queryKey: issueKeys.commandMetrics(wsId),
+    queryFn: async () => {
+      const responses = await Promise.all(
+        COMMAND_OPEN_STATUSES.map((status) => api.listIssues({ status, limit: 1, offset: 0 })),
+      );
+      const totals = new Map(
+        COMMAND_OPEN_STATUSES.map((status, index) => [status, responses[index]?.total ?? 0]),
+      );
+      return {
+        openWork: responses.reduce((sum, response) => sum + response.total, 0),
+        inReview: totals.get("in_review") ?? 0,
+      };
+    },
   });
 }
 

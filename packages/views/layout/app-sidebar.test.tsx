@@ -120,6 +120,7 @@ vi.mock("@multica/core/paths", async (importOriginal) => ({
   paths: { workspace: (slug: string) => ({ issues: () => `/${slug}/issues` }) },
   useCurrentWorkspace: () => ({ id: "ws-1", name: "Acme", slug: "acme" }),
   useWorkspacePaths: () => ({
+    command: () => "/acme/command",
     inbox: () => "/acme/inbox",
     chat: () => "/acme/chat",
     myIssues: () => "/acme/my-issues",

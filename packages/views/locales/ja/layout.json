@@ -1,5 +1,6 @@
 {
   "nav": {
+    "command": "CEO コマンド",
     "inbox": "インボックス",
     "chat": "チャット",
     "my_issues": "マイイシュー",
@@ -20,6 +21,18 @@
     "employees": "従業員",
     "datasets": "データセット",
     "workflow": "ワークフロー"
+  },
+  "command": {
+    "title": "CEO コマンドセンター",
+    "subtitle": "作業、プロジェクト、エージェント、ランタイムのライブ運用ビュー。",
+    "open_work": "進行中の作業",
+    "in_review": "レビュー待ち",
+    "active_projects": "進行中のプロジェクト",
+    "online_runtimes": "オンラインランタイム",
+    "working_agents": "稼働中のエージェント",
+    "loading": "ライブ運用データを読み込み中…",
+    "degraded": "一部のライブデータを読み込めませんでした。リンク先で詳細を確認してください。",
+    "open_surface": "開く"
   },
   "tab": {
     "issue": "イシュー",

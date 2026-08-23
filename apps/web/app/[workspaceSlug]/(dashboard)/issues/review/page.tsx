@@ -37,7 +37,10 @@ export default function ReviewQueuePage() {
     try {
       const res = await fetch("/api/issues/review-queue", {
         credentials: "include",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "X-Workspace-Slug": slug ?? "",
+        },
       });
       if (!res.ok) throw new Error(`review-queue ${res.status}`);
       const body = await res.json();
@@ -46,7 +49,7 @@ export default function ReviewQueuePage() {
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
-  }, []);
+  }, [slug]);
 
   useEffect(() => {
     reload();
@@ -60,7 +63,10 @@ export default function ReviewQueuePage() {
         const res = await fetch(`/api/issues/${issueId}/review-verdict`, {
           method: "POST",
           credentials: "include",
-          headers: { "Content-Type": "application/json" },
+          headers: {
+            "Content-Type": "application/json",
+            "X-Workspace-Slug": slug ?? "",
+          },
           body: JSON.stringify(payload),
         });
         if (!res.ok) {
@@ -74,7 +80,7 @@ export default function ReviewQueuePage() {
         setBusy(null);
       }
     },
-    [reload],
+    [reload, slug],
   );
 
   return (

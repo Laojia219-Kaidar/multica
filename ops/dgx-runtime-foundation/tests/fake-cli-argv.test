@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
+tmp=$(mktemp -d); trap "rm -rf $tmp" EXIT
+fake="$tmp/fake"
+printf "#!/bin/sh\\nprintf %s \"\$1\"\\n" > "$fake"; chmod 755 "$fake"
+out=$("$fake" "evil;touch $tmp/pwned")
+[[ "$out" == *evil* && ! -e "$tmp/pwned" ]]
+echo FAKE_CLI_ARGV_PASS

@@ -18,6 +18,7 @@ import {
   PROJECT_GANTT_PAGE_LIMIT,
   childrenByParentsOptions,
   childIssuesOptions,
+  commandIssueMetricsOptions,
   compareIssuesForSort,
   issueFlatExportOptions,
   issueFlatListOptions,
@@ -85,6 +86,31 @@ function installFakeSearchApi(
 function makeSearchResult(idx: number, identifier: string) {
   return { ...makeIssue(idx), identifier, match_source: "title" as const };
 }
+
+describe("commandIssueMetricsOptions", () => {
+  it("uses server totals instead of the loaded first-page row count", async () => {
+    const totals = new Map([
+      ["backlog", 101],
+      ["todo", 83],
+      ["in_progress", 17],
+      ["in_review", 9],
+      ["blocked", 4],
+    ]);
+    const listIssues = vi.fn(async (params?: ListIssuesParams) => ({
+      issues: [],
+      total: totals.get(params?.status ?? "") ?? 0,
+    }));
+    installFakeApi(listIssues);
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    const result = await qc.fetchQuery(commandIssueMetricsOptions(WS_ID));
+
+    expect(result).toEqual({ openWork: 214, inReview: 9 });
+    expect(listIssues).toHaveBeenCalledTimes(5);
+    expect(listIssues).toHaveBeenCalledWith({ status: "in_review", limit: 1, offset: 0 });
+    qc.clear();
+  });
+});
 
 describe("childIssuesOptions", () => {
   it("refetches a cached snapshot when the parent issue is opened again", async () => {

@@ -125,6 +125,7 @@ export function onIssueCreated(
   qc.invalidateQueries({ queryKey: issueKeys.tableAll(wsId) });
   qc.invalidateQueries({ queryKey: issueKeys.assigneeGroupsAll(wsId) });
   qc.invalidateQueries({ queryKey: issueKeys.myAssigneeGroupsAll(wsId) });
+  qc.invalidateQueries({ queryKey: issueKeys.commandMetrics(wsId) });
   if (issue.project_id) {
     qc.invalidateQueries({ queryKey: projectKeys.all(wsId) });
   }
@@ -442,5 +443,6 @@ export function onIssueDeleted(
   cleanupDeletedIssueCaches(qc, wsId, issueId);
   qc.invalidateQueries({ queryKey: issueKeys.assigneeGroupsAll(wsId) });
   qc.invalidateQueries({ queryKey: issueKeys.myAssigneeGroupsAll(wsId) });
+  qc.invalidateQueries({ queryKey: issueKeys.commandMetrics(wsId) });
   qc.invalidateQueries({ queryKey: projectKeys.all(wsId) });
 }

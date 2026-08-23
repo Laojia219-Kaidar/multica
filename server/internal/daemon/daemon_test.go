@@ -159,6 +159,18 @@ func TestIsBlockedEnvKey(t *testing.T) {
 		{key: "CURSOR_MCP_AUTH_SOURCE", want: true},
 		{key: "OPENCLAW_CONFIG_PATH", want: true},
 		{key: "OPENCLAW_INCLUDE_ROOTS", want: true},
+		{key: "SANDBOX", want: true},
+		{key: "QWEN_SANDBOX", want: true},
+		{key: "QWEN_SANDBOX_IMAGE", want: true},
+		{key: "QWEN_SANDBOX_PROXY_COMMAND", want: true},
+		{key: "BUILD_SANDBOX", want: true},
+		{key: "SANDBOX_FLAGS", want: true},
+		{key: "SANDBOX_MOUNTS", want: true},
+		{key: "SANDBOX_ENV", want: true},
+		{key: "HIVECREW_QWEN_BIN", want: true},
+		{key: "HIVECREW_RUNTIME_PREFIX", want: true},
+		{key: "hivecrew_runtime_prefix", want: true},
+		{key: "hivecrew_landlock_exec", want: true},
 		{key: "ANTHROPIC_API_KEY", want: false},
 		{key: "CURSOR_AGENT", want: false},
 		// HERMES_HOME is intentionally NOT blocked: a skill-less Hermes task
@@ -211,10 +223,10 @@ func TestLayerCustomEnvAndHermesHome(t *testing.T) {
 		},
 		{
 			name:        "blocklisted key dropped, overlay still applied",
-			customEnv:   map[string]string{"CODEX_HOME": "/evil", "MULTICA_TOKEN": "x"},
+			customEnv:   map[string]string{"CODEX_HOME": "/evil", "MULTICA_TOKEN": "x", "SANDBOX": "fake", "HIVECREW_QWEN_BIN": "/evil/qwen", "HIVECREW_RUNTIME_PREFIX": "/attacker/runtime"},
 			overlayHome: "/tmp/task/hermes-home",
 			wantHermes:  "/tmp/task/hermes-home",
-			wantAbsent:  []string{"CODEX_HOME", "MULTICA_TOKEN"},
+			wantAbsent:  []string{"CODEX_HOME", "MULTICA_TOKEN", "SANDBOX", "HIVECREW_QWEN_BIN", "HIVECREW_RUNTIME_PREFIX"},
 		},
 	}
 
@@ -235,6 +247,39 @@ func TestLayerCustomEnvAndHermesHome(t *testing.T) {
 				if _, ok := agentEnv[k]; ok {
 					t.Errorf("blocklisted key %q should not be applied", k)
 				}
+			}
+		})
+	}
+}
+
+func TestQwenRuntimePrefixIsDaemonOwned(t *testing.T) {
+	t.Parallel()
+
+	agentEnv := map[string]string{}
+	injectQwenRuntimePrefix(agentEnv, "qwen", true, "/trusted/runtime")
+	layerCustomEnvAndHermesHome(agentEnv, map[string]string{
+		"HIVECREW_RUNTIME_PREFIX": "/attacker/runtime",
+	}, "", nil)
+	if got := agentEnv["HIVECREW_RUNTIME_PREFIX"]; got != "/trusted/runtime" {
+		t.Fatalf("HIVECREW_RUNTIME_PREFIX = %q, want daemon-owned value", got)
+	}
+
+	for _, tc := range []struct {
+		name     string
+		provider string
+		noTools  bool
+		prefix   string
+	}{
+		{name: "other provider", provider: "codex", noTools: true, prefix: "/trusted/runtime"},
+		{name: "tools allowed", provider: "qwen", prefix: "/trusted/runtime"},
+		{name: "relative prefix", provider: "qwen", noTools: true, prefix: "relative/runtime"},
+		{name: "empty prefix", provider: "qwen", noTools: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env := map[string]string{}
+			injectQwenRuntimePrefix(env, tc.provider, tc.noTools, tc.prefix)
+			if _, ok := env["HIVECREW_RUNTIME_PREFIX"]; ok {
+				t.Fatalf("unexpected runtime prefix injection: %#v", env)
 			}
 		})
 	}

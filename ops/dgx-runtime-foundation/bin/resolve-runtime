@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -euo pipefail
+root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+profile=${1:-}; mode=${2:---dry-run}
+[[ -n "$profile" && "$mode" == "--dry-run" ]] || { echo 'usage: resolve-runtime PROFILE --dry-run' >&2; exit 2; }
+command -v jq >/dev/null || { echo 'missing binary: jq' >&2; exit 127; }
+row=$(jq -c --arg id "$profile" '.profiles[]|select(.id==$id)' "$root/profiles.json")
+[[ -n "$row" ]] || { echo "unknown profile: $profile" >&2; exit 1; }
+cmd=$(jq -r .command <<<"$row"); secret=$(jq -r .secret_env <<<"$row"); path=$(command -v "$cmd" 2>/dev/null || true); status=missing; [[ -n "$path" ]] && status=present
+jq -cn --arg id "$profile" --arg cmd "$cmd" --arg path "$path" --arg secret "$secret" --arg status "$status" '{profile_id:$id,command:$cmd,binary_path:(if $path=="" then null else $path end),binary_status:$status,secret_env:$secret,secret_status:"not_checked",execution:"disabled",secret_values_recorded:false}'

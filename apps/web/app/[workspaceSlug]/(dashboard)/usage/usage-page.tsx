@@ -1,22 +1,28 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { AlertTriangle, BarChart3, Building2, Cpu, Gauge, Users } from "lucide-react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { AlertTriangle, BarChart3, Building2, Cpu, Gauge, Pencil, Users } from "lucide-react";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { useRequiredWorkspaceSlug } from "@multica/core/paths";
 import { Badge } from "@multica/ui/components/ui/badge";
 import { Button } from "@multica/ui/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@multica/ui/components/ui/card";
+import { Input } from "@multica/ui/components/ui/input";
+import { Label } from "@multica/ui/components/ui/label";
 import { Progress } from "@multica/ui/components/ui/progress";
 import { Skeleton } from "@multica/ui/components/ui/skeleton";
 import {
   fetchUsageHierarchy,
+  quotaSourceLabel,
+  upsertProviderUsageQuota,
+  windowKindLabel,
   type EmployeeUsage,
   type ModelUsage,
   type PlanUsage,
   type ProviderUsage,
   type QuotaState,
+  type QuotaWindowView,
 } from "./usage-api";
 
 const PERIODS = [
@@ -58,6 +64,75 @@ function cycleLabel(cycle: string): string {
   }
 }
 
+function formatObservedAt(observedAt?: string): string {
+  if (!observedAt) return "—";
+  const date = new Date(observedAt);
+  if (Number.isNaN(date.getTime())) return "—";
+  return date.toLocaleString(undefined, {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function formatQuotaAmount(value: number, unit?: string): string {
+  if (unit === "cny") return `¥${(value / 100).toFixed(2)}`;
+  if (unit === "percent") return `${value}%`;
+  return formatTokens(value);
+}
+
+function QuotaWindowRow({ window: w }: { window: QuotaWindowView }) {
+  if (w.unlimited) {
+    return (
+      <div className="rounded border px-2 py-1.5 text-xs" data-testid={`quota-window-${w.kind}`}>
+        <span className="font-medium">{windowKindLabel(w.kind, w.label)}</span>
+        <span className="text-muted-foreground"> · {quotaSourceLabel(w.source)} · 不限量</span>
+      </div>
+    );
+  }
+  const unit = w.unit ?? "tokens";
+  const hasPercent = typeof w.percentage === "number";
+  const hasLimit = typeof w.total_tokens === "number" && w.total_tokens > 0;
+  const showBar = hasPercent || hasLimit;
+  const barValue = hasPercent ? Math.min(w.percentage ?? 0, 100) : Math.min(w.percentage ?? 0, 100);
+  const percentageLabel = hasPercent ? Math.round((w.percentage ?? 0) * 10) / 10 : null;
+  const authoritative = w.source === "console" || w.source === "live_vendor" || w.source === "hivecosm";
+  return (
+    <div className="rounded border px-2 py-1.5" data-testid={`quota-window-${w.kind}`}>
+      <div className="flex flex-wrap items-center gap-2 text-xs">
+        <span className="font-medium">{windowKindLabel(w.kind, w.label)}</span>
+        <span className="text-muted-foreground">{quotaSourceLabel(w.source)}</span>
+        {w.local_only && !authoritative ? (
+          <span className="text-amber-700">· 仅本地切片</span>
+        ) : null}
+        {unit === "percent" && hasPercent ? (
+          <span>· 已用 {percentageLabel}%</span>
+        ) : hasLimit ? (
+          <>
+            <span>· 已用 {formatQuotaAmount(w.used_tokens, unit)}</span>
+            <span>· 剩余 {formatQuotaAmount(w.remaining_tokens ?? 0, unit)}</span>
+            {unit === "tokens" || unit === "credits" ? (
+              <span>· 上限 {formatQuotaAmount(w.total_tokens!, unit)}</span>
+            ) : null}
+          </>
+        ) : (
+          <span>· 已用 {formatQuotaAmount(w.used_tokens, unit)}</span>
+        )}
+        <span className="text-muted-foreground">· 观测 {formatObservedAt(w.observed_at)}</span>
+      </div>
+      {showBar ? (
+        <div className="mt-1 flex items-center gap-2">
+          <Progress value={barValue} className="h-1.5 flex-1" />
+          {percentageLabel != null ? (
+            <span className="w-14 text-right tabular-nums text-xs">{percentageLabel}%</span>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function QuotaCell({ quota }: { quota?: QuotaState | null }) {
   if (!quota) {
     return (
@@ -66,12 +141,23 @@ function QuotaCell({ quota }: { quota?: QuotaState | null }) {
       </span>
     );
   }
+  const windows = quota.windows ?? [];
+  if (windows.length > 0) {
+    return (
+      <div className="space-y-1">
+        {windows.map((w) => (
+          <QuotaWindowRow key={w.kind} window={w} />
+        ))}
+      </div>
+    );
+  }
   const hasLimit = typeof quota.total_tokens === "number" && quota.total_tokens > 0;
   const percentage = hasLimit ? Math.round((quota.percentage ?? 0) * 10) / 10 : null;
   return (
     <div className="space-y-1 text-xs">
       <div className="flex items-center gap-2">
         <span className="text-muted-foreground">{cycleLabel(quota.cycle)}</span>
+        <span className="text-muted-foreground">{quotaSourceLabel(quota.source)}</span>
         <span className="font-medium">{hasLimit ? formatTokens(quota.total_tokens!) : "不限量"}</span>
         <span className="text-muted-foreground">·</span>
         <span>已用 {formatTokens(quota.used_tokens)}</span>
@@ -85,8 +171,102 @@ function QuotaCell({ quota }: { quota?: QuotaState | null }) {
       ) : (
         <span className="text-muted-foreground">无硬性额度</span>
       )}
-      <div className="text-muted-foreground">重置 {formatResetAt(quota.reset_at)}</div>
+      <div className="text-muted-foreground">
+        重置 {formatResetAt(quota.reset_at)} · 观测 {formatObservedAt(quota.observed_at)}
+      </div>
     </div>
+  );
+}
+
+function QuotaEditForm({
+  plan,
+  provider,
+  slug,
+  onDone,
+}: {
+  plan: PlanUsage;
+  provider: string;
+  slug: string;
+  onDone: () => void;
+}) {
+  const queryClient = useQueryClient();
+  const wsId = useWorkspaceId();
+  const [cycle, setCycle] = useState("monthly");
+  const [totalTokens, setTotalTokens] = useState("");
+  const [apiKeyLabel, setApiKeyLabel] = useState(plan.api_key_label ?? "");
+
+  const mutation = useMutation({
+    mutationFn: () =>
+      upsertProviderUsageQuota(slug, {
+        provider,
+        plan: plan.plan,
+        account: plan.account,
+        api_key_label: apiKeyLabel,
+        cycle,
+        total_tokens: Number(totalTokens),
+        local_model: plan.local_model,
+      }),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["lane-d", "usage", wsId, slug] });
+      onDone();
+    },
+  });
+
+  return (
+    <form
+      className="mt-2 space-y-2 rounded border bg-muted/20 p-2"
+      onSubmit={(e) => {
+        e.preventDefault();
+        mutation.mutate();
+      }}
+    >
+      <div className="grid gap-2 md:grid-cols-3">
+        <div>
+          <Label className="text-xs">周期</Label>
+          <select
+            className="mt-1 w-full rounded border bg-background px-2 py-1 text-xs"
+            value={cycle}
+            onChange={(e) => setCycle(e.target.value)}
+          >
+            <option value="5h">5 小时</option>
+            <option value="7d">7 天</option>
+            <option value="monthly">每月</option>
+          </select>
+        </div>
+        <div>
+          <Label className="text-xs">Token 上限</Label>
+          <Input
+            className="mt-1 h-8 text-xs"
+            inputMode="numeric"
+            value={totalTokens}
+            onChange={(e) => setTotalTokens(e.target.value)}
+            placeholder="例如 1000000"
+          />
+        </div>
+        <div>
+          <Label className="text-xs">API Key 标签（仅展示）</Label>
+          <Input
+            className="mt-1 h-8 text-xs"
+            value={apiKeyLabel}
+            onChange={(e) => setApiKeyLabel(e.target.value)}
+            placeholder="qwen-coding-1"
+          />
+        </div>
+      </div>
+      <div className="flex gap-2">
+        <Button type="submit" size="sm" disabled={mutation.isPending || totalTokens === ""}>
+          保存上限
+        </Button>
+        <Button type="button" size="sm" variant="ghost" onClick={onDone}>
+          取消
+        </Button>
+      </div>
+      {mutation.isError && (
+        <div className="text-xs text-red-600">
+          {mutation.error instanceof Error ? mutation.error.message : "保存失败"}
+        </div>
+      )}
+    </form>
   );
 }
 
@@ -152,7 +332,8 @@ function EmployeeSection({ employees }: { employees: EmployeeUsage[] }) {
   );
 }
 
-function PlanRow({ plan }: { plan: PlanUsage }) {
+function PlanRow({ plan, provider, slug }: { plan: PlanUsage; provider: string; slug: string }) {
+  const [editing, setEditing] = useState(false);
   return (
     <div className="border-b last:border-0 py-2" data-testid="plan-row">
       <div className="flex flex-wrap items-center gap-2">
@@ -166,8 +347,21 @@ function PlanRow({ plan }: { plan: PlanUsage }) {
         {plan.api_key_label && (
           <span className="text-xs text-muted-foreground">API key · {plan.api_key_label}</span>
         )}
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="h-6 px-2 text-xs"
+          onClick={() => setEditing((v) => !v)}
+        >
+          <Pencil className="mr-1 h-3 w-3" />
+          配置上限
+        </Button>
         <span className="ml-auto tabular-nums font-medium">{formatTokens(plan.used_tokens)}</span>
       </div>
+      {editing && (
+        <QuotaEditForm plan={plan} provider={provider} slug={slug} onDone={() => setEditing(false)} />
+      )}
       <div className="mt-1 pl-1">
         <QuotaCell quota={plan.quota} />
       </div>
@@ -179,7 +373,7 @@ function PlanRow({ plan }: { plan: PlanUsage }) {
   );
 }
 
-function ProviderCard({ provider }: { provider: ProviderUsage }) {
+function ProviderCard({ provider, slug }: { provider: ProviderUsage; slug: string }) {
   const [open, setOpen] = useState(true);
   return (
     <Card data-testid="provider-card">
@@ -204,7 +398,12 @@ function ProviderCard({ provider }: { provider: ProviderUsage }) {
       {open && (
         <CardContent className="space-y-2 pt-0">
           {provider.plans.map((plan) => (
-            <PlanRow key={`${plan.plan}:${plan.account}`} plan={plan} />
+            <PlanRow
+              key={`${plan.plan}:${plan.account}`}
+              plan={plan}
+              provider={provider.provider}
+              slug={slug}
+            />
           ))}
         </CardContent>
       )}
@@ -214,9 +413,10 @@ function ProviderCard({ provider }: { provider: ProviderUsage }) {
 
 function DataGapBanner({ gaps }: { gaps: string[] }) {
   if (gaps.length === 0) return null;
-  const messages: Record<string, string> = {
+    const messages: Record<string, string> = {
     usage_no_rows: "该周期内没有真实 token 用量记录（数据缺口，未伪造用量）。",
     quota_unconfigured: "部分或全部套餐尚未配置配额；未配置项不显示总额/剩余/百分比。",
+    local_usage_partial: "本地 task_usage 仅为控制台用量切片；已观测的控制台快照优先显示。",
   };
   return (
     <div
@@ -315,7 +515,7 @@ export function UsagePage() {
 
       <div className="space-y-3">
         {data?.providers.map((provider) => (
-          <ProviderCard key={provider.provider} provider={provider} />
+          <ProviderCard key={provider.provider} provider={provider} slug={slug} />
         ))}
       </div>
     </div>

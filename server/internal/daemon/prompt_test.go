@@ -652,6 +652,31 @@ func TestBuildPromptDefaultScansRootsFirst(t *testing.T) {
 	}
 }
 
+func TestBuildPromptInjectsResolvedOwnerAuthorization(t *testing.T) {
+	task := Task{
+		IssueID: "issue-1",
+		ResolvedContext: &ResolvedTaskContext{
+			OwnerAuthorization: &ResolvedOwnerAuthorization{
+				Authorization:      "Authorize only replacement canary 002;\nno RUN-06.",
+				AuthorizedByUserID: "owner-1",
+				EvidenceKind:       "issue_assignment",
+				EvidenceRefID:      "issue-1",
+			},
+		},
+	}
+	out := BuildPrompt(task, "qwen")
+	for _, want := range []string{
+		"## Resolved Owner Authorization",
+		"> Authorize only replacement canary 002;\n> no RUN-06.",
+		"owner-1",
+		"issue_assignment",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("prompt missing %q:\n%s", want, out)
+		}
+	}
+}
+
 // TestBuildPromptNonSquadLeaderNoRule verifies that non-squad-leader agents
 // do NOT get the squad leader no_action rule injected.
 func TestBuildPromptNonSquadLeaderNoRule(t *testing.T) {

@@ -5,12 +5,54 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/multica-ai/multica/server/internal/workentry"
 )
+
+func TestWorkEntryEventAndReplayPreserveTypedRunID(t *testing.T) {
+	h, _ := newWorkEntryGuardHandler()
+	event := guardEvent(guardTenantWS)
+	event["run_id"] = "run-guard-1"
+	body, _ := json.Marshal(event)
+
+	w := httptest.NewRecorder()
+	h.WorkEntryEvent(w, newWorkEntryGuardRequest(http.MethodPost, "/api/work/event", string(body)))
+	if w.Code != http.StatusOK {
+		t.Fatalf("event write: %d %s", w.Code, w.Body.String())
+	}
+
+	workRef := event["work_ref"].(string)
+	path := "/api/work/replay?kind=event&key=" + url.QueryEscape("evt-tenant-guard") + "&work_ref=" + url.QueryEscape(workRef)
+	w = httptest.NewRecorder()
+	h.WorkEntryReplay(w, newWorkEntryGuardRequest(http.MethodGet, path, ""))
+	if w.Code != http.StatusOK {
+		t.Fatalf("event replay: %d %s", w.Code, w.Body.String())
+	}
+	var replay workentry.ReplayResult
+	if err := json.Unmarshal(w.Body.Bytes(), &replay); err != nil {
+		t.Fatalf("decode replay: %v", err)
+	}
+	if replay.Event == nil || replay.Event.RunID != "run-guard-1" {
+		t.Fatalf("replay event = %+v", replay.Event)
+	}
+}
+
+func TestWorkEntryEventRejectsNestedRunID(t *testing.T) {
+	h, _ := newWorkEntryGuardHandler()
+	event := guardEvent(guardTenantWS)
+	event["run_id"] = "run-guard-1"
+	event["event_payload"] = map[string]any{"run_id": "forged"}
+	body, _ := json.Marshal(event)
+	w := httptest.NewRecorder()
+	h.WorkEntryEvent(w, newWorkEntryGuardRequest(http.MethodPost, "/api/work/event", string(body)))
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "forbidden_proof_field") {
+		t.Fatalf("nested run_id: %d %s", w.Code, w.Body.String())
+	}
+}
 
 const (
 	guardTenantWS  = "ws-tenant-a"
@@ -70,6 +112,12 @@ func guardEvent(ws string) map[string]any {
 		"occurred_at":     guardNow(),
 		"observed_at":     guardNow(),
 	}
+}
+
+func guardEventWithRunID(ws string) map[string]any {
+	event := guardEvent(ws)
+	event["run_id"] = "run-guard-1"
+	return event
 }
 
 func assertGuardForbidden(t *testing.T, w *httptest.ResponseRecorder) {
@@ -175,7 +223,7 @@ func TestWorkEntrySyncAllowsSameTenant(t *testing.T) {
 				"idempotency_key": "evt-same-tenant",
 				"payload_digest":  "sha256:0000000000000000000000000000000000000000000000000000000000000000",
 				"canonical_payload": map[string]any{
-					"event": guardEvent(guardTenantWS),
+					"event": guardEventWithRunID(guardTenantWS),
 				},
 			},
 		},
@@ -193,6 +241,25 @@ func TestWorkEntrySyncAllowsSameTenant(t *testing.T) {
 	}
 	if res.Synced != 2 {
 		t.Fatalf("same-tenant sync: expected 2 synced entries, got %+v", res)
+	}
+}
+
+func TestWorkEntryMCPCallAllowsSameTenantEventRunID(t *testing.T) {
+	h, _ := newWorkEntryGuardHandler()
+	body := map[string]any{"name": "work.event", "arguments": guardEventWithRunID(guardTenantWS)}
+	b, _ := json.Marshal(body)
+
+	w := httptest.NewRecorder()
+	h.WorkEntryMCPCall(w, newWorkEntryGuardRequest(http.MethodPost, "/api/work/mcp/call", string(b)))
+	if w.Code != http.StatusOK {
+		t.Fatalf("same-tenant MCP event: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var result workentry.EventResult
+	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
+		t.Fatalf("decode event result: %v", err)
+	}
+	if result.EventID == "" {
+		t.Fatal("same-tenant MCP event returned no event id")
 	}
 }
 

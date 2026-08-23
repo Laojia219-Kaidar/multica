@@ -77,6 +77,11 @@ type ExecOptions struct {
 	// "priority", displayed as Fast). Empty means inherit local Codex config.
 	// Other providers ignore this field.
 	ServiceTier string
+	// ToolPolicy and SandboxRequired are daemon-owned execution constraints.
+	// The Qwen backend currently implements the exact "deny" policy by
+	// disabling all tool execution and requiring its native sandbox.
+	ToolPolicy      string
+	SandboxRequired bool
 	// OpenclawMode chooses between local (embedded) and gateway routing for
 	// the openclaw backend. "" or "local" keeps the historical behaviour —
 	// the daemon spawns `openclaw agent --local …` and the agent loop runs

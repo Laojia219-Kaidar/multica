@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -245,7 +246,7 @@ func validateClientUsageRuntime(probe clientUsageRuntimeProbe) (validatedRuntime
 const maxProviderUsageQuotaBody = 8 * 1024
 
 var providerUsageQuotaCycles = map[string]bool{
-	"daily": true, "weekly": true, "monthly": true, "never": true,
+	"5h": true, "7d": true, "daily": true, "weekly": true, "monthly": true, "never": true,
 }
 
 type providerUsageQuotaRequest struct {
@@ -273,11 +274,18 @@ func (h *Handler) GetProviderPlanUsage(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	since := metrics.SinceBound(days)
+	quotaSince := metrics.WindowSince(time.Now().UTC(), "monthly")
 
 	service := metrics.NewUsageService(h.DB)
 	observations, err := service.ListUsageObservations(r.Context(), workspaceID, since)
 	if err != nil {
 		slog.Error("failed to list provider plan usage", "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to list usage")
+		return
+	}
+	quotaObservations, err := service.ListUsageObservations(r.Context(), workspaceID, quotaSince)
+	if err != nil {
+		slog.Error("failed to list quota window usage", "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to list usage")
 		return
 	}
@@ -287,8 +295,35 @@ func (h *Handler) GetProviderPlanUsage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to list quota")
 		return
 	}
+	snapSvc := metrics.NewQuotaSnapshotService(h.DB)
+	if err := h.PollVendorQuotaIfConfigured(r.Context(), workspaceID, vendorQuotaConfigFromEnv()); err != nil {
+		slog.Debug("vendor quota poll failed", "error", err)
+	}
+	snapshots, err := snapSvc.ListSnapshots(r.Context(), workspaceID)
+	if err != nil {
+		slog.Error("failed to list provider quota snapshots", "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to list snapshots")
+		return
+	}
 
-	writeJSON(w, http.StatusOK, metrics.BuildUsageHierarchy(workspaceID, since, observations, quotas))
+	now := time.Now().UTC()
+	hierarchy := metrics.BuildUsageHierarchyWithSnapshots(workspaceID, since, mergeQuotaObservations(observations, quotaObservations), quotas, snapshots, now)
+	writeJSON(w, http.StatusOK, hierarchy)
+}
+
+func mergeQuotaObservations(pageObs, quotaObs []metrics.UsageObservation) []metrics.UsageObservation {
+	byTask := make(map[string]metrics.UsageObservation, len(pageObs)+len(quotaObs))
+	for _, o := range pageObs {
+		byTask[o.TaskID+":"+o.Model] = o
+	}
+	for _, o := range quotaObs {
+		byTask[o.TaskID+":"+o.Model] = o
+	}
+	out := make([]metrics.UsageObservation, 0, len(byTask))
+	for _, o := range byTask {
+		out = append(out, o)
+	}
+	return out
 }
 
 // PutProviderUsageQuota upserts one operator-configured provider/plan quota.
@@ -353,9 +388,9 @@ INSERT INTO provider_usage_quota (
     workspace_id, provider, plan, account_label, api_key_label,
     cycle, total_tokens, reset_day, local_model
 ) VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9)
-ON CONFLICT (workspace_id, provider, plan, account_label, api_key_label)
+ON CONFLICT (workspace_id, provider, plan, account_label, cycle)
 DO UPDATE SET
-    cycle = EXCLUDED.cycle,
+    api_key_label = EXCLUDED.api_key_label,
     total_tokens = EXCLUDED.total_tokens,
     reset_day = EXCLUDED.reset_day,
     local_model = EXCLUDED.local_model,

@@ -72,6 +72,23 @@ func perTurnContextBlocks(task Task) string {
 	}
 	b.WriteString(execenv.BuildTaskInitiatorBlock(task.InitiatorType, task.InitiatorName, task.InitiatorEmail))
 	b.WriteString(execenv.BuildConnectedAppsBlock(task.ConnectedApps))
+	b.WriteString(buildResolvedOwnerAuthorizationBlock(task.ResolvedContext))
+	return b.String()
+}
+
+func buildResolvedOwnerAuthorizationBlock(resolved *ResolvedTaskContext) string {
+	if resolved == nil || resolved.OwnerAuthorization == nil {
+		return ""
+	}
+	auth := resolved.OwnerAuthorization
+	if strings.TrimSpace(auth.Authorization) == "" || auth.AuthorizedByUserID == "" || auth.EvidenceKind == "" || auth.EvidenceRefID == "" {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("## Resolved Owner Authorization\n\n")
+	b.WriteString("The HiveCrew server verified this run-scoped authorization from a direct workspace Owner assignment. Apply it exactly; it does not widen the stated boundaries.\n\n")
+	fmt.Fprintf(&b, "> %s\n\n", strings.ReplaceAll(auth.Authorization, "\n", "\n> "))
+	fmt.Fprintf(&b, "Authorized by user `%s`; evidence `%s/%s`.\n\n", auth.AuthorizedByUserID, auth.EvidenceKind, auth.EvidenceRefID)
 	return b.String()
 }
 

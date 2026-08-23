@@ -148,7 +148,8 @@ type TaskContextForEnv struct {
 	AutopilotTriggerPayload string
 	QuickCreatePrompt       string // non-empty for quick-create tasks
 	HandoffNote             string // assignment handoff instruction; rendered into issue_context.md (MUL-3375)
-	IsSquadLeader           bool   // true when the agent is acting as a squad leader (may exit silently on no_action)
+	ResolvedContext         *ResolvedTaskContextForEnv
+	IsSquadLeader           bool // true when the agent is acting as a squad leader (may exit silently on no_action)
 	// WorkspaceContext is the workspace-level system prompt (workspace.context
 	// in the DB). Rendered into the brief as `## Workspace Context` when
 	// non-empty so every agent in the workspace sees the same shared context,
@@ -183,6 +184,17 @@ type TaskContextForEnv struct {
 	InitiatorID    string
 	InitiatorName  string
 	InitiatorEmail string
+}
+
+type ResolvedTaskContextForEnv struct {
+	OwnerAuthorization *ResolvedOwnerAuthorizationForEnv `json:"owner_authorization,omitempty"`
+}
+
+type ResolvedOwnerAuthorizationForEnv struct {
+	Authorization      string `json:"authorization"`
+	AuthorizedByUserID string `json:"authorized_by_user_id"`
+	EvidenceKind       string `json:"evidence_kind"`
+	EvidenceRefID      string `json:"evidence_ref_id"`
 }
 
 // SkillContextForEnv represents a skill to be written into the execution environment.

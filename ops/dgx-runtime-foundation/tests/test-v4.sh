@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+set -euo pipefail
+root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd); t=$(mktemp -d); trap "rm -rf $t" EXIT; p=$t/dest; b=$t/backup; HIVECREW_RUNTIME_PREFIX=$p HIVECREW_BACKUP_DIR=$b "$root/bin/install" --apply; before=$(sha256sum "$p/bin/hivecrew-runtime-wrapper"|awk "{print \$1}"); printf changed > "$p/owned-marker"; HIVECREW_RUNTIME_PREFIX=$p HIVECREW_BACKUP_DIR=$b "$root/bin/install" --apply; HIVECREW_RUNTIME_PREFIX=$p "$root/bin/uninstall" --apply; after=$(sha256sum "$p/bin/hivecrew-runtime-wrapper"|awk "{print \$1}"); [[ "$before" == "$after" ]]; archive=$t/package.tar; "$root/bin/package-archive" "$archive" >/dev/null; mkdir "$t/unpack"; tar -xf "$archive" -C "$t/unpack"; [[ -s "$archive.sha256" ]]; echo v4_tests=pass

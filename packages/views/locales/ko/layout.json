@@ -1,5 +1,6 @@
 {
   "nav": {
+    "command": "CEO 명령",
     "inbox": "인박스",
     "chat": "채팅",
     "my_issues": "내 이슈",
@@ -20,6 +21,18 @@
     "employees": "직원",
     "datasets": "데이터셋",
     "workflow": "워크플로"
+  },
+  "command": {
+    "title": "CEO 명령 센터",
+    "subtitle": "업무, 프로젝트, 에이전트 및 런타임의 실시간 운영 보기입니다.",
+    "open_work": "진행 중인 업무",
+    "in_review": "검토 대기",
+    "active_projects": "진행 중인 프로젝트",
+    "online_runtimes": "온라인 런타임",
+    "working_agents": "작업 중인 에이전트",
+    "loading": "실시간 운영 데이터를 불러오는 중…",
+    "degraded": "일부 실시간 데이터를 불러오지 못했습니다. 연결된 화면에서 세부 정보를 확인하세요.",
+    "open_surface": "열기"
   },
   "tab": {
     "issue": "이슈",
