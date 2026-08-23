@@ -63,6 +63,10 @@ function presenceText(p: PresenceState) {
   return `${PRESENCE_ICON[p]} ${PRESENCE_LABEL[p]}`;
 }
 
+function hasCurrentLinkage(e: EmployeeLiveActivityV1): boolean {
+  return !!e.issue_id || !!e.task_id || !!e.run_id;
+}
+
 function isoAgeLabel(iso: string): string {
   const d = new Date(iso);
   const diff = Math.max(0, Math.floor((Date.now() - d.getTime()) / 1000));
@@ -338,6 +342,11 @@ function OwnerCard({
             {e.issue_title}
           </div>
         ) : null}
+        {!hasCurrentLinkage(e) ? (
+          <div className="text-zinc-500" data-testid="owner-card-link-unavailable">
+            当前任务链接不可用
+          </div>
+        ) : null}
         {e.work_stage !== "none" ? (
           <div>工作阶段：{STAGE_LABEL[e.work_stage] ?? e.work_stage}</div>
         ) : null}
@@ -404,24 +413,33 @@ function OwnerCard({
             </div>
             <div>
               <div className="text-green-500">任务 / 运行</div>
-              {e.task_id ? (
-                <div className="truncate text-green-700">task_id {e.task_id}</div>
-              ) : (
-                <div className="text-zinc-500">无关联 Task</div>
-              )}
-              {e.run_id ? (
-                <div className="truncate text-green-700">run_id {e.run_id}</div>
-              ) : e.task_id ? (
-                <div className="text-zinc-500">直发任务（无独立 Run ID）</div>
-              ) : null}
-              {e.execution_receipt_ref ? (
+              {hasCurrentLinkage(e) ? (
+                <>
+                  {e.task_id ? (
+                    <div className="truncate text-green-700">task_id {e.task_id}</div>
+                  ) : (
+                    <div className="text-zinc-500">无关联 Task</div>
+                  )}
+                  {e.run_id ? (
+                    <div className="truncate text-green-700">run_id {e.run_id}</div>
+                  ) : e.task_id ? (
+                    <div className="text-zinc-500">直发任务（无独立 Run ID）</div>
+                  ) : null}
+                  {e.execution_receipt_ref ? (
+                    <div className="truncate">
+                      回执：{RECEIPT_STATUS_LABEL[e.execution_receipt_status ?? ""] ?? e.execution_receipt_status ?? ""}
+                      <span className="text-green-700"> {e.execution_receipt_ref}</span>
+                    </div>
+                  ) : (
+                    <div className="text-zinc-500">无执行回执</div>
+                  )}
+                </>
+              ) : e.execution_receipt_ref ? (
                 <div className="truncate">
                   回执：{RECEIPT_STATUS_LABEL[e.execution_receipt_status ?? ""] ?? e.execution_receipt_status ?? ""}
                   <span className="text-green-700"> {e.execution_receipt_ref}</span>
                 </div>
-              ) : (
-                <div className="text-zinc-500">无执行回执</div>
-              )}
+              ) : null}
             </div>
             <div>
               <div className="text-green-500">时间线</div>

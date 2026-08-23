@@ -379,12 +379,15 @@ describe("WorkWall expanded evidence panel", () => {
     expect(evidence.textContent).toContain("档案：高速前端档案");
   });
 
-  it("shows task/run/receipt evidence with explicit missing labels", () => {
+  it("shows task/run/receipt evidence only when linkage exists (exactly one unavailable indicator per card)", () => {
     render(<WorkWall employees={[emp()]} />);
     fireEvent.click(screen.getByTestId("owner-card-header"));
     const evidence = screen.getByTestId("owner-card-evidence");
-    expect(evidence.textContent).toContain("无关联 Task");
-    expect(evidence.textContent).toContain("无执行回执");
+    const card = screen.getByTestId("owner-card");
+    expect(screen.getAllByTestId("owner-card-link-unavailable")).toHaveLength(1);
+    expect(evidence.textContent).not.toContain("无关联 Task");
+    expect(evidence.textContent).not.toContain("无执行回执");
+    expect(card.textContent.match(/当前任务链接不可用/g)?.length ?? 0).toBe(1);
   });
 
   it("shows timeline evidence with all timestamps", () => {
@@ -459,5 +462,113 @@ describe("WorkWall missing evidence regression", () => {
   it("work_stage none hides the stage line", () => {
     render(<WorkWall employees={[emp({ work_stage: "none" })]} />);
     expect(screen.queryByText(/工作阶段：/)).toBeNull();
+  });
+});
+
+describe("WorkWall unavailable linkage indicator (R3)", () => {
+  it("shows exactly one unavailable indicator on a collapsed card with no issue/task/run", () => {
+    render(<WorkWall employees={[emp()]} />);
+    const indicators = screen.getAllByTestId("owner-card-link-unavailable");
+    expect(indicators).toHaveLength(1);
+    expect(indicators[0]?.textContent).toContain("当前任务链接不可用");
+  });
+
+  it("shows exactly one unavailable indicator when the card is expanded", () => {
+    render(<WorkWall employees={[emp()]} />);
+    fireEvent.click(screen.getByTestId("owner-card-header"));
+    const card = screen.getByTestId("owner-card");
+    const count = (card.textContent.match(/当前任务链接不可用/g) ?? []).length;
+    expect(count).toBe(1);
+    expect(screen.getAllByTestId("owner-card-link-unavailable")).toHaveLength(1);
+  });
+
+  it("hides the unavailable indicator when issue_id is present", () => {
+    render(
+      <WorkWall
+        employees={[
+          emp({
+            issue_id: "issue-9001",
+            issue_identifier: "HIV-9001",
+            issue_title: "已链接议题",
+          }),
+        ]}
+      />,
+    );
+    expect(screen.queryByTestId("owner-card-link-unavailable")).toBeNull();
+  });
+
+  it("hides the unavailable indicator when task_id is present", () => {
+    render(
+      <WorkWall
+        employees={[emp({ task_id: "task-4242" })]}
+      />,
+    );
+    expect(screen.queryByTestId("owner-card-link-unavailable")).toBeNull();
+  });
+
+  it("hides the unavailable indicator when only run_id is present (standalone run)", () => {
+    render(
+      <WorkWall
+        employees={[emp({ run_id: "run-9999" })]}
+      />,
+    );
+    expect(screen.queryByTestId("owner-card-link-unavailable")).toBeNull();
+  });
+
+  it("still shows a completed receipt when no current linkage exists", () => {
+    render(
+      <WorkWall
+        employees={[
+          emp({
+            execution_receipt_ref: "receipt://finished-1",
+            execution_receipt_status: "completed",
+          }),
+        ]}
+      />,
+    );
+    expect(screen.getByTestId("owner-card-link-unavailable")).toBeDefined();
+    fireEvent.click(screen.getByTestId("owner-card-header"));
+    const evidence = screen.getByTestId("owner-card-evidence");
+    expect(evidence.textContent).toContain("receipt://finished-1");
+    expect(evidence.textContent).toContain("已完成");
+  });
+
+  it("renders standalone run_id explicitly in the evidence panel", () => {
+    render(<WorkWall employees={[emp({ run_id: "run-standalone-7" })]} />);
+    fireEvent.click(screen.getByTestId("owner-card-header"));
+    const evidence = screen.getByTestId("owner-card-evidence");
+    expect(evidence.textContent).toContain("run_id run-standalone-7");
+  });
+});
+
+describe("WorkWall untrusted-extra-field regression (R3)", () => {
+  it("never renders top-level secret sentinels including token", () => {
+    const rogue = {
+      ...emp(),
+      token: "SENTINEL_TOKEN_sk_live_NEVER_RENDER",
+      raw_prompt: "SENTINEL_PROMPT_never_render_prompt",
+      env_vars: { api_key: "SENTINEL_ENV_never_render_env" },
+      credential: "SENTINEL_CRED_never_render_credential",
+      api_key: "SENTINEL_APIKEY_never_render_apikey",
+      chain_of_thought: "SENTINEL_COT_never_render_cot",
+    } as unknown as EmployeeLiveActivityV1;
+
+    render(<WorkWall employees={[rogue]} />);
+    const card = screen.getByTestId("owner-card").textContent ?? "";
+    expect(card).not.toContain("SENTINEL_TOKEN_sk_live_NEVER_RENDER");
+    expect(card).not.toContain("SENTINEL_PROMPT_never_render_prompt");
+    expect(card).not.toContain("SENTINEL_ENV_never_render_env");
+    expect(card).not.toContain("SENTINEL_CRED_never_render_credential");
+    expect(card).not.toContain("SENTINEL_APIKEY_never_render_apikey");
+    expect(card).not.toContain("SENTINEL_COT_never_render_cot");
+
+    fireEvent.click(screen.getByTestId("owner-card-header"));
+    const expanded = screen.getByTestId("owner-card-expanded").textContent ?? "";
+    expect(expanded).not.toContain("SENTINEL_TOKEN_sk_live_NEVER_RENDER");
+    expect(expanded).not.toContain("SENTINEL_PROMPT_never_render_prompt");
+    expect(expanded).not.toContain("SENTINEL_ENV_never_render_env");
+    expect(expanded).not.toContain("SENTINEL_CRED_never_render_credential");
+    expect(expanded).not.toContain("SENTINEL_APIKEY_never_render_apikey");
+    expect(expanded).not.toContain("SENTINEL_COT_never_render_cot");
   });
 });
