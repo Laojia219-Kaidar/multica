@@ -22,6 +22,42 @@ function timeLabel(iso: string) {
   return d.toLocaleTimeString("zh-CN", { hour12: false });
 }
 
+// Bounded offline sentinel for an explicitly configured external Prime
+// session whose absence the host collector CONFIRMED (prime-agent list
+// succeeded and the configured id had zero matches). Recognized by the
+// exact agent_hint token only — near-miss hints stay ordinary panes.
+const PRIME_OFFLINE_SENTINEL_HINT = "carrier=prime|non-authoritative|presence=offline";
+
+function isPrimeOfflinePane(pane: TerminalPane): boolean {
+  return pane.agent_hint === PRIME_OFFLINE_SENTINEL_HINT;
+}
+
+// Offline sentinel card: a plain, non-interactive projection. No expand
+// control, no tail block — the session is absent, there is nothing to show.
+function PrimeOfflineCard({ pane }: { pane: TerminalPane }) {
+  return (
+    <div
+      className="overflow-hidden rounded-lg border border-dashed bg-card text-foreground opacity-75 shadow-sm"
+      data-testid="terminal-live-prime-offline"
+    >
+      <div className="flex w-full items-center gap-2 px-3 py-2 text-xs">
+        <span className="rounded bg-muted px-1.5 py-0.5 font-mono font-medium text-foreground">
+          {pane.session_name}
+        </span>
+        <span className="font-mono text-muted-foreground">
+          {pane.host}:{pane.window_index}.{pane.pane_index}
+        </span>
+        <span className="text-muted-foreground" data-testid="terminal-live-prime-offline-label">
+          Prime 会话离线
+        </span>
+        <span className="ml-auto whitespace-nowrap font-mono text-muted-foreground">
+          {timeLabel(pane.heartbeat_at)}
+        </span>
+      </div>
+    </div>
+  );
+}
+
 function PaneCard({ pane }: { pane: TerminalPane }) {
   const [open, setOpen] = useState(false);
   const hasOutput = pane.tail_text.trim().length > 0;
@@ -65,14 +101,24 @@ function PaneCard({ pane }: { pane: TerminalPane }) {
 }
 
 export function TerminalLiveSection({ panes }: { panes: TerminalPane[] }) {
+  const offlinePanes = panes.filter(isPrimeOfflinePane);
+  const activePanes = panes.filter((p) => !isPrimeOfflinePane(p));
   const hosts = Array.from(new Set(panes.map((p) => p.host)));
   return (
     <section data-testid="terminal-live-section">
       <div className="mb-2 flex flex-wrap items-center gap-2">
         <h2 className="text-sm font-semibold">Terminal 现场</h2>
         <span className="text-xs text-muted-foreground">
-          {panes.length} 个活跃 pane · {hosts.length} 台主机 · 采集心跳 10s
+          {activePanes.length} 个活跃 pane · {hosts.length} 台主机 · 采集心跳 10s
         </span>
+        {offlinePanes.length > 0 ? (
+          <span
+            className="text-xs text-muted-foreground"
+            data-testid="terminal-live-offline-count"
+          >
+            {offlinePanes.length} 个 Prime 离线
+          </span>
+        ) : null}
         <span
           className="rounded-md border bg-muted/40 px-2 py-0.5 text-[11px] text-muted-foreground"
           data-testid="terminal-live-disclaimer"
@@ -86,12 +132,19 @@ export function TerminalLiveSection({ panes }: { panes: TerminalPane[] }) {
         </p>
       ) : (
         <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
-          {panes.map((p) => (
-            <PaneCard
-              key={`${p.host}:${p.session_name}:${p.window_index}:${p.pane_index}`}
-              pane={p}
-            />
-          ))}
+          {panes.map((p) =>
+            isPrimeOfflinePane(p) ? (
+              <PrimeOfflineCard
+                key={`${p.host}:${p.session_name}:${p.window_index}:${p.pane_index}`}
+                pane={p}
+              />
+            ) : (
+              <PaneCard
+                key={`${p.host}:${p.session_name}:${p.window_index}:${p.pane_index}`}
+                pane={p}
+              />
+            ),
+          )}
         </div>
       )}
     </section>

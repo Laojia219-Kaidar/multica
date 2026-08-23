@@ -30,9 +30,16 @@
   绝不投影 prompt、summary、firstMessage、诊断、端点/配置、会话文件、
   环境、工具参数、terminal 尾部、凭据或思维链。Prime pane 的 tail_text
   恒为空，agent_hint 标注 carrier=prime|non-authoritative，不声明员工身份。
+- 确认离线哨兵：每个配置短 id 解析为 matched / missing / ambiguous 三态
+  之一。仅当 CLI 本身成功（退出码 0、有界合法 JSON、admitted schema）且
+  该 id 在整个 payload 中零匹配（confirmed absent）时，才为它投影一个有界
+  离线哨兵 pane：session_name=prime-<短id>，pane_pid/window_index/pane_index
+  恒为 0，current_command="offline"，agent_hint 恒为
+  carrier=prime|non-authoritative|presence=offline，tail_text 恒为空。哨兵
+  不携带任何 payload 数据；歧义解析不产出 pane 也不产出哨兵。
 - Fail open：CLI 缺失/启动失败/超时/非零退出（即使 stdout 是合法 JSON）/
-  超大输出/坏 UTF-8/非法 payload 一律产出零个 Prime pane、不记录任何
-  原始 JSON，且不压制有效的 tmux pane。
+  超大输出/坏 UTF-8/非法 payload 一律产出零个 Prime pane、零个离线哨兵、
+  不记录任何原始 JSON，且不压制有效的 tmux pane。
 
 用法：nohup python3 terminal-presence-collector.sh.py >/tmp/terminal-presence.log 2>&1 &
 """
@@ -323,40 +330,60 @@ def prime_session_ids(session):
             ids.append(normalized)
     return ids
 
-def unique_prime_session_index(id_lists, short_id):
-    """Resolve one short id against every session's ids; fail closed.
+# Resolution outcomes for one configured Prime session id.
+PRIME_MATCHED = "matched"
+PRIME_MISSING = "missing"
+PRIME_AMBIGUOUS = "ambiguous"
+
+def resolve_prime_session(id_lists, short_id):
+    """Classify one configured id: matched, missing or ambiguous.
 
     Exact-first: a configured id equal to some session's full id field wins
     over any longer suffix collision. Failing that, only a suffix match
-    that is unambiguous across the entire payload qualifies. Zero matches,
-    ambiguous exact matches or ambiguous suffixes all return None — never
-    guess.
+    that is unambiguous across the entire payload qualifies. Zero matches
+    anywhere means the configured session is confirmed absent (missing);
+    two or more candidates — exact or suffix — stay ambiguous and must
+    project nothing. Never guess.
     """
     exact = [i for i, ids in enumerate(id_lists) if short_id in ids]
     if len(exact) == 1:
-        return exact[0]
+        return PRIME_MATCHED, exact[0]
     if exact:
-        return None
+        return PRIME_AMBIGUOUS, None
     suffix = [
         i for i, ids in enumerate(id_lists)
         if any(value.endswith(short_id) for value in ids)
     ]
     if len(suffix) == 1:
-        return suffix[0]
-    return None
+        return PRIME_MATCHED, suffix[0]
+    if suffix:
+        return PRIME_AMBIGUOUS, None
+    return PRIME_MISSING, None
+
+def unique_prime_session_index(id_lists, short_id):
+    """Matched-index-only view of resolve_prime_session.
+
+    Returns the unique matched index, or None for missing and ambiguous —
+    callers that only need "does this id name exactly one session" never
+    have to distinguish why not.
+    """
+    status, index = resolve_prime_session(id_lists, short_id)
+    return index if status == PRIME_MATCHED else None
 
 def match_prime_sessions(sessions, configured):
     """Apply the documented exact-first, unambiguous suffix rule.
 
-    Returns an ordered {dedup_id: (session, short_id)} map keyed by the
-    session's first normalized id field, so one official session is never
-    projected twice even if several configured ids resolve to it.
+    Returns an ordered {dedup_id: (session, short_id)} map of MATCHED
+    sessions only, keyed by the session's first normalized id field, so
+    one official session is never projected twice even if several
+    configured ids resolve to it. Missing and ambiguous resolutions never
+    appear here; collect_prime_sessions owns the offline sentinel.
     """
     id_lists = [prime_session_ids(entry) for entry in sessions]
     matched = {}
     for short_id in configured:
-        index = unique_prime_session_index(id_lists, short_id)
-        if index is None:
+        status, index = resolve_prime_session(id_lists, short_id)
+        if status != PRIME_MATCHED:
             continue
         dedup_id = id_lists[index][0]
         if dedup_id not in matched:
@@ -452,13 +479,40 @@ def project_prime_session(session, short_id, active):
         "tail_text": "",
     }
 
+# Offline sentinel tokens. The frontend matches the hint token verbatim to
+# render the bounded offline projection, so both strings are fixed shape.
+PRIME_OFFLINE_COMMAND = "offline"
+PRIME_OFFLINE_HINT = "carrier=prime|non-authoritative|presence=offline"
+
+def prime_offline_sentinel(short_id):
+    """Bounded offline pane for one confirmed-absent configured session.
+
+    Emitted only after `prime-agent list --json` itself succeeded (exit 0,
+    bounded valid JSON, admitted schema) and the configured id had zero
+    matches anywhere in the payload. The sentinel carries no payload data:
+    only the configured short id inside session_name plus fixed offline
+    tokens; it shares the pane key of the live projection (session_name +
+    window 0 + pane 0) so the server upsert replaces, never duplicates.
+    """
+    return {
+        "session_name": (PRIME_PANE_PREFIX + short_id)[:255],
+        "window_index": 0,
+        "pane_index": 0,
+        "pane_pid": 0,
+        "current_command": PRIME_OFFLINE_COMMAND,
+        "agent_hint": PRIME_OFFLINE_HINT,
+        "tail_text": "",
+    }
+
 def collect_prime_sessions(environ=None):
     """Collect Prime panes; every failure mode yields [] (fail open).
 
     Missing/broken CLI, spawn error, timeout, non-zero exit (even with
     valid JSON on stdout), oversized output, bad UTF-8, malformed JSON or
-    unexpected payload shape all produce zero Prime panes and log no raw
-    JSON.
+    unexpected payload shape all produce zero Prime panes — never an
+    offline sentinel — and log no raw JSON. On a healthy listing each
+    configured id resolves to exactly one of matched (projected live
+    pane), missing (bounded offline sentinel pane) or ambiguous (no pane).
     """
     configured = configured_prime_session_ids(environ)
     if not configured:
@@ -483,9 +537,20 @@ def collect_prime_sessions(environ=None):
         return []
     id_lists = [prime_session_ids(entry) for entry in sessions]
     panes = []
-    for _, (session, short_id) in match_prime_sessions(sessions, configured).items():
-        active = prime_session_is_active(session, sessions, id_lists, active_id)
-        panes.append(project_prime_session(session, short_id, active))
+    projected_dedup_ids = set()
+    for short_id in configured:
+        status, index = resolve_prime_session(id_lists, short_id)
+        if status == PRIME_AMBIGUOUS:
+            continue
+        if status == PRIME_MISSING:
+            panes.append(prime_offline_sentinel(short_id))
+            continue
+        dedup_id = id_lists[index][0]
+        if dedup_id in projected_dedup_ids:
+            continue
+        projected_dedup_ids.add(dedup_id)
+        active = prime_session_is_active(sessions[index], sessions, id_lists, active_id)
+        panes.append(project_prime_session(sessions[index], short_id, active))
     return panes
 
 def collect_all():

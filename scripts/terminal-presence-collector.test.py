@@ -262,6 +262,58 @@ class TestPrimeSuffixMatching(unittest.TestCase):
         self.assertEqual(len(matched), 1)
 
 
+class TestPrimeResolutionTriState(unittest.TestCase):
+    """Each configured id resolves to exactly matched, missing or ambiguous."""
+
+    def test_exact_unique_match_is_matched(self):
+        id_lists = [["agent-run-aaa1111"], ["sess-bbb2222"]]
+        self.assertEqual(
+            collector.resolve_prime_session(id_lists, "agent-run-aaa1111"),
+            (collector.PRIME_MATCHED, 0),
+        )
+
+    def test_unique_suffix_match_is_matched(self):
+        id_lists = [["sess-2026-aaa1111"], ["sess-other-bbb2222"]]
+        self.assertEqual(
+            collector.resolve_prime_session(id_lists, "aaa1111"),
+            (collector.PRIME_MATCHED, 0),
+        )
+
+    def test_zero_matches_is_missing(self):
+        id_lists = [["sess-aaa1111"], ["sess-bbb2222"]]
+        self.assertEqual(
+            collector.resolve_prime_session(id_lists, "ccc3333"),
+            (collector.PRIME_MISSING, None),
+        )
+
+    def test_ambiguous_suffix_is_ambiguous(self):
+        id_lists = [["run-one-aaa1111"], ["run-two-aaa1111"]]
+        self.assertEqual(
+            collector.resolve_prime_session(id_lists, "aaa1111"),
+            (collector.PRIME_AMBIGUOUS, None),
+        )
+
+    def test_ambiguous_exact_match_is_ambiguous(self):
+        id_lists = [["aaa1111"], ["aaa1111"]]
+        self.assertEqual(
+            collector.resolve_prime_session(id_lists, "aaa1111"),
+            (collector.PRIME_AMBIGUOUS, None),
+        )
+
+    def test_exact_wins_over_suffix_collision(self):
+        id_lists = [["sess-other-01", "aaa1111"], ["sess-2026-aaa1111"]]
+        self.assertEqual(
+            collector.resolve_prime_session(id_lists, "aaa1111"),
+            (collector.PRIME_MATCHED, 0),
+        )
+
+    def test_unique_prime_session_index_still_hides_missing_and_ambiguous(self):
+        id_lists = [["sess-aaa1111"], ["run-one-bbb2222"], ["run-two-bbb2222"]]
+        self.assertEqual(collector.unique_prime_session_index(id_lists, "sess-aaa1111"), 0)
+        self.assertIsNone(collector.unique_prime_session_index(id_lists, "ccc3333"))
+        self.assertIsNone(collector.unique_prime_session_index(id_lists, "bbb2222"))
+
+
 def resolve_active(session, sessions, active_session_id):
     """prime_session_is_active with the payload-wide id lists precomputed."""
     id_lists = [collector.prime_session_ids(entry) for entry in sessions]
@@ -504,6 +556,117 @@ class TestPrimeFailOpen(unittest.TestCase):
         with mock.patch.object(collector, "collect", return_value=[SAMPLE_TMUX_PANE]):
             with mock.patch.object(collector, "find_prime_binary", return_value=None):
                 self.assertEqual(collector.collect_all(), [SAMPLE_TMUX_PANE])
+
+
+OFFLINE_SENTINEL_PANE = {
+    "session_name": "prime-6fce4bd4bb2a",
+    "window_index": 0,
+    "pane_index": 0,
+    "pane_pid": 0,
+    "current_command": "offline",
+    "agent_hint": "carrier=prime|non-authoritative|presence=offline",
+    "tail_text": "",
+}
+
+
+class TestPrimeOfflineSentinel(unittest.TestCase):
+    """Confirmed-absent configured sessions project a bounded offline pane."""
+
+    def collect_prime(self, payload, env=None):
+        with mock.patch.object(collector, "find_prime_binary", return_value="/x/prime-agent"):
+            with mock.patch.object(
+                collector, "run_prime_cli",
+                return_value=(0, json.dumps(payload).encode("utf-8")),
+            ):
+                return collector.collect_prime_sessions(env or prime_env())
+
+    def test_sentinel_shape_is_exact(self):
+        self.assertEqual(collector.prime_offline_sentinel("6fce4bd4bb2a"), OFFLINE_SENTINEL_PANE)
+
+    def test_confirmed_absent_session_projects_exactly_one_sentinel(self):
+        payload = {"sessions": [{"sessionId": "sess-other-aaaa1111"}]}
+        self.assertEqual(self.collect_prime(payload), [OFFLINE_SENTINEL_PANE])
+
+    def test_empty_but_valid_listing_confirms_absence(self):
+        self.assertEqual(self.collect_prime({"sessions": []}), [OFFLINE_SENTINEL_PANE])
+
+    def test_matched_and_missing_ids_project_pane_and_sentinel(self):
+        env = prime_env({collector.PRIME_SESSIONS_ENV: "aaaa1111,6fce4bd4bb2a"})
+        panes = self.collect_prime({"sessions": [dict(SAMPLE_SESSION)]}, env)
+        self.assertEqual(
+            [p["session_name"] for p in panes],
+            ["prime-aaaa1111", "prime-6fce4bd4bb2a"],
+        )
+        by_name = {p["session_name"]: p for p in panes}
+        self.assertEqual(by_name["prime-aaaa1111"]["current_command"], "offline")
+        self.assertIn("qwen3.8-max", by_name["prime-6fce4bd4bb2a"]["current_command"])
+
+    def test_two_missing_ids_project_two_distinct_sentinels(self):
+        env = prime_env({collector.PRIME_SESSIONS_ENV: "6fce4bd4bb2a,aaaa1111"})
+        panes = self.collect_prime({"sessions": []}, env)
+        self.assertEqual(
+            [p["session_name"] for p in panes],
+            ["prime-6fce4bd4bb2a", "prime-aaaa1111"],
+        )
+        for pane in panes:
+            self.assertEqual(pane["current_command"], "offline")
+
+    def test_ambiguous_id_projects_no_pane_and_no_sentinel(self):
+        sessions = [
+            {"sessionId": "run-one-6fce4bd4bb2a"},
+            {"sessionId": "run-two-6fce4bd4bb2a"},
+        ]
+        self.assertEqual(self.collect_prime({"sessions": sessions}), [])
+
+    def test_ambiguous_id_emits_no_sentinel_even_next_to_a_match(self):
+        sessions = [
+            {"sessionId": "run-one-6fce4bd4bb2a"},
+            {"sessionId": "run-two-6fce4bd4bb2a"},
+            {"sessionId": "sess-other-aaaa1111"},
+        ]
+        env = prime_env({collector.PRIME_SESSIONS_ENV: "6fce4bd4bb2a,aaaa1111"})
+        panes = self.collect_prime({"sessions": sessions}, env)
+        self.assertEqual([p["session_name"] for p in panes], ["prime-aaaa1111"])
+
+    def test_sentinel_carries_no_payload_data(self):
+        session = {"sessionId": "sess-marker-aaaa1111", "prompt": "MARKER-PROMPT-77"}
+        panes = self.collect_prime({"sessions": [session]})
+        self.assertNotIn("MARKER-PROMPT-77", json.dumps(panes))
+        self.assertEqual(panes, [OFFLINE_SENTINEL_PANE])
+
+    def test_failure_modes_never_emit_offline_sentinel(self):
+        # A would-be-missing id must not look offline when the CLI cannot
+        # prove absence: every failure mode keeps zero Prime panes.
+        absent = payload_bytes(sessions=[{"sessionId": "sess-other-aaaa1111"}])
+        cases = [
+            ("nonzero exit", (3, absent), None),
+            ("invalid json", (0, b"not json"), None),
+            ("invalid schema", (0, b'{"unexpected": true}'), None),
+            ("oversized output", (0, b" " * (collector.PRIME_OUTPUT_MAX_BYTES + 1)), None),
+            ("bad utf-8", (0, b"\xff\xfe{}"), None),
+            ("timeout", None, subprocess.TimeoutExpired(cmd="prime-agent", timeout=1)),
+            ("spawn error", None, OSError("boom")),
+        ]
+        for label, result, exc in cases:
+            with self.subTest(label=label):
+                with mock.patch.object(collector, "find_prime_binary", return_value="/x/prime-agent"):
+                    if exc is not None:
+                        with mock.patch.object(collector, "run_prime_cli", side_effect=exc):
+                            panes = collector.collect_prime_sessions(prime_env())
+                    else:
+                        with mock.patch.object(collector, "run_prime_cli", return_value=result):
+                            panes = collector.collect_prime_sessions(prime_env())
+                self.assertEqual(panes, [])
+
+    def test_absent_cli_never_emits_offline_sentinel(self):
+        with mock.patch.object(collector, "find_prime_binary", return_value=None):
+            self.assertEqual(collector.collect_prime_sessions(prime_env()), [])
+
+    def test_collect_all_keeps_tmux_panes_and_offline_sentinel(self):
+        sentinel = collector.prime_offline_sentinel("6fce4bd4bb2a")
+        with mock.patch.object(collector, "collect", return_value=[SAMPLE_TMUX_PANE]):
+            with mock.patch.object(collector, "collect_prime_sessions", return_value=[sentinel]):
+                self.assertEqual(collector.collect_all(), [SAMPLE_TMUX_PANE, sentinel])
 
 
 class TestCollectAllMerge(unittest.TestCase):

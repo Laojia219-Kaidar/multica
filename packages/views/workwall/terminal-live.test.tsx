@@ -147,3 +147,102 @@ describe("TerminalLiveSection external observation disclaimer", () => {
     expect(hint.textContent).not.toContain("employee");
   });
 });
+
+describe("TerminalLiveSection Prime offline sentinel", () => {
+  const OFFLINE_HINT = "carrier=prime|non-authoritative|presence=offline";
+
+  function offlinePane(over: Partial<TerminalPane> = {}): TerminalPane {
+    return pane({
+      session_name: "prime-6fce4bd4bb2a",
+      current_command: "offline",
+      agent_hint: OFFLINE_HINT,
+      tail_text: "",
+      ...over,
+    });
+  }
+
+  it("renders the Prime 会话离线 label for the exact offline sentinel", () => {
+    render(<TerminalLiveSection panes={[offlinePane()]} />);
+    const label = screen.getByTestId("terminal-live-prime-offline-label");
+    expect(label.textContent).toBe("Prime 会话离线");
+    const card = screen.getByTestId("terminal-live-prime-offline");
+    expect(card.textContent).toContain("prime-6fce4bd4bb2a");
+    expect(card.textContent).toContain("mac-ultra:0.0");
+  });
+
+  it("provides no expand control and no tail block for the offline sentinel", () => {
+    render(<TerminalLiveSection panes={[offlinePane()]} />);
+    expect(screen.queryByRole("button")).toBeNull();
+    expect(screen.queryByTestId("terminal-live-tail")).toBeNull();
+    expect(screen.queryByTestId("terminal-live-pane")).toBeNull();
+  });
+
+  it("excludes the offline sentinel from the active count and shows a separate offline count", () => {
+    render(
+      <TerminalLiveSection
+        panes={[pane(), pane({ session_name: "build" }), offlinePane()]}
+      />,
+    );
+    const section = screen.getByTestId("terminal-live-section");
+    expect(section.textContent).toContain("2 个活跃 pane");
+    expect(screen.getByTestId("terminal-live-offline-count").textContent).toBe("1 个 Prime 离线");
+  });
+
+  it("does not show the offline count when no offline sentinel exists", () => {
+    render(<TerminalLiveSection panes={[pane()]} />);
+    expect(screen.queryByTestId("terminal-live-offline-count")).toBeNull();
+    expect(screen.getByTestId("terminal-live-section").textContent).toContain("1 个活跃 pane");
+  });
+
+  it("renders offline sentinels instead of the empty state when they are the only panes", () => {
+    render(
+      <TerminalLiveSection
+        panes={[offlinePane(), offlinePane({ session_name: "prime-aaaa1111" })]}
+      />,
+    );
+    expect(screen.queryByText(/暂无活跃 Terminal 现场/)).toBeNull();
+    expect(screen.getAllByTestId("terminal-live-prime-offline")).toHaveLength(2);
+    expect(screen.getByTestId("terminal-live-section").textContent).toContain("0 个活跃 pane");
+    expect(screen.getByTestId("terminal-live-offline-count").textContent).toBe("2 个 Prime 离线");
+  });
+
+  it("treats only the exact sentinel token as offline", () => {
+    const nearMisses = [
+      "carrier=prime|non-authoritative|presence=offlin",
+      "carrier=prime|non-authoritative|presence=offline|x",
+      "carrier=prime|non-authoritative|Presence=offline",
+      " carrier=prime|non-authoritative|presence=offline",
+      "carrier=prime|non-authoritative",
+    ];
+    for (const agent_hint of nearMisses) {
+      const { unmount } = render(
+        <TerminalLiveSection panes={[offlinePane({ agent_hint, session_name: "work" })]} />,
+      );
+      expect(screen.queryByTestId("terminal-live-prime-offline")).toBeNull();
+      expect(screen.queryByText("Prime 会话离线")).toBeNull();
+      expect(screen.queryByTestId("terminal-live-offline-count")).toBeNull();
+      expect(screen.getByTestId("terminal-live-section").textContent).toContain("1 个活跃 pane");
+      expect(screen.getByRole("button", { expanded: false })).toBeDefined();
+      unmount();
+    }
+  });
+
+  it("keeps active-pane expansion unchanged next to an offline sentinel", () => {
+    render(
+      <TerminalLiveSection
+        panes={[
+          pane({ session_name: "work", tail_text: "active tail line" }),
+          offlinePane(),
+        ]}
+      />,
+    );
+    expect(screen.queryByTestId("terminal-live-tail")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { expanded: false }));
+    expect(screen.getByTestId("terminal-live-tail").textContent).toBe("active tail line");
+
+    fireEvent.click(screen.getByRole("button", { expanded: true }));
+    expect(screen.queryByTestId("terminal-live-tail")).toBeNull();
+    expect(screen.getByTestId("terminal-live-prime-offline-label").textContent).toBe("Prime 会话离线");
+  });
+});
