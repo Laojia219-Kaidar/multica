@@ -712,7 +712,7 @@ describe("WorkConservingPanel lineage drilldown", () => {
 
     expect(screen.getByRole("link", { name: "employee-1" })).toHaveAttribute(
       "href",
-      "/hivecosm/agents/employee-1",
+      "/hivecosm/organization/employees/employee-1",
     );
     expect(screen.getByRole("link", { name: "agent-1" })).toHaveAttribute(
       "href",
@@ -725,7 +725,7 @@ describe("WorkConservingPanel lineage drilldown", () => {
     // Canonical builder semantics: IDs are URL-encoded, not interpolated raw.
     expect(screen.getByRole("link", { name: "employee/2" })).toHaveAttribute(
       "href",
-      "/hivecosm/agents/employee%2F2",
+      "/hivecosm/organization/employees/employee%2F2",
     );
     expect(screen.getByRole("link", { name: "runtime/2" })).toHaveAttribute(
       "href",
@@ -758,6 +758,30 @@ describe("WorkConservingPanel lineage drilldown", () => {
     expect(document.querySelector('a[href*="GLM"]')).toBeNull();
   });
 
+  it("fails closed for whitespace-only or padded lineage IDs", () => {
+    const base = projection("ready");
+    setProjection({
+      ...base,
+      suggestions: [
+        {
+          issueId: "issue-gap-whitespace",
+          goalId: "goal-1",
+          employeeId: " ",
+          agentId: " agent-padded ",
+          runtimeId: "\t",
+          score: 1,
+          receiver: "receiver-whitespace",
+          wakeCondition: "wake",
+        },
+      ],
+    });
+    renderPanel();
+
+    expect(screen.getByText("issue-gap-whitespace")).toBeInTheDocument();
+    expect(screen.getByText("receiver-whitespace")).toBeInTheDocument();
+    expect(screen.queryByRole("link")).toBeNull();
+  });
+
   it("renders unlinked IDs alongside linked ones when only some lineage IDs exist", () => {
     const base = projection("ready");
     setProjection({
@@ -779,7 +803,7 @@ describe("WorkConservingPanel lineage drilldown", () => {
 
     expect(screen.getByRole("link", { name: "employee-partial" })).toHaveAttribute(
       "href",
-      "/hivecosm/agents/employee-partial",
+      "/hivecosm/organization/employees/employee-partial",
     );
     expect(screen.queryByRole("link", { name: "agent-1" })).toBeNull();
     expect(screen.queryByRole("link", { name: "runtime-1" })).toBeNull();

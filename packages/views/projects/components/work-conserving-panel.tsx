@@ -49,7 +49,8 @@ function StateIcon({ state }: { state: WorkConservingProjection["state"] }) {
 
 /**
  * Fail-closed drilldown anchor for a work-conserving suggestion lineage ID.
- * Renders nothing when the authoritative ID is missing or empty: a link is
+ * Renders nothing when the authoritative ID is missing, empty, or contains
+ * leading/trailing whitespace: a link is
  * built only from the exact payload ID through the canonical workspace path
  * builder, never inferred from a display name, model, Runtime label, or
  * provider, and never fabricated for a source-gap projection.
@@ -61,7 +62,7 @@ function LineageLink({
   id: string | undefined;
   buildHref: (id: string) => string;
 }) {
-  if (!id) return null;
+  if (!id || id.trim() !== id) return null;
   return (
     <a
       href={buildHref(id)}
@@ -319,7 +320,7 @@ export function WorkConservingPanel({ projectId }: { projectId: string }) {
                 <div key={suggestion.issueId} className="rounded-md bg-muted/25 px-2.5 py-2 text-xs">
                   <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
                     <span className="font-medium">{suggestion.issueId}</span>
-                    <LineageLink id={suggestion.employeeId} buildHref={wsPaths.agentDetail} />
+                    <LineageLink id={suggestion.employeeId} buildHref={wsPaths.employeeDossier} />
                     <LineageLink id={suggestion.agentId} buildHref={wsPaths.agentDetail} />
                     <LineageLink id={suggestion.runtimeId} buildHref={wsPaths.runtimeDetail} />
                     <span className="text-muted-foreground">{suggestion.receiver}</span>
