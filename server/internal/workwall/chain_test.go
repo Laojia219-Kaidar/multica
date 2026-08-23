@@ -185,6 +185,24 @@ func TestResolveExecutionChain_NilTaskYieldsNilChain(t *testing.T) {
 	}
 }
 
+func TestResolveExecutionChain_NilTaskStillHydratesRuntimeProfile(t *testing.T) {
+	store := newFakeChainStore()
+	store.profiles[key(tu, tu)] = db.GetRuntimeProfileForWorkWallRow{
+		ID: tu, WorkspaceID: tu, DisplayName: "Prime Agent · GLM-5.3",
+	}
+
+	chain, err := resolveExecutionChain(context.Background(), store, tu, "HIV", seededRuntime(), nil)
+	if err != nil {
+		t.Fatalf("resolveExecutionChain: %v", err)
+	}
+	if chain == nil {
+		t.Fatal("idle runtime with a bound profile must return a profile-only chain")
+	}
+	if chain.TaskID != "" || chain.RuntimeProfileID != uuidStr(tu) || chain.RuntimeProfileName != "Prime Agent · GLM-5.3" {
+		t.Fatalf("profile-only chain = %+v", chain)
+	}
+}
+
 func TestResolveExecutionChain_MissingEvidenceStaysAbsent(t *testing.T) {
 	store := newFakeChainStore() // no issue, project, profile or receipt rows
 	task := seededChainTask()    // direct task: no autopilot_run_id

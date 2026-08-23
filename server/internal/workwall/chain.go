@@ -119,8 +119,9 @@ func resolveIssuePrefix(ctx context.Context, store chainStore, workspaceID pgtyp
 }
 
 // resolveExecutionChain hydrates the chain for the task currently shown on the
-// card (active task, or the most recent terminal task when idle). A nil task
-// yields a nil chain. rt may be nil (no runtime row).
+// card (active task, or the most recent terminal task when idle). Runtime
+// Profile evidence is independent of task evidence, so an idle card may
+// return a profile-only chain. rt may be nil (no runtime row).
 func resolveExecutionChain(
 	ctx context.Context,
 	store chainStore,
@@ -129,19 +130,7 @@ func resolveExecutionChain(
 	rt *db.AgentRuntime,
 	task *db.AgentTaskQueue,
 ) (*ExecutionChain, error) {
-	if task == nil {
-		return nil, nil
-	}
-	chain := &ExecutionChain{TaskID: uuidStr(task.ID)}
-
-	if task.AutopilotRunID.Valid {
-		if matches, err := validateRunLineage(ctx, store, workspaceID, task, task.AutopilotRunID); err != nil {
-			return nil, err
-		} else if matches {
-			chain.RunID = uuidStr(task.AutopilotRunID)
-		}
-		// Mismatch or missing run: RunID stays empty — fail closed.
-	}
+	chain := &ExecutionChain{}
 
 	if rt != nil && rt.ProfileID.Valid {
 		profile, err := store.GetRuntimeProfileForWorkWall(ctx, db.GetRuntimeProfileForWorkWallParams{
@@ -155,6 +144,23 @@ func resolveExecutionChain(
 			chain.RuntimeProfileID = uuidStr(profile.ID)
 			chain.RuntimeProfileName = profile.DisplayName
 		}
+	}
+
+	if task == nil {
+		if chain.RuntimeProfileID == "" {
+			return nil, nil
+		}
+		return chain, nil
+	}
+	chain.TaskID = uuidStr(task.ID)
+
+	if task.AutopilotRunID.Valid {
+		if matches, err := validateRunLineage(ctx, store, workspaceID, task, task.AutopilotRunID); err != nil {
+			return nil, err
+		} else if matches {
+			chain.RunID = uuidStr(task.AutopilotRunID)
+		}
+		// Mismatch or missing run: RunID stays empty — fail closed.
 	}
 
 	if task.IssueID.Valid {

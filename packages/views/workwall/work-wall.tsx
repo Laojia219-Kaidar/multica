@@ -53,7 +53,7 @@ const FRESHNESS_LABEL: Record<string, string> = {
 };
 
 const FRESHNESS_COLOR: Record<string, string> = {
-  fresh: "text-success",
+  fresh: "text-muted-foreground",
   stale: "text-warning",
   missing: "text-destructive",
   conflict: "text-destructive",
@@ -127,7 +127,7 @@ export function WorkWall({ employees }: WorkWallProps) {
   });
 
   return (
-    <div className="work-wall flex flex-col gap-3" data-testid="work-wall">
+    <div className="work-wall flex flex-col gap-4" data-testid="work-wall">
       <StatusBar employees={employees} />
       <div className="flex flex-wrap items-center gap-2 text-xs">
         {(["all", ...Object.keys(PRESENCE_LABEL)] as Array<PresenceState | "all">).map((p) => (
@@ -153,7 +153,7 @@ export function WorkWall({ employees }: WorkWallProps) {
         <FilterSelect label="模型" values={models} value={modelFilter} onChange={setModelFilter} />
       </div>
 
-      <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
         {filtered.map((e) => (
           <OwnerCard
             key={e.agent_id}

@@ -226,6 +226,8 @@ describe("WorkWall Owner card identity and runtime", () => {
     render(<WorkWall employees={[emp({ freshness_state: "fresh" })]} />);
     const freshness = screen.getByTestId("owner-card-freshness");
     expect(freshness.textContent).toContain("新鲜度：新鲜");
+    expect(freshness.className).toContain("text-muted-foreground");
+    expect(freshness.className).not.toContain("text-success");
   });
 
   it("shows stale freshness with the shared warning tone", () => {

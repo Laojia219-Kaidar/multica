@@ -56,9 +56,9 @@ type EmployeeLiveActivityV1 struct {
 	ActivitySummary string        `json:"activity_summary,omitempty"`
 	RecentEvents    []RecentEvent `json:"recent_events"`
 
-	BaseID         string `json:"base_id,omitempty"`
-	BaseName       string `json:"base_name,omitempty"`
-	RuntimeID      string `json:"runtime_id,omitempty"`
+	BaseID    string `json:"base_id,omitempty"`
+	BaseName  string `json:"base_name,omitempty"`
+	RuntimeID string `json:"runtime_id,omitempty"`
 	// RuntimeCarrier is the executable protocol/carrier. The legacy JSON key
 	// remains for installed-client compatibility and must not be labeled as
 	// the LLM provider in user-facing surfaces.
