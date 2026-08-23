@@ -1,12 +1,14 @@
 // @vitest-environment jsdom
-import { beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { defaultStorage } from "./storage";
 
-// Node 25 ships a partial `localStorage` shim under jsdom that's missing
-// `clear`/`removeItem`; replace it with a real in-memory Storage so the
-// round-trip can hold values.
-beforeAll(() => {
-  if (typeof globalThis.localStorage?.clear !== "function") {
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+});
+
+describe("defaultStorage", () => {
+  it("round-trips get/set/remove through window.localStorage", () => {
     const values = new Map<string, string>();
     const storage: Storage = {
       get length() { return values.size; },
@@ -16,13 +18,8 @@ beforeAll(() => {
       removeItem: (k) => { values.delete(k); },
       setItem: (k, v) => { values.set(k, v); },
     };
-    Object.defineProperty(globalThis, "localStorage", { configurable: true, value: storage });
     Object.defineProperty(window, "localStorage", { configurable: true, value: storage });
-  }
-});
 
-describe("defaultStorage", () => {
-  it("round-trips get/set/remove through window.localStorage", () => {
     expect(defaultStorage.getItem("k")).toBeNull();
 
     defaultStorage.setItem("k", "v");
@@ -42,15 +39,53 @@ describe("defaultStorage", () => {
     const removeItem = vi.fn();
     vi.stubGlobal("window", undefined);
     vi.stubGlobal("localStorage", { getItem, setItem, removeItem });
-    try {
-      expect(defaultStorage.getItem("k")).toBeNull();
-      defaultStorage.setItem("k", "v");
-      defaultStorage.removeItem("k");
-    } finally {
-      vi.unstubAllGlobals();
-    }
+
+    expect(defaultStorage.getItem("k")).toBeNull();
+    defaultStorage.setItem("k", "v");
+    defaultStorage.removeItem("k");
+
     expect(getItem).not.toHaveBeenCalled();
     expect(setItem).not.toHaveBeenCalled();
     expect(removeItem).not.toHaveBeenCalled();
+  });
+
+  // Partial JSDOM / test surfaces: `window` exists but `window.localStorage`
+  // is undefined. This is the failure that aborted useBatchDeleteIssues
+  // before command-metric invalidation could be observed.
+  it("is a safe no-op when window.localStorage is undefined", () => {
+    Object.defineProperty(window, "localStorage", {
+      configurable: true,
+      value: undefined,
+    });
+
+    expect(defaultStorage.getItem("k")).toBeNull();
+    expect(() => defaultStorage.setItem("k", "v")).not.toThrow();
+    expect(() => defaultStorage.removeItem("k")).not.toThrow();
+  });
+
+  it("is a safe no-op when window.localStorage is missing individual methods", () => {
+    const setItem = vi.fn();
+    Object.defineProperty(window, "localStorage", {
+      configurable: true,
+      // Only setItem exists; getItem and removeItem are missing. This models
+      // a partially implemented storage shim.
+      value: { setItem },
+    });
+
+    expect(defaultStorage.getItem("k")).toBeNull();
+    expect(() => defaultStorage.setItem("k", "v")).not.toThrow();
+    expect(setItem).toHaveBeenCalledWith("k", "v");
+    expect(() => defaultStorage.removeItem("k")).not.toThrow();
+  });
+
+  it("propagates real storage errors instead of hiding application exceptions", () => {
+    const error = new Error("QuotaExceededError");
+    const setItem = vi.fn(() => { throw error; });
+    Object.defineProperty(window, "localStorage", {
+      configurable: true,
+      value: { setItem },
+    });
+
+    expect(() => defaultStorage.setItem("k", "v")).toThrow(error);
   });
 });
