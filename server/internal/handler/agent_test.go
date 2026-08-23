@@ -1279,6 +1279,57 @@ func TestUpdateAgent_RejectsCustomEnvInBody(t *testing.T) {
 	}
 }
 
+func TestUpdateAgent_OperationalModeTargetsOneAgent(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+
+	targetID := createHandlerTestAgent(t, "operational-mode-target", nil)
+	peerID := createHandlerTestAgent(t, "operational-mode-peer", nil)
+	if _, err := testPool.Exec(ctx, `UPDATE agent SET operational_mode = 'resting' WHERE id IN ($1, $2)`, targetID, peerID); err != nil {
+		t.Fatalf("seed resting operational modes: %v", err)
+	}
+
+	w := httptest.NewRecorder()
+	req := withURLParam(newRequest(http.MethodPut, "/api/agents/"+targetID, map[string]any{
+		"operational_mode": "active",
+	}), "id", targetID)
+	testHandler.UpdateAgent(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("UpdateAgent operational_mode: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp AgentResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.OperationalMode != "active" {
+		t.Fatalf("response operational_mode = %q, want active", resp.OperationalMode)
+	}
+
+	var targetMode, peerMode string
+	if err := testPool.QueryRow(ctx, `SELECT operational_mode FROM agent WHERE id = $1`, targetID).Scan(&targetMode); err != nil {
+		t.Fatalf("read target operational_mode: %v", err)
+	}
+	if err := testPool.QueryRow(ctx, `SELECT operational_mode FROM agent WHERE id = $1`, peerID).Scan(&peerMode); err != nil {
+		t.Fatalf("read peer operational_mode: %v", err)
+	}
+	if targetMode != "active" || peerMode != "resting" {
+		t.Fatalf("modes target=%q peer=%q, want active/resting", targetMode, peerMode)
+	}
+
+	// Keep the claim gate a single-purpose mutation so a failed mixed update
+	// cannot leave metadata and operational state partially applied.
+	mixed := httptest.NewRecorder()
+	testHandler.UpdateAgent(mixed, withURLParam(newRequest(http.MethodPut, "/api/agents/"+targetID, map[string]any{
+		"operational_mode": "resting",
+		"description":      "must not apply",
+	}), "id", targetID))
+	if mixed.Code != http.StatusBadRequest {
+		t.Fatalf("mixed operational_mode update: expected 400, got %d: %s", mixed.Code, mixed.Body.String())
+	}
+}
+
 // TestMergeAgentEnv_PureFunction exercises the diff/sentinel logic
 // without the DB round-trip — keeps the contract front-and-centre in
 // case someone refactors the handler later.

@@ -206,6 +206,7 @@ func init() {
 	agentUpdateCmd.Flags().Bool("public-to-workspace", false, "public_to: allow every workspace member to invoke this agent.")
 	agentUpdateCmd.Flags().StringSlice("public-to-member", nil, "public_to: allow the given member user id(s) to invoke this agent. Repeatable.")
 	agentUpdateCmd.Flags().String("status", "", "New status")
+	agentUpdateCmd.Flags().String("operational-mode", "", "Claim gate for this employee: active or resting (must be updated alone)")
 	agentUpdateCmd.Flags().Int32("max-concurrent-tasks", 0, "New max concurrent tasks (1-50)")
 	agentUpdateCmd.Flags().String("output", "json", "Output format: table or json")
 
@@ -691,6 +692,16 @@ func runAgentUpdate(cmd *cobra.Command, args []string) error {
 		v, _ := cmd.Flags().GetString("status")
 		body["status"] = v
 	}
+	if cmd.Flags().Changed("operational-mode") {
+		v, _ := cmd.Flags().GetString("operational-mode")
+		if v != "active" && v != "resting" {
+			return fmt.Errorf("--operational-mode must be active or resting")
+		}
+		if len(body) != 0 {
+			return fmt.Errorf("--operational-mode must be updated by itself")
+		}
+		body["operational_mode"] = v
+	}
 	if cmd.Flags().Changed("max-concurrent-tasks") {
 		v, _ := cmd.Flags().GetInt32("max-concurrent-tasks")
 		if err := validateAgentMaxConcurrentTasksFlag(v); err != nil {
@@ -705,7 +716,7 @@ func runAgentUpdate(cmd *cobra.Command, args []string) error {
 	}
 
 	if len(body) == 0 {
-		return fmt.Errorf("no fields to update; use --name, --description, --instructions, --runtime-id, --runtime-config, --model, --thinking-level, --service-tier, --custom-args, --mcp-config, --visibility, --status, or --max-concurrent-tasks (env vars now live behind `multica agent env set <id>`)")
+		return fmt.Errorf("no fields to update; use --name, --description, --instructions, --runtime-id, --runtime-config, --model, --thinking-level, --service-tier, --custom-args, --mcp-config, --visibility, --status, --operational-mode, or --max-concurrent-tasks (env vars now live behind `multica agent env set <id>`)")
 	}
 
 	ctx, cancel := cli.APIContext(context.Background())
