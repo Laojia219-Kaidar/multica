@@ -521,7 +521,7 @@ describe("buildLatestFailureIndex", () => {
   });
 
   it("keeps Task runtime lineage when an active agent is currently unbound", () => {
-    const unbound = makeAgent({ id: "unbound", runtime_id: null });
+    const unbound = makeAgent({ id: "unbound", runtime_id: undefined });
     const historicalTask = makeTask({
       id: "t-unbound-history",
       agent_id: "unbound",
