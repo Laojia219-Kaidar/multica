@@ -2516,3 +2516,58 @@ export const MALFORMED_RUNTIME_MODEL_LIST_REQUEST: RuntimeModelListRequest = {
   created_at: "",
   updated_at: "",
 };
+
+// ---------------------------------------------------------------------------
+// Strict Base client wire boundary (WO-P1-ATLAS-BASES-STRICT-WIRE-R1-001).
+// Unlike the lenient schemas above, these three endpoints FAIL CLOSED on
+// unknown payloads, using the frozen server wire field names:
+//
+//   - GET /api/bases/company (formal company base registry) and
+//     GET /api/bases (observed operational bases) degrade to the empty list,
+//     so a wrong-type or partial payload never retains or projects stale
+//     rows — one bad row drops the whole list, never a partial projection.
+//   - POST /api/bases/operational-mode rejects a malformed success receipt,
+//     so a drain/resume that cannot be parsed is never represented as a
+//     successful mode change.
+//
+// Every object is `.strict()` (unknown fields fail the parse), identity and
+// title fields are non-empty strings, counters are non-negative integers,
+// `mode` is the exact `resting | active` enum, and `drained` is a real
+// boolean. zod primitives never coerce, so a numeric counter arriving as a
+// string fails the parse instead of becoming a number.
+// ---------------------------------------------------------------------------
+
+export const CompanyBaseWireSchema = z.object({
+  id: z.string().min(1),
+  code: z.string().min(1),
+  name: z.string().min(1),
+  device: z.string(),
+  machine_title: z.string().min(1),
+  agents: z.number().int().nonnegative(),
+}).strict();
+
+export const CompanyBaseListWireSchema = z.array(CompanyBaseWireSchema);
+
+export type CompanyBaseWire = z.infer<typeof CompanyBaseWireSchema>;
+
+export const OperationalBaseWireSchema = z.object({
+  machine_title: z.string().min(1),
+  runtime_online: z.number().int().nonnegative(),
+  runtime_registered: z.number().int().nonnegative(),
+  employees: z.number().int().nonnegative(),
+  drained: z.boolean(),
+}).strict();
+
+export const OperationalBaseListWireSchema = z.array(OperationalBaseWireSchema);
+
+export type OperationalBaseWire = z.infer<typeof OperationalBaseWireSchema>;
+
+export const BaseOperationalModeReceiptWireSchema = z.object({
+  machine_title: z.string().min(1),
+  mode: z.enum(["resting", "active"]),
+  agents_updated: z.number().int().nonnegative(),
+}).strict();
+
+export type BaseOperationalModeReceiptWire = z.infer<
+  typeof BaseOperationalModeReceiptWireSchema
+>;

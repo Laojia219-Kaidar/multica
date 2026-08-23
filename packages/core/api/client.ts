@@ -1177,6 +1177,12 @@ import {
   EMPTY_WORK_CONSERVING_PROJECTION,
   WorkConservingDrainResultSchema,
   EMPTY_WORK_CONSERVING_DRAIN_RESULT,
+  CompanyBaseListWireSchema,
+  OperationalBaseListWireSchema,
+  BaseOperationalModeReceiptWireSchema,
+  type CompanyBaseWire,
+  type OperationalBaseWire,
+  type BaseOperationalModeReceiptWire,
 } from "./schemas";
 
 /** Identifies the calling client to the server.
@@ -2073,14 +2079,27 @@ export class ApiClient {
     });
   }
 
+  /** Drains or resumes one operational base. The request method, path and
+   *  body are frozen; the success receipt is parsed strictly, so a malformed
+   *  success payload rejects and is never represented as a mode change. */
   async setBaseOperationalMode(
     machineTitle: string,
     mode: "resting" | "active",
-  ): Promise<{ machine_title: string; mode: string; agents_updated: number }> {
-    return this.fetch("/api/bases/operational-mode", {
+  ): Promise<BaseOperationalModeReceiptWire> {
+    const raw = await this.fetch<unknown>("/api/bases/operational-mode", {
       method: "POST",
       body: JSON.stringify({ machine_title: machineTitle, mode }),
     });
+    const receipt = parseWithFallback<BaseOperationalModeReceiptWire | null>(
+      raw,
+      BaseOperationalModeReceiptWireSchema,
+      null,
+      { endpoint: "POST /api/bases/operational-mode" },
+    );
+    if (!receipt) {
+      throw new Error("Invalid base operational-mode receipt.");
+    }
+    return receipt;
   }
 
   listWorkrooms(): Promise<
@@ -2121,8 +2140,13 @@ export class ApiClient {
     return this.fetch("/api/ia/object-ownership");
   }
 
-  getCompanyBases(): Promise<{ id: string; code: string; name: string; device: string; machine_title: string; agents: number }[]> {
-    return this.fetch("/api/bases/company");
+  /** Formal company base registry. Parsed strictly; a malformed payload fails
+   *  closed to the empty list so stale rows are never retained or projected. */
+  async getCompanyBases(): Promise<CompanyBaseWire[]> {
+    const raw = await this.fetch<unknown>("/api/bases/company");
+    return parseWithFallback<CompanyBaseWire[]>(raw, CompanyBaseListWireSchema, [], {
+      endpoint: "GET /api/bases/company",
+    });
   }
 
   // Cockpit federation — read-only projection of the DGX 1421 owner cockpit.
@@ -2130,10 +2154,13 @@ export class ApiClient {
     return this.fetch("/api/bases/cockpit-projection");
   }
 
-  listBases(): Promise<
-    { machine_title: string; runtime_online: number; runtime_registered: number; employees: number; drained: boolean }[]
-  > {
-    return this.fetch("/api/bases");
+  /** Observed operational bases. Parsed strictly; a malformed payload fails
+   *  closed to the empty list so stale rows are never retained or projected. */
+  async listBases(): Promise<OperationalBaseWire[]> {
+    const raw = await this.fetch<unknown>("/api/bases");
+    return parseWithFallback<OperationalBaseWire[]>(raw, OperationalBaseListWireSchema, [], {
+      endpoint: "GET /api/bases",
+    });
   }
 
   // Observed execution bases (Lane C) — read-only grouping of workspace

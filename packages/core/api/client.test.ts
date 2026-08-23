@@ -4145,3 +4145,285 @@ describe("ApiClient project next-actions drain", () => {
     });
   });
 });
+
+describe("ApiClient Base strict wire boundary", () => {
+  const companyBase = {
+    id: "11111111-1111-4111-8111-111111111111",
+    code: "BASE-06",
+    name: "DGX Spark 主基地",
+    device: "NVIDIA DGX Spark",
+    machine_title: "HiveCosm DGX Spark",
+    agents: 3,
+  };
+  const operationalBase = {
+    machine_title: "HiveCosm Mac mini",
+    runtime_online: 2,
+    runtime_registered: 3,
+    employees: 4,
+    drained: false,
+  };
+
+  function stubJson(payload: unknown, status = 200) {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(payload), { status }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    return fetchMock;
+  }
+
+  it("GETs the exact company-base endpoint and parses a valid strict wire", async () => {
+    const fetchMock = stubJson([companyBase]);
+
+    await expect(
+      new ApiClient("https://api.example.test").getCompanyBases(),
+    ).resolves.toEqual([companyBase]);
+
+    const [url, init] = fetchMock.mock.calls[0]!;
+    const parsed = new URL(url as string);
+    expect(`${parsed.origin}${parsed.pathname}`).toBe(
+      "https://api.example.test/api/bases/company",
+    );
+    expect(init?.method ?? "GET").toBe("GET");
+  });
+
+  it("accepts an empty company-base list as a valid wire", async () => {
+    stubJson([]);
+
+    await expect(
+      new ApiClient("https://api.example.test").getCompanyBases(),
+    ).resolves.toEqual([]);
+  });
+
+  it("fails closed to an empty list when the company-base payload is not an array", async () => {
+    stubJson({ bases: [companyBase] });
+
+    await expect(
+      new ApiClient("https://api.example.test").getCompanyBases(),
+    ).resolves.toEqual([]);
+  });
+
+  it("fails closed when a company-base row is partial", async () => {
+    stubJson([{ id: companyBase.id, code: companyBase.code }]);
+
+    await expect(
+      new ApiClient("https://api.example.test").getCompanyBases(),
+    ).resolves.toEqual([]);
+  });
+
+  it("fails closed when a company-base identity field is empty", async () => {
+    stubJson([{ ...companyBase, name: "" }]);
+
+    await expect(
+      new ApiClient("https://api.example.test").getCompanyBases(),
+    ).resolves.toEqual([]);
+  });
+
+  it("rejects a numeric-string company-base counter without coercion", async () => {
+    stubJson([{ ...companyBase, agents: "3" }]);
+
+    await expect(
+      new ApiClient("https://api.example.test").getCompanyBases(),
+    ).resolves.toEqual([]);
+  });
+
+  it("drops the whole company-base list when one row is malformed", async () => {
+    // One bad row must fail the entire projection closed — a partial list
+    // would retain and project stale rows.
+    stubJson([companyBase, { ...companyBase, id: "", machine_title: "" }]);
+
+    await expect(
+      new ApiClient("https://api.example.test").getCompanyBases(),
+    ).resolves.toEqual([]);
+  });
+
+  it("fails closed on an unknown company-base wire field", async () => {
+    stubJson([{ ...companyBase, region: "cn-north" }]);
+
+    await expect(
+      new ApiClient("https://api.example.test").getCompanyBases(),
+    ).resolves.toEqual([]);
+  });
+
+  it("GETs the exact operational-base endpoint and parses a valid strict wire", async () => {
+    const fetchMock = stubJson([operationalBase]);
+
+    await expect(
+      new ApiClient("https://api.example.test").listBases(),
+    ).resolves.toEqual([operationalBase]);
+
+    const [url, init] = fetchMock.mock.calls[0]!;
+    const parsed = new URL(url as string);
+    expect(`${parsed.origin}${parsed.pathname}`).toBe(
+      "https://api.example.test/api/bases",
+    );
+    expect(init?.method ?? "GET").toBe("GET");
+  });
+
+  it("fails closed to an empty list when the operational-base payload is not an array", async () => {
+    stubJson(operationalBase);
+
+    await expect(
+      new ApiClient("https://api.example.test").listBases(),
+    ).resolves.toEqual([]);
+  });
+
+  it("fails closed when an operational-base row is partial", async () => {
+    const { drained: _drained, ...partial } = operationalBase;
+    stubJson([partial]);
+
+    await expect(
+      new ApiClient("https://api.example.test").listBases(),
+    ).resolves.toEqual([]);
+  });
+
+  it("fails closed when an operational-base machine_title is empty", async () => {
+    stubJson([{ ...operationalBase, machine_title: "" }]);
+
+    await expect(
+      new ApiClient("https://api.example.test").listBases(),
+    ).resolves.toEqual([]);
+  });
+
+  it("rejects a stringified drained flag without coercion", async () => {
+    stubJson([{ ...operationalBase, drained: "false" }]);
+
+    await expect(
+      new ApiClient("https://api.example.test").listBases(),
+    ).resolves.toEqual([]);
+  });
+
+  it("fails closed on a negative operational-base counter", async () => {
+    stubJson([{ ...operationalBase, runtime_online: -1 }]);
+
+    await expect(
+      new ApiClient("https://api.example.test").listBases(),
+    ).resolves.toEqual([]);
+  });
+
+  it("rejects a fractional operational-base counter", async () => {
+    stubJson([{ ...operationalBase, employees: 1.5 }]);
+
+    await expect(
+      new ApiClient("https://api.example.test").listBases(),
+    ).resolves.toEqual([]);
+  });
+
+  it("POSTs the exact method, path and body and parses a valid receipt", async () => {
+    const receipt = {
+      machine_title: "HiveCosm Mac mini",
+      mode: "resting",
+      agents_updated: 4,
+    };
+    const fetchMock = stubJson(receipt);
+
+    await expect(
+      new ApiClient("https://api.example.test").setBaseOperationalMode(
+        "HiveCosm Mac mini",
+        "resting",
+      ),
+    ).resolves.toEqual(receipt);
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.example.test/api/bases/operational-mode",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ machine_title: "HiveCosm Mac mini", mode: "resting" }),
+      }),
+    );
+  });
+
+  it("parses the resume receipt with the exact active mode", async () => {
+    const receipt = {
+      machine_title: "HiveCosm DGX Spark",
+      mode: "active",
+      agents_updated: 0,
+    };
+    stubJson(receipt);
+
+    await expect(
+      new ApiClient("https://api.example.test").setBaseOperationalMode(
+        "HiveCosm DGX Spark",
+        "active",
+      ),
+    ).resolves.toEqual(receipt);
+  });
+
+  it("rejects a success receipt with an unknown mode", async () => {
+    stubJson({
+      machine_title: "HiveCosm Mac mini",
+      mode: "training",
+      agents_updated: 4,
+    });
+
+    await expect(
+      new ApiClient("https://api.example.test").setBaseOperationalMode(
+        "HiveCosm Mac mini",
+        "resting",
+      ),
+    ).rejects.toThrow("Invalid base operational-mode receipt.");
+  });
+
+  it("rejects a success receipt whose counter arrives as a string", async () => {
+    stubJson({
+      machine_title: "HiveCosm Mac mini",
+      mode: "resting",
+      agents_updated: "4",
+    });
+
+    await expect(
+      new ApiClient("https://api.example.test").setBaseOperationalMode(
+        "HiveCosm Mac mini",
+        "resting",
+      ),
+    ).rejects.toThrow("Invalid base operational-mode receipt.");
+  });
+
+  it("rejects a partial success receipt missing its counter", async () => {
+    stubJson({ machine_title: "HiveCosm Mac mini", mode: "resting" });
+
+    await expect(
+      new ApiClient("https://api.example.test").setBaseOperationalMode(
+        "HiveCosm Mac mini",
+        "resting",
+      ),
+    ).rejects.toThrow("Invalid base operational-mode receipt.");
+  });
+
+  it("rejects a success receipt with an empty machine_title", async () => {
+    stubJson({ machine_title: "", mode: "resting", agents_updated: 4 });
+
+    await expect(
+      new ApiClient("https://api.example.test").setBaseOperationalMode(
+        "HiveCosm Mac mini",
+        "resting",
+      ),
+    ).rejects.toThrow("Invalid base operational-mode receipt.");
+  });
+
+  it("rejects a success receipt carrying an unknown wire field", async () => {
+    stubJson({
+      machine_title: "HiveCosm Mac mini",
+      mode: "resting",
+      agents_updated: 4,
+      drained: true,
+    });
+
+    await expect(
+      new ApiClient("https://api.example.test").setBaseOperationalMode(
+        "HiveCosm Mac mini",
+        "resting",
+      ),
+    ).rejects.toThrow("Invalid base operational-mode receipt.");
+  });
+
+  it("rejects a wrong-type success payload instead of representing it as success", async () => {
+    stubJson([]);
+
+    await expect(
+      new ApiClient("https://api.example.test").setBaseOperationalMode(
+        "HiveCosm Mac mini",
+        "resting",
+      ),
+    ).rejects.toThrow("Invalid base operational-mode receipt.");
+  });
+});
