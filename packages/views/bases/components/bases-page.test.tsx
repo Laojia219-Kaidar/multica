@@ -14,6 +14,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Agent, AgentRuntime } from "@multica/core/types";
+import type { CockpitProjection } from "@multica/core/api";
 import { I18nProvider } from "@multica/core/i18n/react";
 import enCommon from "../../locales/en/common.json";
 import enBases from "../../locales/en/bases.json";
@@ -41,6 +42,9 @@ const companyBasesRef = vi.hoisted(() => ({
   current: [] as CompanyBaseFixture[],
 }));
 const baseListRef = vi.hoisted(() => ({ current: [] as BaseStatusFixture[] }));
+const cockpitRef = vi.hoisted(() => ({
+  current: null as CockpitProjection | null,
+}));
 
 vi.mock("@multica/core/hooks", () => ({
   useWorkspaceId: () => "ws-1",
@@ -61,7 +65,7 @@ vi.mock("@multica/core/api", () => ({
   api: {
     getCompanyBases: () => Promise.resolve(companyBasesRef.current),
     listBases: () => Promise.resolve(baseListRef.current),
-    getCockpitProjection: () => Promise.resolve(null),
+    getCockpitProjection: () => Promise.resolve(cockpitRef.current),
     setBaseOperationalMode: (machineTitle: string, mode: string) =>
       Promise.resolve({ machine_title: machineTitle, mode, agents_updated: 0 }),
     updateAgent: (agentId: string) => Promise.resolve({ id: agentId }),
@@ -157,6 +161,7 @@ beforeEach(() => {
   agentsRef.current = [];
   companyBasesRef.current = [];
   baseListRef.current = [];
+  cockpitRef.current = null;
 });
 
 describe("BasesPage registered machine mapping", () => {
@@ -385,5 +390,212 @@ describe("BasesPage registered machine mapping", () => {
     await expect(
       screen.findAllByText("HiveCosm Mac mini Deluxe"),
     ).resolves.toHaveLength(2);
+  });
+});
+
+/** Health dot of a cockpit projection row: the row's first span, located via the label text. */
+function cockpitRowDot(label: string): Element {
+  const labelEl = screen.getByText(label);
+  const row = labelEl.closest("div.flex");
+  if (!row) throw new Error(`cockpit row not found for label: ${label}`);
+  const dot = row.querySelector("span");
+  if (!dot) throw new Error(`cockpit dot not found for label: ${label}`);
+  return dot;
+}
+
+describe("BasesPage semantic status visuals", () => {
+  it("renders online status with the shared success token instead of raw emerald", async () => {
+    companyBasesRef.current = [
+      makeCompanyBase({
+        id: "base-06",
+        code: "BASE-06",
+        name: "底座基地",
+        device: "DGX",
+        machine_title: "HiveCosm DGX Spark",
+      }),
+    ];
+    runtimesRef.current = [
+      makeRuntime({
+        id: "runtime-dgx",
+        daemon_id: "daemon-dgx",
+        custom_name: "HiveCosm DGX Spark",
+      }),
+    ];
+
+    renderPage();
+
+    const status = await screen.findByText("Online");
+    expect(status.className).toContain("text-success");
+    expect(status.className).not.toMatch(/emerald|red-/);
+  });
+
+  it("renders offline status with the shared destructive token instead of raw red", async () => {
+    companyBasesRef.current = [
+      makeCompanyBase({
+        id: "base-06",
+        code: "BASE-06",
+        name: "底座基地",
+        device: "DGX",
+        machine_title: "HiveCosm DGX Spark",
+      }),
+    ];
+    runtimesRef.current = [
+      makeRuntime({
+        id: "runtime-dgx",
+        daemon_id: "daemon-dgx",
+        status: "offline",
+        last_seen_at: "2026-08-01T00:00:00Z",
+        custom_name: "HiveCosm DGX Spark",
+      }),
+    ];
+
+    renderPage();
+
+    const status = await screen.findByText("Offline");
+    expect(status.className).toContain("text-destructive");
+    expect(status.className).not.toMatch(/emerald|red-/);
+  });
+
+  it("styles the drain control with warning tone and the resume control with success tone", async () => {
+    companyBasesRef.current = [
+      makeCompanyBase({
+        id: "base-01",
+        code: "BASE-01",
+        name: "中枢基地",
+        device: "Mac mini",
+        machine_title: "HiveCosm Mac mini",
+      }),
+      makeCompanyBase({
+        id: "base-02",
+        code: "BASE-02",
+        name: "工程基地",
+        device: "MBP M5X",
+        machine_title: "HiveCrew MBP M5X",
+      }),
+    ];
+    baseListRef.current = [
+      {
+        machine_title: "HiveCosm Mac mini",
+        runtime_online: 1,
+        runtime_registered: 1,
+        employees: 0,
+        drained: false,
+      },
+      {
+        machine_title: "HiveCrew MBP M5X",
+        runtime_online: 1,
+        runtime_registered: 1,
+        employees: 0,
+        drained: true,
+      },
+    ];
+    runtimesRef.current = [
+      makeRuntime({
+        id: "runtime-mini",
+        daemon_id: "daemon-mini",
+        custom_name: "HiveCosm Mac mini",
+      }),
+      makeRuntime({
+        id: "runtime-mbp",
+        daemon_id: "daemon-mbp",
+        custom_name: "HiveCrew MBP M5X",
+      }),
+    ];
+
+    renderPage();
+
+    const drain = await screen.findByRole("button", { name: "Drain" });
+    expect(drain.className).toContain("text-warning");
+    expect(drain.className).toContain("border-warning/30");
+    expect(drain.className).not.toMatch(/amber|emerald/);
+
+    const resume = screen.getByRole("button", { name: "Resume" });
+    expect(resume.className).toContain("text-success");
+    expect(resume.className).toContain("border-success/30");
+    expect(resume.className).not.toMatch(/amber|emerald/);
+  });
+
+  it("uses semantic tokens for cockpit projection health dots and unreachable sections", async () => {
+    companyBasesRef.current = [
+      makeCompanyBase({
+        id: "base-06",
+        code: "BASE-06",
+        name: "底座基地",
+        device: "DGX",
+        machine_title: "HiveCosm DGX Spark",
+      }),
+    ];
+    runtimesRef.current = [
+      makeRuntime({
+        id: "runtime-dgx",
+        daemon_id: "daemon-dgx",
+        custom_name: "HiveCosm DGX Spark",
+      }),
+    ];
+    cockpitRef.current = {
+      fetched_at: "2026-08-23T10:00:00Z",
+      cockpit_url: "http://hivecosm.local:1421",
+      ok: true,
+      sections: {
+        health_surface: { ok: true },
+        runtime_topology: { ok: false, error: "connection refused" },
+      },
+    };
+
+    renderPage();
+
+    fireEvent.click(await screen.findByRole("button", { name: /底座基地/ }));
+    expect(
+      await screen.findByText("1421 驾驶舱投影（只读）"),
+    ).toBeInTheDocument();
+
+    expect(cockpitRowDot("健康面").className).toContain("bg-success");
+    const failedDot = cockpitRowDot("运行拓扑");
+    expect(failedDot.className).toContain("bg-destructive");
+    expect(failedDot.className).not.toMatch(/emerald|red-/);
+
+    const unreachable = screen.getByText("不可达");
+    expect(unreachable.className).toContain("text-destructive");
+  });
+
+  it("keeps registered authority and unregistered fail-closed controls after the visual pass", async () => {
+    companyBasesRef.current = [
+      makeCompanyBase({
+        id: "base-06",
+        code: "BASE-06",
+        name: "底座基地",
+        device: "DGX",
+        machine_title: "HiveCosm DGX Spark",
+      }),
+    ];
+    runtimesRef.current = [
+      makeRuntime({
+        id: "runtime-dgx",
+        daemon_id: "daemon-dgx",
+        custom_name: "HiveCosm DGX Spark",
+      }),
+      makeRuntime({
+        id: "runtime-stray",
+        daemon_id: "daemon-stray",
+        custom_name: "未登记主机",
+      }),
+    ];
+
+    renderPage();
+
+    // Registered base keeps its status statistics and drain authority …
+    expect(await screen.findByText("底座基地")).toBeInTheDocument();
+    expect(screen.getByText("Runtimes online")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Drain" })).toBeInTheDocument();
+    // … while the unregistered machine stays fail-closed: visible, but with
+    // no statistics and no drain/resume/migration controls.
+    expect(screen.getByText("未注册基地")).toBeInTheDocument();
+    const unregisteredTitles = screen.getAllByText("未登记主机");
+    const card = unregisteredTitles[0]?.closest("div.rounded-lg");
+    expect(card).not.toBeNull();
+    expect(within(card as HTMLElement).queryByText("Runtimes online")).toBeNull();
+    expect(within(card as HTMLElement).queryByRole("button", { name: "Drain" })).toBeNull();
+    expect(within(card as HTMLElement).queryByRole("button", { name: "Resume" })).toBeNull();
+    expect(within(card as HTMLElement).queryByRole("combobox")).toBeNull();
   });
 });
