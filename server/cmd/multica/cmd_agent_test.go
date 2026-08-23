@@ -640,6 +640,23 @@ func TestAgentUpdateDoesNotExposeCustomEnvFlags(t *testing.T) {
 	}
 }
 
+func TestAgentUpdateOperationalModeFlagIsNarrow(t *testing.T) {
+	if agentUpdateCmd.Flag("operational-mode") == nil {
+		t.Fatal("agent update must expose --operational-mode")
+	}
+
+	cmd := &cobra.Command{Use: "update"}
+	cmd.Flags().String("operational-mode", "", "")
+	cmd.Flags().String("output", "json", "")
+	cmd.Flags().String("profile", "", "")
+	if err := cmd.Flags().Set("operational-mode", "training"); err != nil {
+		t.Fatal(err)
+	}
+	if err := runAgentUpdate(cmd, []string{"agent-id-placeholder"}); err == nil || !strings.Contains(err.Error(), "active or resting") {
+		t.Fatalf("invalid operational mode error = %v, want active/resting validation", err)
+	}
+}
+
 // TestAgentCreateDoesNotExposeFromTemplate guards against re-adding the
 // `--from-template` flag. It was an untaught, immature CLI surface that
 // short-circuited before body assembly — silently dropping sibling create

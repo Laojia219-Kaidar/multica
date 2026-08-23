@@ -65,10 +65,15 @@ type AgentResponse struct {
 	// InvocationTargets is the allow-list for a public_to agent. Empty for
 	// private agents. Only populated on the detail / list / create / update
 	// responses that load it; broadcast payloads leave it empty.
-	InvocationTargets  []AgentInvocationTargetDTO `json:"invocation_targets"`
-	Status             string                     `json:"status"`
-	MaxConcurrentTasks int32                      `json:"max_concurrent_tasks"`
-	Model              string                     `json:"model"`
+	InvocationTargets []AgentInvocationTargetDTO `json:"invocation_targets"`
+	Status            string                     `json:"status"`
+	// OperationalMode is the administrative claim gate for this exact
+	// employee. It is intentionally distinct from the UI execution status:
+	// idle/working describes current activity, while active/resting controls
+	// whether the daemon may claim new work.
+	OperationalMode    string `json:"operational_mode"`
+	MaxConcurrentTasks int32  `json:"max_concurrent_tasks"`
+	Model              string `json:"model"`
 	// ThinkingLevel is the runtime-native reasoning/effort token persisted
 	// for this agent (empty = use runtime default). The picker is per-runtime
 	// per-model; the API never normalizes across providers. See MUL-2339.
@@ -173,6 +178,7 @@ func (h *Handler) agentToResponse(a db.Agent) AgentResponse {
 		PermissionMode:           a.PermissionMode,
 		InvocationTargets:        []AgentInvocationTargetDTO{},
 		Status:                   a.Status,
+		OperationalMode:          a.OperationalMode,
 		MaxConcurrentTasks:       a.MaxConcurrentTasks,
 		Model:                    a.Model.String,
 		ThinkingLevel:            a.ThinkingLevel.String,
@@ -1392,11 +1398,16 @@ type UpdateAgentRequest struct {
 	// gate is owner/allow-list based and an admin-authored allow-list would
 	// confuse the owner about who can run their agent. permission_mode is
 	// authoritative when present; otherwise legacy visibility is mapped.
-	PermissionMode     *string                     `json:"permission_mode"`
-	InvocationTargets  *[]AgentInvocationTargetDTO `json:"invocation_targets"`
-	Status             *string                     `json:"status"`
-	MaxConcurrentTasks *int32                      `json:"max_concurrent_tasks"`
-	Model              *string                     `json:"model"`
+	PermissionMode    *string                     `json:"permission_mode"`
+	InvocationTargets *[]AgentInvocationTargetDTO `json:"invocation_targets"`
+	Status            *string                     `json:"status"`
+	// OperationalMode is deliberately a narrow, per-agent alternative to the
+	// execution-base drain/resume endpoint. It may only be changed by itself,
+	// so a caller cannot receive a partially-applied mixed metadata+claim-gate
+	// update if either side fails.
+	OperationalMode    *string `json:"operational_mode"`
+	MaxConcurrentTasks *int32  `json:"max_concurrent_tasks"`
+	Model              *string `json:"model"`
 	// ThinkingLevel is treated as a tri-state per-MUL-2339:
 	//   - field omitted → no change (leave existing value alone)
 	//   - field present with "" → explicit clear (use runtime default)
@@ -1618,6 +1629,53 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 	// audit row.
 	if _, ok := rawFields["custom_env"]; ok {
 		writeError(w, http.StatusBadRequest, "custom_env is no longer accepted on this endpoint; use PUT /api/agents/{id}/env (or `multica agent env set`)")
+		return
+	}
+
+	// Per-employee claim-gate control. The existing base endpoint updates every
+	// employee on a physical machine, which is too broad when an operator wants
+	// to activate one newly-bound employee. Keep this mutation single-purpose
+	// and use the canonical SetAgentOperationalMode query rather than allowing
+	// direct database access or overloading the activity status field.
+	if req.OperationalMode != nil {
+		if len(rawFields) != 1 {
+			writeError(w, http.StatusBadRequest, "operational_mode must be updated by itself")
+			return
+		}
+		mode := strings.TrimSpace(*req.OperationalMode)
+		if mode != "active" && mode != "resting" {
+			writeError(w, http.StatusBadRequest, "operational_mode must be 'active' or 'resting'")
+			return
+		}
+		modeRow, err := h.Queries.SetAgentOperationalMode(r.Context(), db.SetAgentOperationalModeParams{
+			ID:              existing.ID,
+			OperationalMode: mode,
+		})
+		if err != nil {
+			slog.Warn("set agent operational mode failed", append(logger.RequestAttrs(r), "error", err, "agent_id", id)...)
+			writeError(w, http.StatusInternalServerError, "failed to set agent operational mode")
+			return
+		}
+		existing.OperationalMode = modeRow.OperationalMode
+		resp := h.agentToResponse(existing)
+		if err := h.enrichAgentResponseWithTargets(r.Context(), &resp, existing.ID); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to load agent invocation targets")
+			return
+		}
+		if err := h.attachAgentSkills(r.Context(), &resp, existing.ID); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to load agent skills")
+			return
+		}
+		userID := requestUserID(r)
+		actorType, actorID := h.resolveActor(r, userID, uuidToString(existing.WorkspaceID))
+		h.publish(protocol.EventAgentStatus, uuidToString(existing.WorkspaceID), actorType, actorID, map[string]any{"agent": broadcastAgentResponse(resp)})
+		redactAgentResponseForActor(&resp, actorType)
+		if !h.composioMCPAppsEnabled(r.Context()) {
+			suppressComposioToolkitAllowlist(&resp)
+		} else if uuidToString(existing.OwnerID) != userID {
+			redactComposioToolkitAllowlist(&resp)
+		}
+		writeJSON(w, http.StatusOK, resp)
 		return
 	}
 
