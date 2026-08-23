@@ -224,7 +224,7 @@ export function buildLatestFailureIndex(
 ): Map<string, FailureClass> {
   const activeAgentIds = new Set<string>();
   for (const a of agents) {
-    if (!a.runtime_id || a.archived_at) continue;
+    if (a.archived_at) continue;
     activeAgentIds.add(a.id);
   }
 

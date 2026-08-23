@@ -520,6 +520,22 @@ describe("buildLatestFailureIndex", () => {
     expect(index.has("runtime-1")).toBe(false);
   });
 
+  it("keeps Task runtime lineage when an active agent is currently unbound", () => {
+    const unbound = makeAgent({ id: "unbound", runtime_id: null });
+    const historicalTask = makeTask({
+      id: "t-unbound-history",
+      agent_id: "unbound",
+      runtime_id: "runtime-historical",
+      status: "failed",
+      failure_reason: "timeout",
+      completed_at: "2026-01-03T00:00:00Z",
+    });
+
+    const index = buildLatestFailureIndex([unbound], [historicalTask]);
+
+    expect(index.get("runtime-historical")).toBe("timeout");
+  });
+
   it("does not attribute failures of unknown (missing) agents", () => {
     const active = makeAgent({ id: "active", runtime_id: "runtime-1" });
     const ghostTask = makeTask({
