@@ -7,6 +7,7 @@ import {
   Loader2,
   MoreHorizontal,
   Pencil,
+  ShieldX,
   Trash2,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -71,6 +72,8 @@ import {
   pendingRuntimeCommandName,
 } from "./pending-runtime";
 import { useT, useTimeAgo } from "../../i18n";
+import { failureClassOf } from "@multica/core/dashboard";
+import type { FailureClass } from "@multica/core/dashboard";
 
 // The machine detail's runtimes table on the shared ListGrid. Paradigm
 // pieces are taken À LA CARTE here: subgrid template + var-width tracks +
@@ -143,6 +146,7 @@ export interface RuntimeRow {
   profile: RuntimeProfile | null;
   ownerMember: MemberWithUser | null;
   workload: RuntimeWorkload;
+  latestFailureClass?: FailureClass | null;
   canDelete: boolean;
 }
 
@@ -197,6 +201,62 @@ export function buildWorkloadIndex(
   return result;
 }
 
+// Per-runtime latest terminal failure — folded into the seven safe
+// failure classes (auth, rate_limit, timeout, provider, runtime,
+// agent, other). A newer completed run clears an older failed run,
+// so the badge reflects "is the most recent terminal run a failure?"
+// rather than "has this runtime ever failed".
+//
+// Attribution follows Task.runtime_id (not the employee's current
+// binding), so runtime-id rebinding preserves the correct lineage:
+// a task dispatched to runtime-X always counts toward runtime-X,
+// even if the agent later moves.
+//
+// Raw failure_reason, error text, provider responses, and secrets
+// are never stored on the result — only the seven-class enum.
+// Non-terminal states (queued / dispatched / waiting_local_directory
+// / running) are excluded entirely, as are tasks whose agent is
+// archived or unknown — we never fabricate attribution for a
+// runtime an agent no longer has active access to.
+export function buildLatestFailureIndex(
+  agents: Agent[],
+  tasks: AgentTask[],
+): Map<string, FailureClass> {
+  const activeAgentIds = new Set<string>();
+  for (const a of agents) {
+    if (!a.runtime_id || a.archived_at) continue;
+    activeAgentIds.add(a.id);
+  }
+
+  const terminalByRuntime = new Map<string, AgentTask[]>();
+  for (const t of tasks) {
+    if (!t.runtime_id) continue;
+    if (!activeAgentIds.has(t.agent_id)) continue;
+    if (t.status !== "failed" && t.status !== "completed") continue;
+    const list = terminalByRuntime.get(t.runtime_id);
+    if (list) list.push(t);
+    else terminalByRuntime.set(t.runtime_id, [t]);
+  }
+
+  const result = new Map<string, FailureClass>();
+  for (const [runtimeId, list] of terminalByRuntime) {
+    const sorted = [...list].sort((a, b) => {
+      const aTime = a.completed_at ?? a.created_at;
+      const bTime = b.completed_at ?? b.created_at;
+      if (aTime < bTime) return 1;
+      if (aTime > bTime) return -1;
+      return a.id < b.id ? 1 : a.id > b.id ? -1 : 0;
+    });
+    const latest = sorted[0];
+    if (!latest) continue;
+    if (latest.status === "failed") {
+      const reason = latest.failure_reason ?? "";
+      result.set(runtimeId, failureClassOf(reason || "unclassified"));
+    }
+  }
+  return result;
+}
+
 // ---------------------------------------------------------------------------
 // Cells
 // ---------------------------------------------------------------------------
@@ -204,6 +264,7 @@ export function buildWorkloadIndex(
 function RuntimeNameCell({
   runtime,
   machineTitle,
+  latestFailureClass,
 }: {
   runtime: AgentRuntime;
   /**
@@ -214,6 +275,7 @@ function RuntimeNameCell({
    * runtime profiles), where any alias is shown verbatim.
    */
   machineTitle?: string;
+  latestFailureClass: FailureClass | null;
 }) {
   const label = runtimeRowLabel(runtime, machineTitle ?? "");
   return (
@@ -227,6 +289,7 @@ function RuntimeNameCell({
         </span>
         <RuntimeKindBadge runtime={runtime} />
         <PendingRuntimeBadge runtime={runtime} />
+        <LatestFailureBadge failureClass={latestFailureClass} />
         <VisibilityBadge runtime={runtime} />
       </div>
     </ListGridCell>
@@ -269,6 +332,37 @@ function PendingRuntimeBadge({ runtime }: { runtime: AgentRuntime }) {
     <span className="inline-flex shrink-0 items-center rounded bg-warning/10 px-1 text-[10px] font-medium text-warning">
       {t(($) => $.list.badge_registering)}
     </span>
+  );
+}
+
+export function LatestFailureBadge({
+  failureClass,
+}: {
+  failureClass: FailureClass | null;
+}) {
+  const { t } = useT("runtimes");
+  if (!failureClass) return null;
+  const label = t(
+    ($) => $.list.latest_failure[failureClass],
+  ) as string;
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <span
+            data-testid="latest-failure-badge"
+            data-failure-class={failureClass}
+            className="inline-flex shrink-0 items-center gap-0.5 rounded bg-destructive/10 px-1 text-[10px] font-medium text-destructive"
+          >
+            <ShieldX className="h-2.5 w-2.5" />
+            {label}
+          </span>
+        }
+      />
+      <TooltipContent>
+        {t(($) => $.list.latest_failure_tooltip)}
+      </TooltipContent>
+    </Tooltip>
   );
 }
 
@@ -690,6 +784,11 @@ export function RuntimeList({
     [agents, snapshot],
   );
 
+  const latestFailureIndex = useMemo(
+    () => buildLatestFailureIndex(agents, snapshot),
+    [agents, snapshot],
+  );
+
   const memberById = useMemo(() => {
     const map = new Map<string, MemberWithUser>();
     for (const m of members) map.set(m.user_id, m);
@@ -726,13 +825,14 @@ export function RuntimeList({
           ? memberById.get(runtime.owner_id) ?? null
           : null,
         workload: workloadIndex.get(runtime.id) ?? EMPTY_WORKLOAD,
+        latestFailureClass: latestFailureIndex.get(runtime.id) ?? null,
         canDelete: isCustomRuntime
           ? isAdmin && !!profile
           : !isPendingCustomRuntime(runtime) &&
             (isAdmin || (!!user && runtime.owner_id === user.id)),
       };
     });
-  }, [runtimes, profileById, memberById, workloadIndex, isAdmin, user]);
+  }, [runtimes, profileById, memberById, workloadIndex, latestFailureIndex, isAdmin, user]);
 
   // Mirrors RuntimeRowMenu's render guard: the kebab track only earns its
   // width when at least one row will actually show the menu.
@@ -780,7 +880,7 @@ export function RuntimeList({
                   )
                 : {})}
             >
-              <RuntimeNameCell runtime={row.runtime} machineTitle={machineTitle} />
+              <RuntimeNameCell runtime={row.runtime} machineTitle={machineTitle} latestFailureClass={row.latestFailureClass ?? null} />
               <HealthCell
                 runtime={row.runtime}
                 workload={row.workload}

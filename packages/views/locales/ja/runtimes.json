@@ -286,7 +286,17 @@
     "pending_health_error": "登録エラー",
     "pending_health_disabled": "無効",
     "pending_cli_unknown": "待機中",
-    "unbound_agents": "バインドされたエージェントなし"
+    "unbound_agents": "バインドされたエージェントなし",
+    "latest_failure_tooltip": "このランタイムの直近の完了済み実行は失敗しました",
+    "latest_failure": {
+      "auth": "認証エラー",
+      "rate_limit": "レート制限",
+      "timeout": "タイムアウト",
+      "provider": "プロバイダーエラー",
+      "runtime": "ランタイムエラー",
+      "agent": "エージェントエラー",
+      "other": "実行失敗"
+    }
   },
   "profiles": {
     "cta": "ランタイムを追加",

@@ -298,7 +298,17 @@
     "pending_health_error": "Registration error",
     "pending_health_disabled": "Disabled",
     "pending_cli_unknown": "waiting",
-    "unbound_agents": "No agents bound"
+    "unbound_agents": "No agents bound",
+    "latest_failure_tooltip": "Most recent terminal run on this runtime failed",
+    "latest_failure": {
+      "auth": "Auth error",
+      "rate_limit": "Rate limited",
+      "timeout": "Timed out",
+      "provider": "Provider error",
+      "runtime": "Runtime error",
+      "agent": "Agent error",
+      "other": "Run failed"
+    }
   },
   "profiles": {
     "cta": "Add runtime",

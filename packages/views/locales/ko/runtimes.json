@@ -286,7 +286,17 @@
     "pending_health_error": "등록 오류",
     "pending_health_disabled": "비활성화됨",
     "pending_cli_unknown": "대기 중",
-    "unbound_agents": "연결된 에이전트 없음"
+    "unbound_agents": "연결된 에이전트 없음",
+    "latest_failure_tooltip": "이 런타임의 가장 최근 종료된 실행이 실패했습니다",
+    "latest_failure": {
+      "auth": "인증 오류",
+      "rate_limit": "속도 제한",
+      "timeout": "시간 초과",
+      "provider": "공급자 오류",
+      "runtime": "런타임 오류",
+      "agent": "에이전트 오류",
+      "other": "실행 실패"
+    }
   },
   "profiles": {
     "cta": "런타임 추가",

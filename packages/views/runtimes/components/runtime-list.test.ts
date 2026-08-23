@@ -3,7 +3,13 @@ import { describe, expect, it, vi } from "vitest";
 import { screen } from "@testing-library/react";
 import type { Agent, AgentRuntime, AgentTask } from "@multica/core/types";
 import { renderWithI18n } from "../../test/i18n";
-import { AgentStack, buildWorkloadIndex, HealthCell } from "./runtime-list";
+import {
+  AgentStack,
+  buildLatestFailureIndex,
+  buildWorkloadIndex,
+  HealthCell,
+  LatestFailureBadge,
+} from "./runtime-list";
 
 // The agent stack under test only needs the avatar's presence; the hover
 // card / profile surfaces belong to ActorAvatar's own tests.
@@ -277,5 +283,345 @@ describe("runtime health column", () => {
 
     expect(screen.getByText("Online")).toBeInTheDocument();
     expect(screen.getByText(/1 task/i)).toBeInTheDocument();
+  });
+});
+
+describe("buildLatestFailureIndex", () => {
+  it("attributes a failed task to the task's own runtime_id, not the agent's current binding", () => {
+    const employee = makeAgent({
+      id: "employee",
+      runtime_id: "runtime-2",
+    });
+    const failedTask = makeTask({
+      id: "failed-on-old",
+      agent_id: employee.id,
+      runtime_id: "runtime-1",
+      status: "failed",
+      failure_reason: "timeout",
+      completed_at: "2026-01-03T00:00:00Z",
+    });
+
+    const index = buildLatestFailureIndex([employee], [failedTask]);
+
+    expect(index.get("runtime-1")).toBe("timeout");
+    expect(index.has("runtime-2")).toBe(false);
+  });
+
+  it("returns null-equivalent (no entry) when the latest terminal run is completed — newer completed clears older failed", () => {
+    const agent = makeAgent({ id: "a1", runtime_id: "runtime-1" });
+    const olderFailed = makeTask({
+      id: "t-old",
+      agent_id: "a1",
+      runtime_id: "runtime-1",
+      status: "failed",
+      failure_reason: "timeout",
+      completed_at: "2026-01-02T00:00:00Z",
+    });
+    const newerCompleted = makeTask({
+      id: "t-new",
+      agent_id: "a1",
+      runtime_id: "runtime-1",
+      status: "completed",
+      completed_at: "2026-01-03T00:00:00Z",
+    });
+
+    const index = buildLatestFailureIndex([agent], [
+      olderFailed,
+      newerCompleted,
+    ]);
+
+    expect(index.has("runtime-1")).toBe(false);
+  });
+
+  it("shows the failure class when the latest terminal run is failed (newer failed after an older completed)", () => {
+    const agent = makeAgent({ id: "a1", runtime_id: "runtime-1" });
+    const olderCompleted = makeTask({
+      id: "t-old",
+      agent_id: "a1",
+      runtime_id: "runtime-1",
+      status: "completed",
+      completed_at: "2026-01-02T00:00:00Z",
+    });
+    const newerFailed = makeTask({
+      id: "t-new",
+      agent_id: "a1",
+      runtime_id: "runtime-1",
+      status: "failed",
+      failure_reason: "timeout",
+      completed_at: "2026-01-03T00:00:00Z",
+    });
+
+    const index = buildLatestFailureIndex([agent], [
+      olderCompleted,
+      newerFailed,
+    ]);
+
+    expect(index.get("runtime-1")).toBe("timeout");
+  });
+
+  it("sorts deterministically: completed_at first, then created_at, then id", () => {
+    const agent = makeAgent({ id: "a1", runtime_id: "runtime-1" });
+    // Two failed tasks with same completed_at — the one with the later
+    // created_at should win the tie.
+    const olderCreated = makeTask({
+      id: "t-aa",
+      agent_id: "a1",
+      runtime_id: "runtime-1",
+      status: "failed",
+      failure_reason: "timeout",
+      completed_at: "2026-01-03T00:00:00Z",
+      created_at: "2026-01-01T00:00:00Z",
+    });
+    const newerCreated = makeTask({
+      id: "t-bb",
+      agent_id: "a1",
+      runtime_id: "runtime-1",
+      status: "failed",
+      failure_reason: "runtime_offline",
+      completed_at: "2026-01-03T00:00:00Z",
+      created_at: "2026-01-02T00:00:00Z",
+    });
+    // newerCreated has later created_at → it is the latest → runtime error.
+    const index = buildLatestFailureIndex([agent], [olderCreated, newerCreated]);
+    expect(index.get("runtime-1")).toBe("runtime");
+
+    // Same completed_at + same created_at — id breaks the tie
+    // (lexicographic, larger id = "newer").
+    const a = makeTask({
+      id: "t-a",
+      agent_id: "a1",
+      runtime_id: "runtime-2",
+      status: "failed",
+      failure_reason: "timeout",
+      completed_at: "2026-01-03T00:00:00Z",
+      created_at: "2026-01-01T00:00:00Z",
+    });
+    const b = makeTask({
+      id: "t-b",
+      agent_id: "a1",
+      runtime_id: "runtime-2",
+      status: "failed",
+      failure_reason: "runtime_offline",
+      completed_at: "2026-01-03T00:00:00Z",
+      created_at: "2026-01-01T00:00:00Z",
+    });
+    const index2 = buildLatestFailureIndex([agent], [a, b]);
+    expect(index2.get("runtime-2")).toBe("runtime");
+  });
+
+  it("folds each of the seven failure classes correctly", () => {
+    const agent = makeAgent({ id: "a1", runtime_id: "runtime-1" });
+    const cases: [string, string][] = [
+      ["agent_error.provider_auth_or_access", "auth"],
+      ["agent_error.provider_capacity_or_rate_limit", "rate_limit"],
+      ["timeout", "timeout"],
+      ["agent_error.provider_server_error", "provider"],
+      ["runtime_offline", "runtime"],
+      ["agent_error.process_failure", "agent"],
+      ["agent_error.unknown", "other"],
+    ];
+
+    for (const [reason, expectedClass] of cases) {
+      const task = makeTask({
+        id: `t-${reason}`,
+        agent_id: "a1",
+        runtime_id: `runtime-${reason}`,
+        status: "failed",
+        failure_reason: reason as AgentTask["failure_reason"],
+        completed_at: "2026-01-03T00:00:00Z",
+      });
+      const index = buildLatestFailureIndex([agent], [task]);
+      expect(index.get(`runtime-${reason}`)).toBe(expectedClass);
+    }
+  });
+
+  it("maps an unknown failure reason to 'other' without leaking the raw reason", () => {
+    const agent = makeAgent({ id: "a1", runtime_id: "runtime-1" });
+    const task = makeTask({
+      id: "t1",
+      agent_id: "a1",
+      runtime_id: "runtime-1",
+      status: "failed",
+      failure_reason: "some_future_unknown_reason" as AgentTask["failure_reason"],
+      completed_at: "2026-01-03T00:00:00Z",
+    });
+
+    const index = buildLatestFailureIndex([agent], [task]);
+
+    expect(index.get("runtime-1")).toBe("other");
+  });
+
+  it("maps a missing/empty failure_reason to 'other' and never crashes", () => {
+    const agent = makeAgent({ id: "a1", runtime_id: "runtime-1" });
+    const noReason = makeTask({
+      id: "t1",
+      agent_id: "a1",
+      runtime_id: "runtime-1",
+      status: "failed",
+      completed_at: "2026-01-03T00:00:00Z",
+    });
+    const emptyReason = makeTask({
+      id: "t2",
+      agent_id: "a1",
+      runtime_id: "runtime-2",
+      status: "failed",
+      failure_reason: "",
+      completed_at: "2026-01-03T00:00:00Z",
+    });
+
+    const index = buildLatestFailureIndex([agent], [noReason, emptyReason]);
+
+    expect(index.get("runtime-1")).toBe("other");
+    expect(index.get("runtime-2")).toBe("other");
+  });
+
+  it("excludes non-terminal states — queued, dispatched, waiting_local_directory, running", () => {
+    const agent = makeAgent({ id: "a1", runtime_id: "runtime-1" });
+    const nonTerminalStatuses: AgentTask["status"][] = [
+      "queued",
+      "dispatched",
+      "waiting_local_directory",
+      "running",
+    ];
+    const tasks = nonTerminalStatuses.map((status, i) =>
+      makeTask({
+        id: `t-${i}`,
+        agent_id: "a1",
+        runtime_id: `runtime-${status}`,
+        status,
+        failure_reason: "timeout",
+      }),
+    );
+
+    const index = buildLatestFailureIndex([agent], tasks);
+
+    for (const status of nonTerminalStatuses) {
+      expect(index.has(`runtime-${status}`)).toBe(false);
+    }
+  });
+
+  it("does not attribute failures of archived agents", () => {
+    const archived = makeAgent({
+      id: "archived",
+      runtime_id: "runtime-1",
+      archived_at: "2026-01-02T00:00:00Z",
+    });
+    const task = makeTask({
+      id: "t1",
+      agent_id: "archived",
+      runtime_id: "runtime-1",
+      status: "failed",
+      failure_reason: "timeout",
+      completed_at: "2026-01-03T00:00:00Z",
+    });
+
+    const index = buildLatestFailureIndex([archived], [task]);
+
+    expect(index.has("runtime-1")).toBe(false);
+  });
+
+  it("does not attribute failures of unknown (missing) agents", () => {
+    const active = makeAgent({ id: "active", runtime_id: "runtime-1" });
+    const ghostTask = makeTask({
+      id: "ghost",
+      agent_id: "ghost-agent",
+      runtime_id: "runtime-1",
+      status: "failed",
+      failure_reason: "timeout",
+      completed_at: "2026-01-03T00:00:00Z",
+    });
+
+    const index = buildLatestFailureIndex([active], [ghostTask]);
+
+    expect(index.has("runtime-1")).toBe(false);
+  });
+
+  it("cancelled tasks are terminal but not a failure — they do not produce a failure badge", () => {
+    const agent = makeAgent({ id: "a1", runtime_id: "runtime-1" });
+    const cancelled = makeTask({
+      id: "t1",
+      agent_id: "a1",
+      runtime_id: "runtime-1",
+      status: "cancelled",
+      failure_reason: "",
+      completed_at: "2026-01-03T00:00:00Z",
+    });
+
+    const index = buildLatestFailureIndex([agent], [cancelled]);
+
+    expect(index.has("runtime-1")).toBe(false);
+  });
+
+  it("does not leak the raw failure_reason, error, or any provider/credential text into the returned map", () => {
+    const agent = makeAgent({ id: "a1", runtime_id: "runtime-1" });
+    const task = makeTask({
+      id: "t1",
+      agent_id: "a1",
+      runtime_id: "runtime-1",
+      status: "failed",
+      failure_reason: "agent_error.provider_auth_or_access" as AgentTask["failure_reason"],
+      error: "invalid token sk-abc123-secret",
+      completed_at: "2026-01-03T00:00:00Z",
+    });
+
+    const index = buildLatestFailureIndex([agent], [task]);
+    const value = index.get("runtime-1");
+
+    expect(value).toBe("auth");
+    expect(value).not.toContain("sk-abc123");
+    expect(value).not.toContain("invalid token");
+    expect(value).not.toContain("provider_auth_or_access");
+  });
+});
+
+describe("LatestFailureBadge", () => {
+  it("renders nothing when failureClass is null", () => {
+    const view = renderWithI18n(
+      h(LatestFailureBadge, { failureClass: null }),
+    );
+    expect(screen.queryByTestId("latest-failure-badge")).not.toBeInTheDocument();
+    view.unmount();
+  });
+
+  it("renders a localized label for each of the seven failure classes", () => {
+    const cases = [
+      ["en", "auth", "Auth error"],
+      ["en", "rate_limit", "Rate limited"],
+      ["en", "timeout", "Timed out"],
+      ["en", "provider", "Provider error"],
+      ["en", "runtime", "Runtime error"],
+      ["en", "agent", "Agent error"],
+      ["en", "other", "Run failed"],
+      ["zh-Hans", "auth", "鉴权错误"],
+      ["zh-Hans", "timeout", "运行超时"],
+      ["ja", "auth", "認証エラー"],
+      ["ja", "timeout", "タイムアウト"],
+      ["ko", "auth", "인증 오류"],
+      ["ko", "timeout", "시간 초과"],
+    ] as const;
+
+    for (const [locale, cls, label] of cases) {
+      const view = renderWithI18n(
+        h(LatestFailureBadge, { failureClass: cls }),
+        { locale },
+      );
+      const badge = screen.getByTestId("latest-failure-badge");
+      expect(badge).toBeInTheDocument();
+      expect(badge).toHaveTextContent(label);
+      expect(badge.dataset.failureClass).toBe(cls);
+      view.unmount();
+    }
+  });
+
+  it("never renders the raw failure reason string in the DOM", () => {
+    const view = renderWithI18n(
+      h(LatestFailureBadge, { failureClass: "auth" }),
+    );
+    const badge = screen.getByTestId("latest-failure-badge");
+    const text = badge.textContent ?? "";
+    expect(text).not.toContain("provider_auth");
+    expect(text).not.toContain("agent_error");
+    expect(text).not.toContain("failure_reason");
+    view.unmount();
   });
 });
