@@ -327,6 +327,48 @@ describe("WorkWall execution chain", () => {
     expect(screen.queryByTestId("owner-card-chain")).toBeNull();
   });
 
+  it("renders execution runtime in the chain block when task runtime differs (HIV-940)", () => {
+    render(
+      <WorkWall
+        employees={[
+          emp({
+            runtime_provider: "prime",
+            task_id: "33333333-3333-3333-3333-333333333333",
+            execution_runtime_id: "rt-task-orig",
+            execution_runtime_carrier: "codex",
+            execution_model_name: "o3",
+            execution_profile_id: "profile-exec",
+            execution_profile_name: "Codex 执行档案",
+          }),
+        ]}
+      />,
+    );
+    fireEvent.click(screen.getByTestId("owner-card-header"));
+    const execRT = screen.getByTestId("owner-card-exec-runtime");
+    expect(execRT.textContent).toContain("执行运行时：codex");
+    expect(execRT.textContent).toContain("rt-task-orig");
+    expect(execRT.textContent).toContain("模型");
+    expect(execRT.textContent).toContain("o3");
+    expect(execRT.textContent).toContain("档案");
+    expect(execRT.textContent).toContain("Codex 执行档案");
+    expect(execRT.textContent).toContain("profile-exec");
+  });
+
+  it("does not render execution runtime when execution_runtime_id is absent (HIV-940)", () => {
+    render(
+      <WorkWall
+        employees={[
+          emp({
+            task_id: "33333333-3333-3333-3333-333333333333",
+            execution_runtime_carrier: "codex",
+          }),
+        ]}
+      />,
+    );
+    fireEvent.click(screen.getByTestId("owner-card-header"));
+    expect(screen.queryByTestId("owner-card-exec-runtime")).toBeNull();
+  });
+
   it("shows the issue identifier on the collapsed card", () => {
     render(
       <WorkWall

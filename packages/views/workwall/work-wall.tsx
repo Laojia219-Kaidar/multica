@@ -231,16 +231,18 @@ const RECEIPT_STATUS_LABEL: Record<string, string> = {
 };
 
 // ExecutionChainBlock renders the Owner-traceable execution chain
-// (Project -> Issue -> Task -> Run -> Receipt + runtime profile) in the
-// expanded card. Every value is an identifier the server resolved from an
-// authoritative row; absent evidence renders nothing rather than a guess.
+// (Project -> Issue -> Task -> Run -> Receipt + runtime profile + execution
+// runtime) in the expanded card. Every value is an identifier the server
+// resolved from an authoritative row; absent evidence renders nothing
+// rather than a guess.
 function ExecutionChainBlock({ employee: e }: { employee: EmployeeLiveActivityV1 }) {
   const hasAny =
     !!e.issue_id ||
     !!e.project_id ||
     !!e.task_id ||
     !!e.runtime_profile_id ||
-    !!e.execution_receipt_ref;
+    !!e.execution_receipt_ref ||
+    !!e.execution_runtime_id;
   if (!hasAny) return null;
   return (
     <div className="mb-2 flex flex-col gap-0.5" data-testid="owner-card-chain">
@@ -275,6 +277,26 @@ function ExecutionChainBlock({ employee: e }: { employee: EmployeeLiveActivityV1
         <div className="truncate">
           Profile {e.runtime_profile_name ?? ""}
           <span className="text-muted-foreground"> {e.runtime_profile_id}</span>
+        </div>
+      ) : null}
+      {e.execution_runtime_id ? (
+        <div className="truncate" data-testid="owner-card-exec-runtime">
+          执行运行时：{e.execution_runtime_carrier ?? "未知"}
+          <span className="text-muted-foreground"> {e.execution_runtime_id}</span>
+          {e.execution_model_name ? (
+            <>
+              {" · 模型 "}
+              <span className="text-muted-foreground">{e.execution_model_name}</span>
+            </>
+          ) : null}
+          {e.execution_profile_id ? (
+            <>
+              {" · 档案 "}
+              <span className="text-muted-foreground">
+                {e.execution_profile_name ?? e.execution_profile_id} {e.execution_profile_id}
+              </span>
+            </>
+          ) : null}
         </div>
       ) : null}
       {e.execution_receipt_ref ? (

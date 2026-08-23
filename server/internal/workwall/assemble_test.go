@@ -892,3 +892,94 @@ func TestAssembleAgent_RuntimeCarrierPreservedUnderAuthorityOverlay(t *testing.T
 		t.Fatalf("llm_provider = %q, want empty after authority overlay", got.LLMProvider)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Execution-runtime projection (HIV-940)
+// ---------------------------------------------------------------------------
+
+func rebindChainFixture() *ExecutionChain {
+	return &ExecutionChain{
+		TaskID:                  uuidStr(tu),
+		IssueID:                 uuidStr(tu),
+		IssueIdentifier:         "HIV-940",
+		IssueTitle:              "Task-runtime lineage",
+		RuntimeProfileID:        "profile-task-rt",
+		RuntimeProfileName:      "Codex 执行档案",
+		ExecutionRuntimeID:      "rt-task-uuid",
+		ExecutionRuntimeCarrier: "codex",
+		ExecutionProfileID:      "profile-task-rt",
+		ExecutionProfileName:    "Codex 执行档案",
+	}
+}
+
+func TestAssembleAgentCard_RebindShowsCurrentBExecutionA(t *testing.T) {
+	now := time.Now().UTC()
+	// Agent's current runtime is "prime" (runtime_id = tu).
+	// Task's execution runtime is "codex" (from the chain).
+	got := AssembleAgentCard(
+		agent(),
+		rt("online", now.Add(-time.Second)),
+		task("running", now.Add(-time.Minute)),
+		nil,
+		rebindChainFixture(),
+		nil,
+		nil,
+		now, 0,
+	)
+
+	// Current binding: the agent's runtime.
+	if got.RuntimeID != uuidStr(tu) {
+		t.Fatalf("runtime_id = %q, want the agent's current runtime", got.RuntimeID)
+	}
+	if got.RuntimeCarrier != "prime" {
+		t.Fatalf("runtime_carrier = %q, want the agent's current carrier", got.RuntimeCarrier)
+	}
+	// Execution chain: the task's original runtime.
+	if got.ExecutionRuntimeID != "rt-task-uuid" {
+		t.Fatalf("execution_runtime_id = %q, want the task's runtime", got.ExecutionRuntimeID)
+	}
+	if got.ExecutionRuntimeCarrier != "codex" {
+		t.Fatalf("execution_runtime_carrier = %q, want the task's carrier", got.ExecutionRuntimeCarrier)
+	}
+	if got.ExecutionProfileID != "profile-task-rt" || got.ExecutionProfileName != "Codex 执行档案" {
+		t.Fatalf("execution profile = %q / %q", got.ExecutionProfileID, got.ExecutionProfileName)
+	}
+	// Profile on the card follows the task runtime (HIV-940).
+	if got.RuntimeProfileID != "profile-task-rt" {
+		t.Fatalf("runtime_profile_id = %q, want the task runtime's profile", got.RuntimeProfileID)
+	}
+}
+
+func TestAssembleAgentCard_NoExecutionRuntimeOmitsFields(t *testing.T) {
+	now := time.Now().UTC()
+	chain := &ExecutionChain{
+		TaskID:          uuidStr(tu),
+		IssueID:         uuidStr(tu),
+		IssueIdentifier: "HIV-940",
+		// No execution-runtime fields — task runtime was missing.
+	}
+	got := AssembleAgentCard(
+		agent(),
+		rt("online", now.Add(-time.Second)),
+		task("running", now.Add(-time.Minute)),
+		nil,
+		chain,
+		nil,
+		nil,
+		now, 0,
+	)
+
+	if got.ExecutionRuntimeID != "" || got.ExecutionRuntimeCarrier != "" {
+		t.Fatalf("missing task runtime must omit execution fields, got %+v", got)
+	}
+	if got.ExecutionProfileID != "" || got.ExecutionProfileName != "" {
+		t.Fatalf("missing task runtime must omit execution profile, got %+v", got)
+	}
+	// Current binding and the rest of the chain survive.
+	if got.RuntimeCarrier != "prime" {
+		t.Fatalf("current carrier must survive, got %q", got.RuntimeCarrier)
+	}
+	if got.IssueIdentifier != "HIV-940" {
+		t.Fatalf("issue must survive, got %q", got.IssueIdentifier)
+	}
+}

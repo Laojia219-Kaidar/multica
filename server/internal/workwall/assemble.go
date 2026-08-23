@@ -268,6 +268,15 @@ func AssembleAgentCard(
 		in.RuntimeProfileName = chain.RuntimeProfileName
 		in.ExecutionReceiptRef = chain.ExecutionReceiptRef
 		in.ExecutionReceiptStatus = chain.ExecutionReceiptStatus
+		// Execution-runtime projection (HIV-940): the Task's original
+		// runtime/carrier/profile. Empty when the Task has no runtime_id or
+		// the runtime row is missing. Never substituted from the current
+		// Agent runtime binding.
+		in.ExecutionRuntimeID = chain.ExecutionRuntimeID
+		in.ExecutionRuntimeCarrier = chain.ExecutionRuntimeCarrier
+		in.ExecutionModelName = chain.ExecutionModelName
+		in.ExecutionProfileID = chain.ExecutionProfileID
+		in.ExecutionProfileName = chain.ExecutionProfileName
 		if chain.IssueID != "" {
 			in.SourceRefs = append(in.SourceRefs, "issue://"+chain.IssueID)
 		}
@@ -279,6 +288,9 @@ func AssembleAgentCard(
 		}
 		if chain.ExecutionReceiptRef != "" {
 			in.SourceRefs = append(in.SourceRefs, chain.ExecutionReceiptRef)
+		}
+		if chain.ExecutionRuntimeID != "" {
+			in.SourceRefs = append(in.SourceRefs, "exec-runtime://"+chain.ExecutionRuntimeID)
 		}
 	}
 

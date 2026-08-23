@@ -115,6 +115,16 @@ export const EmployeeLiveActivityV1Schema = z
     execution_receipt_ref: z.string().optional(),
     execution_receipt_status: z.string().optional(),
 
+    // Execution-runtime projection (HIV-940). The Task's original runtime
+    // binding. After an A→B rebind the card shows current B but execution
+    // A. Missing/unknown Task Runtime omits these without dropping the
+    // rest of the chain. Never substituted from the Agent model or Receipt.
+    execution_runtime_id: z.string().optional(),
+    execution_runtime_carrier: z.string().optional(),
+    execution_model_name: z.string().optional(),
+    execution_profile_id: z.string().optional(),
+    execution_profile_name: z.string().optional(),
+
     queued_at: z.string().optional(),
     started_at: z.string().optional(),
     last_heartbeat_at: z.string().optional(),

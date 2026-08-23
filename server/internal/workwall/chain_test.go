@@ -25,6 +25,7 @@ type fakeChainStore struct {
 	receipts      map[string]db.GetExecutionReceiptForWorkWallRow // key: task
 	autopilotRuns map[string]db.AutopilotRun                      // key: run id
 	autopilots    map[string]db.Autopilot                         // key: autopilot id
+	runtimes      map[string]db.AgentRuntime                      // key: workspace|runtime
 	crossCalls    int                                             // lookups whose workspace arg mismatched the stored row
 	issueCalls    []string
 	receiptCalls  []pgtype.UUID
@@ -40,6 +41,7 @@ func newFakeChainStore() *fakeChainStore {
 		receipts:      map[string]db.GetExecutionReceiptForWorkWallRow{},
 		autopilotRuns: map[string]db.AutopilotRun{},
 		autopilots:    map[string]db.Autopilot{},
+		runtimes:      map[string]db.AgentRuntime{},
 	}
 }
 
@@ -112,6 +114,14 @@ func (f *fakeChainStore) GetAutopilot(_ context.Context, id pgtype.UUID) (db.Aut
 		return db.Autopilot{}, pgx.ErrNoRows
 	}
 	return ap, nil
+}
+
+func (f *fakeChainStore) GetAgentRuntimeForWorkspace(_ context.Context, arg db.GetAgentRuntimeForWorkspaceParams) (db.AgentRuntime, error) {
+	rt, ok := f.runtimes[key(arg.WorkspaceID, arg.ID)]
+	if !ok {
+		return db.AgentRuntime{}, pgx.ErrNoRows
+	}
+	return rt, nil
 }
 
 func otherWorkspace() pgtype.UUID {
@@ -503,5 +513,221 @@ func TestReceiptTerminalStatusOK_ClosedSet(t *testing.T) {
 		if receiptTerminalStatusOK(bad) {
 			t.Fatalf("%q must be outside the closed set", bad)
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Execution-runtime lineage (HIV-940)
+//
+// The card's current runtime fields (RuntimeID / RuntimeCarrier) come from
+// the agent's CURRENT binding. The execution-runtime fields come from the
+// Task's own runtime_id. After an A→B rebind the card shows current B but
+// execution A. Missing/unknown Task Runtime omits execution fields without
+// dropping the rest of the chain.
+// ---------------------------------------------------------------------------
+
+func taskRuntimeUUID() pgtype.UUID {
+	return pgtype.UUID{Bytes: [16]byte{2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2}, Valid: true}
+}
+
+func otherProfileUUID() pgtype.UUID {
+	return pgtype.UUID{Bytes: [16]byte{3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3}, Valid: true}
+}
+
+func TestResolveExecutionChain_TaskRuntimeRebindShowsExecutionA(t *testing.T) {
+	store := newFakeChainStore()
+	store.issues[key(tu, tu)] = seededIssue()
+
+	taskRT := taskRuntimeUUID()
+	taskProfile := otherProfileUUID()
+
+	// Agent's current runtime (tu) has profile tu.
+	// Task's runtime (taskRT) has profile taskProfile — a DIFFERENT profile.
+	store.runtimes[key(tu, taskRT)] = db.AgentRuntime{
+		ID: taskRT, WorkspaceID: tu, Provider: "codex", Status: "online", ProfileID: taskProfile,
+	}
+	store.profiles[key(tu, taskProfile)] = db.GetRuntimeProfileForWorkWallRow{
+		ID: taskProfile, WorkspaceID: tu, DisplayName: "Codex 执行档案",
+	}
+
+	task := seededChainTask()
+	task.RuntimeID = taskRT
+
+	chain, err := resolveExecutionChain(context.Background(), store, tu, "HIV", seededRuntime(), task)
+	if err != nil {
+		t.Fatalf("resolveExecutionChain: %v", err)
+	}
+
+	// Profile comes from the Task's runtime, not the agent's current.
+	if chain.RuntimeProfileID != uuidStr(taskProfile) || chain.RuntimeProfileName != "Codex 执行档案" {
+		t.Fatalf("profile must follow task runtime, got profile=%q name=%q", chain.RuntimeProfileID, chain.RuntimeProfileName)
+	}
+	// Execution-runtime fields trace the Task's original runtime.
+	if chain.ExecutionRuntimeID != uuidStr(taskRT) {
+		t.Fatalf("execution_runtime_id = %q, want %q", chain.ExecutionRuntimeID, uuidStr(taskRT))
+	}
+	if chain.ExecutionRuntimeCarrier != "codex" {
+		t.Fatalf("execution_runtime_carrier = %q, want codex", chain.ExecutionRuntimeCarrier)
+	}
+	if chain.ExecutionProfileID != uuidStr(taskProfile) || chain.ExecutionProfileName != "Codex 执行档案" {
+		t.Fatalf("execution profile = %q / %q", chain.ExecutionProfileID, chain.ExecutionProfileName)
+	}
+	// The rest of the chain survives.
+	if chain.TaskID != uuidStr(tu) || chain.IssueID != uuidStr(tu) {
+		t.Fatalf("task/issue must survive rebind, got %+v", chain)
+	}
+}
+
+func TestResolveExecutionChain_MissingTaskRuntimeOmitsExecutionFields(t *testing.T) {
+	store := newFakeChainStore()
+	store.issues[key(tu, tu)] = seededIssue()
+	store.profiles[key(tu, tu)] = db.GetRuntimeProfileForWorkWallRow{
+		ID: tu, WorkspaceID: tu, DisplayName: "glm-5.3 运行档案",
+	}
+
+	unknownRT := pgtype.UUID{Bytes: [16]byte{8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8}, Valid: true}
+	task := seededChainTask()
+	task.RuntimeID = unknownRT
+	// No runtime row seeded for unknownRT — simulates a deleted/unknown runtime.
+
+	chain, err := resolveExecutionChain(context.Background(), store, tu, "HIV", seededRuntime(), task)
+	if err != nil {
+		t.Fatalf("resolveExecutionChain: %v", err)
+	}
+
+	// Execution fields must be empty — the runtime row is missing.
+	if chain.ExecutionRuntimeID != "" || chain.ExecutionRuntimeCarrier != "" {
+		t.Fatalf("missing task runtime must omit execution fields, got %+v", chain)
+	}
+	if chain.ExecutionProfileID != "" || chain.ExecutionProfileName != "" {
+		t.Fatalf("missing task runtime must omit execution profile, got %+v", chain)
+	}
+	// Profile falls back to the agent's current runtime.
+	if chain.RuntimeProfileID != uuidStr(tu) || chain.RuntimeProfileName != "glm-5.3 运行档案" {
+		t.Fatalf("profile must fall back to current runtime, got %q / %q", chain.RuntimeProfileID, chain.RuntimeProfileName)
+	}
+	// The rest of the chain survives.
+	if chain.TaskID != uuidStr(tu) || chain.IssueIdentifier != "HIV-797" {
+		t.Fatalf("task/issue must survive missing task runtime, got %+v", chain)
+	}
+}
+
+func TestResolveExecutionChain_TaskWithoutRuntimeIDUsesCurrentRuntime(t *testing.T) {
+	store := newFakeChainStore()
+	store.issues[key(tu, tu)] = seededIssue()
+	store.profiles[key(tu, tu)] = db.GetRuntimeProfileForWorkWallRow{
+		ID: tu, WorkspaceID: tu, DisplayName: "glm-5.3 运行档案",
+	}
+
+	task := seededChainTask()
+	task.RuntimeID = pgtype.UUID{} // no task runtime
+
+	chain, err := resolveExecutionChain(context.Background(), store, tu, "HIV", seededRuntime(), task)
+	if err != nil {
+		t.Fatalf("resolveExecutionChain: %v", err)
+	}
+
+	// No execution-runtime fields — the task has no runtime_id.
+	if chain.ExecutionRuntimeID != "" || chain.ExecutionRuntimeCarrier != "" {
+		t.Fatalf("task without runtime_id must not set execution fields, got %+v", chain)
+	}
+	if chain.ExecutionProfileID != "" {
+		t.Fatalf("task without runtime_id must not set execution profile, got %+v", chain)
+	}
+	// Profile comes from the agent's current runtime (backward compatible).
+	if chain.RuntimeProfileID != uuidStr(tu) {
+		t.Fatalf("profile must come from current runtime, got %q", chain.RuntimeProfileID)
+	}
+}
+
+func TestResolveExecutionChain_NilTaskNoExecutionRuntime(t *testing.T) {
+	store := newFakeChainStore()
+	store.profiles[key(tu, tu)] = db.GetRuntimeProfileForWorkWallRow{
+		ID: tu, WorkspaceID: tu, DisplayName: "当前档案",
+	}
+
+	chain, err := resolveExecutionChain(context.Background(), store, tu, "HIV", seededRuntime(), nil)
+	if err != nil {
+		t.Fatalf("resolveExecutionChain: %v", err)
+	}
+	if chain == nil {
+		t.Fatal("idle runtime with profile must return a profile-only chain")
+	}
+	if chain.ExecutionRuntimeID != "" || chain.ExecutionRuntimeCarrier != "" {
+		t.Fatalf("nil task must not set execution runtime, got %+v", chain)
+	}
+	if chain.ExecutionProfileID != "" {
+		t.Fatalf("nil task must not set execution profile, got %+v", chain)
+	}
+	if chain.RuntimeProfileID != uuidStr(tu) || chain.RuntimeProfileName != "当前档案" {
+		t.Fatalf("profile must come from current runtime for idle card, got %+v", chain)
+	}
+}
+
+func TestResolveExecutionChain_TaskRuntimeSameAsCurrentSetsExecutionFields(t *testing.T) {
+	store := newFakeChainStore()
+	store.issues[key(tu, tu)] = seededIssue()
+	store.profiles[key(tu, tu)] = db.GetRuntimeProfileForWorkWallRow{
+		ID: tu, WorkspaceID: tu, DisplayName: "glm-5.3 运行档案",
+	}
+	// Seed the runtime row so the task runtime lookup succeeds.
+	store.runtimes[key(tu, tu)] = db.AgentRuntime{
+		ID: tu, WorkspaceID: tu, Provider: "prime", Status: "online", ProfileID: tu,
+	}
+
+	// Task's runtime_id matches the agent's current runtime (tu).
+	task := seededChainTask()
+	task.RuntimeID = tu
+
+	chain, err := resolveExecutionChain(context.Background(), store, tu, "HIV", seededRuntime(), task)
+	if err != nil {
+		t.Fatalf("resolveExecutionChain: %v", err)
+	}
+
+	// Execution fields are populated because the task runtime was resolved.
+	if chain.ExecutionRuntimeID != uuidStr(tu) {
+		t.Fatalf("execution_runtime_id = %q, want %q", chain.ExecutionRuntimeID, uuidStr(tu))
+	}
+	if chain.ExecutionRuntimeCarrier != "prime" {
+		t.Fatalf("execution_runtime_carrier = %q, want prime", chain.ExecutionRuntimeCarrier)
+	}
+	// Profile comes from the task's runtime (same as current in this case).
+	if chain.RuntimeProfileID != uuidStr(tu) {
+		t.Fatalf("profile = %q", chain.RuntimeProfileID)
+	}
+	if chain.ExecutionProfileID != uuidStr(tu) {
+		t.Fatalf("execution profile = %q", chain.ExecutionProfileID)
+	}
+}
+
+func TestResolveExecutionChain_CrossWorkspaceTaskRuntimeFailsClosed(t *testing.T) {
+	store := newFakeChainStore()
+	store.issues[key(tu, tu)] = seededIssue()
+	store.profiles[key(tu, tu)] = db.GetRuntimeProfileForWorkWallRow{
+		ID: tu, WorkspaceID: tu, DisplayName: "glm-5.3 运行档案",
+	}
+	other := otherWorkspace()
+
+	taskRT := taskRuntimeUUID()
+	// The task runtime exists but in a DIFFERENT workspace.
+	store.runtimes[key(other, taskRT)] = db.AgentRuntime{
+		ID: taskRT, WorkspaceID: other, Provider: "leaked", Status: "online",
+	}
+
+	task := seededChainTask()
+	task.RuntimeID = taskRT
+
+	chain, err := resolveExecutionChain(context.Background(), store, tu, "HIV", seededRuntime(), task)
+	if err != nil {
+		t.Fatalf("resolveExecutionChain: %v", err)
+	}
+
+	// Cross-workspace runtime must fail closed.
+	if chain.ExecutionRuntimeID != "" || chain.ExecutionRuntimeCarrier != "" {
+		t.Fatalf("cross-workspace task runtime must fail closed, got %+v", chain)
+	}
+	// Profile falls back to current runtime.
+	if chain.RuntimeProfileID != uuidStr(tu) {
+		t.Fatalf("profile must fall back to current runtime, got %q", chain.RuntimeProfileID)
 	}
 }

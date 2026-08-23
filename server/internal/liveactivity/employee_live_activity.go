@@ -84,6 +84,19 @@ type EmployeeLiveActivityV1 struct {
 	ExecutionReceiptRef    string `json:"execution_receipt_ref,omitempty"`
 	ExecutionReceiptStatus string `json:"execution_receipt_status,omitempty"`
 
+	// Execution-runtime projection (HIV-940). When the selected Task carries
+	// its own runtime_id the card must show the agent's CURRENT runtime
+	// binding above (RuntimeID / RuntimeCarrier / ModelName) while the
+	// execution fields below trace the Task's ORIGINAL runtime. After an
+	// A→B rebind the card shows current B but execution A. Missing or
+	// unknown Task Runtime omits these fields without dropping the rest of
+	// the chain. Never substituted from the Agent model or Receipt snapshots.
+	ExecutionRuntimeID      string `json:"execution_runtime_id,omitempty"`
+	ExecutionRuntimeCarrier string `json:"execution_runtime_carrier,omitempty"`
+	ExecutionModelName      string `json:"execution_model_name,omitempty"`
+	ExecutionProfileID      string `json:"execution_profile_id,omitempty"`
+	ExecutionProfileName    string `json:"execution_profile_name,omitempty"`
+
 	QueuedAt        *time.Time `json:"queued_at,omitempty"`
 	StartedAt       *time.Time `json:"started_at,omitempty"`
 	LastHeartbeatAt *time.Time `json:"last_heartbeat_at,omitempty"`
@@ -134,6 +147,12 @@ type SnapshotInput struct {
 	ExecutionReceiptRef    string
 	ExecutionReceiptStatus string
 
+	ExecutionRuntimeID      string
+	ExecutionRuntimeCarrier string
+	ExecutionModelName      string
+	ExecutionProfileID      string
+	ExecutionProfileName    string
+
 	Derivation    Inputs
 	StageHint     WorkStage
 	ActivityKind  string
@@ -183,49 +202,54 @@ func BuildDTO(s SnapshotInput, observedAt time.Time) EmployeeLiveActivityV1 {
 	refs = append(refs, s.SourceRefs...)
 
 	dto := EmployeeLiveActivityV1{
-		SchemaVersion:          SchemaVersionV1,
-		WorkspaceID:            s.WorkspaceID,
-		EmployeeID:             s.EmployeeID,
-		AgentID:                s.AgentID,
-		DisplayName:            s.DisplayName,
-		AvatarURL:              s.AvatarURL,
-		DepartmentID:           s.DepartmentID,
-		DepartmentName:         s.DepartmentName,
-		PositionName:           s.PositionName,
-		ProjectID:              s.ProjectID,
-		ProjectTitle:           s.ProjectTitle,
-		IssueID:                s.IssueID,
-		IssueIdentifier:        s.IssueIdentifier,
-		IssueTitle:             s.IssueTitle,
-		TaskID:                 s.TaskID,
-		RunID:                  s.RunID,
-		PresenceState:          presence,
-		WorkStage:              stage,
-		ActivityKind:           s.ActivityKind,
-		ActivitySummary:        s.ActivityNotes,
-		RecentEvents:           events,
-		BaseID:                 s.BaseID,
-		BaseName:               s.BaseName,
-		RuntimeID:              s.RuntimeID,
-		RuntimeCarrier:         s.RuntimeCarrier,
-		ModelName:              s.ModelName,
-		LLMProvider:            s.LLMProvider,
-		RuntimeProfileID:       s.RuntimeProfileID,
-		RuntimeProfileName:     s.RuntimeProfileName,
-		ExecutionReceiptRef:    s.ExecutionReceiptRef,
-		ExecutionReceiptStatus: s.ExecutionReceiptStatus,
-		QueuedAt:               s.QueuedAt,
-		StartedAt:              s.StartedAt,
-		LastHeartbeatAt:        s.LastHeartbeatAt,
-		LastEventAt:            s.LastEventAt,
-		CompletedAt:            s.CompletedAt,
-		TokenUsage:             s.TokenUsage,
-		CostAmount:             s.CostAmount,
-		BlockedReason:          deriv.BlockedReason,
-		NextAction:             s.NextAction,
-		SourceRefs:             refs,
-		ObservedAt:             observedAt,
-		FreshnessState:         s.FreshnessState,
+		SchemaVersion:           SchemaVersionV1,
+		WorkspaceID:             s.WorkspaceID,
+		EmployeeID:              s.EmployeeID,
+		AgentID:                 s.AgentID,
+		DisplayName:             s.DisplayName,
+		AvatarURL:               s.AvatarURL,
+		DepartmentID:            s.DepartmentID,
+		DepartmentName:          s.DepartmentName,
+		PositionName:            s.PositionName,
+		ProjectID:               s.ProjectID,
+		ProjectTitle:            s.ProjectTitle,
+		IssueID:                 s.IssueID,
+		IssueIdentifier:         s.IssueIdentifier,
+		IssueTitle:              s.IssueTitle,
+		TaskID:                  s.TaskID,
+		RunID:                   s.RunID,
+		PresenceState:           presence,
+		WorkStage:               stage,
+		ActivityKind:            s.ActivityKind,
+		ActivitySummary:         s.ActivityNotes,
+		RecentEvents:            events,
+		BaseID:                  s.BaseID,
+		BaseName:                s.BaseName,
+		RuntimeID:               s.RuntimeID,
+		RuntimeCarrier:          s.RuntimeCarrier,
+		ModelName:               s.ModelName,
+		LLMProvider:             s.LLMProvider,
+		RuntimeProfileID:        s.RuntimeProfileID,
+		RuntimeProfileName:      s.RuntimeProfileName,
+		ExecutionReceiptRef:     s.ExecutionReceiptRef,
+		ExecutionReceiptStatus:  s.ExecutionReceiptStatus,
+		ExecutionRuntimeID:      s.ExecutionRuntimeID,
+		ExecutionRuntimeCarrier: s.ExecutionRuntimeCarrier,
+		ExecutionModelName:      s.ExecutionModelName,
+		ExecutionProfileID:      s.ExecutionProfileID,
+		ExecutionProfileName:    s.ExecutionProfileName,
+		QueuedAt:                s.QueuedAt,
+		StartedAt:               s.StartedAt,
+		LastHeartbeatAt:         s.LastHeartbeatAt,
+		LastEventAt:             s.LastEventAt,
+		CompletedAt:             s.CompletedAt,
+		TokenUsage:              s.TokenUsage,
+		CostAmount:              s.CostAmount,
+		BlockedReason:           deriv.BlockedReason,
+		NextAction:              s.NextAction,
+		SourceRefs:              refs,
+		ObservedAt:              observedAt,
+		FreshnessState:          s.FreshnessState,
 	}
 	if dto.FreshnessState == "" {
 		dto.FreshnessState = FreshnessFresh

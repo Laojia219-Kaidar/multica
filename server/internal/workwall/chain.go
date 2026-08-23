@@ -60,6 +60,11 @@ type chainStore interface {
 	// (HIV-869). The Work Wall only reads workspace_id. Reuses the
 	// existing generated query.
 	GetAutopilot(ctx context.Context, id pgtype.UUID) (db.Autopilot, error)
+	// GetAgentRuntimeForWorkspace returns the workspace-scoped runtime row
+	// the execution-runtime projection needs (HIV-940). The Work Wall only
+	// reads id, provider and profile_id from this row. Reuses the existing
+	// generated query.
+	GetAgentRuntimeForWorkspace(ctx context.Context, arg db.GetAgentRuntimeForWorkspaceParams) (db.AgentRuntime, error)
 }
 
 // Compile-time proof that production binds the walk to the generated narrow
@@ -96,6 +101,17 @@ type ExecutionChain struct {
 
 	ExecutionReceiptRef    string
 	ExecutionReceiptStatus string
+
+	// Execution-runtime projection (HIV-940). When the selected Task
+	// carries its own runtime_id, these fields trace the Task's ORIGINAL
+	// runtime (provider/carrier, profile, model). After an A→B rebind the
+	// card shows current B but execution A. Missing or unknown Task Runtime
+	// leaves these empty without dropping the rest of the chain.
+	ExecutionRuntimeID      string
+	ExecutionRuntimeCarrier string
+	ExecutionModelName      string
+	ExecutionProfileID      string
+	ExecutionProfileName    string
 }
 
 // receiptTerminalStatuses is the closed terminal_status set enforced by the
@@ -120,8 +136,13 @@ func resolveIssuePrefix(ctx context.Context, store chainStore, workspaceID pgtyp
 
 // resolveExecutionChain hydrates the chain for the task currently shown on the
 // card (active task, or the most recent terminal task when idle). Runtime
-// Profile evidence is independent of task evidence, so an idle card may
-// return a profile-only chain. rt may be nil (no runtime row).
+// Profile evidence follows the Task's runtime when a task with its own
+// runtime_id exists (HIV-940): the profile is resolved from the Task's
+// runtime, not the agent's current binding. After an A→B rebind the card
+// shows current B but the chain resolves Profile A. When the task has no
+// runtime_id the agent's current runtime profile is the fallback. An idle
+// card (no task) may return a profile-only chain from the current runtime.
+// rt may be nil (no runtime row).
 func resolveExecutionChain(
 	ctx context.Context,
 	store chainStore,
@@ -132,9 +153,41 @@ func resolveExecutionChain(
 ) (*ExecutionChain, error) {
 	chain := &ExecutionChain{}
 
-	if rt != nil && rt.ProfileID.Valid {
+	// Determine which runtime drives the profile and execution fields.
+	// When the task carries its own runtime_id the execution chain derives
+	// from THAT runtime (HIV-940); otherwise the agent's current runtime
+	// is the fallback for the profile. The execution-runtime fields are
+	// populated only when a distinct task runtime is resolved.
+	var (
+		profileRuntime   *db.AgentRuntime
+		taskRuntimeFound *db.AgentRuntime
+	)
+
+	if task != nil && task.RuntimeID.Valid {
+		tr, err := store.GetAgentRuntimeForWorkspace(ctx, db.GetAgentRuntimeForWorkspaceParams{
+			ID:          task.RuntimeID,
+			WorkspaceID: workspaceID,
+		})
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return nil, err
+		}
+		if err == nil {
+			taskRuntimeFound = &tr
+			profileRuntime = taskRuntimeFound
+			chain.ExecutionRuntimeID = uuidStr(tr.ID)
+			chain.ExecutionRuntimeCarrier = tr.Provider
+		}
+		// Missing/unknown task runtime: execution fields stay empty, the
+		// rest of the chain is unaffected.
+	}
+
+	if profileRuntime == nil {
+		profileRuntime = rt
+	}
+
+	if profileRuntime != nil && profileRuntime.ProfileID.Valid {
 		profile, err := store.GetRuntimeProfileForWorkWall(ctx, db.GetRuntimeProfileForWorkWallParams{
-			ID:          rt.ProfileID,
+			ID:          profileRuntime.ProfileID,
 			WorkspaceID: workspaceID,
 		})
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
@@ -143,6 +196,10 @@ func resolveExecutionChain(
 		if err == nil {
 			chain.RuntimeProfileID = uuidStr(profile.ID)
 			chain.RuntimeProfileName = profile.DisplayName
+			if taskRuntimeFound != nil {
+				chain.ExecutionProfileID = uuidStr(profile.ID)
+				chain.ExecutionProfileName = profile.DisplayName
+			}
 		}
 	}
 
