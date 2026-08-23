@@ -2096,7 +2096,11 @@ export class ApiClient {
       null,
       { endpoint: "POST /api/bases/operational-mode" },
     );
-    if (!receipt) {
+    if (
+      !receipt ||
+      receipt.machine_title !== machineTitle ||
+      receipt.mode !== mode
+    ) {
       throw new Error("Invalid base operational-mode receipt.");
     }
     return receipt;

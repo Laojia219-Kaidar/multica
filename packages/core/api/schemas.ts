@@ -2537,12 +2537,19 @@ export const MALFORMED_RUNTIME_MODEL_LIST_REQUEST: RuntimeModelListRequest = {
 // string fails the parse instead of becoming a number.
 // ---------------------------------------------------------------------------
 
+const CanonicalBaseStringSchema = z
+  .string()
+  .min(1)
+  .refine((value) => value.trim() === value, {
+    message: "Base identity and title fields must not contain surrounding whitespace",
+  });
+
 export const CompanyBaseWireSchema = z.object({
-  id: z.string().min(1),
-  code: z.string().min(1),
-  name: z.string().min(1),
+  id: CanonicalBaseStringSchema,
+  code: CanonicalBaseStringSchema,
+  name: CanonicalBaseStringSchema,
   device: z.string(),
-  machine_title: z.string().min(1),
+  machine_title: CanonicalBaseStringSchema,
   agents: z.number().int().nonnegative(),
 }).strict();
 
@@ -2551,7 +2558,7 @@ export const CompanyBaseListWireSchema = z.array(CompanyBaseWireSchema);
 export type CompanyBaseWire = z.infer<typeof CompanyBaseWireSchema>;
 
 export const OperationalBaseWireSchema = z.object({
-  machine_title: z.string().min(1),
+  machine_title: CanonicalBaseStringSchema,
   runtime_online: z.number().int().nonnegative(),
   runtime_registered: z.number().int().nonnegative(),
   employees: z.number().int().nonnegative(),
@@ -2563,7 +2570,7 @@ export const OperationalBaseListWireSchema = z.array(OperationalBaseWireSchema);
 export type OperationalBaseWire = z.infer<typeof OperationalBaseWireSchema>;
 
 export const BaseOperationalModeReceiptWireSchema = z.object({
-  machine_title: z.string().min(1),
+  machine_title: CanonicalBaseStringSchema,
   mode: z.enum(["resting", "active"]),
   agents_updated: z.number().int().nonnegative(),
 }).strict();

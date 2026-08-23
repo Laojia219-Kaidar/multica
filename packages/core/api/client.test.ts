@@ -4218,6 +4218,18 @@ describe("ApiClient Base strict wire boundary", () => {
     ).resolves.toEqual([]);
   });
 
+  it("fails closed when company-base identity fields are whitespace-only or padded", async () => {
+    stubJson([{ ...companyBase, id: " " }]);
+    await expect(
+      new ApiClient("https://api.example.test").getCompanyBases(),
+    ).resolves.toEqual([]);
+
+    stubJson([{ ...companyBase, machine_title: " HiveCosm DGX Spark " }]);
+    await expect(
+      new ApiClient("https://api.example.test").getCompanyBases(),
+    ).resolves.toEqual([]);
+  });
+
   it("rejects a numeric-string company-base counter without coercion", async () => {
     stubJson([{ ...companyBase, agents: "3" }]);
 
@@ -4279,6 +4291,18 @@ describe("ApiClient Base strict wire boundary", () => {
   it("fails closed when an operational-base machine_title is empty", async () => {
     stubJson([{ ...operationalBase, machine_title: "" }]);
 
+    await expect(
+      new ApiClient("https://api.example.test").listBases(),
+    ).resolves.toEqual([]);
+  });
+
+  it("fails closed when an operational-base machine_title is whitespace-only or padded", async () => {
+    stubJson([{ ...operationalBase, machine_title: "\t" }]);
+    await expect(
+      new ApiClient("https://api.example.test").listBases(),
+    ).resolves.toEqual([]);
+
+    stubJson([{ ...operationalBase, machine_title: " HiveCosm Mac mini" }]);
     await expect(
       new ApiClient("https://api.example.test").listBases(),
     ).resolves.toEqual([]);
@@ -4348,6 +4372,36 @@ describe("ApiClient Base strict wire boundary", () => {
     ).resolves.toEqual(receipt);
   });
 
+  it("rejects a schema-valid receipt for a different base", async () => {
+    stubJson({
+      machine_title: "HiveCosm DGX Spark",
+      mode: "resting",
+      agents_updated: 4,
+    });
+
+    await expect(
+      new ApiClient("https://api.example.test").setBaseOperationalMode(
+        "HiveCosm Mac mini",
+        "resting",
+      ),
+    ).rejects.toThrow("Invalid base operational-mode receipt.");
+  });
+
+  it("rejects a schema-valid receipt for the opposite mode", async () => {
+    stubJson({
+      machine_title: "HiveCosm Mac mini",
+      mode: "active",
+      agents_updated: 4,
+    });
+
+    await expect(
+      new ApiClient("https://api.example.test").setBaseOperationalMode(
+        "HiveCosm Mac mini",
+        "resting",
+      ),
+    ).rejects.toThrow("Invalid base operational-mode receipt.");
+  });
+
   it("rejects a success receipt with an unknown mode", async () => {
     stubJson({
       machine_title: "HiveCosm Mac mini",
@@ -4392,6 +4446,28 @@ describe("ApiClient Base strict wire boundary", () => {
   it("rejects a success receipt with an empty machine_title", async () => {
     stubJson({ machine_title: "", mode: "resting", agents_updated: 4 });
 
+    await expect(
+      new ApiClient("https://api.example.test").setBaseOperationalMode(
+        "HiveCosm Mac mini",
+        "resting",
+      ),
+    ).rejects.toThrow("Invalid base operational-mode receipt.");
+  });
+
+  it("rejects a success receipt with whitespace-only or padded machine_title", async () => {
+    stubJson({ machine_title: " ", mode: "resting", agents_updated: 4 });
+    await expect(
+      new ApiClient("https://api.example.test").setBaseOperationalMode(
+        "HiveCosm Mac mini",
+        "resting",
+      ),
+    ).rejects.toThrow("Invalid base operational-mode receipt.");
+
+    stubJson({
+      machine_title: " HiveCosm Mac mini ",
+      mode: "resting",
+      agents_updated: 4,
+    });
     await expect(
       new ApiClient("https://api.example.test").setBaseOperationalMode(
         "HiveCosm Mac mini",
