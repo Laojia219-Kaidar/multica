@@ -146,37 +146,53 @@ export interface RuntimeRow {
   canDelete: boolean;
 }
 
-// Per-runtime workload snapshot — agent IDs serving this runtime (drives
+// Per-runtime workload snapshot — agent IDs bound to this runtime (drives
 // the avatar stack; .length doubles as the agent count) plus task counts
 // split by status. Built once per render off the workspace-wide
 // agents / agent-task-snapshot caches; filtered locally — no extra requests.
+//
+// Two lineage sources are deliberately kept apart:
+//   - Agent binding comes ONLY from agent.runtime_id (current, non-archived
+//     agents), so a rebound employee appears on their new runtime and stops
+//     appearing on the old one.
+//   - Task workload is attributed to each task's OWN runtime_id — the
+//     runtime the run was actually dispatched to — so counts never drift
+//     when the employee later rebinds. queued / dispatched /
+//     waiting_local_directory / running count (the active, non-terminal
+//     states); completed / failed / cancelled never do. Active tasks owned
+//     by archived (or unknown) agents do not count at all.
 export function buildWorkloadIndex(
   agents: Agent[],
   tasks: AgentTask[],
 ): Map<string, RuntimeWorkload> {
   const result = new Map<string, RuntimeWorkload>();
-  const agentToRuntime = new Map<string, string>();
-
+  const entryFor = (runtimeId: string): RuntimeWorkload => {
+    let entry = result.get(runtimeId);
+    if (!entry) {
+      entry = { agentIds: [], runningCount: 0, queuedCount: 0 };
+      result.set(runtimeId, entry);
+    }
+    return entry;
+  };
+  const activeAgentIds = new Set<string>();
   for (const a of agents) {
     if (!a.runtime_id || a.archived_at) continue;
-    agentToRuntime.set(a.id, a.runtime_id);
-    const entry =
-      result.get(a.runtime_id) ?? {
-        agentIds: [],
-        runningCount: 0,
-        queuedCount: 0,
-      };
-    entry.agentIds.push(a.id);
-    result.set(a.runtime_id, entry);
+    activeAgentIds.add(a.id);
+    entryFor(a.runtime_id).agentIds.push(a.id);
   }
   for (const t of tasks) {
-    const rid = agentToRuntime.get(t.agent_id);
-    if (!rid) continue;
-    const entry = result.get(rid);
-    if (!entry) continue;
-    if (t.status === "running") entry.runningCount += 1;
-    else if (t.status === "queued" || t.status === "dispatched")
-      entry.queuedCount += 1;
+    if (!t.runtime_id) continue;
+    if (!activeAgentIds.has(t.agent_id)) continue;
+    if (t.status === "running") entryFor(t.runtime_id).runningCount += 1;
+    else if (
+      t.status === "queued" ||
+      t.status === "dispatched" ||
+      t.status === "waiting_local_directory"
+    )
+      entryFor(t.runtime_id).queuedCount += 1;
+    // Any other status is terminal (completed / failed / cancelled) or a
+    // future unknown value — falling through without counting is the safe
+    // direction: a task must never inflate a runtime it did not run on.
   }
   return result;
 }
@@ -285,7 +301,7 @@ function VisibilityBadge({ runtime }: { runtime: AgentRuntime }) {
 // it (idle is the unremarkable default). If "queued but nothing running"
 // ever becomes a signal worth surfacing, it belongs to the HEALTH layer
 // (a new deriveRuntimeHealth state), not to vocabulary hints here.
-function HealthCell({
+export function HealthCell({
   runtime,
   workload,
   now,
@@ -498,9 +514,19 @@ export function CliCell({ runtime }: { runtime: AgentRuntime }) {
 // Stacks up to 3 agent avatars, then a "+N" pill if more bind to this
 // runtime. Each avatar uses the wrapping ActorAvatar so hover automatically
 // surfaces AgentProfileCard.
-function AgentStack({ agentIds }: { agentIds: string[] }) {
+//
+// Zero bound agents renders an explicit localized unbound label instead of
+// the old bare dash: an empty cell on an online runtime read as "serving
+// nobody right now", blurring assignment into the health/load semantics
+// the health column owns. Health never implies binding.
+export function AgentStack({ agentIds }: { agentIds: string[] }) {
+  const { t } = useT("runtimes");
   if (agentIds.length === 0) {
-    return <span className="text-xs text-muted-foreground/50">—</span>;
+    return (
+      <span className="block min-w-0 truncate text-xs text-muted-foreground">
+        {t(($) => $.list.unbound_agents)}
+      </span>
+    );
   }
   const visible = agentIds.slice(0, 3);
   const extra = agentIds.length - visible.length;

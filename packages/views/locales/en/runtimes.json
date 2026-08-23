@@ -297,7 +297,8 @@
     "pending_health_warning": "Waiting for daemon sync",
     "pending_health_error": "Registration error",
     "pending_health_disabled": "Disabled",
-    "pending_cli_unknown": "waiting"
+    "pending_cli_unknown": "waiting",
+    "unbound_agents": "No agents bound"
   },
   "profiles": {
     "cta": "Add runtime",

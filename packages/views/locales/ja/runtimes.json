@@ -285,7 +285,8 @@
     "pending_health_warning": "Daemon 同期待ち",
     "pending_health_error": "登録エラー",
     "pending_health_disabled": "無効",
-    "pending_cli_unknown": "待機中"
+    "pending_cli_unknown": "待機中",
+    "unbound_agents": "バインドされたエージェントなし"
   },
   "profiles": {
     "cta": "ランタイムを追加",

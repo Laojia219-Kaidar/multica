@@ -285,7 +285,8 @@
     "pending_health_warning": "Daemon 동기화 대기 중",
     "pending_health_error": "등록 오류",
     "pending_health_disabled": "비활성화됨",
-    "pending_cli_unknown": "대기 중"
+    "pending_cli_unknown": "대기 중",
+    "unbound_agents": "연결된 에이전트 없음"
   },
   "profiles": {
     "cta": "런타임 추가",
