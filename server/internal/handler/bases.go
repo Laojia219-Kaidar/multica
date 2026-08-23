@@ -28,9 +28,14 @@ type SetBaseOperationalModeRequest struct {
 	Mode         string `json:"mode"`
 }
 
-// ListBases returns the observed execution bases in the workspace, grouped
-// from runtime device_info machine titles plus agent-to-runtime bindings.
-// Read-only; no second source of truth is created.
+// ListBases returns the observed execution bases in the workspace, aggregated
+// under the formal base registry's canonical machine titles plus
+// agent-to-runtime bindings. A runtime row joins its registered base when its
+// device_info machine title is the exact registered title or that title
+// followed by an exact " · " detail suffix (longest registered title wins).
+// Rows that resolve to no registered base stay visible under their unmodified
+// observed title but can never be commanded. Read-only; no second source of
+// truth is created.
 func (h *Handler) ListBases(w http.ResponseWriter, r *http.Request) {
 	workspaceID := h.resolveWorkspaceID(r)
 
@@ -44,12 +49,21 @@ func (h *Handler) ListBases(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to list agents")
 		return
 	}
-
-	runtimeMachine := make(map[string]string, len(runtimes))
-	for _, rt := range runtimes {
-		runtimeMachine[uuidToString(rt.ID)] = machineTitle(rt.DeviceInfo)
+	bases, err := h.Queries.ListBases(r.Context(), parseUUID(workspaceID))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list bases")
+		return
 	}
 
+	writeJSON(w, http.StatusOK, buildCanonicalBaseOverviews(baseMachineTitles(bases), runtimes, agents))
+}
+
+// buildCanonicalBaseOverviews aggregates observed runtime rows and their
+// resident agents under canonical registered machine titles, fail-closed.
+// Runtime rows that resolve to no registered base are reported under their
+// unmodified observed title, so an unregistered variant can never merge
+// into — or inherit the drained state of — a registered base.
+func buildCanonicalBaseOverviews(registeredTitles []string, runtimes []db.AgentRuntime, agents []db.Agent) []BaseOverview {
 	type agg struct {
 		machine    string
 		online     int
@@ -58,8 +72,10 @@ func (h *Handler) ListBases(w http.ResponseWriter, r *http.Request) {
 	}
 	bases := make(map[string]*agg)
 	order := make([]string, 0, len(runtimes))
+	machineOfRuntime := make(map[string]string, len(runtimes))
 	for _, rt := range runtimes {
-		m := runtimeMachine[uuidToString(rt.ID)]
+		m := observedMachineKey(registeredTitles, rt.DeviceInfo)
+		machineOfRuntime[uuidToString(rt.ID)] = m
 		b := bases[m]
 		if b == nil {
 			b = &agg{machine: m}
@@ -71,10 +87,13 @@ func (h *Handler) ListBases(w http.ResponseWriter, r *http.Request) {
 			b.online++
 		}
 	}
-	drained := make(map[string]int)   // drained agent count per machine
-	total := make(map[string]int)    // total agent count per machine
+	drained := make(map[string]int) // drained agent count per machine
+	total := make(map[string]int)   // total agent count per machine
 	for _, a := range agents {
-		m := runtimeMachine[uuidToString(a.RuntimeID)]
+		m := machineOfRuntime[uuidToString(a.RuntimeID)]
+		if m == "" {
+			continue
+		}
 		if b := bases[m]; b != nil {
 			b.employees++
 		}
@@ -98,12 +117,16 @@ func (h *Handler) ListBases(w http.ResponseWriter, r *http.Request) {
 			Drained:           isDrained(b.machine),
 		})
 	}
-	writeJSON(w, http.StatusOK, resp)
+	return resp
 }
 
-// SetBaseOperationalMode drains or resumes one observed execution base by
-// setting every agent bound to a runtime on that machine to the given claim
-// mode. "resting" denies new task claims (drain); "active" re-enables them
+// SetBaseOperationalMode drains or resumes one formally registered execution
+// base. The requested machine_title must be an exact registered base title;
+// the mode is then applied to every agent bound to a runtime whose observed
+// machine title resolves to that canonical title (exact title or exact
+// " · " detail suffix) in the same workspace. Unregistered, prefix,
+// substring, parenthesis and suffixed variants are rejected without any
+// write. "resting" denies new task claims (drain); "active" re-enables them
 // (resume). In-flight tasks are unaffected — the gate is evaluated at claim
 // time, so draining lets running work finish while new work stays queued.
 // Owner/admin only.
@@ -122,8 +145,20 @@ func (h *Handler) SetBaseOperationalMode(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusBadRequest, "mode must be 'resting' or 'active'")
 		return
 	}
-	if strings.TrimSpace(req.MachineTitle) == "" {
+	title := strings.TrimSpace(req.MachineTitle)
+	if title == "" {
 		writeError(w, http.StatusBadRequest, "machine_title is required")
+		return
+	}
+
+	bases, err := h.Queries.ListBases(r.Context(), parseUUID(workspaceID))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list bases")
+		return
+	}
+	registeredTitles := baseMachineTitles(bases)
+	if !registeredCanonicalTitle(registeredTitles, title) {
+		writeError(w, http.StatusNotFound, "machine_title is not a registered base")
 		return
 	}
 
@@ -138,16 +173,8 @@ func (h *Handler) SetBaseOperationalMode(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	runtimeMachine := make(map[string]string, len(runtimes))
-	for _, rt := range runtimes {
-		runtimeMachine[uuidToString(rt.ID)] = machineTitle(rt.DeviceInfo)
-	}
-
 	updated := 0
-	for _, a := range agents {
-		if runtimeMachine[uuidToString(a.RuntimeID)] != req.MachineTitle {
-			continue
-		}
+	for _, a := range selectBaseDrainAgents(registeredTitles, runtimes, agents, workspaceID, title) {
 		if _, err := h.Queries.SetAgentOperationalMode(r.Context(), db.SetAgentOperationalModeParams{
 			ID:              a.ID,
 			OperationalMode: req.Mode,
@@ -159,24 +186,135 @@ func (h *Handler) SetBaseOperationalMode(w http.ResponseWriter, r *http.Request)
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"machine_title":  req.MachineTitle,
+		"machine_title":  title,
 		"mode":           req.Mode,
 		"agents_updated": updated,
 	})
 }
 
-// machineTitle extracts the physical machine title from a runtime's
-// device_info ("HiveCosm Mac mini · 2.1.221 (Claude Code)") — the observed
-// execution location, not a company-owned base assignment.
-func machineTitle(deviceInfo string) string {
-	machine := strings.TrimSpace(deviceInfo)
-	if i := strings.Index(machine, " · "); i >= 0 {
-		machine = strings.TrimSpace(machine[:i])
+// baseMachineTitles returns the distinct, non-empty canonical machine titles
+// of the formal base registry. The registry is the only authority that can
+// grant a machine title command over observed runtime rows.
+func baseMachineTitles(bases []db.Base) []string {
+	seen := make(map[string]struct{}, len(bases))
+	titles := make([]string, 0, len(bases))
+	for _, b := range bases {
+		title := strings.TrimSpace(b.MachineTitle)
+		if title == "" {
+			continue
+		}
+		if _, dup := seen[title]; dup {
+			continue
+		}
+		seen[title] = struct{}{}
+		titles = append(titles, title)
 	}
-	if machine == "" {
+	return titles
+}
+
+// resolveCanonicalMachine maps an observed runtime machine title to the
+// formally registered base machine_title that commands it, fail-closed. An
+// observed title is admitted only as an exact registered title or as a
+// registered title followed by an exact " · " detail suffix
+// ("HiveCosm Mac mini · 2.1.221 (Claude Code)"); when several registered
+// titles match, the longest one wins. Raw prefixes, substrings, parenthesis
+// variants and unregistered titles never resolve, so they can never gain
+// command authority over a base.
+func resolveCanonicalMachine(registeredTitles []string, observed string) (string, bool) {
+	observed = strings.TrimSpace(observed)
+	if observed == "" {
+		return "", false
+	}
+	best := ""
+	for _, registered := range registeredTitles {
+		title := strings.TrimSpace(registered)
+		if title == "" {
+			continue
+		}
+		exact := observed == title
+		suffixed := false
+		if rest := strings.TrimPrefix(observed, title+" · "); rest != observed && strings.TrimSpace(rest) != "" {
+			suffixed = true
+		}
+		if !exact && !suffixed {
+			continue
+		}
+		if len(title) > len(best) {
+			best = title
+		}
+	}
+	if best == "" {
+		return "", false
+	}
+	return best, true
+}
+
+// registeredCanonicalTitle reports whether the requested title is itself an
+// exact registered base machine_title. Drain/resume admits only registered
+// canonical titles — a request in "canonical · detail" form, or any prefix,
+// substring or parenthesis variant, is rejected fail-closed.
+func registeredCanonicalTitle(registeredTitles []string, requested string) bool {
+	requested = strings.TrimSpace(requested)
+	if requested == "" {
+		return false
+	}
+	for _, registered := range registeredTitles {
+		if requested == strings.TrimSpace(registered) {
+			return true
+		}
+	}
+	return false
+}
+
+// observedMachineKey resolves a runtime device_info to its canonical
+// registered machine title, fail-closed. Rows no registered base commands
+// are kept under their unmodified observed title — never re-parsed by
+// guesswork — so they stay observable without gaining command affinity.
+func observedMachineKey(registeredTitles []string, deviceInfo string) string {
+	if canonical, ok := resolveCanonicalMachine(registeredTitles, deviceInfo); ok {
+		return canonical
+	}
+	observed := strings.TrimSpace(deviceInfo)
+	if observed == "" {
 		return "unknown"
 	}
-	return machine
+	return observed
+}
+
+// selectBaseDrainAgents returns the agents whose runtime observes to the
+// given canonical base title in the same workspace. Fail-closed on every
+// axis: the canonical title must itself be registered, runtimes and agents
+// outside the workspace are never selected, and runtime rows whose machine
+// title resolves to no registered base (or to a different base) are never
+// commanded. Selection only — the claim gate is evaluated at claim time, so
+// in-flight tasks keep running untouched.
+func selectBaseDrainAgents(registeredTitles []string, runtimes []db.AgentRuntime, agents []db.Agent, workspaceID, canonicalTitle string) []db.Agent {
+	if !registeredCanonicalTitle(registeredTitles, canonicalTitle) {
+		return nil
+	}
+	canonical := strings.TrimSpace(canonicalTitle)
+	machineOfRuntime := make(map[string]string, len(runtimes))
+	for _, rt := range runtimes {
+		if uuidToString(rt.WorkspaceID) != workspaceID {
+			continue
+		}
+		resolved, ok := resolveCanonicalMachine(registeredTitles, rt.DeviceInfo)
+		if !ok {
+			continue
+		}
+		machineOfRuntime[uuidToString(rt.ID)] = resolved
+	}
+	selected := make([]db.Agent, 0, len(agents))
+	for _, a := range agents {
+		if uuidToString(a.WorkspaceID) != workspaceID {
+			continue
+		}
+		if machineOfRuntime[uuidToString(a.RuntimeID)] != canonical {
+			continue
+		}
+		selected = append(selected, a)
+	}
+	return selected
 }
 
 // CompanyBase is the formal, company-owned base assignment (决策 A: formal
@@ -197,11 +335,13 @@ func (h *Handler) GetCompanyBases(w http.ResponseWriter, r *http.Request) {
 	workspaceID := h.resolveWorkspaceID(r)
 	bases, err := h.Queries.ListBases(r.Context(), parseUUID(workspaceID))
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to list bases"); return
+		writeError(w, http.StatusInternalServerError, "failed to list bases")
+		return
 	}
 	counts, err := h.Queries.CountAgentsByBase(r.Context(), parseUUID(workspaceID))
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to count agents"); return
+		writeError(w, http.StatusInternalServerError, "failed to count agents")
+		return
 	}
 	countMap := make(map[string]int64, len(counts))
 	for _, c := range counts {
