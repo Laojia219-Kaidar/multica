@@ -264,7 +264,7 @@ export function WorkConservingPanel({ projectId }: { projectId: string }) {
         </div>
       )}
 
-      {lastResult && lastResult.state === "ready" && lastResult.results.length > 0 && (
+      {projection.state !== "source_gap" && lastResult && lastResult.state === "ready" && lastResult.results.length > 0 && (
         <div className="mt-3 border-t pt-3">
           <div className="flex flex-wrap gap-2 text-[11px]">
             <span className="rounded bg-muted/40 px-2 py-0.5">

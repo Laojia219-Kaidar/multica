@@ -512,6 +512,48 @@ describe("WorkConservingPanel", () => {
       expect(document.body.textContent).not.toContain("model-1");
     });
 
+    it("hides a previous ready drain result when the projection becomes source_gap", async () => {
+      mockQueryResult.workConserving = { data: projection("ready"), isLoading: false, isError: false };
+      mockQueryResult.members = {
+        data: [{ user_id: "user-1", role: "owner" }],
+        isLoading: false,
+        isError: false,
+      };
+      mockDrain.mockResolvedValue(successDrainResult());
+      renderPanel();
+      fireEvent.click(screen.getByRole("button", { name: /dispatch next action/i }));
+      expect(await screen.findByRole("link", { name: "issue-drain-1" })).toBeInTheDocument();
+
+      mockQueryResult.workConserving = {
+        data: projection("source_gap"),
+        isLoading: false,
+        isError: false,
+      };
+      act(() => mutationRef.forceUpdate?.());
+
+      expect(screen.getByText(/source gap/i)).toBeInTheDocument();
+      expect(screen.queryByRole("link", { name: "issue-drain-1" })).toBeNull();
+    });
+
+    it("hides a previous ready drain result when the projection query errors", async () => {
+      mockQueryResult.workConserving = { data: projection("ready"), isLoading: false, isError: false };
+      mockQueryResult.members = {
+        data: [{ user_id: "user-1", role: "owner" }],
+        isLoading: false,
+        isError: false,
+      };
+      mockDrain.mockResolvedValue(successDrainResult());
+      renderPanel();
+      fireEvent.click(screen.getByRole("button", { name: /dispatch next action/i }));
+      expect(await screen.findByRole("link", { name: "issue-drain-1" })).toBeInTheDocument();
+
+      mockQueryResult.workConserving = { data: projection("ready"), isLoading: false, isError: true };
+      act(() => mutationRef.forceUpdate?.());
+
+      expect(screen.getByText(/source gap/i)).toBeInTheDocument();
+      expect(screen.queryByRole("link", { name: "issue-drain-1" })).toBeNull();
+    });
+
     it("shows neutral no-ready toast with safe counters when dispatched=0 and batchSize>0", async () => {
       mockQueryResult.workConserving = { data: projection("ready"), isLoading: false, isError: false };
       mockQueryResult.members = {
