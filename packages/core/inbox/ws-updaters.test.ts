@@ -155,3 +155,91 @@ describe("onInboxIssueStatusChanged", () => {
     ).toBe("done");
   });
 });
+
+const envelope = (items: InboxItem[]) => ({
+  items,
+  total: items.length,
+  limit: 50,
+  offset: 0,
+  has_more: false,
+});
+
+describe("pagination envelope cache shape", () => {
+  it("patchInboxIssueStatus patches items inside the envelope and preserves envelope fields", () => {
+    const qc = new QueryClient();
+    qc.setQueryData(inboxKeys.list(wsId), envelope([
+      makeItem("i1", "issue-a", { issue_status: "todo" }),
+      makeItem("i2", "issue-b", { issue_status: "todo" }),
+    ]));
+
+    onInboxIssueStatusChanged(qc, wsId, "issue-a", "done");
+
+    const cached = qc.getQueryData<any>(inboxKeys.list(wsId));
+    expect(cached.items).toHaveLength(2);
+    expect(cached.items[0].issue_status).toBe("done");
+    expect(cached.items[1].issue_status).toBe("todo");
+    expect(cached.total).toBe(2);
+    expect(cached.limit).toBe(50);
+    expect(cached.offset).toBe(0);
+    expect(cached.has_more).toBe(false);
+  });
+
+  it("onInboxIssueDeleted removes items inside the envelope and preserves envelope fields", () => {
+    const qc = new QueryClient();
+    qc.setQueryData(inboxKeys.list(wsId), envelope([
+      makeItem("i1", "issue-a"),
+      makeItem("i2", "issue-b"),
+    ]));
+
+    onInboxIssueDeleted(qc, wsId, "issue-a");
+
+    const cached = qc.getQueryData<any>(inboxKeys.list(wsId));
+    expect(cached.items).toHaveLength(1);
+    expect(cached.items[0].id).toBe("i2");
+    expect(cached.total).toBe(2);
+    expect(cached.has_more).toBe(false);
+  });
+
+  it("patches archived envelope cache the same way", () => {
+    const qc = new QueryClient();
+    qc.setQueryData(inboxKeys.archived(wsId), envelope([
+      makeItem("a1", "issue-a", { archived: true, issue_status: "todo" }),
+    ]));
+
+    onInboxIssueStatusChanged(qc, wsId, "issue-a", "done");
+
+    const cached = qc.getQueryData<any>(inboxKeys.archived(wsId));
+    expect(cached.items[0].issue_status).toBe("done");
+    expect(cached.total).toBe(1);
+  });
+});
+
+describe("malformed cache values", () => {
+  it("onInboxIssueStatusChanged does not throw on a non-array non-envelope value and invalidates", () => {
+    const qc = new QueryClient();
+    qc.setQueryData(inboxKeys.list(wsId), "garbage");
+    const spy = vi.spyOn(qc, "invalidateQueries");
+
+    expect(() =>
+      onInboxIssueStatusChanged(qc, wsId, "issue-a", "done"),
+    ).not.toThrow();
+    expect(spy).toHaveBeenCalledWith({ queryKey: inboxKeys.all(wsId) });
+  });
+
+  it("onInboxIssueDeleted does not throw on a non-array non-envelope value and invalidates", () => {
+    const qc = new QueryClient();
+    qc.setQueryData(inboxKeys.list(wsId), { foo: "bar" });
+    const spy = vi.spyOn(qc, "invalidateQueries");
+
+    expect(() => onInboxIssueDeleted(qc, wsId, "issue-a")).not.toThrow();
+    expect(spy).toHaveBeenCalledWith({ queryKey: inboxKeys.all(wsId) });
+  });
+
+  it("is a no-op when cache is undefined (no invalidation)", () => {
+    const qc = new QueryClient();
+    const spy = vi.spyOn(qc, "invalidateQueries");
+
+    expect(() => onInboxIssueDeleted(qc, wsId, "issue-a")).not.toThrow();
+    expect(spy).not.toHaveBeenCalled();
+  });
+});

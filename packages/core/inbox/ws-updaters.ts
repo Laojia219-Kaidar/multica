@@ -2,6 +2,62 @@ import type { QueryClient } from "@tanstack/react-query";
 import { inboxKeys } from "./queries";
 import type { InboxItem, IssueStatus } from "../types";
 
+interface InboxListEnvelope {
+  items: InboxItem[];
+  total: number;
+  limit: number;
+  offset: number;
+  has_more: boolean;
+}
+
+type InboxListCache = InboxItem[] | InboxListEnvelope;
+
+function extractItems(old: unknown): InboxItem[] | undefined {
+  if (Array.isArray(old)) return old;
+  if (
+    old != null &&
+    typeof old === "object" &&
+    Array.isArray((old as InboxListEnvelope).items)
+  ) {
+    return (old as InboxListEnvelope).items;
+  }
+  return undefined;
+}
+
+function writeItems(
+  original: InboxListCache | undefined,
+  next: InboxItem[],
+): InboxListCache {
+  if (
+    original != null &&
+    !Array.isArray(original) &&
+    typeof original === "object" &&
+    Array.isArray((original as InboxListEnvelope).items)
+  ) {
+    return { ...(original as InboxListEnvelope), items: next };
+  }
+  return next;
+}
+
+function patchCache(
+  qc: QueryClient,
+  key: readonly string[],
+  wsId: string,
+  transform: (items: InboxItem[]) => InboxItem[],
+) {
+  const fullKey = [...key];
+  const old = qc.getQueryData(fullKey);
+  if (old === undefined) return;
+  const items = extractItems(old);
+  if (!items) {
+    qc.invalidateQueries({ queryKey: inboxKeys.all(wsId) });
+    return;
+  }
+  qc.setQueryData<InboxListCache>(fullKey, () =>
+    writeItems(old as InboxListCache, transform(items)),
+  );
+}
+
 export function onInboxNew(
   qc: QueryClient,
   wsId: string,
@@ -23,11 +79,13 @@ export function patchInboxIssueStatus(
   issueId: string,
   status: IssueStatus,
 ) {
-  const patch = (old: InboxItem[] | undefined) =>
-    old?.map((i) => (i.issue_id === issueId ? { ...i, issue_status: status } : i));
-  qc.setQueryData<InboxItem[]>(inboxKeys.list(wsId), patch);
+  const transform = (items: InboxItem[]) =>
+    items.map((i) =>
+      i.issue_id === issueId ? { ...i, issue_status: status } : i,
+    );
+  patchCache(qc, inboxKeys.list(wsId), wsId, transform);
   // Archived rows render the same status icon, so they need the same patch.
-  qc.setQueryData<InboxItem[]>(inboxKeys.archived(wsId), patch);
+  patchCache(qc, inboxKeys.archived(wsId), wsId, transform);
 }
 
 export function onInboxIssueStatusChanged(
@@ -48,10 +106,10 @@ export function onInboxIssueDeleted(
   wsId: string,
   issueId: string,
 ) {
-  const drop = (old: InboxItem[] | undefined) =>
-    old?.filter((i) => i.issue_id !== issueId);
-  qc.setQueryData<InboxItem[]>(inboxKeys.list(wsId), drop);
-  qc.setQueryData<InboxItem[]>(inboxKeys.archived(wsId), drop);
+  const transform = (items: InboxItem[]) =>
+    items.filter((i) => i.issue_id !== issueId);
+  patchCache(qc, inboxKeys.list(wsId), wsId, transform);
+  patchCache(qc, inboxKeys.archived(wsId), wsId, transform);
 }
 
 // Refresh both the main and archived lists. Every inbox event can move an item
