@@ -12,4 +12,4 @@ ORDER BY created_at DESC;
 -- name: GetWorkroom :one
 SELECT id, workspace_id, name, project_id, issue_id, work_order_id, created_by, created_at, updated_at
 FROM workroom
-WHERE id = $1;
+WHERE id = $1 AND workspace_id = $2;

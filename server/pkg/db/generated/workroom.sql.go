@@ -53,11 +53,16 @@ func (q *Queries) CreateWorkroom(ctx context.Context, arg CreateWorkroomParams) 
 const getWorkroom = `-- name: GetWorkroom :one
 SELECT id, workspace_id, name, project_id, issue_id, work_order_id, created_by, created_at, updated_at
 FROM workroom
-WHERE id = $1
+WHERE id = $1 AND workspace_id = $2
 `
 
-func (q *Queries) GetWorkroom(ctx context.Context, id pgtype.UUID) (Workroom, error) {
-	row := q.db.QueryRow(ctx, getWorkroom, id)
+type GetWorkroomParams struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+func (q *Queries) GetWorkroom(ctx context.Context, arg GetWorkroomParams) (Workroom, error) {
+	row := q.db.QueryRow(ctx, getWorkroom, arg.ID, arg.WorkspaceID)
 	var i Workroom
 	err := row.Scan(
 		&i.ID,

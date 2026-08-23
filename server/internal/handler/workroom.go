@@ -48,8 +48,18 @@ type createWorkroomRequest struct {
 
 // CreateWorkroom creates a QM Workroom bound to an optional Project/Issue/WorkOrder.
 func (h *Handler) CreateWorkroom(w http.ResponseWriter, r *http.Request) {
-	workspaceID := h.resolveWorkspaceID(r)
 	userID, ok := requireUserID(w, r)
+	if !ok {
+		return
+	}
+	// Every UUID crossing this boundary is user input. Validate before the DB
+	// so a malformed value gets a stable 400 instead of becoming a zero UUID
+	// (or a panic) inside the write query (WO-P3 workroom authority hardening).
+	userUUID, ok := parseUUIDOrBadRequest(w, userID, "user id")
+	if !ok {
+		return
+	}
+	wsUUID, ok := parseUUIDOrBadRequest(w, h.resolveWorkspaceID(r), "workspace id")
 	if !ok {
 		return
 	}
@@ -63,15 +73,23 @@ func (h *Handler) CreateWorkroom(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	params := db.CreateWorkroomParams{
-		WorkspaceID: parseUUID(workspaceID),
+		WorkspaceID: wsUUID,
 		Name:        req.Name,
-		CreatedBy:   parseUUID(userID),
+		CreatedBy:   userUUID,
 	}
 	if req.ProjectID != "" {
-		params.ProjectID = parseUUID(req.ProjectID)
+		projectUUID, ok := parseUUIDOrBadRequest(w, req.ProjectID, "project id")
+		if !ok {
+			return
+		}
+		params.ProjectID = projectUUID
 	}
 	if req.IssueID != "" {
-		params.IssueID = parseUUID(req.IssueID)
+		issueUUID, ok := parseUUIDOrBadRequest(w, req.IssueID, "issue id")
+		if !ok {
+			return
+		}
+		params.IssueID = issueUUID
 	}
 	if req.WorkOrderID != "" {
 		params.WorkOrderID = pgtype.Text{String: req.WorkOrderID, Valid: true}
@@ -86,8 +104,11 @@ func (h *Handler) CreateWorkroom(w http.ResponseWriter, r *http.Request) {
 
 // ListWorkrooms lists QM Workrooms in the workspace.
 func (h *Handler) ListWorkrooms(w http.ResponseWriter, r *http.Request) {
-	workspaceID := h.resolveWorkspaceID(r)
-	rows, err := h.Queries.ListWorkrooms(r.Context(), parseUUID(workspaceID))
+	wsUUID, ok := parseUUIDOrBadRequest(w, h.resolveWorkspaceID(r), "workspace id")
+	if !ok {
+		return
+	}
+	rows, err := h.Queries.ListWorkrooms(r.Context(), wsUUID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list workrooms")
 		return
@@ -99,10 +120,19 @@ func (h *Handler) ListWorkrooms(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// GetWorkroom returns one QM Workroom by id.
+// GetWorkroom returns one QM Workroom by id, scoped to the caller's
+// workspace: a Workroom id from another workspace must not be readable
+// (WO-P3 workroom authority hardening).
 func (h *Handler) GetWorkroom(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
-	wr, err := h.Queries.GetWorkroom(r.Context(), parseUUID(id))
+	wsUUID, ok := parseUUIDOrBadRequest(w, h.resolveWorkspaceID(r), "workspace id")
+	if !ok {
+		return
+	}
+	idUUID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "id"), "workroom id")
+	if !ok {
+		return
+	}
+	wr, err := h.Queries.GetWorkroom(r.Context(), db.GetWorkroomParams{ID: idUUID, WorkspaceID: wsUUID})
 	if err != nil {
 		writeError(w, http.StatusNotFound, "workroom not found")
 		return
