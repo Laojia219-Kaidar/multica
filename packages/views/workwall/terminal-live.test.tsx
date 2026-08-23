@@ -18,6 +18,11 @@ function pane(over: Partial<TerminalPane> = {}): TerminalPane {
 }
 
 describe("TerminalLiveSection", () => {
+  it("uses the shared semantic palette instead of the legacy green terminal theme", () => {
+    render(<TerminalLiveSection panes={[pane()]} />);
+    expect(screen.getByTestId("terminal-live-section").querySelector('[class*="green"]')).toBeNull();
+  });
+
   it("renders the section header with pane and host counts", () => {
     render(
       <TerminalLiveSection

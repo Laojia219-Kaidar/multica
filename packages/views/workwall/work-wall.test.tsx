@@ -21,6 +21,11 @@ function emp(over: Partial<EmployeeLiveActivityV1> = {}): EmployeeLiveActivityV1
 }
 
 describe("WorkWall", () => {
+  it("uses the shared semantic palette instead of the legacy green terminal theme", () => {
+    render(<WorkWall employees={[emp()]} />);
+    expect(screen.getByTestId("work-wall").querySelector('[class*="green"]')).toBeNull();
+  });
+
   it("renders one owner card per employee with text (not colour-only) presence", () => {
     render(
       <WorkWall
@@ -220,10 +225,10 @@ describe("WorkWall Owner card identity and runtime", () => {
     expect(freshness.textContent).toContain("新鲜度：新鲜");
   });
 
-  it("shows stale freshness with yellow color class", () => {
+  it("shows stale freshness with the shared warning tone", () => {
     render(<WorkWall employees={[emp({ freshness_state: "stale" })]} />);
     const freshness = screen.getByTestId("owner-card-freshness");
-    expect(freshness.className).toContain("text-yellow-400");
+    expect(freshness.className).toContain("text-warning");
   });
 
   it("shows blocked reason with warning style", () => {
@@ -234,7 +239,7 @@ describe("WorkWall Owner card identity and runtime", () => {
     );
     const blocked = screen.getByTestId("owner-card-blocked");
     expect(blocked.textContent).toContain("阻塞原因：等待 API 密钥审批");
-    expect(blocked.className).toContain("text-yellow-400");
+    expect(blocked.className).toContain("text-warning");
   });
 
   it("shows next action", () => {

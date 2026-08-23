@@ -80,6 +80,8 @@ describe("WorkWallPage SSE integration", () => {
     );
 
     await waitFor(() => expect(apiMock.workWallSnapshot).toHaveBeenCalledTimes(1));
+    expect(screen.getByRole("heading", { name: "工作现场" })).toBeDefined();
+    expect(screen.getByTestId("work-wall-content").className).toContain("px-5");
     expect(screen.getByText("Terminal 现场")).toBeDefined();
 
     const source = FakeEventSource.instances[0];

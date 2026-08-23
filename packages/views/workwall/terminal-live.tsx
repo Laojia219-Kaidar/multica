@@ -27,34 +27,34 @@ function PaneCard({ pane }: { pane: TerminalPane }) {
   const hasOutput = pane.tail_text.trim().length > 0;
   return (
     <div
-      className="rounded-md border border-green-800 bg-black font-mono text-green-300"
+      className="overflow-hidden rounded-lg border bg-card text-foreground shadow-sm"
       data-testid="terminal-live-pane"
     >
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs"
+        className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs transition-colors hover:bg-accent"
         aria-expanded={open}
       >
-        <span className="rounded bg-green-900 px-1.5 py-0.5 text-green-100">
+        <span className="rounded bg-muted px-1.5 py-0.5 font-mono font-medium text-foreground">
           {pane.session_name}
         </span>
-        <span className="text-green-500">
+        <span className="font-mono text-muted-foreground">
           {pane.host}:{pane.window_index}.{pane.pane_index}
         </span>
         {pane.agent_hint ? (
-          <span className="truncate text-green-200" data-testid="terminal-live-agent-hint">
+          <span className="truncate text-muted-foreground" data-testid="terminal-live-agent-hint">
             hint: {pane.agent_hint}
           </span>
         ) : null}
-        <span className="ml-auto whitespace-nowrap text-green-600">
+        <span className="ml-auto whitespace-nowrap font-mono text-muted-foreground">
           {pane.current_command || "idle"} · {timeLabel(pane.heartbeat_at)}
         </span>
-        <span className="text-green-700">{open ? "收起" : "展开输出"}</span>
+        <span className="text-muted-foreground">{open ? "收起" : "展开输出"}</span>
       </button>
       {open ? (
         <pre
-          className="max-h-40 overflow-auto border-t border-green-900 px-3 py-2 text-[11px] leading-relaxed text-green-400"
+          className="max-h-40 overflow-auto border-t bg-muted/25 px-3 py-2 font-mono text-[11px] leading-relaxed text-foreground"
           data-testid="terminal-live-tail"
         >
           {hasOutput ? pane.tail_text : "（无输出）"}
@@ -67,21 +67,21 @@ function PaneCard({ pane }: { pane: TerminalPane }) {
 export function TerminalLiveSection({ panes }: { panes: TerminalPane[] }) {
   const hosts = Array.from(new Set(panes.map((p) => p.host)));
   return (
-    <section className="mt-4" data-testid="terminal-live-section">
+    <section data-testid="terminal-live-section">
       <div className="mb-2 flex flex-wrap items-center gap-2">
         <h2 className="text-sm font-semibold">Terminal 现场</h2>
-        <span className="text-xs text-zinc-500">
+        <span className="text-xs text-muted-foreground">
           {panes.length} 个活跃 pane · {hosts.length} 台主机 · 采集心跳 10s
         </span>
         <span
-          className="rounded border border-zinc-700 bg-zinc-900 px-2 py-0.5 text-[11px] text-zinc-400"
+          className="rounded-md border bg-muted/40 px-2 py-0.5 text-[11px] text-muted-foreground"
           data-testid="terminal-live-disclaimer"
         >
           外部观测，agent_hint 非权威身份绑定
         </span>
       </div>
       {panes.length === 0 ? (
-        <p className="text-xs text-zinc-500">
+        <p className="rounded-lg border border-dashed px-4 py-6 text-center text-xs text-muted-foreground">
           暂无活跃 Terminal 现场——宿主采集器未运行或所有会话已结束。
         </p>
       ) : (
