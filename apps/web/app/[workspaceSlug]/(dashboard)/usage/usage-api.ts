@@ -2,6 +2,8 @@ import { getApi } from "@multica/core/api";
 
 export interface QuotaWindowView {
   kind: string;
+  label?: string;
+  unit?: string;
   total_tokens?: number;
   used_tokens: number;
   remaining_tokens?: number;
@@ -9,6 +11,8 @@ export interface QuotaWindowView {
   reset_at?: string;
   source: string;
   observed_at?: string;
+  unlimited?: boolean;
+  local_only?: boolean;
 }
 
 export interface QuotaState {
@@ -146,6 +150,8 @@ export async function upsertProviderUsageQuota(
 
 export function quotaSourceLabel(source?: string): string {
   switch (source) {
+    case "console":
+      return "控制台";
     case "live_vendor":
       return "厂商 API";
     case "manual_cap":
@@ -153,20 +159,41 @@ export function quotaSourceLabel(source?: string): string {
     case "hivecosm":
       return "HiveCosm";
     case "task_usage":
-      return "task_usage";
+      return "本地 task_usage";
     default:
       return source ?? "—";
   }
 }
 
-export function windowKindLabel(kind: string): string {
+export function windowKindLabel(kind: string, label?: string): string {
+  if (label) return label;
   switch (kind) {
     case "5h":
       return "5 小时";
     case "7d":
       return "7 天";
+    case "30d":
+      return "30 天";
     case "monthly":
       return "每月";
+    case "mcp_monthly":
+      return "MCP 每月";
+    case "credits":
+      return "Credits";
+    case "cny_balance":
+      return "CNY 余额";
+    case "package":
+      return "套餐总量";
+    case "code_5h":
+      return "Code 5 小时";
+    case "code_7d":
+      return "Code 7 天";
+    case "session":
+      return "会话";
+    case "unlimited":
+      return "每周（不限）";
+    case "30d_cost":
+      return "30 天用量";
     default:
       return kind;
   }

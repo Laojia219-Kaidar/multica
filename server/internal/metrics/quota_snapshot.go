@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-// Standard quota windows shown on the usage page and /api/work/quota.
+// StandardQuotaWindows is the legacy fallback when no plan profile exists.
 var StandardQuotaWindows = []string{"5h", "7d", "monthly"}
 
 // QuotaSnapshotRow is one persisted observation from provider_quota_snapshot.
@@ -22,6 +22,8 @@ type QuotaSnapshotRow struct {
 	LimitTokens     *int64
 	UsedTokens      int64
 	RemainingTokens *int64
+	Percentage      *float64
+	Unit            string
 	ResetAt         *time.Time
 	ObservedAt      time.Time
 	Source          string
@@ -31,6 +33,8 @@ type QuotaSnapshotRow struct {
 // QuotaWindowView is one rendered quota window for a plan/account.
 type QuotaWindowView struct {
 	Kind            string   `json:"kind"`
+	Label           string   `json:"label,omitempty"`
+	Unit            string   `json:"unit,omitempty"`
 	TotalTokens     *int64   `json:"total_tokens,omitempty"`
 	UsedTokens      int64    `json:"used_tokens"`
 	RemainingTokens *int64   `json:"remaining_tokens,omitempty"`
@@ -38,9 +42,14 @@ type QuotaWindowView struct {
 	ResetAt         *string  `json:"reset_at,omitempty"`
 	Source          string   `json:"source"`
 	ObservedAt      *string  `json:"observed_at,omitempty"`
+	Unlimited       bool     `json:"unlimited,omitempty"`
+	LocalOnly       bool     `json:"local_only,omitempty"`
 }
 
-const quotaSnapshotFreshness = 15 * time.Minute
+const (
+	quotaSnapshotFreshness       = 15 * time.Minute
+	quotaConsoleSnapshotMaxAge   = 7 * 24 * time.Hour
+)
 
 // WindowSince returns the UTC instant from which task_usage rows should be
 // counted for a quota window kind.
@@ -51,6 +60,8 @@ func WindowSince(now time.Time, kind string) time.Time {
 		return now.Add(-5 * time.Hour)
 	case "7d":
 		return now.AddDate(0, 0, -7)
+	case "30d", "30d_cost":
+		return now.AddDate(0, 0, -30)
 	case "daily":
 		return time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
 	case "monthly":
@@ -99,8 +110,8 @@ func snapshotsByKey(snapshots []QuotaSnapshotRow) map[string]QuotaSnapshotRow {
 	return out
 }
 
-// BuildQuotaWindows merges manual caps, live snapshots, and task_usage into the
-// standard 5h / 7d / monthly views for one plan bucket.
+// BuildQuotaWindows merges console snapshots (ground truth), manual caps, and
+// local task_usage. Console/live observations take precedence over local math.
 func BuildQuotaWindows(
 	provider, plan, account string,
 	planObservations []UsageObservation,
@@ -108,58 +119,114 @@ func BuildQuotaWindows(
 	snapshots []QuotaSnapshotRow,
 	now time.Time,
 ) []QuotaWindowView {
+	specs := PlanWindowsFor(provider, plan)
+	if len(specs) == 0 {
+		return nil
+	}
 	quotaMap := quotaByCycle(quotas)
 	snapMap := snapshotsByKey(snapshots)
 
-	views := make([]QuotaWindowView, 0, len(StandardQuotaWindows))
-	for _, kind := range StandardQuotaWindows {
-		used := sumObservationsForWindow(planObservations, WindowSince(now, kind), now)
+	views := make([]QuotaWindowView, 0, len(specs))
+	for _, spec := range specs {
+		kind := spec.Kind
+		localUsed := sumObservationsForWindow(planObservations, WindowSince(now, windowKindToSince(kind)), now)
 		view := QuotaWindowView{
 			Kind:       kind,
-			UsedTokens: used,
+			Label:      spec.Label,
+			Unit:       spec.Unit,
+			UsedTokens: localUsed,
 			Source:     "task_usage",
+			LocalOnly:  true,
+		}
+		if kind == "unlimited" {
+			view.Unlimited = true
+			view.Source = "console"
+			view.LocalOnly = false
 		}
 
 		if snap, ok := snapMap[snapshotKey(provider, plan, account, kind)]; ok && snap.ID != "" {
 			applySnapshotToView(&view, snap, now)
 		}
 
-		if cap, ok := quotaMap[quotaKey(provider, plan, account)+"\x00"+kind]; ok && cap.ID != "" {
-			applyManualCapToView(&view, cap, used)
-		} else if cap, ok := quotaMap[quotaKey(provider, plan, account)+"\x00"+legacyCycleForWindow(kind)]; ok && cap.ID != "" {
-			applyManualCapToView(&view, cap, used)
+		if !view.isAuthoritative() {
+			if cap, ok := quotaMap[quotaKey(provider, plan, account)+"\x00"+kind]; ok && cap.ID != "" {
+				applyManualCapToView(&view, cap, localUsed)
+			} else if cap, ok := quotaMap[quotaKey(provider, plan, account)+"\x00"+legacyCycleForWindow(kind)]; ok && cap.ID != "" {
+				applyManualCapToView(&view, cap, localUsed)
+			}
 		}
 
-		if view.TotalTokens != nil && *view.TotalTokens > 0 {
-			remaining := *view.TotalTokens - view.UsedTokens
-			if view.RemainingTokens != nil && view.Source == "live_vendor" {
-				remaining = *view.RemainingTokens
-			}
-			if remaining < 0 {
-				remaining = 0
-			}
-			pct := float64(view.UsedTokens) / float64(*view.TotalTokens) * 100
-			if view.Source == "live_vendor" && view.RemainingTokens != nil {
-				pct = float64(*view.TotalTokens-*view.RemainingTokens) / float64(*view.TotalTokens) * 100
-			}
-			if pct > 100 {
-				pct = 100
-			}
-			view.RemainingTokens = &remaining
-			view.Percentage = &pct
-		}
-
+		finalizeQuotaWindowView(&view)
 		if view.ResetAt == nil {
-			if reset := windowResetAt(kind, now); reset != nil {
+			if reset := windowResetAt(kind, now); reset != nil && kind != "unlimited" {
 				s := reset.UTC().Format(time.RFC3339)
 				view.ResetAt = &s
 			}
 		}
-
 		views = append(views, view)
 	}
 	return views
 }
+
+func windowKindToSince(kind string) string {
+	switch kind {
+	case "30d", "30d_cost", "session":
+		return "30d"
+	case "mcp_monthly", "monthly", "package":
+		return "monthly"
+	case "code_5h", "5h":
+		return "5h"
+	case "code_7d", "7d":
+		return "7d"
+	default:
+		return kind
+	}
+}
+
+func (v QuotaWindowView) isAuthoritative() bool {
+	return isAuthoritativeQuotaSource(v.Source) && !v.LocalOnly
+}
+
+func finalizeQuotaWindowView(view *QuotaWindowView) {
+	if view.Unlimited {
+		view.Percentage = nil
+		view.RemainingTokens = nil
+		return
+	}
+	if view.Percentage != nil && view.Unit == "percent" {
+		if view.RemainingTokens == nil && view.TotalTokens == nil {
+			remainingPct := 100 - *view.Percentage
+			if remainingPct < 0 {
+				remainingPct = 0
+			}
+			// Expose remaining headroom as pseudo-percent for employees.
+			view.RemainingTokens = int64Ptr(int64(remainingPct))
+		}
+		return
+	}
+	if view.TotalTokens != nil && *view.TotalTokens > 0 {
+		remaining := *view.TotalTokens - view.UsedTokens
+		if view.RemainingTokens != nil && view.isAuthoritative() {
+			remaining = *view.RemainingTokens
+		}
+		if remaining < 0 {
+			remaining = 0
+		}
+		pct := float64(view.UsedTokens) / float64(*view.TotalTokens) * 100
+		if view.isAuthoritative() && view.Percentage != nil {
+			pct = *view.Percentage
+		} else if view.isAuthoritative() && view.RemainingTokens != nil {
+			pct = float64(*view.TotalTokens-*view.RemainingTokens) / float64(*view.TotalTokens) * 100
+		}
+		if pct > 100 {
+			pct = 100
+		}
+		view.RemainingTokens = &remaining
+		view.Percentage = &pct
+	}
+}
+
+func int64Ptr(v int64) *int64 { return &v }
 
 func legacyCycleForWindow(kind string) string {
 	switch kind {
@@ -187,13 +254,29 @@ func sumObservationsForWindow(observations []UsageObservation, since, now time.T
 	return total
 }
 
+func snapshotStillFresh(snap QuotaSnapshotRow, now time.Time) bool {
+	age := now.Sub(snap.ObservedAt.UTC())
+	switch snap.Source {
+	case "live_vendor":
+		return age <= quotaSnapshotFreshness
+	case "console", "hivecosm":
+		return age <= quotaConsoleSnapshotMaxAge
+	default:
+		return age <= quotaConsoleSnapshotMaxAge
+	}
+}
+
 func applySnapshotToView(view *QuotaWindowView, snap QuotaSnapshotRow, now time.Time) {
-	if now.Sub(snap.ObservedAt.UTC()) > quotaSnapshotFreshness && snap.Source == "live_vendor" {
+	if !snapshotStillFresh(snap, now) {
+		return
+	}
+	if !isAuthoritativeQuotaSource(snap.Source) {
 		return
 	}
 	view.Source = snap.Source
-	if snap.SourceRef != "" {
-		view.Source = snap.Source
+	view.LocalOnly = false
+	if snap.Unit != "" {
+		view.Unit = snap.Unit
 	}
 	obs := snap.ObservedAt.UTC().Format(time.RFC3339)
 	view.ObservedAt = &obs
@@ -203,29 +286,31 @@ func applySnapshotToView(view *QuotaWindowView, snap QuotaSnapshotRow, now time.
 	if snap.RemainingTokens != nil {
 		view.RemainingTokens = snap.RemainingTokens
 	}
-	if snap.UsedTokens > 0 && view.Source == "live_vendor" {
+	if snap.Percentage != nil {
+		view.Percentage = snap.Percentage
+	}
+	if snap.UsedTokens > 0 || isAuthoritativeQuotaSource(snap.Source) {
 		view.UsedTokens = snap.UsedTokens
 	}
 	if snap.ResetAt != nil {
 		s := snap.ResetAt.UTC().Format(time.RFC3339)
 		view.ResetAt = &s
 	}
-	if snap.APIKeyLabel != "" {
-		_ = snap.APIKeyLabel
+	if snap.WindowKind == "unlimited" {
+		view.Unlimited = true
 	}
 }
 
 func applyManualCapToView(view *QuotaWindowView, cap UsageQuotaRow, used int64) {
-	if view.Source == "live_vendor" && view.TotalTokens != nil {
+	if view.isAuthoritative() {
 		return
 	}
 	if cap.TotalTokens > 0 {
 		total := cap.TotalTokens
 		view.TotalTokens = &total
 	}
-	if view.Source != "live_vendor" {
-		view.Source = "manual_cap"
-	}
+	view.Source = "manual_cap"
+	view.LocalOnly = false
 	view.UsedTokens = used
 	if reset := quotaResetAt(cap.Cycle, cap.ResetDay); reset != nil && view.ResetAt == nil {
 		s := reset.UTC().Format(time.RFC3339)
@@ -269,6 +354,8 @@ SELECT
     limit_tokens,
     used_tokens,
     remaining_tokens,
+    percentage,
+    unit,
     reset_at,
     observed_at,
     source,
@@ -291,21 +378,25 @@ func (s *QuotaSnapshotService) ListSnapshots(ctx context.Context, workspaceID st
 	out := make([]QuotaSnapshotRow, 0)
 	for rows.Next() {
 		var (
-			r           QuotaSnapshotRow
-			limit       *int64
-			remaining   *int64
-			resetAt     *time.Time
-			observedAt  time.Time
+			r          QuotaSnapshotRow
+			limit      *int64
+			remaining  *int64
+			percentage *float64
+			resetAt    *time.Time
+			observedAt time.Time
+			unit       string
 		)
 		if err := rows.Scan(
 			&r.ID, &r.WorkspaceID, &r.Provider, &r.Plan, &r.Account, &r.APIKeyLabel,
-			&r.WindowKind, &limit, &r.UsedTokens, &remaining, &resetAt, &observedAt,
+			&r.WindowKind, &limit, &r.UsedTokens, &remaining, &percentage, &unit, &resetAt, &observedAt,
 			&r.Source, &r.SourceRef,
 		); err != nil {
 			return nil, err
 		}
 		r.LimitTokens = limit
 		r.RemainingTokens = remaining
+		r.Percentage = percentage
+		r.Unit = unit
 		r.ResetAt = resetAt
 		r.ObservedAt = observedAt
 		out = append(out, r)
@@ -323,6 +414,8 @@ type UpsertSnapshotInput struct {
 	LimitTokens     *int64
 	UsedTokens      int64
 	RemainingTokens *int64
+	Percentage      *float64
+	Unit            string
 	ResetAt         *time.Time
 	ObservedAt      time.Time
 	Source          string
@@ -333,14 +426,16 @@ const upsertQuotaSnapshotSQL = `
 INSERT INTO provider_quota_snapshot (
     workspace_id, provider, plan, account_label, api_key_label,
     window_kind, limit_tokens, used_tokens, remaining_tokens,
-    reset_at, observed_at, source, source_ref
-) VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+    percentage, unit, reset_at, observed_at, source, source_ref
+) VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
 ON CONFLICT (workspace_id, provider, plan, account_label, window_kind)
 DO UPDATE SET
     api_key_label = EXCLUDED.api_key_label,
     limit_tokens = EXCLUDED.limit_tokens,
     used_tokens = EXCLUDED.used_tokens,
     remaining_tokens = EXCLUDED.remaining_tokens,
+    percentage = EXCLUDED.percentage,
+    unit = EXCLUDED.unit,
     reset_at = EXCLUDED.reset_at,
     observed_at = EXCLUDED.observed_at,
     source = EXCLUDED.source,
@@ -356,10 +451,14 @@ func (s *QuotaSnapshotService) UpsertSnapshot(ctx context.Context, workspaceID s
 	if observedAt.IsZero() {
 		observedAt = time.Now().UTC()
 	}
+	unit := in.Unit
+	if unit == "" {
+		unit = "tokens"
+	}
 	_, err := s.Querier.Exec(ctx, upsertQuotaSnapshotSQL,
 		workspaceID, in.Provider, in.Plan, in.Account, in.APIKeyLabel,
 		in.WindowKind, in.LimitTokens, in.UsedTokens, in.RemainingTokens,
-		in.ResetAt, observedAt, in.Source, in.SourceRef,
+		in.Percentage, unit, in.ResetAt, observedAt, in.Source, in.SourceRef,
 	)
 	return err
 }

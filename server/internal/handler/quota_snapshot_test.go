@@ -38,7 +38,7 @@ func TestPostProviderQuotaObservationValidation(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
 	}
-	body := `{"observations":[{"provider":"MiniMax","plan":"MiniMax API","window_kind":"5h","source":"live_vendor","remaining_tokens":100}]}`
+	body := `{"observations":[{"provider":"MiniMax","plan":"TokenPlanPlus","account":"secure minimax","window_kind":"5h","percentage":10,"unit":"percent","source":"console","remaining_tokens":100}]}`
 	req := httptest.NewRequest("POST", "/api/company-ops/usage/quota-observation", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-User-ID", testUserID)

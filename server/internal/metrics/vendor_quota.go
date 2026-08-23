@@ -41,6 +41,8 @@ type VendorQuotaObservation struct {
 	Limit       *int64
 	Used        int64
 	Remaining   *int64
+	Percentage  *float64
+	Unit        string
 	ResetAt     *time.Time
 	ObservedAt  time.Time
 	SourceRef   string
@@ -409,11 +411,11 @@ func deriveVolcSigningKey(secret, date, service string) []byte {
 func MapVendorObservationToPlan(v VendorQuotaObservation, runtimeName string) (provider, plan, account string) {
 	switch v.Vendor {
 	case "MiniMax":
-		return "MiniMax", "MiniMax API", runtimeName
+		return "MiniMax", "TokenPlanPlus", runtimeName
 	case "智谱 · GLM":
-		return "智谱 · GLM", "GLM API", runtimeName
+		return "智谱 · GLM", "GLM Coding Max V1", runtimeName
 	case "火山引擎 · Doubao":
-		return "火山引擎 · Doubao", "Volcengine Agent Plan", runtimeName
+		return "火山引擎 · Doubao", "Ark Agent Plan", runtimeName
 	case "DeepSeek":
 		return "DeepSeek", "DeepSeek API", runtimeName
 	default:

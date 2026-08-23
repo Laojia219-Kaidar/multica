@@ -37,12 +37,12 @@ const fixture: UsageHierarchy = {
   },
   providers: [
     {
-      provider: "阿里云 · Qwen",
+      provider: "阿里云百炼",
       local_model: false,
       used_tokens: 313_777_232,
       plans: [
         {
-          plan: "Qwen Coding Plan",
+          plan: "Coding Pro",
           account: "HiveCosm Secure qwen-coding (HiveCosm Mac mini)",
           api_key_label: "qwen-coding-1",
           local_model: false,
@@ -56,31 +56,31 @@ const fixture: UsageHierarchy = {
             reset_at: "2026-09-01T00:00:00Z",
             reset_day: 1,
             local_model: false,
-            source: "manual_cap",
+            source: "console",
             windows: [
               {
                 kind: "5h",
-                total_tokens: 50_000_000,
-                used_tokens: 10_000_000,
-                remaining_tokens: 40_000_000,
-                percentage: 20,
-                source: "manual_cap",
+                label: "5 小时",
+                unit: "percent",
+                percentage: 12,
+                used_tokens: 0,
+                source: "console",
               },
               {
                 kind: "7d",
-                total_tokens: 200_000_000,
-                used_tokens: 80_000_000,
-                remaining_tokens: 120_000_000,
-                percentage: 40,
-                source: "manual_cap",
+                label: "7 天",
+                unit: "percent",
+                percentage: 55,
+                used_tokens: 0,
+                source: "console",
               },
               {
-                kind: "monthly",
-                total_tokens: 1_000_000_000,
-                used_tokens: 313_777_232,
-                remaining_tokens: 686_222_768,
-                percentage: 31.3777232,
-                source: "manual_cap",
+                kind: "30d",
+                label: "30 天",
+                unit: "percent",
+                percentage: 31.4,
+                used_tokens: 0,
+                source: "console",
               },
             ],
           },
@@ -146,12 +146,12 @@ describe("UsagePage — hierarchy aggregation render", () => {
 
     renderPage();
 
-    expect(await screen.findByText("阿里云 · Qwen")).toBeInTheDocument();
-    expect(await screen.findByText("Qwen Coding Plan")).toBeInTheDocument();
+    expect(await screen.findByText("阿里云百炼")).toBeInTheDocument();
+    expect(await screen.findByText("Coding Pro")).toBeInTheDocument();
     // Quota percentage rendered from real percentage field.
     expect(await screen.findByText("31.4%")).toBeInTheDocument();
     expect(screen.getByTestId("quota-window-5h")).toBeInTheDocument();
-    expect(screen.getByTestId("quota-window-7d")).toBeInTheDocument();
+    expect(screen.getByTestId("quota-window-30d")).toBeInTheDocument();
     // Remaining quota rendered.
     expect(screen.getByText(/剩余 686\.22M/)).toBeInTheDocument();
     // API-key identifier (non-secret label) rendered.

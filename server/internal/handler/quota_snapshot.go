@@ -17,26 +17,34 @@ import (
 const maxQuotaObservationBody = 32 * 1024
 
 var quotaObservationSources = map[string]bool{
-	"task_usage": true, "live_vendor": true, "manual_cap": true, "hivecosm": true,
+	"task_usage": true, "live_vendor": true, "manual_cap": true, "hivecosm": true, "console": true,
 }
 
 var quotaObservationWindows = map[string]bool{
-	"5h": true, "7d": true, "monthly": true, "daily": true,
+	"5h": true, "7d": true, "30d": true, "monthly": true, "daily": true,
+	"mcp_monthly": true, "credits": true, "cny_balance": true, "package": true,
+	"code_5h": true, "code_7d": true, "session": true, "unlimited": true, "30d_cost": true,
+}
+
+var quotaObservationUnits = map[string]bool{
+	"tokens": true, "percent": true, "credits": true, "cny": true,
 }
 
 type quotaObservationItem struct {
-	Provider        string  `json:"provider"`
-	Plan            string  `json:"plan"`
-	Account         string  `json:"account"`
-	APIKeyLabel     string  `json:"api_key_label"`
-	WindowKind      string  `json:"window_kind"`
-	LimitTokens     *int64  `json:"limit_tokens,omitempty"`
-	UsedTokens      int64   `json:"used_tokens"`
-	RemainingTokens *int64  `json:"remaining_tokens,omitempty"`
-	ResetAt         *string `json:"reset_at,omitempty"`
-	ObservedAt      *string `json:"observed_at,omitempty"`
-	Source          string  `json:"source"`
-	SourceRef       string  `json:"source_ref"`
+	Provider        string   `json:"provider"`
+	Plan            string   `json:"plan"`
+	Account         string   `json:"account"`
+	APIKeyLabel     string   `json:"api_key_label"`
+	WindowKind      string   `json:"window_kind"`
+	LimitTokens     *int64   `json:"limit_tokens,omitempty"`
+	UsedTokens      int64    `json:"used_tokens"`
+	RemainingTokens *int64   `json:"remaining_tokens,omitempty"`
+	Percentage      *float64 `json:"percentage,omitempty"`
+	Unit            string   `json:"unit"`
+	ResetAt         *string  `json:"reset_at,omitempty"`
+	ObservedAt      *string  `json:"observed_at,omitempty"`
+	Source          string   `json:"source"`
+	SourceRef       string   `json:"source_ref"`
 }
 
 type quotaObservationRequest struct {
@@ -100,10 +108,20 @@ func validateQuotaObservationItem(item quotaObservationItem) (metrics.UpsertSnap
 		return metrics.UpsertSnapshotInput{}, errors.New("provider and plan are required")
 	}
 	if !quotaObservationWindows[item.WindowKind] {
-		return metrics.UpsertSnapshotInput{}, errors.New("window_kind must be 5h, 7d, monthly, or daily")
+		return metrics.UpsertSnapshotInput{}, errors.New("window_kind is not supported")
 	}
 	if !quotaObservationSources[item.Source] {
-		return metrics.UpsertSnapshotInput{}, errors.New("source must be task_usage, live_vendor, manual_cap, or hivecosm")
+		return metrics.UpsertSnapshotInput{}, errors.New("source must be task_usage, live_vendor, manual_cap, hivecosm, or console")
+	}
+	item.Unit = strings.TrimSpace(item.Unit)
+	if item.Unit == "" {
+		item.Unit = "tokens"
+	}
+	if !quotaObservationUnits[item.Unit] {
+		return metrics.UpsertSnapshotInput{}, errors.New("unit must be tokens, percent, credits, or cny")
+	}
+	if item.Percentage != nil && (*item.Percentage < 0 || *item.Percentage > 100) {
+		return metrics.UpsertSnapshotInput{}, errors.New("percentage must be between 0 and 100")
 	}
 	if containsSecretMaterial(item.APIKeyLabel) || containsSecretMaterial(item.SourceRef) {
 		return metrics.UpsertSnapshotInput{}, errors.New("payload must not contain secret material")
@@ -135,6 +153,8 @@ func validateQuotaObservationItem(item quotaObservationItem) (metrics.UpsertSnap
 		LimitTokens:     item.LimitTokens,
 		UsedTokens:      item.UsedTokens,
 		RemainingTokens: item.RemainingTokens,
+		Percentage:      item.Percentage,
+		Unit:            item.Unit,
 		ResetAt:         resetAt,
 		ObservedAt:      observedAt,
 		Source:          item.Source,
@@ -205,6 +225,8 @@ func (h *Handler) PollVendorQuotaIfConfigured(ctx context.Context, workspaceID s
 			LimitTokens:     obs.Limit,
 			UsedTokens:      obs.Used,
 			RemainingTokens: obs.Remaining,
+			Percentage:      obs.Percentage,
+			Unit:            obs.Unit,
 			ResetAt:         obs.ResetAt,
 			ObservedAt:      obs.ObservedAt,
 			Source:          "live_vendor",

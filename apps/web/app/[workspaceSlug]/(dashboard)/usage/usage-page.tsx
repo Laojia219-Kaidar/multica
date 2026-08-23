@@ -76,29 +76,57 @@ function formatObservedAt(observedAt?: string): string {
   });
 }
 
+function formatQuotaAmount(value: number, unit?: string): string {
+  if (unit === "cny") return `¥${(value / 100).toFixed(2)}`;
+  if (unit === "percent") return `${value}%`;
+  return formatTokens(value);
+}
+
 function QuotaWindowRow({ window: w }: { window: QuotaWindowView }) {
+  if (w.unlimited) {
+    return (
+      <div className="rounded border px-2 py-1.5 text-xs" data-testid={`quota-window-${w.kind}`}>
+        <span className="font-medium">{windowKindLabel(w.kind, w.label)}</span>
+        <span className="text-muted-foreground"> · {quotaSourceLabel(w.source)} · 不限量</span>
+      </div>
+    );
+  }
+  const unit = w.unit ?? "tokens";
+  const hasPercent = typeof w.percentage === "number";
   const hasLimit = typeof w.total_tokens === "number" && w.total_tokens > 0;
-  const percentage = hasLimit ? Math.round((w.percentage ?? 0) * 10) / 10 : null;
+  const showBar = hasPercent || hasLimit;
+  const barValue = hasPercent ? Math.min(w.percentage ?? 0, 100) : Math.min(w.percentage ?? 0, 100);
+  const percentageLabel = hasPercent ? Math.round((w.percentage ?? 0) * 10) / 10 : null;
+  const authoritative = w.source === "console" || w.source === "live_vendor" || w.source === "hivecosm";
   return (
     <div className="rounded border px-2 py-1.5" data-testid={`quota-window-${w.kind}`}>
       <div className="flex flex-wrap items-center gap-2 text-xs">
-        <span className="font-medium">{windowKindLabel(w.kind)}</span>
+        <span className="font-medium">{windowKindLabel(w.kind, w.label)}</span>
         <span className="text-muted-foreground">{quotaSourceLabel(w.source)}</span>
-        {hasLimit ? (
+        {w.local_only && !authoritative ? (
+          <span className="text-amber-700">· 仅本地切片</span>
+        ) : null}
+        {unit === "percent" && hasPercent ? (
+          <span>· 已用 {percentageLabel}%</span>
+        ) : hasLimit ? (
           <>
-            <span>· 已用 {formatTokens(w.used_tokens)}</span>
-            <span>· 剩余 {formatTokens(w.remaining_tokens ?? 0)}</span>
-            <span>· 上限 {formatTokens(w.total_tokens!)}</span>
+            <span>· 已用 {formatQuotaAmount(w.used_tokens, unit)}</span>
+            <span>· 剩余 {formatQuotaAmount(w.remaining_tokens ?? 0, unit)}</span>
+            {unit === "tokens" || unit === "credits" ? (
+              <span>· 上限 {formatQuotaAmount(w.total_tokens!, unit)}</span>
+            ) : null}
           </>
         ) : (
-          <span>· 已用 {formatTokens(w.used_tokens)}（无硬性上限）</span>
+          <span>· 已用 {formatQuotaAmount(w.used_tokens, unit)}</span>
         )}
         <span className="text-muted-foreground">· 观测 {formatObservedAt(w.observed_at)}</span>
       </div>
-      {hasLimit ? (
+      {showBar ? (
         <div className="mt-1 flex items-center gap-2">
-          <Progress value={Math.min(w.percentage ?? 0, 100)} className="h-1.5 flex-1" />
-          <span className="w-14 text-right tabular-nums text-xs">{percentage}%</span>
+          <Progress value={barValue} className="h-1.5 flex-1" />
+          {percentageLabel != null ? (
+            <span className="w-14 text-right tabular-nums text-xs">{percentageLabel}%</span>
+          ) : null}
         </div>
       ) : null}
     </div>
@@ -385,9 +413,10 @@ function ProviderCard({ provider, slug }: { provider: ProviderUsage; slug: strin
 
 function DataGapBanner({ gaps }: { gaps: string[] }) {
   if (gaps.length === 0) return null;
-  const messages: Record<string, string> = {
+    const messages: Record<string, string> = {
     usage_no_rows: "该周期内没有真实 token 用量记录（数据缺口，未伪造用量）。",
     quota_unconfigured: "部分或全部套餐尚未配置配额；未配置项不显示总额/剩余/百分比。",
+    local_usage_partial: "本地 task_usage 仅为控制台用量切片；已观测的控制台快照优先显示。",
   };
   return (
     <div

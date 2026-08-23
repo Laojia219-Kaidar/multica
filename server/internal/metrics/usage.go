@@ -87,34 +87,39 @@ func ClassifyProviderPlan(model, runtimeName, runtimeProvider, runtimeMode strin
 		}
 	}
 	if strings.HasPrefix(modelLower, "bailian-token-plan-personal/") {
-		return classified("阿里云百炼", "Token Plan Personal")
+		return PlanClassification{
+			Provider:   "阿里云百炼",
+			Plan:       "Token Plan Personal",
+			Account:    "bailian-token-plan-personal",
+			LocalModel: localModel,
+		}
 	}
 	if strings.Contains(runtimeLower, "volcengine-agent") {
-		return classified("火山引擎 · Doubao", "Volcengine Agent Plan")
+		return classified("火山引擎 · Doubao", "Ark Agent Plan")
 	}
 	if strings.Contains(runtimeLower, "volcengine-coding") {
-		return classified("火山引擎 · Doubao", "Volcengine Coding Plan")
+		return classified("火山引擎 · Doubao", "Ark Coding Plan")
 	}
 	if strings.Contains(runtimeLower, "qwen-token") {
-		return classified("阿里云 · Qwen", "Qwen Token Plan")
+		return classified("阿里云百炼", "Token Plan Personal")
 	}
 	if strings.Contains(runtimeLower, "qwen-coding") {
-		return classified("阿里云 · Qwen", "Qwen Coding Plan")
+		return classified("阿里云百炼", "Coding Pro")
 	}
 	if strings.Contains(runtimeLower, "secure zhipu") {
-		return classified("智谱 · GLM", "GLM API")
+		return classified("智谱 · GLM", "GLM Coding Max V1")
 	}
 	if strings.Contains(runtimeLower, "secure deepseek") {
 		return classified("DeepSeek", "DeepSeek API")
 	}
 	if strings.Contains(runtimeLower, "secure kimi") {
-		return classified("月之暗面 · Kimi", "Kimi API")
+		return classified("月之暗面 · Kimi", "Kimi Membership Allegro")
 	}
 	if strings.Contains(runtimeLower, "secure mimo") {
-		return classified("小米 · MiMo", "MiMo API")
+		return classified("小米 · MiMo", "MiMo Pro annual")
 	}
 	if strings.Contains(runtimeLower, "secure minimax") {
-		return classified("MiniMax", "MiniMax API")
+		return classified("MiniMax", "TokenPlanPlus")
 	}
 	if strings.HasPrefix(modelLower, "gpt-") || providerLower == "codex" {
 		return classified("OpenAI · Codex", "Codex Plan")
@@ -123,7 +128,7 @@ func ClassifyProviderPlan(model, runtimeName, runtimeProvider, runtimeMode strin
 		return classified("Anthropic · Claude", "Claude Plan")
 	}
 	if strings.HasPrefix(modelLower, "glm-") {
-		return classified("智谱 · GLM", "GLM API")
+		return classified("智谱 · GLM", "GLM Coding Max V1")
 	}
 	if modelLower == "k3" || providerLower == "kimi" {
 		return classified("月之暗面 · Kimi", "Kimi CLI")
@@ -135,10 +140,10 @@ func ClassifyProviderPlan(model, runtimeName, runtimeProvider, runtimeMode strin
 		return classified("DeepSeek", "DeepSeek API")
 	}
 	if strings.HasPrefix(modelLower, "minimax") {
-		return classified("MiniMax", model)
+		return classified("MiniMax", "TokenPlanPlus")
 	}
 	if strings.HasPrefix(modelLower, "mimo") {
-		return classified("小米 · MiMo", model)
+		return classified("小米 · MiMo", "MiMo Pro annual")
 	}
 
 	switch providerLower {
@@ -575,6 +580,38 @@ func BuildUsageHierarchyWithSnapshots(
 		totals.UsedTokens += used
 	}
 
+	// Console-ingested plans may exist before local task_usage rows arrive.
+	for _, snap := range snapshots {
+		if snap.Provider == "" || snap.Plan == "" {
+			continue
+		}
+		pk := quotaKey(snap.Provider, snap.Plan, snap.Account)
+		pb := providers[snap.Provider]
+		if pb == nil {
+			pb = &providerBucket{
+				provider: ProviderUsage{Provider: snap.Provider},
+				plans:    make(map[string]*planBucket),
+			}
+			providers[snap.Provider] = pb
+		}
+		if pb.plans[pk] != nil {
+			continue
+		}
+		pb.plans[pk] = &planBucket{
+			plan: PlanUsage{
+				Plan:    snap.Plan,
+				Account: snap.Account,
+			},
+			models:        make(map[string]*ModelUsage),
+			empl:          make(map[string]*EmployeeUsage),
+			modelEmployee: make(map[string]map[string]struct{}),
+			modelTask:     make(map[string]map[string]struct{}),
+		}
+		if snap.APIKeyLabel != "" {
+			pb.plans[pk].plan.APIKeyLabel = snap.APIKeyLabel
+		}
+	}
+
 	providerList := make([]ProviderUsage, 0, len(providers))
 	for _, pb := range providers {
 		prov := pb.provider
@@ -765,10 +802,16 @@ func buildQuotaStateWithWindows(
 
 func anyWindowConfigured(windows []QuotaWindowView) bool {
 	for _, w := range windows {
-		if w.TotalTokens != nil && *w.TotalTokens > 0 {
+		if w.isAuthoritative() {
 			return true
 		}
-		if w.Source == "live_vendor" || w.Source == "hivecosm" {
+		if w.Unlimited {
+			return true
+		}
+		if w.Percentage != nil {
+			return true
+		}
+		if w.TotalTokens != nil && *w.TotalTokens > 0 {
 			return true
 		}
 	}
