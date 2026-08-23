@@ -462,6 +462,98 @@ func TestACPTerminalSecretEnvNotInherited(t *testing.T) {
 	}
 }
 
+// envValue returns the value of name from an /usr/bin/env style dump,
+// or "" when the name is absent.
+func envValue(dump, name string) string {
+	for _, line := range strings.Split(dump, "\n") {
+		if strings.HasPrefix(line, name+"=") {
+			return strings.TrimPrefix(line, name+"=")
+		}
+	}
+	return ""
+}
+
+// TestACPTerminalTaskCapabilityEnvInherited pins the HIV-878 fix: the
+// terminal child inherits EXACTLY the two trusted task-scoped daemon
+// variables (MULTICA_DAEMON_PORT, MULTICA_LOCAL_AUTH_CAPABILITY_FILE)
+// from the host environment — so the CLI inside the terminal can recover
+// the task-scoped Multica credential — while MULTICA_TOKEN, provider
+// credentials and every other MULTICA_* host variable stay excluded.
+func TestACPTerminalTaskCapabilityEnvInherited(t *testing.T) {
+	// t.Setenv forbids t.Parallel().
+	capFile := filepath.Join(t.TempDir(), "capability.json")
+	t.Setenv("MULTICA_DAEMON_PORT", "8765")
+	t.Setenv("MULTICA_LOCAL_AUTH_CAPABILITY_FILE", capFile)
+	hostOnly := map[string]string{
+		"MULTICA_TOKEN":        "mat-host-token-leak-456",
+		"MULTICA_WORKSPACE_ID": "ws-host-leak-456",
+		"MULTICA_ARBITRARY":    "multica-arbitrary-leak-456",
+		"KIMI_API_KEY":         "sk-kimi-host-leak-456",
+	}
+	for k, v := range hostOnly {
+		t.Setenv(k, v)
+	}
+
+	m, _ := newTestTerminalManager(t)
+
+	id := createTestTerminal(t, m, `{"sessionId":"ses_1","command":"/usr/bin/env"}`)
+	waitTestTerminalExit(t, m, "ses_1", id)
+
+	envDump := outputTestTerminal(t, m, "ses_1", id).Output
+	if got := envValue(envDump, "MULTICA_DAEMON_PORT"); got != "8765" {
+		t.Errorf("MULTICA_DAEMON_PORT = %q, want the trusted host value %q", got, "8765")
+	}
+	if got := envValue(envDump, "MULTICA_LOCAL_AUTH_CAPABILITY_FILE"); got != capFile {
+		t.Errorf("MULTICA_LOCAL_AUTH_CAPABILITY_FILE = %q, want the trusted host path %q", got, capFile)
+	}
+	for name, value := range hostOnly {
+		if envValue(envDump, name) != "" {
+			t.Errorf("terminal child inherited non-trusted host env %s", name)
+		}
+		if strings.Contains(envDump, value) {
+			t.Errorf("terminal child environment leaked the value of %s", name)
+		}
+	}
+	// Exactly the two trusted MULTICA_* names may appear in the child;
+	// nothing else from the daemon's Multica namespace passes through.
+	for _, line := range strings.Split(envDump, "\n") {
+		if !strings.HasPrefix(line, "MULTICA_") {
+			continue
+		}
+		name := strings.SplitN(line, "=", 2)[0]
+		if name != "MULTICA_DAEMON_PORT" && name != "MULTICA_LOCAL_AUTH_CAPABILITY_FILE" {
+			t.Errorf("terminal child env carries untrusted MULTICA_* entry %q", line)
+		}
+	}
+}
+
+// TestACPTerminalTaskCapabilityRequestOverrideRejected pins that the
+// model cannot inject or override the trusted task identity through
+// request-scoped env: every MULTICA_* request name — the two trusted
+// names included — is still rejected with -32602 before any process is
+// spawned, so those values can only ever come from the daemon host.
+func TestACPTerminalTaskCapabilityRequestOverrideRejected(t *testing.T) {
+	t.Parallel()
+	m, _ := newTestTerminalManager(t)
+
+	for _, name := range []string{
+		"MULTICA_DAEMON_PORT",
+		"MULTICA_LOCAL_AUTH_CAPABILITY_FILE",
+		"MULTICA_TOKEN",
+		"MULTICA_ANYTHING_ELSE",
+	} {
+		params := `{"sessionId":"ses_1","command":"/bin/echo","env":[{"name":` + testJSONString(name) + `,"value":"attacker"}]}`
+		_, terr := m.dispatch("terminal/create", json.RawMessage(params))
+		if terr == nil {
+			t.Errorf("request env %s: expected terminal/create to be rejected", name)
+			continue
+		}
+		if terr.code != -32602 {
+			t.Errorf("request env %s: error code = %d, want -32602 (msg=%q)", name, terr.code, terr.message)
+		}
+	}
+}
+
 // TestACPTerminalIDsUniqueAndUnguessable pins that ids across many
 // terminals never repeat and carry no sequential structure.
 func TestACPTerminalIDsUniqueAndUnguessable(t *testing.T) {

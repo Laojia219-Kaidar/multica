@@ -75,14 +75,15 @@ const (
 	acpTerminalPipeDrainDelay = 2 * time.Second
 )
 
-// acpTerminalHostEnvAllowlist is the complete set of host environment
-// variables a terminal child may inherit. Terminal processes run model-
-// requested commands, so they must NOT inherit the daemon's credentials
-// (provider API keys injected through Config.Env, MULTICA_TOKEN, …) the
-// way the agent CLI process itself does. Only names needed by ordinary
-// development commands are allowed through; everything else the child
-// needs must arrive as request-scoped env (merged and screened by
-// acpTerminalChildEnv).
+// acpTerminalHostEnvAllowlist is the complete set of GENERIC host
+// environment variables a terminal child may inherit (the two
+// task-scoped daemon variables below are the only additions). Terminal
+// processes run model-requested commands, so they must NOT inherit the
+// daemon's credentials (provider API keys injected through Config.Env,
+// MULTICA_TOKEN, …) the way the agent CLI process itself does. Only
+// names needed by ordinary development commands are allowed through;
+// everything else the child needs must arrive as request-scoped env
+// (merged and screened by acpTerminalChildEnv).
 var acpTerminalHostEnvAllowlist = []string{
 	// POSIX / macOS / Linux
 	"PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE", "TERM", "TZ",
@@ -92,6 +93,28 @@ var acpTerminalHostEnvAllowlist = []string{
 	"TEMP", "TMP", "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "USERNAME",
 	"SYSTEMROOT", "COMSPEC", "PATHEXT", "PROGRAMDATA", "APPDATA",
 	"LOCALAPPDATA", "PROGRAMFILES",
+}
+
+// acpTerminalTrustedTaskEnv is the exact, closed set of task-scoped
+// daemon variables a terminal child inherits IN ADDITION to the generic
+// allowlist above, and the only MULTICA_* names it may ever see. The
+// HIV-877 canary showed the native ACP terminal working while its child
+// environment could not recover the task-scoped Multica credential,
+// because the bridge stripped MULTICA_DAEMON_PORT and
+// MULTICA_LOCAL_AUTH_CAPABILITY_FILE along with every other MULTICA_*
+// host variable. These two carry only the local daemon's port and a
+// task-scoped capability FILE PATH — never a credential value — so the
+// CLI inside the terminal can reach the daemon and recover the task
+// credential itself. They pass through from the daemon's host
+// environment only: MULTICA_TOKEN, provider/API credentials and every
+// other MULTICA_* host variable stay excluded, and request-scoped env
+// still rejects the whole MULTICA_* namespace
+// (isACPTerminalCredentialEnvName), so the model can neither inject nor
+// override either trusted value. Do not add more names here without a
+// new security-reviewed work order.
+var acpTerminalTrustedTaskEnv = []string{
+	"MULTICA_DAEMON_PORT",
+	"MULTICA_LOCAL_AUTH_CAPABILITY_FILE",
 }
 
 // acpTerminalEnvNameRe is the shape a request-scoped env name must have
@@ -585,13 +608,23 @@ func isACPTerminalCredentialEnvName(name string) bool {
 }
 
 // acpTerminalChildEnv builds the terminal child's environment: ONLY the
-// allowlisted host variables plus the request-scoped entries. The agent
-// CLI's Config.Env (provider credentials, MULTICA_TOKEN, …) is never
-// consulted, and a credential-shaped request entry is rejected rather
-// than silently dropped so the failure is visible on the wire.
+// allowlisted generic host variables, the two trusted task-scoped daemon
+// variables (acpTerminalTrustedTaskEnv, HIV-878), plus the
+// request-scoped entries. The agent CLI's Config.Env (provider
+// credentials, MULTICA_TOKEN, …) is never consulted, and a
+// credential-shaped request entry is rejected rather than silently
+// dropped so the failure is visible on the wire.
 func acpTerminalChildEnv(requestEnv []acpTerminalEnvVar) ([]string, *acpTerminalError) {
-	env := make([]string, 0, len(acpTerminalHostEnvAllowlist)+len(requestEnv))
+	env := make([]string, 0, len(acpTerminalHostEnvAllowlist)+len(acpTerminalTrustedTaskEnv)+len(requestEnv))
 	for _, key := range acpTerminalHostEnvAllowlist {
+		if v, ok := os.LookupEnv(key); ok {
+			env = append(env, key+"="+v)
+		}
+	}
+	// Trusted task identity (HIV-878): sourced from the daemon host
+	// environment only. The request path below keeps rejecting every
+	// MULTICA_* name, so the model cannot inject or override either.
+	for _, key := range acpTerminalTrustedTaskEnv {
 		if v, ok := os.LookupEnv(key); ok {
 			env = append(env, key+"="+v)
 		}
