@@ -12,9 +12,32 @@
 - PAT 从 ~/.multica/config.json 读取，不落日志、不入库。
 - 15 分钟无心跳的 pane 由服务端判定过期，不在此删除。
 
+可选 Prime 观测（opt-in，只读投影）：
+- 仅当非机密配置 TERMINAL_PRESENCE_PRIME_SESSIONS 明确列出短会话 id 时，
+  才以有界、超时保护的方式读取官方 `prime-agent list --json`；
+  缺省为空 = 从不调用 Prime CLI。
+  TERMINAL_PRESENCE_PRIME_BIN 提供可执行文件绝对路径覆盖（launchd 的
+  PATH 只有系统目录）；TERMINAL_PRESENCE_PRIME_TIMEOUT 秒数被钳制在
+  [1, 30]，非法值回落到默认 5。
+- 官方 live JSON 可能携带完整 id（activeSessionId/sessionId/id 任一字段），
+  配置值是短显示 id。匹配规则：精确优先（exact-first），否则小写后的完整
+  id 以某个配置短 id 结尾即视为候选；仅当该解析在整个 payload 中唯一匹配
+  一个会话时才采用，歧义（精确或后缀）不匹配任何会话（fail closed，不猜
+  测），且同一会话绝不投影两次。activeSessionId 推导活跃同样要求全
+  payload 唯一，歧义短后缀不把任何会话标为活跃。
+- 只投影短会话 id、model id、cwd、taskState、workerState、isSessionActive、
+  isRunningTools、isStreaming、unfinishedActionCount、lastActivityAt；
+  绝不投影 prompt、summary、firstMessage、诊断、端点/配置、会话文件、
+  环境、工具参数、terminal 尾部、凭据或思维链。Prime pane 的 tail_text
+  恒为空，agent_hint 标注 carrier=prime|non-authoritative，不声明员工身份。
+- Fail open：CLI 缺失/启动失败/超时/非零退出（即使 stdout 是合法 JSON）/
+  超大输出/坏 UTF-8/非法 payload 一律产出零个 Prime pane、不记录任何
+  原始 JSON，且不压制有效的 tmux pane。
+
 用法：nohup python3 terminal-presence-collector.sh.py >/tmp/terminal-presence.log 2>&1 &
 """
 import json
+import math
 import os
 import re
 import shutil
@@ -165,6 +188,320 @@ def collect():
         })
     return panes
 
+# --- Prime observation (opt-in, read-only projection) ----------------------
+
+PRIME_BIN_ENV = "TERMINAL_PRESENCE_PRIME_BIN"
+PRIME_SESSIONS_ENV = "TERMINAL_PRESENCE_PRIME_SESSIONS"
+PRIME_TIMEOUT_ENV = "TERMINAL_PRESENCE_PRIME_TIMEOUT"
+PRIME_TIMEOUT_DEFAULT = 5.0
+PRIME_TIMEOUT_MIN = 1.0
+PRIME_TIMEOUT_MAX = 30.0
+# Bounded read: larger payloads are treated as malformed and dropped.
+PRIME_OUTPUT_MAX_BYTES = 1_000_000
+# Short display ids: ASCII alphanumerics plus '-'/'_', 4-64 chars,
+# alphanumeric edges. Anything else is rejected, never widened.
+PRIME_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{2,62}[a-z0-9]$")
+PRIME_PANE_PREFIX = "prime-"
+PRIME_STATE_MAX = 12
+PRIME_TIMESTAMP_MAX = 20
+PRIME_PENDING_MAX = 999999
+# current_command carries "<model> <cwd> <lastActivityAt>"; the caps keep
+# the joined value inside the pane shape's 120-char bound (40+57+20+2).
+PRIME_MODEL_MAX = 40
+PRIME_CWD_MAX = 57
+
+def normalize_prime_session_id(raw):
+    """Normalize one configured Prime session id; "" when invalid."""
+    if not isinstance(raw, str):
+        return ""
+    value = raw.strip().lower()
+    if not PRIME_ID_RE.fullmatch(value):
+        return ""
+    return value
+
+def configured_prime_session_ids(environ=None):
+    """Parse the non-secret TERMINAL_PRESENCE_PRIME_SESSIONS allowlist.
+
+    Comma/space separated short display ids. Empty/unset means no Prime
+    observation at all. Invalid entries are dropped, duplicates collapse,
+    order is preserved.
+    """
+    env = os.environ if environ is None else environ
+    ids = []
+    for part in re.split(r"[,\s]+", env.get(PRIME_SESSIONS_ENV, "")):
+        normalized = normalize_prime_session_id(part)
+        if normalized and normalized not in ids:
+            ids.append(normalized)
+    return ids
+
+def prime_binary_candidates(environ=None):
+    """Ordered executable candidates: env override, PATH, common locations.
+
+    TERMINAL_PRESENCE_PRIME_BIN is the absolute override for macOS launchd,
+    whose PATH only contains system directories.
+    """
+    env = os.environ if environ is None else environ
+    candidates = []
+    override = env.get(PRIME_BIN_ENV, "").strip()
+    if override:
+        candidates.append(override)
+    which = shutil.which("prime-agent", path=env.get("PATH", os.defpath))
+    if which:
+        candidates.append(which)
+    candidates.extend([
+        "/opt/homebrew/bin/prime-agent",
+        "/usr/local/bin/prime-agent",
+        os.path.expanduser("~/.local/bin/prime-agent"),
+    ])
+    return candidates
+
+def find_prime_binary(environ=None):
+    """First existing executable candidate, or None (callers fail open)."""
+    for candidate in prime_binary_candidates(environ):
+        if candidate and os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    return None
+
+def prime_timeout_seconds(environ=None):
+    """Bounded Prime CLI timeout; invalid config falls back to the default."""
+    env = os.environ if environ is None else environ
+    try:
+        value = float(env.get(PRIME_TIMEOUT_ENV, ""))
+    except ValueError:
+        return PRIME_TIMEOUT_DEFAULT
+    if math.isnan(value):
+        return PRIME_TIMEOUT_DEFAULT
+    return max(PRIME_TIMEOUT_MIN, min(PRIME_TIMEOUT_MAX, value))
+
+def run_prime_cli(binary, timeout_seconds):
+    """Run `<binary> list --json`; return (returncode, stdout_bytes)."""
+    proc = subprocess.run(
+        [binary, "list", "--json"],
+        capture_output=True,
+        timeout=timeout_seconds,
+    )
+    return proc.returncode, proc.stdout
+
+def parse_prime_payload(text):
+    """Parse official list JSON into (sessions, active_session_id).
+
+    Accepts a bare session list or an object wrapping the list under
+    "sessions" (with optional top-level "activeSessionId"). Returns
+    (None, None) for anything else so callers fail open.
+    """
+    try:
+        payload = json.loads(text)
+    except ValueError:
+        return None, None
+    active = None
+    if isinstance(payload, dict):
+        raw_active = payload.get("activeSessionId")
+        if isinstance(raw_active, str) and raw_active.strip():
+            active = raw_active.strip().lower()
+        sessions = payload.get("sessions")
+    else:
+        sessions = payload
+    if not isinstance(sessions, list):
+        return None, None
+    return [entry for entry in sessions if isinstance(entry, dict)], active
+
+def prime_session_ids(session):
+    """Normalized official id fields of one session, priority ordered.
+
+    Official live entries carry `activeSessionId` and `id` (the live agent
+    id) alongside a separate persisted `sessionId`; inactive entries carry
+    `id`/`sessionId` only. A configured short id is matched against any of
+    the three fields, lowercased and deduplicated, empties dropped.
+    """
+    ids = []
+    for key in ("activeSessionId", "sessionId", "id"):
+        value = session.get(key)
+        if not isinstance(value, str):
+            continue
+        normalized = value.strip().lower()
+        if normalized and normalized not in ids:
+            ids.append(normalized)
+    return ids
+
+def unique_prime_session_index(id_lists, short_id):
+    """Resolve one short id against every session's ids; fail closed.
+
+    Exact-first: a configured id equal to some session's full id field wins
+    over any longer suffix collision. Failing that, only a suffix match
+    that is unambiguous across the entire payload qualifies. Zero matches,
+    ambiguous exact matches or ambiguous suffixes all return None — never
+    guess.
+    """
+    exact = [i for i, ids in enumerate(id_lists) if short_id in ids]
+    if len(exact) == 1:
+        return exact[0]
+    if exact:
+        return None
+    suffix = [
+        i for i, ids in enumerate(id_lists)
+        if any(value.endswith(short_id) for value in ids)
+    ]
+    if len(suffix) == 1:
+        return suffix[0]
+    return None
+
+def match_prime_sessions(sessions, configured):
+    """Apply the documented exact-first, unambiguous suffix rule.
+
+    Returns an ordered {dedup_id: (session, short_id)} map keyed by the
+    session's first normalized id field, so one official session is never
+    projected twice even if several configured ids resolve to it.
+    """
+    id_lists = [prime_session_ids(entry) for entry in sessions]
+    matched = {}
+    for short_id in configured:
+        index = unique_prime_session_index(id_lists, short_id)
+        if index is None:
+            continue
+        dedup_id = id_lists[index][0]
+        if dedup_id not in matched:
+            matched[dedup_id] = (sessions[index], short_id)
+    return matched
+
+def prime_session_is_active(session, sessions, id_lists, active_session_id):
+    """Activity from the official bool or activeSessionId; never widened.
+
+    The official isSessionActive bool needs no resolution. An
+    activeSessionId — top-level or the session's own — resolves through
+    the same exact-first, unambiguous-suffix rule applied across the
+    entire payload, and only activates the session it uniquely resolves
+    to. An ambiguous short suffix marks no session active.
+    """
+    if session.get("isSessionActive") is True:
+        return True
+    for candidate in (active_session_id, session.get("activeSessionId")):
+        if not (isinstance(candidate, str) and candidate.strip()):
+            continue
+        normalized = candidate.strip().lower()
+        index = unique_prime_session_index(id_lists, normalized)
+        if index is not None and sessions[index] is session:
+            return True
+    return False
+
+def _prime_clean_str(session, keys, limit):
+    for key in keys:
+        value = session.get(key)
+        if isinstance(value, str) and value.strip():
+            return sanitize(value.strip())[:limit]
+    return ""
+
+def prime_model_id(session):
+    """Bounded model id for projection; "" when no admitted shape exists.
+
+    Official live `model` is an object carrying `provider` and `id`; only
+    its `id` string is ever read — provider and every other object field
+    stay unread. Legacy string shapes stay supported in order: a direct
+    string `modelId`, then a direct string `model`.
+    """
+    for key in ("modelId", "model"):
+        value = session.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    model = session.get("model")
+    if isinstance(model, dict):
+        value = model.get("id")
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+def _prime_flag(value):
+    return "1" if value is True else "0"
+
+def project_prime_session(session, short_id, active):
+    """Project one whitelisted, bounded pane in the existing tmux shape.
+
+    Projected: short session id, model id, cwd, taskState, workerState,
+    isSessionActive, isRunningTools, isStreaming, unfinishedActionCount and
+    lastActivityAt — nothing else ever reaches the pane shape. Field layout:
+    session_name carries the short id, current_command carries
+    "<model> <cwd> <lastActivityAt>", agent_hint carries the bounded state
+    flags. tail_text is always empty; agent_hint stays a non-authoritative
+    clue with no Employee claim.
+    """
+    model = sanitize(prime_model_id(session))[:PRIME_MODEL_MAX]
+    cwd = _prime_clean_str(session, ("cwd", "workingDirectory"), PRIME_CWD_MAX)
+    task_state = _prime_clean_str(session, ("taskState",), PRIME_STATE_MAX)
+    worker_state = _prime_clean_str(session, ("workerState",), PRIME_STATE_MAX)
+    last_activity = _prime_clean_str(session, ("lastActivityAt",), PRIME_TIMESTAMP_MAX)
+    pending = session.get("unfinishedActionCount")
+    if isinstance(pending, bool) or not isinstance(pending, int):
+        pending = 0
+    pending = max(0, min(PRIME_PENDING_MAX, pending))
+    hint = "|".join([
+        "carrier=prime",
+        "non-authoritative",
+        f"task={task_state}",
+        f"worker={worker_state}",
+        f"active={_prime_flag(active)}",
+        f"tools={_prime_flag(session.get('isRunningTools'))}",
+        f"stream={_prime_flag(session.get('isStreaming'))}",
+        f"pending={pending}",
+    ])[:120]
+    return {
+        "session_name": (PRIME_PANE_PREFIX + short_id)[:255],
+        "window_index": 0,
+        "pane_index": 0,
+        "pane_pid": 0,
+        "current_command": sanitize(f"{model} {cwd} {last_activity}".strip())[:120],
+        "agent_hint": hint,
+        "tail_text": "",
+    }
+
+def collect_prime_sessions(environ=None):
+    """Collect Prime panes; every failure mode yields [] (fail open).
+
+    Missing/broken CLI, spawn error, timeout, non-zero exit (even with
+    valid JSON on stdout), oversized output, bad UTF-8, malformed JSON or
+    unexpected payload shape all produce zero Prime panes and log no raw
+    JSON.
+    """
+    configured = configured_prime_session_ids(environ)
+    if not configured:
+        return []
+    binary = find_prime_binary(environ)
+    if binary is None:
+        return []
+    try:
+        returncode, raw = run_prime_cli(binary, prime_timeout_seconds(environ))
+    except (FileNotFoundError, OSError, ValueError, subprocess.TimeoutExpired):
+        return []
+    if returncode != 0:
+        return []
+    if not isinstance(raw, bytes) or len(raw) > PRIME_OUTPUT_MAX_BYTES:
+        return []
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return []
+    sessions, active_id = parse_prime_payload(text)
+    if sessions is None:
+        return []
+    id_lists = [prime_session_ids(entry) for entry in sessions]
+    panes = []
+    for _, (session, short_id) in match_prime_sessions(sessions, configured).items():
+        active = prime_session_is_active(session, sessions, id_lists, active_id)
+        panes.append(project_prime_session(session, short_id, active))
+    return panes
+
+def collect_all():
+    """Merge tmux and Prime panes; either source may fail open on its own.
+
+    tmux collection returning None (tmux missing or unreadable) must not
+    suppress valid Prime-only observations. When nothing is observable at
+    all, keep the legacy skip-report behaviour so a tmux-only host never
+    wipes its wall on a transient tmux failure.
+    """
+    tmux_panes = collect()
+    prime_panes = collect_prime_sessions()
+    if tmux_panes is None:
+        return prime_panes or None
+    return tmux_panes + prime_panes
+
 def report(panes):
     try:
         cfg = json.load(open(CONFIG))
@@ -198,7 +535,7 @@ def main():
     signal.signal(signal.SIGINT, stop)
     print(f"terminal-presence-collector started interval={INTERVAL}s api={API}")
     while running:
-        panes = collect()
+        panes = collect_all()
         if panes is not None:
             report(panes)
         time.sleep(INTERVAL)
