@@ -1,5 +1,20 @@
 import { getApi } from "@multica/core/api";
 
+export interface QuotaWindowView {
+  kind: string;
+  label?: string;
+  unit?: string;
+  total_tokens?: number;
+  used_tokens: number;
+  remaining_tokens?: number;
+  percentage?: number;
+  reset_at?: string;
+  source: string;
+  observed_at?: string;
+  unlimited?: boolean;
+  local_only?: boolean;
+}
+
 export interface QuotaState {
   cycle: string;
   total_tokens?: number;
@@ -9,6 +24,9 @@ export interface QuotaState {
   reset_at?: string;
   reset_day?: number;
   local_model: boolean;
+  windows?: QuotaWindowView[];
+  source?: string;
+  observed_at?: string;
 }
 
 export interface TaskUsage {
@@ -69,6 +87,17 @@ export interface UsageHierarchy {
   providers: ProviderUsage[];
 }
 
+export interface ProviderUsageQuotaInput {
+  provider: string;
+  plan: string;
+  account: string;
+  api_key_label?: string;
+  cycle: string;
+  total_tokens: number;
+  reset_day?: number;
+  local_model?: boolean;
+}
+
 export async function fetchUsageHierarchy(
   slug: string,
   days: number,
@@ -90,4 +119,82 @@ export async function fetchUsageHierarchy(
     throw new Error(message);
   }
   return (await res.json()) as UsageHierarchy;
+}
+
+export async function upsertProviderUsageQuota(
+  slug: string,
+  input: ProviderUsageQuotaInput,
+): Promise<void> {
+  const api = getApi();
+  const base = api.getBaseUrl();
+  const res = await fetch(`${base}/api/company-ops/usage/quota`, {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Workspace-Slug": slug,
+    },
+    credentials: "include",
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) {
+    let message = `API error: ${res.status} ${res.statusText}`;
+    try {
+      const body = (await res.json()) as { error?: string };
+      if (body?.error) message = body.error;
+    } catch {
+      // keep the status message
+    }
+    throw new Error(message);
+  }
+}
+
+export function quotaSourceLabel(source?: string): string {
+  switch (source) {
+    case "console":
+      return "控制台";
+    case "live_vendor":
+      return "厂商 API";
+    case "manual_cap":
+      return "手动上限";
+    case "hivecosm":
+      return "HiveCosm";
+    case "task_usage":
+      return "本地 task_usage";
+    default:
+      return source ?? "—";
+  }
+}
+
+export function windowKindLabel(kind: string, label?: string): string {
+  if (label) return label;
+  switch (kind) {
+    case "5h":
+      return "5 小时";
+    case "7d":
+      return "7 天";
+    case "30d":
+      return "30 天";
+    case "monthly":
+      return "每月";
+    case "mcp_monthly":
+      return "MCP 每月";
+    case "credits":
+      return "Credits";
+    case "cny_balance":
+      return "CNY 余额";
+    case "package":
+      return "套餐总量";
+    case "code_5h":
+      return "Code 5 小时";
+    case "code_7d":
+      return "Code 7 天";
+    case "session":
+      return "会话";
+    case "unlimited":
+      return "每周（不限）";
+    case "30d_cost":
+      return "30 天用量";
+    default:
+      return kind;
+  }
 }

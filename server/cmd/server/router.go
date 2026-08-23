@@ -1834,6 +1834,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			r.Get("/workforce-base-runtime", h.GetCompanyOpsWorkforceBaseRuntime)
 			r.Get("/usage", h.GetProviderPlanUsage)
 			r.Put("/usage/quota", h.PutProviderUsageQuota)
+			r.Post("/usage/quota-observation", h.PostProviderQuotaObservation)
 			r.Post("/assignments", h.CreateCompanyOpsAssignment)
 			r.With(middleware.RequireWorkspaceRole(queries, "owner")).Post("/artifact-reviews", h.CreateCompanyOpsArtifactReview)
 			r.With(middleware.RequireWorkspaceRole(queries, "owner")).Post("/formal-artifact-promotions", h.CreateCompanyOpsFormalArtifactPromotion)
@@ -1863,6 +1864,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			r.Get("/replay", h.WorkEntryReplay)
 			r.Get("/mcp/tools", h.WorkEntryMCPTools)
 			r.Post("/mcp/call", h.WorkEntryMCPCall)
+			r.Get("/quota", h.GetWorkQuota)
 		})
 
 		// --- Workspace-scoped routes (all require workspace membership) ---

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
@@ -20,12 +21,15 @@ import (
 // database seam. Fail closed rather than returning an empty hierarchy.
 var errUsageQuerierRequired = errors.New("usage querier is required")
 
-// UsageSQLQuerier is the minimal DB seam the usage aggregation needs. It is
-// satisfied by *db.Queries, *pgxpool.Pool and the handler's dbExecutor so the
-// aggregation can run against any canonical Postgres handle without importing
-// the handler or generated-query packages.
+// UsageSQLQuerier is the minimal DB seam the usage aggregation needs.
 type UsageSQLQuerier interface {
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+}
+
+// UsageWriteQuerier adds write access for quota snapshot upserts.
+type UsageWriteQuerier interface {
+	UsageSQLQuerier
+	Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error)
 }
 
 // PlanClassification is the billing identity of one (provider, model,
@@ -83,34 +87,39 @@ func ClassifyProviderPlan(model, runtimeName, runtimeProvider, runtimeMode strin
 		}
 	}
 	if strings.HasPrefix(modelLower, "bailian-token-plan-personal/") {
-		return classified("阿里云百炼", "Token Plan Personal")
+		return PlanClassification{
+			Provider:   "阿里云百炼",
+			Plan:       "Token Plan Personal",
+			Account:    "bailian-token-plan-personal",
+			LocalModel: localModel,
+		}
 	}
 	if strings.Contains(runtimeLower, "volcengine-agent") {
-		return classified("火山引擎 · Doubao", "Volcengine Agent Plan")
+		return classified("火山引擎 · Doubao", "Ark Agent Plan")
 	}
 	if strings.Contains(runtimeLower, "volcengine-coding") {
-		return classified("火山引擎 · Doubao", "Volcengine Coding Plan")
+		return classified("火山引擎 · Doubao", "Ark Coding Plan")
 	}
 	if strings.Contains(runtimeLower, "qwen-token") {
-		return classified("阿里云 · Qwen", "Qwen Token Plan")
+		return classified("阿里云百炼", "Token Plan Personal")
 	}
 	if strings.Contains(runtimeLower, "qwen-coding") {
-		return classified("阿里云 · Qwen", "Qwen Coding Plan")
+		return classified("阿里云百炼", "Coding Pro")
 	}
 	if strings.Contains(runtimeLower, "secure zhipu") {
-		return classified("智谱 · GLM", "GLM API")
+		return classified("智谱 · GLM", "GLM Coding Max V1")
 	}
 	if strings.Contains(runtimeLower, "secure deepseek") {
 		return classified("DeepSeek", "DeepSeek API")
 	}
 	if strings.Contains(runtimeLower, "secure kimi") {
-		return classified("月之暗面 · Kimi", "Kimi API")
+		return classified("月之暗面 · Kimi", "Kimi Membership Allegro")
 	}
 	if strings.Contains(runtimeLower, "secure mimo") {
-		return classified("小米 · MiMo", "MiMo API")
+		return classified("小米 · MiMo", "MiMo Pro annual")
 	}
 	if strings.Contains(runtimeLower, "secure minimax") {
-		return classified("MiniMax", "MiniMax API")
+		return classified("MiniMax", "TokenPlanPlus")
 	}
 	if strings.HasPrefix(modelLower, "gpt-") || providerLower == "codex" {
 		return classified("OpenAI · Codex", "Codex Plan")
@@ -119,7 +128,7 @@ func ClassifyProviderPlan(model, runtimeName, runtimeProvider, runtimeMode strin
 		return classified("Anthropic · Claude", "Claude Plan")
 	}
 	if strings.HasPrefix(modelLower, "glm-") {
-		return classified("智谱 · GLM", "GLM API")
+		return classified("智谱 · GLM", "GLM Coding Max V1")
 	}
 	if modelLower == "k3" || providerLower == "kimi" {
 		return classified("月之暗面 · Kimi", "Kimi CLI")
@@ -131,10 +140,10 @@ func ClassifyProviderPlan(model, runtimeName, runtimeProvider, runtimeMode strin
 		return classified("DeepSeek", "DeepSeek API")
 	}
 	if strings.HasPrefix(modelLower, "minimax") {
-		return classified("MiniMax", model)
+		return classified("MiniMax", "TokenPlanPlus")
 	}
 	if strings.HasPrefix(modelLower, "mimo") {
-		return classified("小米 · MiMo", model)
+		return classified("小米 · MiMo", "MiMo Pro annual")
 	}
 
 	switch providerLower {
@@ -189,6 +198,7 @@ type UsageObservation struct {
 	CacheReadTokens  int64
 	CacheWriteTokens int64
 	CostUSDTicks     int64
+	CreatedAt        time.Time
 }
 
 // TotalTokens returns the token figure used everywhere on the usage page:
@@ -237,7 +247,8 @@ SELECT
     tu.output_tokens,
     tu.cache_read_tokens,
     tu.cache_write_tokens,
-    COALESCE(tu.cost_usd_ticks, 0)
+    COALESCE(tu.cost_usd_ticks, 0),
+    tu.created_at
 FROM task_usage tu
 JOIN agent_task_queue atq ON atq.id = tu.task_id
 JOIN agent a ON a.id = atq.agent_id
@@ -270,6 +281,7 @@ func (s *UsageService) ListUsageObservations(ctx context.Context, workspaceID st
 			input, output         int64
 			cacheRead, cacheWrite int64
 			costTicks             int64
+			createdAt             time.Time
 		)
 		if err := rows.Scan(
 			&o.Provider,
@@ -286,6 +298,7 @@ func (s *UsageService) ListUsageObservations(ctx context.Context, workspaceID st
 			&cacheRead,
 			&cacheWrite,
 			&costTicks,
+			&createdAt,
 		); err != nil {
 			return nil, err
 		}
@@ -294,6 +307,7 @@ func (s *UsageService) ListUsageObservations(ctx context.Context, workspaceID st
 		o.CacheReadTokens = cacheRead
 		o.CacheWriteTokens = cacheWrite
 		o.CostUSDTicks = costTicks
+		o.CreatedAt = createdAt
 		if issueID.Valid && issueID.String != "" {
 			v := issueID.String
 			o.IssueID = &v
@@ -372,14 +386,17 @@ ORDER BY provider, plan, account_label, api_key_label
 // operator has not configured a quota for this plan/account; the page renders
 // "配额未配置" instead of inventing remaining/percentage values.
 type QuotaState struct {
-	Cycle       string   `json:"cycle"`
-	TotalTokens *int64   `json:"total_tokens,omitempty"`
-	UsedTokens  int64    `json:"used_tokens"`
-	Remaining   *int64   `json:"remaining_tokens,omitempty"`
-	Percentage  *float64 `json:"percentage,omitempty"`
-	ResetAt     *string  `json:"reset_at,omitempty"`
-	ResetDay    *int     `json:"reset_day,omitempty"`
-	LocalModel  bool     `json:"local_model"`
+	Cycle       string            `json:"cycle"`
+	TotalTokens *int64            `json:"total_tokens,omitempty"`
+	UsedTokens  int64             `json:"used_tokens"`
+	Remaining   *int64            `json:"remaining_tokens,omitempty"`
+	Percentage  *float64          `json:"percentage,omitempty"`
+	ResetAt     *string           `json:"reset_at,omitempty"`
+	ResetDay    *int              `json:"reset_day,omitempty"`
+	LocalModel  bool              `json:"local_model"`
+	Windows     []QuotaWindowView `json:"windows,omitempty"`
+	Source      string            `json:"source,omitempty"`
+	ObservedAt  *string           `json:"observed_at,omitempty"`
 }
 
 // TaskUsage is one task's token total inside an employee bucket.
@@ -450,6 +467,20 @@ type UsageHierarchy struct {
 // BuildUsageHierarchy rolls observations up into the provider -> plan ->
 // model -> employee -> task hierarchy and merges configured quota rows.
 func BuildUsageHierarchy(workspaceID string, since time.Time, observations []UsageObservation, quotas []UsageQuotaRow) UsageHierarchy {
+	return BuildUsageHierarchyWithSnapshots(workspaceID, since, observations, quotas, nil, time.Now())
+}
+
+// BuildUsageHierarchyWithSnapshots merges quota snapshots and multi-window
+// caps into the usage hierarchy. Observations should cover at least the last
+// calendar month so 5h/7d/monthly windows can be computed.
+func BuildUsageHierarchyWithSnapshots(
+	workspaceID string,
+	since time.Time,
+	observations []UsageObservation,
+	quotas []UsageQuotaRow,
+	snapshots []QuotaSnapshotRow,
+	now time.Time,
+) UsageHierarchy {
 	quotaByKey := make(map[string]UsageQuotaRow, len(quotas))
 	for _, q := range quotas {
 		quotaByKey[quotaKey(q.Provider, q.Plan, q.Account)] = q
@@ -457,6 +488,8 @@ func BuildUsageHierarchy(workspaceID string, since time.Time, observations []Usa
 
 	type planBucket struct {
 		plan          PlanUsage
+		class         PlanClassification
+		obs           []UsageObservation
 		models        map[string]*ModelUsage
 		empl          map[string]*EmployeeUsage
 		modelEmployee map[string]map[string]struct{}
@@ -503,6 +536,7 @@ func BuildUsageHierarchy(workspaceID string, since time.Time, observations []Usa
 					Account:    c.Account,
 					LocalModel: c.LocalModel,
 				},
+				class:         c,
 				models:        make(map[string]*ModelUsage),
 				empl:          make(map[string]*EmployeeUsage),
 				modelEmployee: make(map[string]map[string]struct{}),
@@ -510,6 +544,7 @@ func BuildUsageHierarchy(workspaceID string, since time.Time, observations []Usa
 			}
 			pb.plans[pk] = p
 		}
+		p.obs = append(p.obs, o)
 		p.plan.UsedTokens += used
 		if c.LocalModel {
 			p.plan.LocalModel = true
@@ -545,6 +580,38 @@ func BuildUsageHierarchy(workspaceID string, since time.Time, observations []Usa
 		totals.UsedTokens += used
 	}
 
+	// Console-ingested plans may exist before local task_usage rows arrive.
+	for _, snap := range snapshots {
+		if snap.Provider == "" || snap.Plan == "" {
+			continue
+		}
+		pk := quotaKey(snap.Provider, snap.Plan, snap.Account)
+		pb := providers[snap.Provider]
+		if pb == nil {
+			pb = &providerBucket{
+				provider: ProviderUsage{Provider: snap.Provider},
+				plans:    make(map[string]*planBucket),
+			}
+			providers[snap.Provider] = pb
+		}
+		if pb.plans[pk] != nil {
+			continue
+		}
+		pb.plans[pk] = &planBucket{
+			plan: PlanUsage{
+				Plan:    snap.Plan,
+				Account: snap.Account,
+			},
+			models:        make(map[string]*ModelUsage),
+			empl:          make(map[string]*EmployeeUsage),
+			modelEmployee: make(map[string]map[string]struct{}),
+			modelTask:     make(map[string]map[string]struct{}),
+		}
+		if snap.APIKeyLabel != "" {
+			pb.plans[pk].plan.APIKeyLabel = snap.APIKeyLabel
+		}
+	}
+
 	providerList := make([]ProviderUsage, 0, len(providers))
 	for _, pb := range providers {
 		prov := pb.provider
@@ -561,7 +628,10 @@ func BuildUsageHierarchy(workspaceID string, since time.Time, observations []Usa
 			if hasQuota {
 				plan.APIKeyLabel = matchedQuota.APIKeyLabel
 			}
-			plan.Quota = buildQuotaState(matchedQuota, plan.UsedTokens)
+			plan.Quota = buildQuotaStateWithWindows(
+				prov.Provider, plan.Plan, plan.Account, matchedQuota, plan.UsedTokens,
+				p.obs, quotas, snapshots, now,
+			)
 			planList = append(planList, plan)
 		}
 		sort.Slice(planList, func(i, j int) bool {
@@ -660,26 +730,42 @@ func quotaKey(provider, plan, account string) string {
 // buildQuotaState merges a configured quota with observed usage. A zero-value
 // (not found) quota row returns nil so the caller renders "配额未配置".
 func buildQuotaState(q UsageQuotaRow, used int64) *QuotaState {
-	if q.ID == "" {
+	return buildQuotaStateWithWindows(q.Provider, q.Plan, q.Account, q, used, nil, nil, nil, time.Now())
+}
+
+func buildQuotaStateWithWindows(
+	provider, plan, account string,
+	q UsageQuotaRow,
+	periodUsed int64,
+	planObs []UsageObservation,
+	allQuotas []UsageQuotaRow,
+	snapshots []QuotaSnapshotRow,
+	now time.Time,
+) *QuotaState {
+	windows := BuildQuotaWindows(provider, plan, account, planObs, allQuotas, snapshots, now)
+	hasConfigured := q.ID != "" || len(windows) > 0 && anyWindowConfigured(windows)
+	if !hasConfigured {
 		return nil
 	}
+
 	cycle := q.Cycle
 	if cycle == "" {
 		cycle = "monthly"
 	}
 	state := &QuotaState{
 		Cycle:      cycle,
-		UsedTokens: used,
+		UsedTokens: periodUsed,
 		ResetDay:   q.ResetDay,
 		LocalModel: q.LocalModel,
+		Windows:    windows,
 	}
 	if q.TotalTokens > 0 {
 		total := q.TotalTokens
-		remaining := total - used
+		remaining := total - periodUsed
 		if remaining < 0 {
 			remaining = 0
 		}
-		percentage := float64(used) / float64(total) * 100
+		percentage := float64(periodUsed) / float64(total) * 100
 		if percentage > 100 {
 			percentage = 100
 		}
@@ -691,7 +777,45 @@ func buildQuotaState(q UsageQuotaRow, used int64) *QuotaState {
 		s := reset.UTC().Format(time.RFC3339)
 		state.ResetAt = &s
 	}
+	for _, w := range windows {
+		if w.Source != "" && w.Source != "task_usage" {
+			state.Source = w.Source
+		}
+		if w.ObservedAt != nil {
+			state.ObservedAt = w.ObservedAt
+		}
+	}
+	if len(windows) > 0 && state.TotalTokens == nil {
+		for _, w := range windows {
+			if w.Kind == "monthly" && w.TotalTokens != nil {
+				state.TotalTokens = w.TotalTokens
+				state.Remaining = w.RemainingTokens
+				state.Percentage = w.Percentage
+				state.ResetAt = w.ResetAt
+				state.UsedTokens = w.UsedTokens
+				break
+			}
+		}
+	}
 	return state
+}
+
+func anyWindowConfigured(windows []QuotaWindowView) bool {
+	for _, w := range windows {
+		if w.isAuthoritative() {
+			return true
+		}
+		if w.Unlimited {
+			return true
+		}
+		if w.Percentage != nil {
+			return true
+		}
+		if w.TotalTokens != nil && *w.TotalTokens > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // quotaResetAt returns the next reset boundary for a cycle: daily -> next UTC
