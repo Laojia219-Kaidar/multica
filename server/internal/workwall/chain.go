@@ -52,6 +52,14 @@ type chainStore interface {
 	GetWorkspaceIssuePrefix(ctx context.Context, id pgtype.UUID) (string, error)
 	GetRuntimeProfileForWorkWall(ctx context.Context, arg db.GetRuntimeProfileForWorkWallParams) (db.GetRuntimeProfileForWorkWallRow, error)
 	GetExecutionReceiptForWorkWall(ctx context.Context, taskID pgtype.UUID) (db.GetExecutionReceiptForWorkWallRow, error)
+	// GetAutopilotRun returns the autopilot_run row the run-lineage gate
+	// needs (HIV-869). The Work Wall only reads task_id, issue_id and
+	// autopilot_id from this row. Reuses the existing generated query.
+	GetAutopilotRun(ctx context.Context, id pgtype.UUID) (db.AutopilotRun, error)
+	// GetAutopilot returns the autopilot row the run-lineage gate needs
+	// (HIV-869). The Work Wall only reads workspace_id. Reuses the
+	// existing generated query.
+	GetAutopilot(ctx context.Context, id pgtype.UUID) (db.Autopilot, error)
 }
 
 // Compile-time proof that production binds the walk to the generated narrow
@@ -127,7 +135,12 @@ func resolveExecutionChain(
 	chain := &ExecutionChain{TaskID: uuidStr(task.ID)}
 
 	if task.AutopilotRunID.Valid {
-		chain.RunID = uuidStr(task.AutopilotRunID)
+		if matches, err := validateRunLineage(ctx, store, workspaceID, task, task.AutopilotRunID); err != nil {
+			return nil, err
+		} else if matches {
+			chain.RunID = uuidStr(task.AutopilotRunID)
+		}
+		// Mismatch or missing run: RunID stays empty — fail closed.
 	}
 
 	if rt != nil && rt.ProfileID.Valid {
@@ -186,6 +199,44 @@ func resolveExecutionChain(
 	}
 
 	return chain, nil
+}
+
+// validateRunLineage is the fail-closed run lineage gate (HIV-869). The
+// autopilot_run row must exist, its task_id and issue_id must match the
+// task being projected, and the parent autopilot's workspace_id must match
+// the snapshot workspace. Any mismatch or missing row clears the RunID
+// without guessing.
+func validateRunLineage(
+	ctx context.Context,
+	store chainStore,
+	workspaceID pgtype.UUID,
+	task *db.AgentTaskQueue,
+	runID pgtype.UUID,
+) (bool, error) {
+	run, err := store.GetAutopilotRun(ctx, runID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, nil
+		}
+		return false, err
+	}
+	if run.TaskID != task.ID {
+		return false, nil
+	}
+	if !task.IssueID.Valid || run.IssueID != task.IssueID {
+		return false, nil
+	}
+	autopilot, err := store.GetAutopilot(ctx, run.AutopilotID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, nil
+		}
+		return false, err
+	}
+	if !autopilot.WorkspaceID.Valid || autopilot.WorkspaceID != workspaceID {
+		return false, nil
+	}
+	return true, nil
 }
 
 // receiptLineageMatches is the fail-closed receipt gate: the row must belong

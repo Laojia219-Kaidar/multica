@@ -161,7 +161,14 @@ func (s *Service) Snapshot(ctx context.Context, workspaceID pgtype.UUID) ([]live
 		t := &tasks[i]
 		aid := uuidStr(t.AgentID)
 		if isActiveTaskStatus(t.Status) {
-			activeByAgent[aid] = t
+			// Deterministic priority selection (HIV-869): running >
+			// dispatched > waiting_local_directory > queued, then stable
+			// UUID tie-break. Completed/failed are never active.
+			prev := activeByAgent[aid]
+			if prev == nil || taskActivePriority(t.Status) > taskActivePriority(prev.Status) ||
+				(taskActivePriority(t.Status) == taskActivePriority(prev.Status) && uuidStr(t.ID) > uuidStr(prev.ID)) {
+				activeByAgent[aid] = t
+			}
 		} else {
 			outcomeByAgent[aid] = t
 		}
@@ -213,6 +220,24 @@ func (s *Service) Snapshot(ctx context.Context, workspaceID pgtype.UUID) ([]live
 		))
 	}
 	return out, nil
+}
+
+// taskActivePriority maps an active task status to its selection priority
+// (higher = preferred). The deterministic ordering is:
+// running > dispatched > waiting_local_directory > queued.
+func taskActivePriority(status string) int {
+	switch status {
+	case "running":
+		return 4
+	case "dispatched":
+		return 3
+	case "waiting_local_directory":
+		return 2
+	case "queued":
+		return 1
+	default:
+		return 0
+	}
 }
 
 // resolveEmployeeAuthority performs one CompanyOps directory pass and resolves

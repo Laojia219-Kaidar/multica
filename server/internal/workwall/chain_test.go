@@ -17,25 +17,29 @@ import (
 // It stores only the narrow rows the production queries load, mirroring the
 // narrow-read contract of the Work Wall chain.
 type fakeChainStore struct {
-	workspaceID  pgtype.UUID
-	issuePrefix  string
-	issues       map[string]db.Issue   // key: workspace|issue
-	projects     map[string]db.Project // key: workspace|project
-	profiles     map[string]db.GetRuntimeProfileForWorkWallRow
-	receipts     map[string]db.GetExecutionReceiptForWorkWallRow // key: task
-	crossCalls   int                                             // lookups whose workspace arg mismatched the stored row
-	issueCalls   []string
-	receiptCalls []pgtype.UUID
+	workspaceID   pgtype.UUID
+	issuePrefix   string
+	issues        map[string]db.Issue   // key: workspace|issue
+	projects      map[string]db.Project // key: workspace|project
+	profiles      map[string]db.GetRuntimeProfileForWorkWallRow
+	receipts      map[string]db.GetExecutionReceiptForWorkWallRow // key: task
+	autopilotRuns map[string]db.AutopilotRun                      // key: run id
+	autopilots    map[string]db.Autopilot                         // key: autopilot id
+	crossCalls    int                                             // lookups whose workspace arg mismatched the stored row
+	issueCalls    []string
+	receiptCalls  []pgtype.UUID
 }
 
 func newFakeChainStore() *fakeChainStore {
 	return &fakeChainStore{
-		workspaceID: tu,
-		issuePrefix: "HIV",
-		issues:      map[string]db.Issue{},
-		projects:    map[string]db.Project{},
-		profiles:    map[string]db.GetRuntimeProfileForWorkWallRow{},
-		receipts:    map[string]db.GetExecutionReceiptForWorkWallRow{},
+		workspaceID:   tu,
+		issuePrefix:   "HIV",
+		issues:        map[string]db.Issue{},
+		projects:      map[string]db.Project{},
+		profiles:      map[string]db.GetRuntimeProfileForWorkWallRow{},
+		receipts:      map[string]db.GetExecutionReceiptForWorkWallRow{},
+		autopilotRuns: map[string]db.AutopilotRun{},
+		autopilots:    map[string]db.Autopilot{},
 	}
 }
 
@@ -94,6 +98,22 @@ func (f *fakeChainStore) GetExecutionReceiptForWorkWall(_ context.Context, taskI
 	return receipt, nil
 }
 
+func (f *fakeChainStore) GetAutopilotRun(_ context.Context, id pgtype.UUID) (db.AutopilotRun, error) {
+	run, ok := f.autopilotRuns[uuidStr(id)]
+	if !ok {
+		return db.AutopilotRun{}, pgx.ErrNoRows
+	}
+	return run, nil
+}
+
+func (f *fakeChainStore) GetAutopilot(_ context.Context, id pgtype.UUID) (db.Autopilot, error) {
+	ap, ok := f.autopilots[uuidStr(id)]
+	if !ok {
+		return db.Autopilot{}, pgx.ErrNoRows
+	}
+	return ap, nil
+}
+
 func otherWorkspace() pgtype.UUID {
 	return pgtype.UUID{Bytes: [16]byte{9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9}, Valid: true}
 }
@@ -116,7 +136,16 @@ func TestResolveExecutionChain_PositiveHydration(t *testing.T) {
 	store.projects[key(tu, tu)] = db.Project{ID: tu, WorkspaceID: tu, Title: "HIVECREW 自我开发项目"}
 	store.profiles[key(tu, tu)] = db.GetRuntimeProfileForWorkWallRow{ID: tu, WorkspaceID: tu, DisplayName: "glm-5.3 运行档案"}
 	task := seededChainTask()
-	task.AutopilotRunID = pgtype.UUID{Bytes: [16]byte{7}, Valid: true}
+	runID := pgtype.UUID{Bytes: [16]byte{7}, Valid: true}
+	autopilotID := pgtype.UUID{Bytes: [16]byte{8}, Valid: true}
+	task.AutopilotRunID = runID
+	// Seed the run lineage: run matches task+issue, parent autopilot matches workspace.
+	store.autopilotRuns[uuidStr(runID)] = db.AutopilotRun{
+		ID: runID, AutopilotID: autopilotID, TaskID: tu, IssueID: tu,
+	}
+	store.autopilots[uuidStr(autopilotID)] = db.Autopilot{
+		ID: autopilotID, WorkspaceID: tu,
+	}
 	store.receipts[uuidStr(tu)] = seededReceipt("completed")
 
 	chain, err := resolveExecutionChain(context.Background(), store, tu, "HIV", seededRuntime(), task)
@@ -138,7 +167,7 @@ func TestResolveExecutionChain_PositiveHydration(t *testing.T) {
 	if chain.RuntimeProfileID != uuidStr(tu) || chain.RuntimeProfileName != "glm-5.3 运行档案" {
 		t.Fatalf("profile chain = %+v", chain)
 	}
-	if chain.RunID != uuidStr(pgtype.UUID{Bytes: [16]byte{7}, Valid: true}) {
+	if chain.RunID != uuidStr(runID) {
 		t.Fatalf("run id = %q", chain.RunID)
 	}
 	if chain.ExecutionReceiptRef != "receipt://"+uuidStr(tu) || chain.ExecutionReceiptStatus != "completed" {
@@ -234,6 +263,87 @@ func TestResolveExecutionChain_CrossWorkspaceFailClosed(t *testing.T) {
 	// The walk still probed by the exact task id.
 	if len(store.receiptCalls) != 1 || store.receiptCalls[0] != tu {
 		t.Fatalf("receipt probe must use the exact task id, got %v", store.receiptCalls)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Run lineage fail-closed (HIV-869)
+//
+// The RunID on the chain must only survive when the autopilot_run row exists,
+// its task_id and issue_id match the projected task, and the parent autopilot
+// belongs to the same workspace. Any mismatch clears RunID without dropping
+// the valid Issue/Task linkage.
+// ---------------------------------------------------------------------------
+
+func TestResolveExecutionChain_RunLineageFailClosed(t *testing.T) {
+	runID := pgtype.UUID{Bytes: [16]byte{7}, Valid: true}
+	autopilotID := pgtype.UUID{Bytes: [16]byte{8}, Valid: true}
+
+	tests := []struct {
+		name string
+		seed func(*fakeChainStore)
+	}{
+		{"unknown run (no row)", func(store *fakeChainStore) {
+			// no autopilot_run row at all
+		}},
+		{"cross-workspace run", func(store *fakeChainStore) {
+			store.autopilotRuns[uuidStr(runID)] = db.AutopilotRun{
+				ID: runID, AutopilotID: autopilotID, TaskID: tu, IssueID: tu,
+			}
+			store.autopilots[uuidStr(autopilotID)] = db.Autopilot{
+				ID: autopilotID, WorkspaceID: otherWorkspace(),
+			}
+		}},
+		{"task mismatch", func(store *fakeChainStore) {
+			store.autopilotRuns[uuidStr(runID)] = db.AutopilotRun{
+				ID: runID, AutopilotID: autopilotID,
+				TaskID:  pgtype.UUID{Bytes: [16]byte{99}, Valid: true},
+				IssueID: tu,
+			}
+			store.autopilots[uuidStr(autopilotID)] = db.Autopilot{
+				ID: autopilotID, WorkspaceID: tu,
+			}
+		}},
+		{"issue mismatch", func(store *fakeChainStore) {
+			store.autopilotRuns[uuidStr(runID)] = db.AutopilotRun{
+				ID: runID, AutopilotID: autopilotID, TaskID: tu,
+				IssueID: pgtype.UUID{Bytes: [16]byte{99}, Valid: true},
+			}
+			store.autopilots[uuidStr(autopilotID)] = db.Autopilot{
+				ID: autopilotID, WorkspaceID: tu,
+			}
+		}},
+		{"missing parent autopilot", func(store *fakeChainStore) {
+			store.autopilotRuns[uuidStr(runID)] = db.AutopilotRun{
+				ID: runID, AutopilotID: autopilotID, TaskID: tu, IssueID: tu,
+			}
+			// no autopilot row
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := newFakeChainStore()
+			store.issues[key(tu, tu)] = seededIssue()
+			tt.seed(store)
+
+			task := seededChainTask()
+			task.AutopilotRunID = runID
+
+			chain, err := resolveExecutionChain(context.Background(), store, tu, "HIV", nil, task)
+			if err != nil {
+				t.Fatalf("resolveExecutionChain: %v", err)
+			}
+			if chain.RunID != "" {
+				t.Fatalf("RunID must be cleared on lineage failure, got %q", chain.RunID)
+			}
+			// The valid Issue/Task linkage must survive.
+			if chain.TaskID != uuidStr(tu) {
+				t.Fatalf("task id must survive, got %q", chain.TaskID)
+			}
+			if chain.IssueID != uuidStr(tu) {
+				t.Fatalf("issue id must survive, got %q", chain.IssueID)
+			}
+		})
 	}
 }
 

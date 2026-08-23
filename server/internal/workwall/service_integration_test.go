@@ -73,6 +73,13 @@ func TestSnapshotQueriesRunAgainstRealSchema(t *testing.T) {
 	if _, err := q.GetExecutionReceiptForWorkWall(ctx, ws); err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		t.Fatalf("GetExecutionReceiptForWorkWall: %v", err)
 	}
+	// Run lineage reads (HIV-869) reuse existing generated queries.
+	if _, err := q.GetAutopilotRun(ctx, ws); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("GetAutopilotRun: %v", err)
+	}
+	if _, err := q.GetAutopilot(ctx, ws); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("GetAutopilot: %v", err)
+	}
 
 	probeSlug := fmt.Sprintf("w4-probe-%d", time.Now().UnixNano())
 	var probeWsID string
