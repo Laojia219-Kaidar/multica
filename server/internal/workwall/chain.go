@@ -104,7 +104,7 @@ type ExecutionChain struct {
 
 	// Execution-runtime projection (HIV-940). When the selected Task
 	// carries its own runtime_id, these fields trace the Task's ORIGINAL
-	// runtime (provider/carrier, profile, model). After an A→B rebind the
+	// runtime (provider/carrier and profile). After an A→B rebind the
 	// card shows current B but execution A. Missing or unknown Task Runtime
 	// leaves these empty without dropping the rest of the chain.
 	ExecutionRuntimeID      string
