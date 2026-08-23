@@ -611,10 +611,102 @@ func TestBuildChatPromptSlashSkills(t *testing.T) {
 // starts assignment-triggered comment catch-up with a bounded roots scan and
 // only then offers the full-thread read, while still keeping older history
 // available through pagination.
+// HIV-920: the prompt half of the daemon-matched CLI binding. Every
+// daemon-owned task kind must carry the same stable guidance binding each
+// HiveCrew/Multica command to `"$MULTICA_TASK_CLI"` and forbidding bare
+// `multica`, because a carrier shell that resets PATH can resolve the bare
+// form to an older system binary without this task's checkout/mutation
+// capabilities.
+
+// TestBuildPromptTaskCLIBindingGuidanceOnEveryKind pins that the stable
+// guidance rides on every daemon-launched task kind — the environment
+// variable is injected for all of them (pinTaskCLIEnv in runTask), so a kind
+// missing the contract would silently fall back to bare `multica`.
+func TestBuildPromptTaskCLIBindingGuidanceOnEveryKind(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		task Task
+	}{
+		{"assignment", Task{IssueID: "issue-1"}},
+		{"assignment-with-handoff", Task{IssueID: "issue-1", HandoffNote: "start with tests"}},
+		{"comment-triggered", Task{IssueID: "issue-1", TriggerCommentID: "c-1", TriggerCommentContent: "please look"}},
+		{"chat", Task{ChatSessionID: "chat-1", ChatMessage: "hello"}},
+		{"quick-create", Task{QuickCreatePrompt: "make an issue"}},
+		{"autopilot", Task{AutopilotRunID: "run-1", AutopilotTitle: "daily check"}},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			out := BuildPrompt(tc.task, "claude")
+			for _, want := range []string{
+				"### Task CLI binding",
+				"`\"$" + taskCLIEnvName + "\"`",
+				"Bare `multica` is forbidden for this task",
+				"Do not print environment or credential values",
+			} {
+				if !strings.Contains(out, want) {
+					t.Errorf("%s prompt missing CLI binding contract %q\n--- output ---\n%s", tc.name, want, out)
+				}
+			}
+		})
+	}
+}
+
+// TestTaskCLIBindingGuidanceMatchesInjectedEnvName keeps the prompt copy and
+// the injected environment variable from drifting apart: the guidance is
+// composed from taskCLIEnvName, so this is cheap belt-and-braces over the
+// construction.
+func TestTaskCLIBindingGuidanceMatchesInjectedEnvName(t *testing.T) {
+	t.Parallel()
+
+	guidance := taskCLIBindingGuidance
+	for _, want := range []string{
+		"issue get <issue-id> --output json",
+		"runtime workflow file",
+		"`$" + taskCLIEnvName + "` only inside command lines",
+	} {
+		if !strings.Contains(guidance, want) {
+			t.Errorf("task CLI binding guidance missing %q\n--- guidance ---\n%s", want, guidance)
+		}
+	}
+	if strings.Contains(guidance, "MULTICA_TOKEN") {
+		t.Errorf("guidance must not name credential variables\n--- guidance ---\n%s", guidance)
+	}
+}
+
+// TestBuildPromptOwnershipUsesPinnedCLIInvocation locks the HIV-920 ownership
+// contract: the first commands an assignment run executes — issue get and the
+// mandatory comment-history scan — must invoke the daemon-pinned CLI, with the
+// forbidden bare `multica` form still spelled out once for the first command.
+func TestBuildPromptOwnershipUsesPinnedCLIInvocation(t *testing.T) {
+	t.Parallel()
+
+	out := BuildPrompt(Task{IssueID: "issue-own-1"}, "claude")
+	for _, want := range []string{
+		"`\"$" + taskCLIEnvName + "\" issue get issue-own-1 --output json`",
+		"never the bare `multica issue get issue-own-1` form",
+		"`\"$" + taskCLIEnvName + "\" issue comment list issue-own-1 --roots-only --summary --output json`",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("ownership prompt missing %q\n--- output ---\n%s", want, out)
+		}
+	}
+	// The comment-history catch-up must not regress to the bare invocation:
+	// it is the very read the workflow makes mandatory on every ownership run.
+	if strings.Contains(out, "`multica issue comment list issue-own-1") {
+		t.Errorf("ownership prompt still shows the bare comment-list invocation\n--- output ---\n%s", out)
+	}
+}
+
 func TestBuildPromptDefaultScansRootsFirst(t *testing.T) {
 	out := BuildPrompt(Task{IssueID: "issue-default-1"}, "claude")
 	for _, s := range []string{
-		"multica issue comment list issue-default-1 --roots-only --summary --output json",
+		// HIV-920: the initial catch-up read must use the daemon-pinned CLI
+		// invocation, never bare `multica`.
+		"`\"$" + taskCLIEnvName + "\" issue comment list issue-default-1 --roots-only --summary --output json`",
 		"--since",
 	} {
 		if !strings.Contains(out, s) {

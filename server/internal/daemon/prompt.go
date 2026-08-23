@@ -92,6 +92,22 @@ func buildResolvedOwnerAuthorizationBlock(resolved *ResolvedTaskContext) string 
 	return b.String()
 }
 
+// taskCLIBindingGuidance is stable prompt copy (identical on every run) that
+// binds a daemon-owned task to the daemon's own CLI binary (HIV-920). Bare
+// `multica` is not reliable inside carrier shells: the tool shell can
+// reconstruct PATH from scratch, letting an older system binary win the
+// lookup even though runTask prepends the daemon binary's directory — an
+// older CLI then fails governed checkouts with "task mutation capability
+// required". The guidance therefore overrides every bare `multica ...`
+// example, including the ones the runtime brief (AGENTS.md / CLAUDE.md) and
+// the per-turn bodies below still spell out for readability. It is built
+// from taskCLIEnvName so the prompt and the injected environment variable
+// can never drift apart.
+var taskCLIBindingGuidance = "### Task CLI binding\n\n" +
+	"This is a daemon-owned task: every HiveCrew/Multica CLI command must invoke the exact CLI binary the daemon pinned for this run by quoting `\"$" + taskCLIEnvName + "\"` in front of the subcommand — e.g. `\"$" + taskCLIEnvName + "\" issue get <issue-id> --output json`.\n" +
+	"Bare `multica` is forbidden for this task. The carrier shell can reset PATH and resolve bare `multica` to an older system binary that lacks this task's checkout and mutation capabilities, so run every `multica ...` command shown in your runtime workflow file or anywhere in this prompt as `\"$" + taskCLIEnvName + "\" ...` instead.\n" +
+	"Do not print environment or credential values into your output; reference `$" + taskCLIEnvName + "` only inside command lines.\n"
+
 // BuildPrompt constructs the task prompt for an agent CLI.
 // Keep this minimal — detailed instructions live in CLAUDE.md / AGENTS.md
 // injected by execenv.InjectRuntimeConfig. The provider string is threaded
@@ -101,6 +117,13 @@ func buildResolvedOwnerAuthorizationBlock(resolved *ResolvedTaskContext) string 
 // against is not specific to any one provider or host (MUL-2904, #4182).
 func BuildPrompt(task Task, provider string) string {
 	body := buildPromptBody(task, provider)
+	// Stable guidance is appended (never prepended) for the same cache reason
+	// as the run-scoped blocks below: it is identical on every run of the same
+	// task, so it costs nothing ahead of the volatile per-turn tail.
+	if !strings.HasSuffix(body, "\n\n") {
+		body += "\n"
+	}
+	body += taskCLIBindingGuidance
 	// Run-scoped context is appended, never prepended: everything ahead of it
 	// is stable across runs of a resumed session, and appending keeps it after
 	// the cached prefix (MUL-5377).
@@ -137,8 +160,13 @@ func buildPromptBody(task Task, provider string) string {
 		b.WriteString("You were handed this issue with a handoff note. Treat it as the assigner's scoping instruction for this run; follow it before doing anything broader, and do not reply to it as if it were a comment:\n\n")
 		fmt.Fprintf(&b, "> %s\n\n", task.HandoffNote)
 	}
-	fmt.Fprintf(&b, "Start by running `multica issue get %s --output json` to understand your task, then complete it.\n", task.IssueID)
-	fmt.Fprintf(&b, "For comment history, follow the rule in your runtime workflow file (assignment-triggered tasks treat the read as mandatory). Scan the threads first with `multica issue comment list %s --roots-only --summary --output json`, then expand only what matters with `--thread <thread-id> --tail 30`. Your runtime workflow file documents the rest of the read surface, including pagination and `--since` for incremental polling.\n", task.IssueID)
+	// HIV-920: the first commands an ownership run executes must use the
+	// daemon-pinned CLI invocation, not bare `multica` — a carrier shell that
+	// resets PATH can resolve the bare form to an older system binary whose
+	// governed checkout then fails. The forbidden bare form is still spelled
+	// out once so the contrast is explicit for exactly this command.
+	fmt.Fprintf(&b, "Start by running `\"$%s\" issue get %s --output json` to understand your task, then complete it — never the bare `multica issue get %s` form.\n", taskCLIEnvName, task.IssueID, task.IssueID)
+	fmt.Fprintf(&b, "For comment history, follow the rule in your runtime workflow file (assignment-triggered tasks treat the read as mandatory). Scan the threads first with `\"$%s\" issue comment list %s --roots-only --summary --output json`, then expand only what matters with `--thread <thread-id> --tail 30`. Your runtime workflow file documents the rest of the read surface, including pagination and `--since` for incremental polling.\n", taskCLIEnvName, task.IssueID)
 	return b.String()
 }
 

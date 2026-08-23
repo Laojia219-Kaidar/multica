@@ -4877,6 +4877,33 @@ func resolvedContextForEnv(in *ResolvedTaskContext) *execenv.ResolvedTaskContext
 	}}
 }
 
+// taskCLIEnvName carries the absolute path of the exact multica CLI binary
+// this daemon process runs as. It is injected into every daemon-launched task
+// environment (pinTaskCLIEnv) so employee agents can invoke the daemon-matched
+// CLI even when their carrier shell resets PATH and a bare `multica` resolves
+// to an older system binary without this task's checkout/mutation
+// capabilities (HIV-920). The name is not secret — it is a file path — and it
+// is MULTICA_-prefixed, so custom_env cannot override it (isBlockedEnvKey).
+// prompt.go's stable task prompt guidance pins every HiveCrew/Multica command
+// to `"$MULTICA_TASK_CLI"` instead of bare `multica`.
+const taskCLIEnvName = "MULTICA_TASK_CLI"
+
+// pinTaskCLIEnv binds the task environment to the daemon's own CLI binary:
+// when resolveSelfExecutable succeeds it sets taskCLIEnvName to that exact
+// absolute executable path and prepends the binary's directory to PATH (the
+// pre-existing compatibility behavior for sandboxed runtimes that inherit the
+// daemon's PATH). On resolve failure the environment is left untouched — the
+// task still runs, it just keeps whatever PATH the carrier supplies, exactly
+// as before this binding existed.
+func pinTaskCLIEnv(agentEnv map[string]string) {
+	selfBin, err := resolveSelfExecutable()
+	if err != nil {
+		return
+	}
+	agentEnv[taskCLIEnvName] = selfBin
+	agentEnv["PATH"] = filepath.Dir(selfBin) + string(os.PathListSeparator) + os.Getenv("PATH")
+}
+
 func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot int, taskLog *slog.Logger) (taskResult TaskResult, returnErr error) {
 	if d.mutationBroker == nil {
 		// Keep hand-built daemon fixtures and older embedding callers safe while
@@ -5404,14 +5431,13 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			}
 		}
 	}
-	// Ensure the multica CLI is on PATH inside the agent's environment.
-	// Some runtimes (e.g. Codex) run in an isolated sandbox that may not
-	// inherit the daemon's PATH. Prepend the directory of the running
-	// multica binary so that `multica` commands in the agent always resolve.
-	if selfBin, err := resolveSelfExecutable(); err == nil {
-		binDir := filepath.Dir(selfBin)
-		agentEnv["PATH"] = binDir + string(os.PathListSeparator) + os.Getenv("PATH")
-	}
+	// Bind the task to the exact CLI binary this daemon runs (HIV-920):
+	// inject MULTICA_TASK_CLI and keep the legacy PATH prepend for
+	// compatibility. Carriers whose tool shell reconstructs PATH from
+	// scratch can still resolve an older system `multica` even with the
+	// prepend, so the prompt contract (prompt.go) requires the pinned
+	// invocation for every HiveCrew/Multica command.
+	pinTaskCLIEnv(agentEnv)
 	// Point Codex to the per-task CODEX_HOME so it discovers skills natively
 	// without polluting the system ~/.codex/skills/.
 	if env.CodexHome != "" {

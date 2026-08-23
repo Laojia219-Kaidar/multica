@@ -681,6 +681,108 @@ func TestBuildPromptContainsIssueID(t *testing.T) {
 	}
 }
 
+// HIV-920: the daemon must bind every launched task to the exact CLI binary
+// it runs as, because a carrier shell that reconstructs PATH can resolve bare
+// `multica` to an older system binary whose governed checkout then fails with
+// "task mutation capability required". The environment half of that contract
+// is pinTaskCLIEnv; the prompt half lives in prompt.go's taskCLIBindingGuidance.
+
+// TestPinTaskCLIEnv_PinnedPathWinsIndependentlyOfOlderPATHEntry proves the
+// binding does not depend on PATH resolution at all: with an older system
+// `multica` FIRST on PATH (so a bare lookup resolves to it both before and
+// after pinning), MULTICA_TASK_CLI still carries the exact daemon binary, and
+// the compatibility PATH prepend keeps the daemon's bin dir ahead of the older
+// entry.
+func TestPinTaskCLIEnv_PinnedPathWinsIndependentlyOfOlderPATHEntry(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("exec-bit PATH lookup layout is POSIX-specific")
+	}
+	originalResolveSelfExecutable := resolveSelfExecutable
+	t.Cleanup(func() { resolveSelfExecutable = originalResolveSelfExecutable })
+
+	root := t.TempDir()
+	// Older system CLI directory, FIRST on PATH: /opt/homebrew/bin analogue.
+	oldBinDir := filepath.Join(root, "old-homebrew", "bin")
+	if err := os.MkdirAll(oldBinDir, 0o755); err != nil {
+		t.Fatalf("mkdir older bin dir: %v", err)
+	}
+	olderCLI := filepath.Join(oldBinDir, "multica")
+	if err := os.WriteFile(olderCLI, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write older CLI fixture: %v", err)
+	}
+	otherDir := filepath.Join(root, "usr-bin")
+	if err := os.MkdirAll(otherDir, 0o755); err != nil {
+		t.Fatalf("mkdir filler dir: %v", err)
+	}
+	oldPATH := oldBinDir + string(os.PathListSeparator) + otherDir
+	t.Setenv("PATH", oldPATH)
+
+	// Precondition: PATH alone resolves `multica` to the older binary.
+	if got, err := exec.LookPath("multica"); err != nil || got != olderCLI {
+		t.Fatalf("PATH lookup before pin = (%q, %v), want older system binary %q", got, err, olderCLI)
+	}
+
+	// The daemon runs as a different, exact binary (the versioned fast-dev
+	// checkout layout; its directory need not exist for the pin — it is an
+	// opaque path handed to the child env).
+	daemonBin := filepath.Join(root, "daemon", "multica-fast-v2-25f13630b")
+	resolveSelfExecutable = func() (string, error) { return daemonBin, nil }
+
+	env := map[string]string{}
+	pinTaskCLIEnv(env)
+
+	if got := env[taskCLIEnvName]; got != daemonBin {
+		t.Fatalf("%s = %q, want exact daemon binary %q", taskCLIEnvName, got, daemonBin)
+	}
+	// Compatibility prepend survives: the daemon bin dir leads PATH, ahead of
+	// the older system entry, for runtimes that DO inherit the daemon's PATH.
+	wantPATH := filepath.Dir(daemonBin) + string(os.PathListSeparator) + oldPATH
+	if got := env["PATH"]; got != wantPATH {
+		t.Fatalf("PATH = %q, want %q", got, wantPATH)
+	}
+	// Independence proof: the process PATH still resolves bare `multica` to
+	// the older binary (pinTaskCLIEnv writes the child env map, never the
+	// process env), yet the pinned variable is bound to the daemon binary.
+	if got, err := exec.LookPath("multica"); err != nil || got != olderCLI {
+		t.Fatalf("bare lookup after pin = (%q, %v), still want older %q — the pinned path must win without touching PATH resolution", got, err, olderCLI)
+	}
+}
+
+// TestPinTaskCLIEnv_ResolveFailureLeavesEnvUntouched pins the no-regression
+// half: when the executable cannot be resolved the task environment is left
+// exactly as before the binding existed — no MULTICA_TASK_CLI, no PATH edit.
+func TestPinTaskCLIEnv_ResolveFailureLeavesEnvUntouched(t *testing.T) {
+	originalResolveSelfExecutable := resolveSelfExecutable
+	t.Cleanup(func() { resolveSelfExecutable = originalResolveSelfExecutable })
+	resolveSelfExecutable = func() (string, error) {
+		return "", errors.New("cannot resolve executable")
+	}
+
+	t.Setenv("PATH", filepath.Join(t.TempDir(), "carrier", "bin"))
+
+	env := map[string]string{"MULTICA_TASK_ID": "task-1"}
+	pinTaskCLIEnv(env)
+
+	if got := env[taskCLIEnvName]; got != "" {
+		t.Fatalf("%s = %q, want unset on resolve failure", taskCLIEnvName, got)
+	}
+	if _, ok := env["PATH"]; ok {
+		t.Fatal("PATH must not be rewritten when the executable cannot be resolved")
+	}
+	if env["MULTICA_TASK_ID"] != "task-1" {
+		t.Fatalf("existing env clobbered: %v", env)
+	}
+}
+
+// TestTaskCLIEnvNameIsBlockedFromCustomEnv ensures an agent's user-configured
+// custom_env cannot repoint the pinned CLI at some other binary: the MULTICA_
+// prefix blocklist must keep the daemon-set value authoritative.
+func TestTaskCLIEnvNameIsBlockedFromCustomEnv(t *testing.T) {
+	if !isBlockedEnvKey(taskCLIEnvName) {
+		t.Fatalf("%s must be blocked from custom_env override", taskCLIEnvName)
+	}
+}
+
 // TestFreshSessionRetryPrompt asserts the daemon's single fresh-session retry
 // preserves the current prompt verbatim and prefixes an explicit context-loss
 // disclosure (GH #5975), so the new provider session does not assume continuity
