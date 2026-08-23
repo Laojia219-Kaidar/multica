@@ -303,6 +303,8 @@ def parse_prime_payload(text):
     active = None
     if isinstance(payload, dict):
         raw_active = payload.get("activeSessionId")
+        if raw_active is not None and not isinstance(raw_active, str):
+            return None, None
         if isinstance(raw_active, str) and raw_active.strip():
             active = raw_active.strip().lower()
         sessions = payload.get("sessions")
@@ -310,7 +312,16 @@ def parse_prime_payload(text):
         sessions = payload
     if not isinstance(sessions, list):
         return None, None
-    return [entry for entry in sessions if isinstance(entry, dict)], active
+    # Before offline sentinels existed, silently dropping malformed rows was
+    # harmless because it could only reduce live projections. It is unsafe
+    # once an empty result can prove absence: a null/id-less row must not be
+    # reinterpreted as a valid empty listing. Reject the whole payload unless
+    # every row is an object with at least one admitted identifier.
+    if any(not isinstance(entry, dict) for entry in sessions):
+        return None, None
+    if any(not prime_session_ids(entry) for entry in sessions):
+        return None, None
+    return sessions, active
 
 def prime_session_ids(session):
     """Normalized official id fields of one session, priority ordered.

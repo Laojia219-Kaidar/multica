@@ -539,10 +539,18 @@ class TestPrimeFailOpen(unittest.TestCase):
         raw = b" " * (collector.PRIME_OUTPUT_MAX_BYTES + 1)
         self.assertEqual(self.collect_with_cli_result((0, raw)), [])
 
-    def test_non_object_entries_are_ignored(self):
+    def test_non_object_entries_invalidate_listing(self):
         sessions = ["junk", 42, dict(SAMPLE_SESSION)]
         panes = self.collect_with_cli_result((0, payload_bytes(sessions)))
-        self.assertEqual([p["session_name"] for p in panes], ["prime-6fce4bd4bb2a"])
+        self.assertEqual(panes, [])
+
+    def test_idless_object_invalidates_listing(self):
+        panes = self.collect_with_cli_result((0, payload_bytes([{"model": "glm-5.3"}])))
+        self.assertEqual(panes, [])
+
+    def test_wrong_typed_active_session_id_invalidates_listing(self):
+        raw = json.dumps({"sessions": [], "activeSessionId": 42}).encode("utf-8")
+        self.assertEqual(self.collect_with_cli_result((0, raw)), [])
 
     def test_failures_log_no_raw_json(self):
         buffer = io.StringIO()
@@ -642,6 +650,8 @@ class TestPrimeOfflineSentinel(unittest.TestCase):
             ("nonzero exit", (3, absent), None),
             ("invalid json", (0, b"not json"), None),
             ("invalid schema", (0, b'{"unexpected": true}'), None),
+            ("non-object session", (0, b'{"sessions": [null]}'), None),
+            ("id-less session", (0, b'{"sessions": [{"model": "glm-5.3"}]}'), None),
             ("oversized output", (0, b" " * (collector.PRIME_OUTPUT_MAX_BYTES + 1)), None),
             ("bad utf-8", (0, b"\xff\xfe{}"), None),
             ("timeout", None, subprocess.TimeoutExpired(cmd="prime-agent", timeout=1)),
