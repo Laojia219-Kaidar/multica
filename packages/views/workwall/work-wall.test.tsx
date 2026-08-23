@@ -182,7 +182,7 @@ describe("WorkWall Owner card identity and runtime", () => {
     expect(screen.getByText("emp-pixel-001")).toBeDefined();
   });
 
-  it("shows model name and runtime provider with clear labels on the collapsed card", () => {
+  it("shows model name and runtime carrier with clear labels on the collapsed card", () => {
     render(
       <WorkWall
         employees={[
@@ -195,7 +195,10 @@ describe("WorkWall Owner card identity and runtime", () => {
     );
     const runtime = screen.getByTestId("owner-card-runtime");
     expect(runtime.textContent).toContain("模型：doubao-seed-2.1-turbo");
-    expect(runtime.textContent).toContain("提供商：volcengine");
+    expect(runtime.textContent).toContain("运行载体：volcengine");
+    expect(screen.getByTestId("owner-card-llm-provider").textContent).toContain(
+      "模型提供方：未登记",
+    );
   });
 
   it("shows runtime profile when profile_id is present", () => {
@@ -377,7 +380,7 @@ describe("WorkWall expanded evidence panel", () => {
     );
     fireEvent.click(screen.getByTestId("owner-card-header"));
     const evidence = screen.getByTestId("owner-card-evidence");
-    expect(evidence.textContent).toContain("Runtime：volcengine");
+    expect(evidence.textContent).toContain("运行载体：volcengine");
     expect(evidence.textContent).toContain("rt-001");
     expect(evidence.textContent).toContain("模型：doubao-seed-2.1-turbo");
     expect(evidence.textContent).toContain("基座：doubao-seed");
@@ -447,15 +450,17 @@ describe("WorkWall missing evidence regression", () => {
     expect(screen.queryByText(/agent_hint/)).toBeNull();
   });
 
-  it("shows model name as 未计量 and runtime as 无 when absent", () => {
+  it("shows model name as 未计量, carrier as 无, and LLM provider as 未知 when absent", () => {
     render(
       <WorkWall
-        employees={[emp({ model_name: undefined, runtime_provider: undefined })]}
+        employees={[emp({ model_name: undefined, runtime_provider: undefined, llm_provider: undefined })]}
       />,
     );
     const runtime = screen.getByTestId("owner-card-runtime");
     expect(runtime.textContent).toContain("模型：未计量");
-    expect(runtime.textContent).toContain("提供商：无");
+    expect(runtime.textContent).toContain("运行载体：无");
+    const llm = screen.getByTestId("owner-card-llm-provider");
+    expect(llm.textContent).toContain("模型提供方：未登记");
   });
 
   it("does not show blocked or next sections when absent", () => {
@@ -575,5 +580,63 @@ describe("WorkWall untrusted-extra-field regression (R3)", () => {
     expect(expanded).not.toContain("SENTINEL_CRED_never_render_credential");
     expect(expanded).not.toContain("SENTINEL_APIKEY_never_render_apikey");
     expect(expanded).not.toContain("SENTINEL_COT_never_render_cot");
+  });
+});
+
+describe("WorkWall runtime carrier vs LLM provider semantic separation (HIV-911)", () => {
+  it("displays the compatibility runtime_provider field as a runtime carrier", () => {
+    render(
+      <WorkWall
+        employees={[
+          emp({
+            runtime_provider: "prime",
+            model_name: "deepseek-v4",
+          }),
+        ]}
+      />,
+    );
+    const runtime = screen.getByTestId("owner-card-runtime");
+    expect(runtime.textContent).toContain("运行载体：prime");
+    expect(runtime.textContent).not.toContain("提供商：prime");
+    const llm = screen.getByTestId("owner-card-llm-provider");
+    expect(llm.textContent).toContain("模型提供方：未登记");
+  });
+
+  it("displays llm_provider independently when an authoritative source exists", () => {
+    render(
+      <WorkWall
+        employees={[
+          emp({
+            runtime_provider: "volcengine",
+            llm_provider: "volcengine-ark",
+            model_name: "doubao-seed-2.1-turbo",
+          }),
+        ]}
+      />,
+    );
+    const runtime = screen.getByTestId("owner-card-runtime");
+    expect(runtime.textContent).toContain("运行载体：volcengine");
+    const llm = screen.getByTestId("owner-card-llm-provider");
+    expect(llm.textContent).toContain("模型提供方：volcengine-ark");
+  });
+
+  it("shows the semantic separation in the expanded evidence panel", () => {
+    render(
+      <WorkWall
+        employees={[
+          emp({
+            runtime_id: "rt-001",
+            runtime_provider: "prime",
+            llm_provider: "openai",
+            model_name: "gpt-4.1",
+          }),
+        ]}
+      />,
+    );
+    fireEvent.click(screen.getByTestId("owner-card-header"));
+    const evidence = screen.getByTestId("owner-card-evidence");
+    expect(evidence.textContent).toContain("运行载体：prime");
+    expect(evidence.textContent).toContain("模型提供方：openai");
+    expect(evidence.textContent).toContain("模型：gpt-4.1");
   });
 });

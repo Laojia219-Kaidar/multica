@@ -102,8 +102,11 @@ export const EmployeeLiveActivityV1Schema = z
     base_id: z.string().optional(),
     base_name: z.string().optional(),
     runtime_id: z.string().optional(),
+    // Compatibility key: this is the executable runtime carrier/protocol,
+    // not the LLM provider. Keep it until the wire schema is versioned.
     runtime_provider: z.string().optional(),
     model_name: z.string().optional(),
+    llm_provider: z.string().optional(),
 
     // Execution-chain projection (HIV-797). Absent = no authoritative row;
     // the server never fabricates a registration or a run reference.

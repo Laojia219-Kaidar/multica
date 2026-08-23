@@ -149,7 +149,7 @@ export function WorkWall({ employees }: WorkWallProps) {
           data-testid="work-wall-search"
         />
         <FilterSelect label="项目" values={projects} value={projectFilter} onChange={setProjectFilter} />
-        <FilterSelect label="Runtime" values={runtimes} value={runtimeFilter} onChange={setRuntimeFilter} />
+        <FilterSelect label="运行载体" values={runtimes} value={runtimeFilter} onChange={setRuntimeFilter} />
         <FilterSelect label="模型" values={models} value={modelFilter} onChange={setModelFilter} />
       </div>
 
@@ -325,7 +325,10 @@ function OwnerCard({
 
       <div className="border-t bg-muted/20 px-3 py-2 text-xs">
         <div className="truncate" data-testid="owner-card-runtime">
-          模型：{e.model_name ?? "未计量"} · 提供商：{e.runtime_provider ?? "无"}
+          模型：{e.model_name ?? "未计量"} · 运行载体：{e.runtime_provider ?? "无"}
+        </div>
+        <div className="truncate" data-testid="owner-card-llm-provider">
+          模型提供方：{e.llm_provider ?? "未登记"}
         </div>
         {e.runtime_profile_id ? (
           <div className="truncate" data-testid="owner-card-profile">
@@ -395,9 +398,10 @@ function OwnerCard({
             <div>
               <div className="font-medium text-foreground">运行时 / 模型</div>
               <div className="truncate">
-                Runtime：{e.runtime_provider ?? "无"}
+                运行载体：{e.runtime_provider ?? "无"}
                 {e.runtime_id ? <span className="text-muted-foreground"> {e.runtime_id}</span> : null}
               </div>
+              <div className="truncate">模型提供方：{e.llm_provider ?? "未登记"}</div>
               <div className="truncate">模型：{e.model_name ?? "未计量"}</div>
               {e.base_name ? (
                 <div className="truncate">

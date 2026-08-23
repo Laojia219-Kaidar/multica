@@ -89,6 +89,26 @@ describe("EmployeeLiveActivityV1Schema", () => {
     ).toThrow();
   });
 
+
+  it("treats the compatibility runtime_provider key as the runtime carrier", () => {
+    const parsed = EmployeeLiveActivityV1Schema.parse({
+      ...valid,
+      runtime_provider: "volcengine",
+    });
+    expect(parsed.runtime_provider).toBe("volcengine");
+  });
+
+  it("accepts llm_provider as an optional independent field (HIV-911)", () => {
+    const withoutLLM = EmployeeLiveActivityV1Schema.parse(valid);
+    expect(withoutLLM.llm_provider).toBeUndefined();
+
+    const withLLM = EmployeeLiveActivityV1Schema.parse({
+      ...valid,
+      llm_provider: "volcengine-ark",
+    });
+    expect(withLLM.llm_provider).toBe("volcengine-ark");
+    expect(withLLM.runtime_provider).not.toBe(withLLM.llm_provider);
+  });
   it("codifies the 19-kind event protocol", () => {
     const kinds = [
       "task.queued", "task.dispatched", "run.started", "run.heartbeat",

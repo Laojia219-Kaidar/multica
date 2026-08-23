@@ -337,8 +337,8 @@ func TestAssembleAgentCard_VerifiedOverlayPreservesExecutionChain(t *testing.T) 
 	if got.ExecutionReceiptRef != "receipt://"+uuidStr(tu) || got.ExecutionReceiptStatus != "completed" {
 		t.Fatalf("receipt lost under overlay: %+v", got)
 	}
-	if got.RuntimeProvider != "prime" || got.ModelName != "deepseek-v4" {
-		t.Fatalf("runtime provider/model lost under overlay: %+v", got)
+	if got.RuntimeCarrier != "prime" || got.ModelName != "deepseek-v4" {
+		t.Fatalf("runtime carrier/model lost under overlay: %+v", got)
 	}
 }
 
@@ -850,4 +850,45 @@ func TestNewServiceDirectoryBinding(t *testing.T) {
 		t.Fatalf("configured directory must bind the seam")
 	}
 	var _ EmployeeDirectory = real
+}
+
+// ---------------------------------------------------------------------------
+// Runtime carrier vs LLM provider semantic separation (HIV-911)
+//
+// agent_runtime.provider is the Multica runtime protocol/carrier (e.g.
+// "prime", "volcengine"), NOT the LLM provider. The assembler must map it
+// to RuntimeCarrier and never present it as the LLM provider.
+// ---------------------------------------------------------------------------
+
+func TestAssembleAgent_RuntimeCarrierIsNotLLMProvider(t *testing.T) {
+	now := time.Now().UTC()
+	got := AssembleAgent(agent(), rt("online", now.Add(-time.Second)), nil, nil, nil, nil, now, 0)
+
+	if got.RuntimeCarrier != "prime" {
+		t.Fatalf("runtime_carrier = %q, want %q (the agent_runtime.provider value)", got.RuntimeCarrier, "prime")
+	}
+	if got.LLMProvider != "" {
+		t.Fatalf("llm_provider = %q, want empty: no workspace-scoped authoritative LLM provider source exists", got.LLMProvider)
+	}
+	if got.RuntimeCarrier == got.LLMProvider && got.RuntimeCarrier != "" {
+		t.Fatalf("runtime_carrier and llm_provider must never carry the same non-empty value — they are independent semantics")
+	}
+}
+
+func TestAssembleAgent_RuntimeCarrierPreservedUnderAuthorityOverlay(t *testing.T) {
+	now := time.Now().UTC()
+	got := AssembleAgentCard(
+		agent(),
+		rt("online", now.Add(-time.Second)),
+		nil, nil, nil,
+		&EmployeeAuthority{State: EmployeeAuthorityVerified, Identity: verifiedIdentityFixture()},
+		nil, now, 0,
+	)
+
+	if got.RuntimeCarrier != "prime" {
+		t.Fatalf("runtime_carrier = %q, want %q after authority overlay", got.RuntimeCarrier, "prime")
+	}
+	if got.LLMProvider != "" {
+		t.Fatalf("llm_provider = %q, want empty after authority overlay", got.LLMProvider)
+	}
 }

@@ -158,3 +158,72 @@ func TestBuildDTO_EmptyChainFieldsOmitFromWire(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildDTO_RuntimeCarrierNotLLMProvider(t *testing.T) {
+	now := time.Now().UTC()
+	in := SnapshotInput{
+		WorkspaceID:    "ws-1",
+		EmployeeID:     "EMP-01",
+		AgentID:        "AGT-01",
+		DisplayName:    "Emory",
+		RuntimeID:      "rt-1",
+		RuntimeCarrier: "prime",
+		ModelName:      "deepseek-v4",
+	}
+	dto := BuildDTO(in, now)
+
+	if dto.RuntimeCarrier != "prime" {
+		t.Fatalf("runtime_carrier = %q, want %q", dto.RuntimeCarrier, "prime")
+	}
+	if dto.LLMProvider != "" {
+		t.Fatalf("llm_provider = %q, want empty (no authoritative source)", dto.LLMProvider)
+	}
+
+	b, err := json.Marshal(dto)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	raw := string(b)
+	if !strings.Contains(raw, `"runtime_provider":"prime"`) {
+		t.Fatalf("compatibility wire key must carry the runtime carrier: %s", raw)
+	}
+	if strings.Contains(raw, `"llm_provider"`) {
+		t.Fatalf("absent llm_provider must be omitted from the wire: %s", raw)
+	}
+}
+
+func TestBuildDTO_LLMProviderOnlyFromAuthoritativeSource(t *testing.T) {
+	now := time.Now().UTC()
+	in := SnapshotInput{
+		WorkspaceID:    "ws-1",
+		EmployeeID:     "EMP-01",
+		AgentID:        "AGT-01",
+		DisplayName:    "Emory",
+		RuntimeCarrier: "volcengine",
+		ModelName:      "doubao-seed-2.1-turbo",
+		LLMProvider:    "volcengine-ark",
+	}
+	dto := BuildDTO(in, now)
+
+	if dto.RuntimeCarrier != "volcengine" {
+		t.Fatalf("runtime_carrier = %q, want %q", dto.RuntimeCarrier, "volcengine")
+	}
+	if dto.LLMProvider != "volcengine-ark" {
+		t.Fatalf("llm_provider = %q, want %q", dto.LLMProvider, "volcengine-ark")
+	}
+	if dto.RuntimeCarrier == dto.LLMProvider {
+		t.Fatalf("runtime_carrier and llm_provider must carry independent semantics")
+	}
+
+	b, err := json.Marshal(dto)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	raw := string(b)
+	if !strings.Contains(raw, `"runtime_provider":"volcengine"`) {
+		t.Fatalf("compatibility wire key must carry the runtime carrier: %s", raw)
+	}
+	if !strings.Contains(raw, `"llm_provider":"volcengine-ark"`) {
+		t.Fatalf("wire JSON missing llm_provider: %s", raw)
+	}
+}

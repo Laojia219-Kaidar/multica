@@ -194,7 +194,7 @@ func AssembleAgentCard(
 	}
 
 	if rt != nil {
-		in.RuntimeProvider = rt.Provider
+		in.RuntimeCarrier = rt.Provider
 		in.LastHeartbeatAt = tsPtr(rt.LastSeenAt)
 		in.SourceRefs = append(in.SourceRefs, "runtime://"+runtimeID)
 	}

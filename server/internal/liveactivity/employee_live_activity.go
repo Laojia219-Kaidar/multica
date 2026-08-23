@@ -56,11 +56,22 @@ type EmployeeLiveActivityV1 struct {
 	ActivitySummary string        `json:"activity_summary,omitempty"`
 	RecentEvents    []RecentEvent `json:"recent_events"`
 
-	BaseID          string `json:"base_id,omitempty"`
-	BaseName        string `json:"base_name,omitempty"`
-	RuntimeID       string `json:"runtime_id,omitempty"`
-	RuntimeProvider string `json:"runtime_provider,omitempty"`
-	ModelName       string `json:"model_name,omitempty"`
+	BaseID         string `json:"base_id,omitempty"`
+	BaseName       string `json:"base_name,omitempty"`
+	RuntimeID      string `json:"runtime_id,omitempty"`
+	// RuntimeCarrier is the executable protocol/carrier. The legacy JSON key
+	// remains for installed-client compatibility and must not be labeled as
+	// the LLM provider in user-facing surfaces.
+	RuntimeCarrier string `json:"runtime_provider,omitempty"`
+	ModelName      string `json:"model_name,omitempty"`
+
+	// LLMProvider is the workspace-scoped LLM provider/plan name resolved
+	// from an authoritative, non-secret source. It is NEVER inferred from
+	// employee names, model names, executable paths, args, descriptions,
+	// env vars, credential references, or secret storage. Empty when no
+	// authoritative source exists — the UI renders a distinct unavailable
+	// state in that case.
+	LLMProvider string `json:"llm_provider,omitempty"`
 
 	// Execution-chain projection (HIV-797). RuntimeProfileID/Name are the
 	// registered runtime_profile row bound to the agent's runtime; they are
@@ -112,8 +123,9 @@ type SnapshotInput struct {
 	RunID           string
 
 	RuntimeID          string
-	RuntimeProvider    string
+	RuntimeCarrier     string
 	ModelName          string
+	LLMProvider        string
 	BaseID             string
 	BaseName           string
 	RuntimeProfileID   string
@@ -171,33 +183,33 @@ func BuildDTO(s SnapshotInput, observedAt time.Time) EmployeeLiveActivityV1 {
 	refs = append(refs, s.SourceRefs...)
 
 	dto := EmployeeLiveActivityV1{
-		SchemaVersion:   SchemaVersionV1,
-		WorkspaceID:     s.WorkspaceID,
-		EmployeeID:      s.EmployeeID,
-		AgentID:         s.AgentID,
-		DisplayName:     s.DisplayName,
-		AvatarURL:       s.AvatarURL,
-		DepartmentID:    s.DepartmentID,
-		DepartmentName:  s.DepartmentName,
-		PositionName:    s.PositionName,
-		ProjectID:       s.ProjectID,
-		ProjectTitle:    s.ProjectTitle,
-		IssueID:         s.IssueID,
-		IssueIdentifier: s.IssueIdentifier,
-		IssueTitle:      s.IssueTitle,
-		TaskID:          s.TaskID,
-		RunID:           s.RunID,
-		PresenceState:   presence,
-		WorkStage:       stage,
-		ActivityKind:    s.ActivityKind,
-		ActivitySummary: s.ActivityNotes,
-		RecentEvents:    events,
-		BaseID:          s.BaseID,
-		BaseName:        s.BaseName,
-		RuntimeID:       s.RuntimeID,
-		RuntimeProvider: s.RuntimeProvider,
-		ModelName:       s.ModelName,
-
+		SchemaVersion:          SchemaVersionV1,
+		WorkspaceID:            s.WorkspaceID,
+		EmployeeID:             s.EmployeeID,
+		AgentID:                s.AgentID,
+		DisplayName:            s.DisplayName,
+		AvatarURL:              s.AvatarURL,
+		DepartmentID:           s.DepartmentID,
+		DepartmentName:         s.DepartmentName,
+		PositionName:           s.PositionName,
+		ProjectID:              s.ProjectID,
+		ProjectTitle:           s.ProjectTitle,
+		IssueID:                s.IssueID,
+		IssueIdentifier:        s.IssueIdentifier,
+		IssueTitle:             s.IssueTitle,
+		TaskID:                 s.TaskID,
+		RunID:                  s.RunID,
+		PresenceState:          presence,
+		WorkStage:              stage,
+		ActivityKind:           s.ActivityKind,
+		ActivitySummary:        s.ActivityNotes,
+		RecentEvents:           events,
+		BaseID:                 s.BaseID,
+		BaseName:               s.BaseName,
+		RuntimeID:              s.RuntimeID,
+		RuntimeCarrier:         s.RuntimeCarrier,
+		ModelName:              s.ModelName,
+		LLMProvider:            s.LLMProvider,
 		RuntimeProfileID:       s.RuntimeProfileID,
 		RuntimeProfileName:     s.RuntimeProfileName,
 		ExecutionReceiptRef:    s.ExecutionReceiptRef,
