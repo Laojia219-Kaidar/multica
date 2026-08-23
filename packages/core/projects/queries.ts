@@ -62,9 +62,25 @@ export function projectLifecycleDetailOptions(wsId: string, id: string) {
   });
 }
 
+/**
+ * HIV-941 (P1): read-only work-conserving projection for a single project.
+ *
+ * The scheduler can settle outcomes (automatic assignment, retry lease
+ * expiry, queue reordering) without emitting a Task lifecycle event or a
+ * WebSocket message observed by this client. A bounded 15-second fallback
+ * poll guarantees those silent outcomes still converge in the UI without
+ * forcing a reload. Immediate invalidation is provided separately by the
+ * Task lifecycle WebSocket hook; this poll never dispatches, drains, or
+ * mutates anything — the underlying query function is GET-only.
+ *
+ * Key includes workspace + project so two projects never share cache, and
+ * the interval is scoped to this projection only (it does not touch the
+ * 5s pipeline poll or any other query).
+ */
 export function projectWorkConservingOptions(wsId: string, id: string) {
   return queryOptions({
     queryKey: projectKeys.workConserving(wsId, id),
     queryFn: () => api.getProjectWorkConservingProjection(id),
+    refetchInterval: 15_000,
   });
 }
