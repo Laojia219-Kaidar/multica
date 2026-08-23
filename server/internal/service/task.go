@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"strconv"
 	"strings"
 	"sync"
@@ -1093,6 +1094,60 @@ func (s *TaskService) enqueueIssueTaskWithCommentPlan(ctx context.Context, issue
 	return task, nil
 }
 
+// issueTaskMaxAttemptsMetadataKey is the per-issue metadata key (HIV-870) that
+// overrides the automatic retry budget for tasks enqueued through the canonical
+// issue funnel. The value is an exact JSON integer; 1 opts the issue out of
+// every automatic retry, matching the agent_task_queue.max_attempts column
+// contract documented in migration 055 ("1 disables retry").
+const issueTaskMaxAttemptsMetadataKey = "max_attempts"
+
+// parseIssueMaxAttemptsOverride decodes issue.metadata.max_attempts (HIV-870)
+// into the CreateAgentTask override. It is read ONLY by the canonical issue
+// prepare funnel; every other task-creation path keeps the column default.
+//
+// An absent key, empty metadata, an explicit null, or a non-object metadata
+// blob all mean "no override" (a NULL param, so the SQL COALESCE keeps the
+// default 2) — mirroring parseIssueMetadata's degradation for blobs that
+// predate the object-shape DB CHECK. A PRESENT key is validated strictly and
+// refuses the enqueue before any task row is written: booleans, strings,
+// fractional literals (including integral-looking 2.0), zero, negatives, and
+// values beyond the int32 attempt column are rejected, never silently coerced.
+func parseIssueMaxAttemptsOverride(raw []byte) (pgtype.Int4, error) {
+	if len(raw) == 0 {
+		return pgtype.Int4{}, nil
+	}
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &object); err != nil || object == nil {
+		return pgtype.Int4{}, nil
+	}
+	value, ok := object[issueTaskMaxAttemptsMetadataKey]
+	trimmed := strings.TrimSpace(string(value))
+	if !ok || trimmed == "" || trimmed == "null" {
+		return pgtype.Int4{}, nil
+	}
+	// json.Number keeps the raw literal, so "1" parses below while "1.0",
+	// "1.5", and "1e2" all fail ParseInt — no float64 collapse, no coercion of
+	// a non-integer literal into an integer. The first-byte guard is required
+	// because encoding/json deliberately accepts a quoted number ("1") into a
+	// json.Number (string-kind special case); a JSON integer never starts with
+	// a quote, letter, bracket, or brace.
+	if c := trimmed[0]; c != '-' && (c < '0' || c > '9') {
+		return pgtype.Int4{}, fmt.Errorf("issue metadata %s must be a JSON integer, got %s", issueTaskMaxAttemptsMetadataKey, trimmed)
+	}
+	var literal json.Number
+	if err := json.Unmarshal([]byte(trimmed), &literal); err != nil {
+		return pgtype.Int4{}, fmt.Errorf("issue metadata %s must be a JSON integer, got %s", issueTaskMaxAttemptsMetadataKey, trimmed)
+	}
+	parsed, err := strconv.ParseInt(literal.String(), 10, 32)
+	if err != nil {
+		return pgtype.Int4{}, fmt.Errorf("issue metadata %s must be an integer between 1 and %d, got %s", issueTaskMaxAttemptsMetadataKey, math.MaxInt32, literal.String())
+	}
+	if parsed < 1 {
+		return pgtype.Int4{}, fmt.Errorf("issue metadata %s must be >= 1 (1 disables auto-retry), got %d", issueTaskMaxAttemptsMetadataKey, parsed)
+	}
+	return pgtype.Int4{Int32: int32(parsed), Valid: true}, nil
+}
+
 // prepareIssueTaskWithCommentPlan performs the canonical issue-task reads and
 // insert against queries without publishing realtime events or notifying the
 // daemon. A caller that supplies transaction-bound queries can therefore make
@@ -1122,6 +1177,15 @@ func (s *TaskService) prepareIssueTaskWithCommentPlan(
 	if evidenceOverride != nil && (evidenceOverride.Kind == "" ||
 		!evidenceOverride.RefID.Valid || evidenceOverride.RefID.Bytes == ([16]byte{})) {
 		return db.AgentTaskQueue{}, fmt.Errorf("task trigger evidence override requires kind and ref id")
+	}
+
+	// HIV-870: the issue's max_attempts metadata overrides the auto-retry
+	// budget for tasks created by this canonical funnel only. A present but
+	// invalid value refuses the enqueue BEFORE any task row is written.
+	maxAttemptsOverride, err := parseIssueMaxAttemptsOverride(issue.Metadata)
+	if err != nil {
+		slog.Error("task enqueue failed", "issue_id", util.UUIDToString(issue.ID), "error", err)
+		return db.AgentTaskQueue{}, err
 	}
 
 	preparer := s.queryPreparer(queries)
@@ -1188,6 +1252,9 @@ func (s *TaskService) prepareIssueTaskWithCommentPlan(
 		// Stamp the reviewed head so dedup can distinguish this run's target
 		// from a later request against a new HEAD (TEN-356).
 		HeadSha: headShaText(preparer.ResolveIssueReviewSHA(ctx, issue.ID)),
+		// HIV-870: NULL keeps the column default 2; a validated metadata
+		// integer (1 disables auto-retry) persists verbatim.
+		MaxAttempts: maxAttemptsOverride,
 	})
 	if err != nil {
 		// Map the pending-task unique-index violation to the sentinel so the

@@ -260,11 +260,16 @@ ORDER BY created_at DESC;
 -- issues with no linked PR. Issue-linked tasks never hit quick-create context
 -- parsing (parseQuickCreateContext short-circuits on IssueID.Valid), so this
 -- key rides harmlessly alongside.
+-- max_attempts (HIV-870) persists the per-issue auto-retry budget parsed from
+-- issue.metadata.max_attempts by the canonical issue prepare funnel. NULL keeps
+-- the column default 2 (first run + one retry); 1 disables every automatic
+-- retry. The service validates the value BEFORE insert — no coercion here.
 INSERT INTO agent_task_queue (
     agent_id, runtime_id, issue_id, status, priority, trigger_comment_id,
     coalesced_comment_ids, trigger_summary, force_fresh_session, is_leader_task, handoff_note,
     squad_id, context, originator_user_id, accountable_user_id, runtime_mcp_overlay, runtime_connected_apps,
-    originator_source, delegated_from_task_id, rule_version_id, rerun_of_task_id, trigger_evidence_kind, trigger_evidence_ref_id
+    originator_source, delegated_from_task_id, rule_version_id, rerun_of_task_id, trigger_evidence_kind, trigger_evidence_ref_id,
+    max_attempts
 )
 VALUES (
     $1, $2, $3, 'queued', $4, sqlc.narg(trigger_comment_id),
@@ -288,7 +293,8 @@ VALUES (
     sqlc.narg(rule_version_id),
     sqlc.narg(rerun_of_task_id),
     sqlc.narg(trigger_evidence_kind),
-    sqlc.narg(trigger_evidence_ref_id)
+    sqlc.narg(trigger_evidence_ref_id),
+    COALESCE(sqlc.narg(max_attempts)::int, 2)
 )
 RETURNING *;
 
