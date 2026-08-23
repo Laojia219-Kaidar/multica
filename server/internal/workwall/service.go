@@ -161,14 +161,11 @@ func (s *Service) Snapshot(ctx context.Context, workspaceID pgtype.UUID) ([]live
 		t := &tasks[i]
 		aid := uuidStr(t.AgentID)
 		if isActiveTaskStatus(t.Status) {
-			// Deterministic priority selection (HIV-869): running >
-			// dispatched > waiting_local_directory > queued, then stable
-			// UUID tie-break. Completed/failed are never active.
-			prev := activeByAgent[aid]
-			if prev == nil || taskActivePriority(t.Status) > taskActivePriority(prev.Status) ||
-				(taskActivePriority(t.Status) == taskActivePriority(prev.Status) && uuidStr(t.ID) > uuidStr(prev.ID)) {
-				activeByAgent[aid] = t
-			}
+			// Deterministic priority selection (HIV-869, R3 repair):
+			// running > dispatched > waiting_local_directory > queued,
+			// then lexicographically smaller UUID wins. Terminal statuses
+			// (completed/failed/cancelled) never become the active task.
+			activeByAgent[aid] = selectActiveTask(activeByAgent[aid], t)
 		} else {
 			outcomeByAgent[aid] = t
 		}
@@ -238,6 +235,26 @@ func taskActivePriority(status string) int {
 	default:
 		return 0
 	}
+}
+
+// selectActiveTask returns the better of the current holder and a challenger
+// for the per-agent active-task slot. The challenger wins only when it has a
+// strictly higher active priority, or the same priority and a
+// lexicographically smaller UUID (stable deterministic tie-break regardless
+// of input order). A nil holder always loses to any challenger.
+func selectActiveTask(holder, challenger *db.AgentTaskQueue) *db.AgentTaskQueue {
+	if holder == nil {
+		return challenger
+	}
+	hp := taskActivePriority(holder.Status)
+	cp := taskActivePriority(challenger.Status)
+	if cp > hp {
+		return challenger
+	}
+	if cp == hp && uuidStr(challenger.ID) < uuidStr(holder.ID) {
+		return challenger
+	}
+	return holder
 }
 
 // resolveEmployeeAuthority performs one CompanyOps directory pass and resolves
