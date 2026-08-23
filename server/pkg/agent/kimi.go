@@ -151,11 +151,22 @@ func (b *kimiBackend) Execute(ctx context.Context, prompt string, opts ExecOptio
 	// process group with the kimi CLI process, and defaulting new
 	// terminals to the same cwd the session runs in. Only kimi wires a
 	// manager — the other ACP backends never advertise the capability.
+	//
+	// Trusted task pointers (HIV-880): the daemon injects
+	// MULTICA_DAEMON_PORT and MULTICA_LOCAL_AUTH_CAPABILITY_FILE into
+	// the Task-specific agentEnv — b.cfg.Env, the same map that becomes
+	// the kimi CLI process environment — and NOT into the daemon's own
+	// process environment (HIV-879). Extract exactly those two
+	// non-secret values here so terminal children inherit the same
+	// pointers the CLI itself got; acpTerminalTrustedTaskEnvFromConfig
+	// keeps every other Config.Env entry (MULTICA_TOKEN, provider/API
+	// credentials, …) out of the terminal bridge, and the capability
+	// file itself is never opened — only its path string passes through.
 	sessionCwd := opts.Cwd
 	if sessionCwd == "" {
 		sessionCwd = "."
 	}
-	c.terminals = newACPTerminalManager(runCtx, sessionCwd, b.cfg.Logger)
+	c.terminals = newACPTerminalManager(runCtx, sessionCwd, b.cfg.Logger, acpTerminalTrustedTaskEnvFromConfig(b.cfg.Env)...)
 
 	// Start reading stdout in background.
 	readerDone := make(chan struct{})

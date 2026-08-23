@@ -391,10 +391,17 @@ done
 // returns the final Result.
 func runFakeKimiBackend(t *testing.T, script string, opts ExecOptions) Result {
 	t.Helper()
+	return runFakeKimiBackendWithEnv(t, script, opts, nil)
+}
+
+// runFakeKimiBackendWithEnv is runFakeKimiBackend with a Task-specific
+// Config.Env, mirroring the daemon's per-Task agentEnv injection.
+func runFakeKimiBackendWithEnv(t *testing.T, script string, opts ExecOptions, env map[string]string) Result {
+	t.Helper()
 	fakePath := filepath.Join(t.TempDir(), "kimi")
 	writeTestExecutable(t, fakePath, []byte(script))
 
-	backend, err := New("kimi", Config{ExecutablePath: fakePath, Logger: slog.Default()})
+	backend, err := New("kimi", Config{ExecutablePath: fakePath, Logger: slog.Default(), Env: env})
 	if err != nil {
 		t.Fatalf("new kimi backend: %v", err)
 	}
@@ -593,5 +600,135 @@ func TestKimiBackendTerminalUnknownIDReturnsStructuredError(t *testing.T) {
 	}
 	if unknown["id"] != float64(900) {
 		t.Errorf("unknown-id reply id = %v, want 900", unknown["id"])
+	}
+}
+
+// fakeKimiACPTerminalConfigPointerScript impersonates `kimi acp` proving
+// the HIV-880 contract end-to-end: at session/prompt it first tries to
+// smuggle MULTICA_DAEMON_PORT into a terminal through request-scoped env
+// (the daemon must reject it with -32602 before any spawn), then spawns
+// an /usr/bin/env terminal and records the child's environment dump the
+// daemon hands back — which must carry the Task Config.Env pointers and
+// nothing secret.
+func fakeKimiACPTerminalConfigPointerScript(recordPath string) string {
+	return `#!/bin/sh
+RECORD=` + recordPath + `
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
+  case "$line" in
+    *'"method":"initialize"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":1,"agentCapabilities":{}}}\n' "$id"
+      ;;
+    *'"method":"session/new"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"sessionId":"ses_term"}}\n' "$id"
+      ;;
+    *'"method":"session/prompt"'*)
+      printf '{"jsonrpc":"2.0","id":900,"method":"terminal/create","params":{"sessionId":"ses_term","command":"/bin/echo","args":["should-never-run"],"env":[{"name":"MULTICA_DAEMON_PORT","value":"attacker-override"}]}}\n'
+      IFS= read -r resp; printf 'OVERRIDE-RESP %s\n' "$resp" >> "$RECORD"
+      printf '{"jsonrpc":"2.0","id":901,"method":"terminal/create","params":{"sessionId":"ses_term","command":"/usr/bin/env","outputByteLimit":65536}}\n'
+      IFS= read -r resp; printf 'CREATE-RESP %s\n' "$resp" >> "$RECORD"
+      tid=$(printf '%s' "$resp" | sed -n 's/.*"terminalId":"\([^"]*\)".*/\1/p')
+      sleep 0.3
+      printf '{"jsonrpc":"2.0","id":902,"method":"terminal/output","params":{"sessionId":"ses_term","terminalId":"%s"}}\n' "$tid"
+      IFS= read -r resp; printf 'ENV-RESP %s\n' "$resp" >> "$RECORD"
+      printf '{"jsonrpc":"2.0","id":903,"method":"terminal/wait_for_exit","params":{"sessionId":"ses_term","terminalId":"%s"}}\n' "$tid"
+      IFS= read -r resp; printf 'WAIT-RESP %s\n' "$resp" >> "$RECORD"
+      printf '{"jsonrpc":"2.0","id":904,"method":"terminal/release","params":{"sessionId":"ses_term","terminalId":"%s"}}\n' "$tid"
+      IFS= read -r resp; printf 'RELEASE-RESP %s\n' "$resp" >> "$RECORD"
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}\n' "$id"
+      exit 0
+      ;;
+  esac
+done
+`
+}
+
+// TestKimiBackendTerminalTaskConfigPointerPropagation pins the HIV-880
+// repair through the full kimi ACP stack: the daemon injects
+// MULTICA_DAEMON_PORT and MULTICA_LOCAL_AUTH_CAPABILITY_FILE into the
+// Task-specific agentEnv (kimi Config.Env), NOT into its own process
+// environment (the HIV-879 live failure), and the Task-owned terminal
+// manager passes exactly those two pointers to terminal children —
+// while MULTICA_TOKEN, provider credentials, arbitrary Config.Env
+// values, conflicting host values and any request-scoped override all
+// stay excluded.
+func TestKimiBackendTerminalTaskConfigPointerPropagation(t *testing.T) {
+	// NOT parallel: t.Setenv pins conflicting host values to prove the
+	// pointers are sourced from the Task config, not the host process
+	// environment.
+	t.Setenv("MULTICA_DAEMON_PORT", "host-port-must-be-ignored-880")
+	t.Setenv("MULTICA_LOCAL_AUTH_CAPABILITY_FILE", "/host/capability-must-be-ignored-880")
+
+	recordPath := filepath.Join(t.TempDir(), "replies.jsonl")
+	// The capability file is deliberately never created: the bridge must
+	// pass the path string without ever opening or parsing the file.
+	capFile := filepath.Join(t.TempDir(), "capability.json")
+	cfgEnv := map[string]string{
+		"MULTICA_DAEMON_PORT":                "8791",
+		"MULTICA_LOCAL_AUTH_CAPABILITY_FILE": capFile,
+		"MULTICA_TOKEN":                      "mat-task-token-leak-880",
+		"KIMI_API_KEY":                       "sk-kimi-leak-880",
+		"MOONSHOT_API_KEY":                   "sk-moonshot-leak-880",
+		"MULTICA_WORKSPACE_ID":               "ws-leak-880",
+	}
+
+	result := runFakeKimiBackendWithEnv(t, fakeKimiACPTerminalConfigPointerScript(recordPath), ExecOptions{}, cfgEnv)
+	if result.Status != "completed" {
+		t.Fatalf("task status = %q (error=%q), want completed", result.Status, result.Error)
+	}
+
+	// The model's request-env override of a trusted pointer is rejected
+	// with -32602 before any process is spawned.
+	override := recordedTaggedFrame(t, recordPath, "OVERRIDE-RESP")
+	if _, hasResult := override["result"]; hasResult {
+		t.Fatalf("request-env override of MULTICA_DAEMON_PORT returned a result: %#v", override)
+	}
+	rpcErr, _ := override["error"].(map[string]any)
+	if code, _ := rpcErr["code"].(float64); code != -32602 {
+		t.Errorf("override reply error code = %v, want -32602 (%#v)", rpcErr["code"], override)
+	}
+
+	// The terminal child inherited exactly the two Task config pointers.
+	envFrame := recordedTaggedFrame(t, recordPath, "ENV-RESP")
+	envResult, _ := envFrame["result"].(map[string]any)
+	envDump, _ := envResult["output"].(string)
+	if !strings.Contains(envDump, "MULTICA_DAEMON_PORT=8791") {
+		t.Errorf("terminal child env lacks the Task config pointer MULTICA_DAEMON_PORT=8791: %q", envDump)
+	}
+	if !strings.Contains(envDump, "MULTICA_LOCAL_AUTH_CAPABILITY_FILE="+capFile) {
+		t.Errorf("terminal child env lacks the Task config pointer MULTICA_LOCAL_AUTH_CAPABILITY_FILE=%s: %q", capFile, envDump)
+	}
+	for _, leak := range []string{
+		"leak-880",                             // MULTICA_TOKEN / provider keys / workspace id values from Config.Env
+		"host-port-must-be-ignored-880",        // conflicting host value
+		"/host/capability-must-be-ignored-880", // conflicting host value
+		"attacker-override",                    // rejected request-env override value
+	} {
+		if strings.Contains(envDump, leak) {
+			t.Errorf("terminal child env leaked %q: %q", leak, envDump)
+		}
+	}
+	multicaNames := 0
+	for _, line := range strings.Split(envDump, "\n") {
+		if strings.HasPrefix(line, "MULTICA_") {
+			multicaNames++
+			name := strings.SplitN(line, "=", 2)[0]
+			if name != "MULTICA_DAEMON_PORT" && name != "MULTICA_LOCAL_AUTH_CAPABILITY_FILE" {
+				t.Errorf("terminal child env carries untrusted MULTICA_* entry %q", line)
+			}
+		}
+	}
+	if multicaNames != 2 {
+		t.Errorf("terminal child env carries %d MULTICA_* names, want exactly the two trusted pointers: %q", multicaNames, envDump)
+	}
+
+	wait := recordedTaggedFrame(t, recordPath, "WAIT-RESP")
+	waitResult, _ := wait["result"].(map[string]any)
+	if code, _ := waitResult["exitCode"].(float64); code != 0 {
+		t.Errorf("env-dump terminal exitCode = %v, want 0", waitResult["exitCode"])
+	}
+	release := recordedTaggedFrame(t, recordPath, "RELEASE-RESP")
+	if _, hasErr := release["error"]; hasErr {
+		t.Errorf("terminal/release returned an error: %#v", release)
 	}
 }

@@ -105,13 +105,24 @@ var acpTerminalHostEnvAllowlist = []string{
 // host variable. These two carry only the local daemon's port and a
 // task-scoped capability FILE PATH — never a credential value — so the
 // CLI inside the terminal can reach the daemon and recover the task
-// credential itself. They pass through from the daemon's host
-// environment only: MULTICA_TOKEN, provider/API credentials and every
-// other MULTICA_* host variable stay excluded, and request-scoped env
-// still rejects the whole MULTICA_* namespace
-// (isACPTerminalCredentialEnvName), so the model can neither inject nor
-// override either trusted value. Do not add more names here without a
-// new security-reviewed work order.
+// credential itself.
+//
+// Since HIV-880 the source is the Task's own Config.Env: the daemon
+// injects both pointers into the Task-specific agentEnv (which becomes
+// the Kimi CLI process environment), NOT into the daemon's own process
+// environment — which is why the HIV-878 attempt of reading
+// os.Environ() still failed live (HIV-879). The kimi backend extracts
+// exactly these two names from Config.Env
+// (acpTerminalTrustedTaskEnvFromConfig) and hands the already-filtered
+// entries to the Task-owned terminal manager; the daemon's host
+// environment is never consulted for them. MULTICA_TOKEN, provider/API
+// credentials and every other Config.Env or MULTICA_* value stay
+// excluded, and request-scoped env still rejects the whole MULTICA_*
+// namespace (isACPTerminalCredentialEnvName), so the model can neither
+// inject nor override either trusted value. The capability file itself
+// is never opened, parsed or logged — only its path string passes
+// through. Do not add more names here without a new security-reviewed
+// work order.
 var acpTerminalTrustedTaskEnv = []string{
 	"MULTICA_DAEMON_PORT",
 	"MULTICA_LOCAL_AUTH_CAPABILITY_FILE",
@@ -303,6 +314,16 @@ type acpTerminalManager struct {
 	cwd    string          // default cwd for terminals whose create params omit one
 	logger *slog.Logger
 
+	// trustedTaskEnv is the immutable, already-vetted set of trusted
+	// task-scoped daemon pointers ("KEY=VALUE" entries) every terminal
+	// child of THIS Task inherits in addition to the generic host
+	// allowlist — at most MULTICA_DAEMON_PORT and
+	// MULTICA_LOCAL_AUTH_CAPABILITY_FILE, sourced from this Task's
+	// Config.Env (HIV-880). Written exactly once at construction and
+	// never mutated afterwards; empty when the Task config carries
+	// neither pointer.
+	trustedTaskEnv []string
+
 	mu        sync.Mutex
 	closed    bool
 	terminals map[string]*acpTerminal
@@ -311,16 +332,81 @@ type acpTerminalManager struct {
 // newACPTerminalManager builds the terminal bridge for one ACP client.
 // ctx must be the same context that bounds the agent CLI process, so
 // cancelling the Task kills the terminals with it.
-func newACPTerminalManager(ctx context.Context, cwd string, logger *slog.Logger) *acpTerminalManager {
+//
+// trustedTaskEnv optionally carries the ALREADY-FILTERED trusted task
+// pointers ("KEY=VALUE" entries, at most MULTICA_DAEMON_PORT and
+// MULTICA_LOCAL_AUTH_CAPABILITY_FILE) sourced from THIS Task's
+// Config.Env — the Task-specific agentEnv the daemon assembles, which
+// is where both pointers live in every live deployment (HIV-879/880).
+// The constructor defensively vets the entries into a fresh, immutable
+// slice: an entry whose name is not one of the two trusted names is
+// dropped silently, so no caller can ever smuggle MULTICA_TOKEN, a
+// provider/API credential or any other value into a terminal child
+// through this path. The variadic form keeps the zero-trusted-env call
+// used by tests valid.
+func newACPTerminalManager(ctx context.Context, cwd string, logger *slog.Logger, trustedTaskEnv ...string) *acpTerminalManager {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	return &acpTerminalManager{
-		ctx:       ctx,
-		cwd:       cwd,
-		logger:    logger,
-		terminals: make(map[string]*acpTerminal),
+		ctx:            ctx,
+		cwd:            cwd,
+		logger:         logger,
+		terminals:      make(map[string]*acpTerminal),
+		trustedTaskEnv: vetACPTerminalTrustedTaskEnv(trustedTaskEnv),
 	}
+}
+
+// acpTerminalTrustedTaskEnvFromConfig extracts exactly the trusted
+// task-scoped daemon pointers from one Task's Config.Env: it reads only
+// the two names in acpTerminalTrustedTaskEnv and passes their values
+// through verbatim as "KEY=VALUE" entries. MULTICA_TOKEN, provider/API
+// credentials and every other Config.Env entry never reach the terminal
+// bridge, and the capability file itself is never opened or parsed —
+// the value is a path string the terminal child needs as-is (HIV-880).
+func acpTerminalTrustedTaskEnvFromConfig(cfgEnv map[string]string) []string {
+	trusted := make([]string, 0, len(acpTerminalTrustedTaskEnv))
+	for _, key := range acpTerminalTrustedTaskEnv {
+		if v, ok := cfgEnv[key]; ok {
+			trusted = append(trusted, key+"="+v)
+		}
+	}
+	return trusted
+}
+
+// vetACPTerminalTrustedTaskEnv copies entries into a fresh slice keeping
+// only well-formed entries whose name is one of the two trusted task
+// pointers (first occurrence wins). This is the manager-boundary fence:
+// even a future caller passing unfiltered Config.Env entries cannot leak
+// MULTICA_TOKEN or a provider credential into a terminal child.
+func vetACPTerminalTrustedTaskEnv(entries []string) []string {
+	if len(entries) == 0 {
+		return nil
+	}
+	vetted := make([]string, 0, len(acpTerminalTrustedTaskEnv))
+	seen := make(map[string]bool, len(acpTerminalTrustedTaskEnv))
+	for _, entry := range entries {
+		key, _, ok := strings.Cut(entry, "=")
+		if !ok || seen[key] {
+			continue
+		}
+		trusted := false
+		for _, name := range acpTerminalTrustedTaskEnv {
+			if key == name {
+				trusted = true
+				break
+			}
+		}
+		if !trusted {
+			continue
+		}
+		seen[key] = true
+		vetted = append(vetted, entry)
+	}
+	if len(vetted) == 0 {
+		return nil
+	}
+	return vetted
 }
 
 // isACPTerminalMethod reports whether method is one of the ACP terminal
@@ -405,7 +491,7 @@ func (m *acpTerminalManager) create(params json.RawMessage) (any, *acpTerminalEr
 	if p.Command == "" {
 		return nil, acpTerminalInvalidParams("terminal/create requires a non-empty command")
 	}
-	childEnv, err := acpTerminalChildEnv(p.Env)
+	childEnv, err := acpTerminalChildEnv(m.trustedTaskEnv, p.Env)
 	if err != nil {
 		return nil, err
 	}
@@ -608,27 +694,27 @@ func isACPTerminalCredentialEnvName(name string) bool {
 }
 
 // acpTerminalChildEnv builds the terminal child's environment: ONLY the
-// allowlisted generic host variables, the two trusted task-scoped daemon
-// variables (acpTerminalTrustedTaskEnv, HIV-878), plus the
-// request-scoped entries. The agent CLI's Config.Env (provider
+// allowlisted generic host variables, the immutable trusted task-scoped
+// daemon pointers already extracted from THIS Task's Config.Env
+// (trustedTaskEnv, HIV-880), plus the request-scoped entries. The
+// daemon's own process environment is consulted for the generic
+// allowlist only; the rest of the agent CLI's Config.Env (provider
 // credentials, MULTICA_TOKEN, …) is never consulted, and a
 // credential-shaped request entry is rejected rather than silently
 // dropped so the failure is visible on the wire.
-func acpTerminalChildEnv(requestEnv []acpTerminalEnvVar) ([]string, *acpTerminalError) {
-	env := make([]string, 0, len(acpTerminalHostEnvAllowlist)+len(acpTerminalTrustedTaskEnv)+len(requestEnv))
+func acpTerminalChildEnv(trustedTaskEnv []string, requestEnv []acpTerminalEnvVar) ([]string, *acpTerminalError) {
+	env := make([]string, 0, len(acpTerminalHostEnvAllowlist)+len(trustedTaskEnv)+len(requestEnv))
 	for _, key := range acpTerminalHostEnvAllowlist {
 		if v, ok := os.LookupEnv(key); ok {
 			env = append(env, key+"="+v)
 		}
 	}
-	// Trusted task identity (HIV-878): sourced from the daemon host
-	// environment only. The request path below keeps rejecting every
-	// MULTICA_* name, so the model cannot inject or override either.
-	for _, key := range acpTerminalTrustedTaskEnv {
-		if v, ok := os.LookupEnv(key); ok {
-			env = append(env, key+"="+v)
-		}
-	}
+	// Trusted task identity (HIV-878/880): the already-vetted pointers
+	// extracted from THIS Task's Config.Env — never os.Environ(), which
+	// lacks both in every live deployment (HIV-879). The request path
+	// below keeps rejecting every MULTICA_* name, so the model cannot
+	// inject or override either.
+	env = append(env, trustedTaskEnv...)
 	for _, kv := range requestEnv {
 		if !acpTerminalEnvNameRe.MatchString(kv.Name) {
 			return nil, acpTerminalInvalidParams("terminal/create env has malformed name %q", kv.Name)
