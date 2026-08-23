@@ -24,8 +24,7 @@ function timeLabel(iso: string) {
 
 function PaneCard({ pane }: { pane: TerminalPane }) {
   const [open, setOpen] = useState(false);
-  const lines = pane.tail_text.split("\n").filter((l) => l.trim() !== "");
-  const preview = lines.slice(-3).join("\n");
+  const hasOutput = pane.tail_text.trim().length > 0;
   return (
     <div
       className="rounded-md border border-green-800 bg-black font-mono text-green-300"
@@ -51,13 +50,16 @@ function PaneCard({ pane }: { pane: TerminalPane }) {
         <span className="ml-auto whitespace-nowrap text-green-600">
           {pane.current_command || "idle"} · {timeLabel(pane.heartbeat_at)}
         </span>
+        <span className="text-green-700">{open ? "收起" : "展开输出"}</span>
       </button>
-      <pre
-        className="max-h-40 overflow-auto border-t border-green-900 px-3 py-2 text-[11px] leading-relaxed text-green-400"
-        data-testid="terminal-live-tail"
-      >
-        {open ? pane.tail_text : preview || "（无输出）"}
-      </pre>
+      {open ? (
+        <pre
+          className="max-h-40 overflow-auto border-t border-green-900 px-3 py-2 text-[11px] leading-relaxed text-green-400"
+          data-testid="terminal-live-tail"
+        >
+          {hasOutput ? pane.tail_text : "（无输出）"}
+        </pre>
+      ) : null}
     </div>
   );
 }

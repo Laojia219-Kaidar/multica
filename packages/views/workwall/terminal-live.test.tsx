@@ -53,14 +53,49 @@ describe("TerminalLiveSection", () => {
     expect(hint.textContent).toContain("hint: coco-planner");
   });
 
-  it("shows last 3 lines as preview, full tail when expanded", () => {
+  it("hides tail text in DOM when collapsed, shows full tail after expansion", () => {
     render(<TerminalLiveSection panes={[pane()]} />);
-    const tail = screen.getByTestId("terminal-live-tail");
-    expect(tail.textContent).toBe("line3\nline4\nline5");
+    expect(screen.queryByTestId("terminal-live-tail")).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { expanded: false }));
     const fullTail = screen.getByTestId("terminal-live-tail");
     expect(fullTail.textContent).toBe("line1\nline2\nline3\nline4\nline5");
+  });
+
+  it("removes tail text from DOM when collapsed again after expansion", () => {
+    render(<TerminalLiveSection panes={[pane()]} />);
+    const button = screen.getByRole("button", { expanded: false });
+
+    fireEvent.click(button);
+    expect(screen.getByTestId("terminal-live-tail")).toBeDefined();
+
+    fireEvent.click(button);
+    expect(screen.queryByTestId("terminal-live-tail")).toBeNull();
+  });
+
+  it("unique sentinel in tail_text is absent while collapsed, present when expanded, absent when re-collapsed", () => {
+    const sentinel = "SENTINEL-9f3e2a7b-tail-only";
+    const sentinelPane = pane({ tail_text: `first line\n${sentinel}\nthird line` });
+    render(<TerminalLiveSection panes={[sentinelPane]} />);
+
+    const card = screen.getByTestId("terminal-live-pane");
+    expect(card.textContent).not.toContain(sentinel);
+    expect(screen.queryByTestId("terminal-live-tail")).toBeNull();
+
+    const button = screen.getByRole("button", { expanded: false });
+    fireEvent.click(button);
+    expect(screen.getByTestId("terminal-live-tail").textContent).toContain(sentinel);
+
+    fireEvent.click(button);
+    expect(screen.queryByTestId("terminal-live-tail")).toBeNull();
+    expect(screen.getByTestId("terminal-live-pane").textContent).not.toContain(sentinel);
+  });
+
+  it("shows no-output state when expanded with empty tail", () => {
+    render(<TerminalLiveSection panes={[pane({ tail_text: "" })]} />);
+    fireEvent.click(screen.getByRole("button", { expanded: false }));
+    const tail = screen.getByTestId("terminal-live-tail");
+    expect(tail.textContent).toBe("（无输出）");
   });
 
   it("shows idle when current_command is empty", () => {
