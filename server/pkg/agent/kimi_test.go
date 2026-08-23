@@ -66,7 +66,7 @@ func fakeKimiACPScript() string {
 #
 # Writes the full argv (one arg per line) to $KIMI_ARGS_FILE if that env
 # var is set, so tests can assert that the daemon invokes us with the
-# right flags (`+"`--yolo acp`"+`, not bare `+"`acp`"+`).
+# right flags (` + "`--yolo acp`" + `, not bare ` + "`acp`" + `).
 #
 # Then reads one JSON-RPC request per line from stdin, matches on the
 # method name, and writes back a canned response. Exits after set_model
@@ -333,5 +333,265 @@ func TestKimiResumeIncludesMcpServers(t *testing.T) {
 	}
 	if len(servers) != 1 || servers[0].(map[string]any)["name"] != "fetch" {
 		t.Fatalf("session/resume.mcpServers: got %v, want one entry named fetch", servers)
+	}
+}
+
+// ── ACP terminal bridge (HIV-862) ──
+//
+// Kimi Code CLI 0.37.2 executes its native Bash tool by asking the ACP
+// client (this daemon) to spawn terminals. These tests pin both halves of
+// the fix: the initialize advertisement that makes kimi-cli consider the
+// terminal capability available, and the terminal/* request serving the
+// fake CLI exercises end-to-end.
+
+// fakeKimiACPTerminalScript impersonates `kimi acp` driving one Bash-tool
+// terminal through its full ACP lifecycle: terminal/create → two
+// terminal/output polls (before/after the child's second line) →
+// terminal/wait_for_exit → terminal/kill (idempotent after exit) →
+// terminal/release, then answers session/prompt and exits. Every
+// daemon→agent reply is recorded to recordPath with a tag so the Go test
+// can assert the exact wire shapes.
+func fakeKimiACPTerminalScript(recordPath string) string {
+	return `#!/bin/sh
+RECORD=` + recordPath + `
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
+  case "$line" in
+    *'"method":"initialize"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":1,"agentCapabilities":{}}}\n' "$id"
+      ;;
+    *'"method":"session/new"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"sessionId":"ses_term"}}\n' "$id"
+      ;;
+    *'"method":"session/prompt"'*)
+      printf '{"jsonrpc":"2.0","id":900,"method":"terminal/create","params":{"sessionId":"ses_term","command":"/bin/sh","args":["-c","echo first-line; echo stderr-line 1>&2; sleep 1; echo second-line; exit 7"],"env":[{"name":"NO_COLOR","value":"1"},{"name":"TERM","value":"dumb"}],"cwd":"'"$PWD"'","outputByteLimit":65536}}\n'
+      IFS= read -r resp; printf 'CREATE-RESP %s\n' "$resp" >> "$RECORD"
+      tid=$(printf '%s' "$resp" | sed -n 's/.*"terminalId":"\([^"]*\)".*/\1/p')
+      sleep 0.3
+      printf '{"jsonrpc":"2.0","id":901,"method":"terminal/output","params":{"sessionId":"ses_term","terminalId":"%s"}}\n' "$tid"
+      IFS= read -r resp; printf 'OUTPUT1-RESP %s\n' "$resp" >> "$RECORD"
+      sleep 2
+      printf '{"jsonrpc":"2.0","id":902,"method":"terminal/output","params":{"sessionId":"ses_term","terminalId":"%s"}}\n' "$tid"
+      IFS= read -r resp; printf 'OUTPUT2-RESP %s\n' "$resp" >> "$RECORD"
+      printf '{"jsonrpc":"2.0","id":903,"method":"terminal/wait_for_exit","params":{"sessionId":"ses_term","terminalId":"%s"}}\n' "$tid"
+      IFS= read -r resp; printf 'WAIT-RESP %s\n' "$resp" >> "$RECORD"
+      printf '{"jsonrpc":"2.0","id":904,"method":"terminal/kill","params":{"sessionId":"ses_term","terminalId":"%s"}}\n' "$tid"
+      IFS= read -r resp; printf 'KILL-RESP %s\n' "$resp" >> "$RECORD"
+      printf '{"jsonrpc":"2.0","id":905,"method":"terminal/release","params":{"sessionId":"ses_term","terminalId":"%s"}}\n' "$tid"
+      IFS= read -r resp; printf 'RELEASE-RESP %s\n' "$resp" >> "$RECORD"
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}\n' "$id"
+      exit 0
+      ;;
+  esac
+done
+`
+}
+
+// runFakeKimiBackend executes one prompt against a fake kimi binary and
+// returns the final Result.
+func runFakeKimiBackend(t *testing.T, script string, opts ExecOptions) Result {
+	t.Helper()
+	fakePath := filepath.Join(t.TempDir(), "kimi")
+	writeTestExecutable(t, fakePath, []byte(script))
+
+	backend, err := New("kimi", Config{ExecutablePath: fakePath, Logger: slog.Default()})
+	if err != nil {
+		t.Fatalf("new kimi backend: %v", err)
+	}
+	if opts.Timeout == 0 {
+		opts.Timeout = 20 * time.Second
+	}
+	session, err := backend.Execute(context.Background(), "prompt-ignored", opts)
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	go func() {
+		for range session.Messages {
+		}
+	}()
+	select {
+	case result, ok := <-session.Result:
+		if !ok {
+			t.Fatal("result channel closed without a value")
+		}
+		return result
+	case <-time.After(30 * time.Second):
+		t.Fatal("timeout waiting for result")
+		return Result{}
+	}
+}
+
+// recordedTaggedFrame finds the recorded daemon→agent reply tagged with
+// tag and returns its decoded JSON.
+func recordedTaggedFrame(t *testing.T, recordPath, tag string) map[string]any {
+	t.Helper()
+	data, err := os.ReadFile(recordPath)
+	if err != nil {
+		t.Fatalf("read record file: %v", err)
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if !strings.HasPrefix(line, tag+" ") {
+			continue
+		}
+		var frame map[string]any
+		if err := json.Unmarshal([]byte(strings.TrimPrefix(line, tag+" ")), &frame); err != nil {
+			t.Fatalf("tagged frame %s not valid JSON: %q err=%v", tag, line, err)
+		}
+		return frame
+	}
+	t.Fatalf("no recorded frame tagged %s in %s", tag, data)
+	return nil
+}
+
+// TestKimiBackendAdvertisesTerminalCapability pins the initialize half of
+// HIV-862: `kimi acp` refuses every terminal request ("ACP terminal
+// capability is unavailable") unless the client advertises
+// clientCapabilities.terminal=true, so the kimi backend must send it.
+func TestKimiBackendAdvertisesTerminalCapability(t *testing.T) {
+	t.Parallel()
+
+	recordPath := filepath.Join(t.TempDir(), "frames.jsonl")
+	fakePath := filepath.Join(t.TempDir(), "kimi")
+	writeTestExecutable(t, fakePath, []byte(fakeACPRecordingScript(recordPath, "ses_caps", `{}`)))
+
+	backend, err := New("kimi", Config{ExecutablePath: fakePath, Logger: slog.Default()})
+	if err != nil {
+		t.Fatalf("new kimi backend: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	session, err := backend.Execute(ctx, "prompt-ignored", ExecOptions{Timeout: 5 * time.Second})
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	go func() {
+		for range session.Messages {
+		}
+	}()
+	select {
+	case <-session.Result:
+	case <-time.After(10 * time.Second):
+		t.Fatal("timeout waiting for result")
+	}
+
+	frame := findRecordedFrame(t, recordPath, "initialize")
+	params, ok := frame["params"].(map[string]any)
+	if !ok {
+		t.Fatalf("initialize params: got %T, want map", frame["params"])
+	}
+	caps, _ := params["clientCapabilities"].(map[string]any)
+	if caps["terminal"] != true {
+		t.Errorf("kimi initialize clientCapabilities = %v, want terminal=true (kimi-cli gates its Bash tool on it)", caps)
+	}
+}
+
+// TestKimiBackendServesNativeTerminalRequests drives the full terminal
+// lifecycle a real kimi-cli Bash tool performs: create with command/env/
+// cwd/outputByteLimit, incremental output polls, wait_for_exit with the
+// child's real exit code, idempotent kill after exit, and release. The
+// task must still complete normally afterwards.
+func TestKimiBackendServesNativeTerminalRequests(t *testing.T) {
+	t.Parallel()
+
+	recordPath := filepath.Join(t.TempDir(), "replies.jsonl")
+	result := runFakeKimiBackend(t, fakeKimiACPTerminalScript(recordPath), ExecOptions{
+		Cwd: t.TempDir(),
+	})
+	if result.Status != "completed" {
+		t.Fatalf("task status = %q (error=%q), want completed", result.Status, result.Error)
+	}
+
+	create := recordedTaggedFrame(t, recordPath, "CREATE-RESP")
+	createResult, _ := create["result"].(map[string]any)
+	terminalID, _ := createResult["terminalId"].(string)
+	if terminalID == "" {
+		t.Fatalf("terminal/create reply has no terminalId: %#v", create)
+	}
+
+	out1 := recordedTaggedFrame(t, recordPath, "OUTPUT1-RESP")
+	r1, _ := out1["result"].(map[string]any)
+	output1, _ := r1["output"].(string)
+	if !strings.Contains(output1, "first-line") || !strings.Contains(output1, "stderr-line") {
+		t.Errorf("early output poll = %q, want both streams' first lines", output1)
+	}
+	if strings.Contains(output1, "second-line") {
+		t.Errorf("early output poll saw second-line before it was produced: %q", output1)
+	}
+	if r1["truncated"] != false {
+		t.Errorf("early output truncated = %v, want false", r1["truncated"])
+	}
+
+	out2 := recordedTaggedFrame(t, recordPath, "OUTPUT2-RESP")
+	r2, _ := out2["result"].(map[string]any)
+	output2, _ := r2["output"].(string)
+	if !strings.Contains(output2, "second-line") || !strings.Contains(output2, "first-line") {
+		t.Errorf("late output poll = %q, want full combined output", output2)
+	}
+
+	wait := recordedTaggedFrame(t, recordPath, "WAIT-RESP")
+	waitResult, _ := wait["result"].(map[string]any)
+	if code, _ := waitResult["exitCode"].(float64); code != 7 {
+		t.Errorf("wait_for_exit exitCode = %v (%#v), want 7", waitResult["exitCode"], wait)
+	}
+
+	kill := recordedTaggedFrame(t, recordPath, "KILL-RESP")
+	if _, hasErr := kill["error"]; hasErr {
+		t.Errorf("terminal/kill after exit returned an error: %#v", kill)
+	}
+	release := recordedTaggedFrame(t, recordPath, "RELEASE-RESP")
+	if _, hasErr := release["error"]; hasErr {
+		t.Errorf("terminal/release returned an error: %#v", release)
+	}
+}
+
+// fakeKimiACPTerminalUnknownIDScript impersonates `kimi acp` asking about
+// a terminal id the daemon never issued, then finishing the prompt.
+func fakeKimiACPTerminalUnknownIDScript(recordPath string) string {
+	return `#!/bin/sh
+RECORD=` + recordPath + `
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
+  case "$line" in
+    *'"method":"initialize"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":1,"agentCapabilities":{}}}\n' "$id"
+      ;;
+    *'"method":"session/new"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"sessionId":"ses_term"}}\n' "$id"
+      ;;
+    *'"method":"session/prompt"'*)
+      printf '{"jsonrpc":"2.0","id":900,"method":"terminal/output","params":{"sessionId":"ses_term","terminalId":"term-never-issued"}}\n'
+      IFS= read -r resp; printf 'UNKNOWN-RESP %s\n' "$resp" >> "$RECORD"
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}\n' "$id"
+      exit 0
+      ;;
+  esac
+done
+`
+}
+
+// TestKimiBackendTerminalUnknownIDReturnsStructuredError pins the
+// fail-closed path: an unknown terminal id gets a structured -32002
+// resource-not-found JSON-RPC error (the code kimi-cli recognises) and
+// the Run keeps flowing instead of hanging.
+func TestKimiBackendTerminalUnknownIDReturnsStructuredError(t *testing.T) {
+	t.Parallel()
+
+	recordPath := filepath.Join(t.TempDir(), "replies.jsonl")
+	result := runFakeKimiBackend(t, fakeKimiACPTerminalUnknownIDScript(recordPath), ExecOptions{})
+	if result.Status != "completed" {
+		t.Fatalf("task status = %q (error=%q), want completed — an unknown terminal id must not hang or fail the run", result.Status, result.Error)
+	}
+
+	unknown := recordedTaggedFrame(t, recordPath, "UNKNOWN-RESP")
+	if _, hasResult := unknown["result"]; hasResult {
+		t.Fatalf("unknown-id reply carried a result: %#v", unknown)
+	}
+	rpcErr, _ := unknown["error"].(map[string]any)
+	if code, _ := rpcErr["code"].(float64); code != -32002 {
+		t.Errorf("unknown-id error code = %v, want -32002 (kimi-cli resource-not-found)", rpcErr["code"])
+	}
+	if unknown["id"] != float64(900) {
+		t.Errorf("unknown-id reply id = %v, want 900", unknown["id"])
 	}
 }

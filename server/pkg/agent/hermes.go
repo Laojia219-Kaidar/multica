@@ -716,6 +716,13 @@ type hermesClient struct {
 	toolMu       sync.Mutex
 	pendingTools map[string]*pendingToolCall
 
+	// terminals bridges the ACP terminal methods (agent → client requests)
+	// to real host processes for backends that advertised
+	// clientCapabilities.terminal=true at initialize (kimi today, HIV-862).
+	// Nil for every other backend: terminal/* requests then keep receiving
+	// the pre-existing fail-closed -32601 "method not found" reply.
+	terminals *acpTerminalManager
+
 	usageMu sync.Mutex
 	usage   TokenUsage
 }
@@ -892,18 +899,27 @@ func (c *hermesClient) handleAgentRequest(raw map[string]json.RawMessage) {
 			}
 			c.cfg.Logger.Warn("no safely selectable permission option offered; returning error", "method", method)
 		}
+	case "terminal/create", "terminal/output", "terminal/wait_for_exit", "terminal/kill", "terminal/release":
+		if c.terminals != nil {
+			// Serve terminal requests on their own goroutine: kimi-cli's
+			// Bash tool polls terminal/output every ~250ms while a
+			// terminal/wait_for_exit for the same terminal is still
+			// pending, so blocking this stdout reader would deadlock the
+			// incremental-output path (and the Run). writeLine is
+			// mutex-serialised, so the reply can come from any goroutine.
+			go c.serveACPTerminalRequest(method, rawID, raw["params"])
+			return
+		}
+		// Terminal capability not advertised for this client — keep the
+		// fail-closed method-not-found reply below (identical to unknown
+		// methods) so non-opted-in backends behave exactly as before.
+		resp = acpAgentMethodNotFoundResponse(method, rawID)
+		c.cfg.Logger.Debug("terminal method not served (capability not advertised)", "method", method)
 	default:
 		// Unknown agent→client method — reply with standard "method
 		// not found" so the agent doesn't block waiting for us. Better
 		// than silence: the agent can decide how to proceed.
-		resp = map[string]any{
-			"jsonrpc": "2.0",
-			"id":      json.RawMessage(rawID),
-			"error": map[string]any{
-				"code":    -32601,
-				"message": "method not found: " + method,
-			},
-		}
+		resp = acpAgentMethodNotFoundResponse(method, rawID)
 		c.cfg.Logger.Debug("unhandled agent→client request", "method", method)
 	}
 
@@ -915,6 +931,73 @@ func (c *hermesClient) handleAgentRequest(raw map[string]json.RawMessage) {
 	data = append(data, '\n')
 	if err := c.writeLine(data); err != nil {
 		c.cfg.Logger.Warn("write agent-request response", "method", method, "error", err)
+	}
+}
+
+// acpAgentMethodNotFoundResponse builds the standard JSON-RPC frame used
+// for unknown or unserved agent→client methods so the reply shape stays
+// identical wherever it is produced.
+func acpAgentMethodNotFoundResponse(method string, rawID json.RawMessage) map[string]any {
+	return map[string]any{
+		"jsonrpc": "2.0",
+		"id":      json.RawMessage(rawID),
+		"error": map[string]any{
+			"code":    -32601,
+			"message": "method not found: " + method,
+		},
+	}
+}
+
+// serveACPTerminalRequest serves one agent→client terminal request on the
+// calling goroutine (invoked via go from handleAgentRequest) and writes
+// the JSON-RPC reply itself. Terminal replies are logged without command
+// output or environment values — only the method, terminal id and exit
+// status where relevant.
+func (c *hermesClient) serveACPTerminalRequest(method string, rawID json.RawMessage, params json.RawMessage) {
+	result, terr := c.terminals.dispatch(method, params)
+	if terr != nil {
+		c.cfg.Logger.Warn("acp terminal request failed",
+			"method", method,
+			"code", terr.code,
+			"error", terr.message,
+		)
+		c.writeAgentRequestFrame(map[string]any{
+			"jsonrpc": "2.0",
+			"id":      json.RawMessage(rawID),
+			"error": map[string]any{
+				"code":    terr.code,
+				"message": terr.message,
+			},
+		})
+		return
+	}
+	c.writeAgentRequestFrame(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      json.RawMessage(rawID),
+		"result":  result,
+	})
+}
+
+// writeAgentRequestFrame marshals and writes one agent→client reply
+// frame. Safe from any goroutine (writeLine serialises the pipe).
+func (c *hermesClient) writeAgentRequestFrame(resp map[string]any) {
+	data, err := json.Marshal(resp)
+	if err != nil {
+		c.cfg.Logger.Warn("marshal agent-request response", "error", err)
+		return
+	}
+	data = append(data, '\n')
+	if err := c.writeLine(data); err != nil {
+		c.cfg.Logger.Warn("write agent-request response", "error", err)
+	}
+}
+
+// closeTerminals shuts the terminal bridge down on client shutdown (the
+// agent CLI process exiting or the Task finishing). Nil-safe: backends
+// without the terminal capability never wired a manager.
+func (c *hermesClient) closeTerminals() {
+	if c.terminals != nil {
+		c.terminals.closeAll()
 	}
 }
 

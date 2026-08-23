@@ -3340,3 +3340,196 @@ func TestACPRawText(t *testing.T) {
 		}
 	}
 }
+
+// ── ACP terminal bridge wiring (HIV-862) ──
+
+// TestHermesClientTerminalMethodNotAdvertisedFailsClosed pins that a
+// hermesClient whose backend did NOT advertise
+// clientCapabilities.terminal=true (hermes, kiro, qoder, grok, traecli)
+// keeps the pre-existing fail-closed behavior for terminal/* methods:
+// the same -32601 "method not found" reply used for unknown methods, so
+// no unadvertised capability is ever implicitly served.
+func TestHermesClientTerminalMethodNotAdvertisedFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	for _, method := range []string{"terminal/create", "terminal/output", "terminal/wait_for_exit", "terminal/kill", "terminal/release"} {
+		w := &bufferWriter{}
+		c := &hermesClient{
+			cfg:     Config{Logger: slog.Default()},
+			stdin:   w,
+			pending: make(map[int]*pendingRPC),
+		}
+		c.handleLine(`{"jsonrpc":"2.0","id":11,"method":"` + method + `","params":{"sessionId":"ses_1","terminalId":"term-x"}}`)
+
+		var resp struct {
+			ID    int `json:"id"`
+			Error struct {
+				Code    int    `json:"code"`
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal([]byte(strings.TrimSpace(w.String())), &resp); err != nil {
+			t.Fatalf("%s: reply not valid JSON: %q err=%v", method, w.String(), err)
+		}
+		if resp.ID != 11 {
+			t.Errorf("%s: id echo: got %d, want 11", method, resp.ID)
+		}
+		if resp.Error.Code != -32601 {
+			t.Errorf("%s: error code: got %d, want -32601 (method not found)", method, resp.Error.Code)
+		}
+		if !strings.Contains(resp.Error.Message, method) {
+			t.Errorf("%s: error message should name the method, got %q", method, resp.Error.Message)
+		}
+	}
+}
+
+// TestHermesClientServesTerminalRequestsWhileWaitPending pins the
+// concurrency contract of the terminal bridge: kimi-cli polls
+// terminal/output every ~250ms while a terminal/wait_for_exit for the
+// same terminal is still pending, so the stdout reader goroutine must
+// never block on a wait. The output reply has to arrive while the wait is
+// still unresolved.
+func TestHermesClientServesTerminalRequestsWhileWaitPending(t *testing.T) {
+	t.Parallel()
+
+	w := &bufferWriter{}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	m := newACPTerminalManager(ctx, t.TempDir(), slog.Default())
+	c := &hermesClient{
+		cfg:       Config{Logger: slog.Default()},
+		stdin:     w,
+		pending:   make(map[int]*pendingRPC),
+		terminals: m,
+	}
+
+	res, terr := m.dispatch("terminal/create", json.RawMessage(`{"sessionId":"ses_1","command":"/bin/sh","args":["-c","echo waiting; sleep 30"]}`))
+	if terr != nil {
+		t.Fatalf("terminal/create: code=%d msg=%q", terr.code, terr.message)
+	}
+	terminalID, _ := res.(map[string]any)["terminalId"].(string)
+	defer m.closeAll()
+
+	// Feed a blocking wait_for_exit and then an output poll through the
+	// same handleLine path the stdout reader uses. The output reply must
+	// come back while the sleep is still running.
+	c.handleLine(`{"jsonrpc":"2.0","id":41,"method":"terminal/wait_for_exit","params":{"sessionId":"ses_1","terminalId":"` + terminalID + `"}}`)
+	c.handleLine(`{"jsonrpc":"2.0","id":42,"method":"terminal/output","params":{"sessionId":"ses_1","terminalId":"` + terminalID + `"}}`)
+
+	waitForSubstring(t, w, `"id":42`, 5*time.Second, "terminal/output reply never arrived while wait_for_exit was pending — the reader goroutine is blocked")
+	if strings.Contains(w.String(), `"id":41`) {
+		t.Fatal("wait_for_exit resolved early — the sleep terminal should still be running")
+	}
+
+	// The early poll reply may legitimately race process startup (empty
+	// output); what matters is the required shape — output and truncated
+	// must always be present per kimi-cli's schema.
+	var early acpTerminalOutputResponse
+	for _, line := range strings.Split(w.String(), "\n") {
+		if !strings.Contains(line, `"id":42`) {
+			continue
+		}
+		var raw map[string]json.RawMessage
+		if err := json.Unmarshal([]byte(line), &raw); err != nil {
+			t.Fatalf("output reply not valid JSON: %q err=%v", line, err)
+		}
+		var result map[string]json.RawMessage
+		if err := json.Unmarshal(raw["result"], &result); err != nil {
+			t.Fatalf("output reply result not an object: %q err=%v", line, err)
+		}
+		if _, ok := result["output"]; !ok {
+			t.Errorf("output reply missing required field output: %s", line)
+		}
+		if _, ok := result["truncated"]; !ok {
+			t.Errorf("output reply missing required field truncated: %s", line)
+		}
+		if err := json.Unmarshal(raw["result"], &early); err != nil {
+			t.Fatalf("output reply result shape: %q err=%v", line, err)
+		}
+	}
+
+	// Reap: cancel the run context; the pending wait must answer itself
+	// (bounded by the bridge's post-cancel grace) instead of hanging.
+	cancel()
+	waitForSubstring(t, w, `"id":41`, 5*time.Second, "terminal/wait_for_exit reply never arrived after run cancellation")
+
+	// A post-cancel poll still serves the captured buffer — the terminal
+	// stayed readable until released even though the process was killed.
+	c.handleLine(`{"jsonrpc":"2.0","id":43,"method":"terminal/output","params":{"sessionId":"ses_1","terminalId":"` + terminalID + `"}}`)
+	waitForSubstring(t, w, `"id":43`, 5*time.Second, "post-cancel output reply never arrived")
+	var late acpTerminalOutputResponse
+	for _, line := range strings.Split(w.String(), "\n") {
+		if !strings.Contains(line, `"id":43`) {
+			continue
+		}
+		var frame struct {
+			Result acpTerminalOutputResponse `json:"result"`
+		}
+		if err := json.Unmarshal([]byte(line), &frame); err != nil {
+			t.Fatalf("post-cancel output reply not valid JSON: %q err=%v", line, err)
+		}
+		late = frame.Result
+	}
+	if !strings.Contains(late.Output, "waiting") {
+		t.Errorf("post-cancel output: got %q, want the captured echoed line", late.Output)
+	}
+	if late.Truncated {
+		t.Errorf("post-cancel truncated = true, want false for a tiny output")
+	}
+}
+
+// waitForSubstring polls a bufferWriter until it contains want.
+func waitForSubstring(t *testing.T, w *bufferWriter, want string, timeout time.Duration, failMsg string) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if strings.Contains(w.String(), want) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal(failMsg)
+}
+
+// TestHermesInitializeKeepsCapabilityAdvertisement pins that the shared
+// client's terminal bridge did not silently opt the Hermes backend in:
+// initialize must keep advertising the previous (empty) capability set —
+// only kimi advertises clientCapabilities.terminal=true.
+func TestHermesInitializeKeepsCapabilityAdvertisement(t *testing.T) {
+	t.Parallel()
+
+	recordPath := filepath.Join(t.TempDir(), "frames.jsonl")
+	fakePath := filepath.Join(t.TempDir(), "hermes")
+	writeTestExecutable(t, fakePath, []byte(fakeACPRecordingScript(recordPath, "ses_caps", `{}`)))
+
+	backend, err := New("hermes", Config{ExecutablePath: fakePath, Logger: slog.Default()})
+	if err != nil {
+		t.Fatalf("new hermes backend: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	session, err := backend.Execute(ctx, "prompt-ignored", ExecOptions{Timeout: 5 * time.Second})
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	go func() {
+		for range session.Messages {
+		}
+	}()
+	select {
+	case <-session.Result:
+	case <-time.After(10 * time.Second):
+		t.Fatal("timeout waiting for result")
+	}
+
+	frame := findRecordedFrame(t, recordPath, "initialize")
+	params, ok := frame["params"].(map[string]any)
+	if !ok {
+		t.Fatalf("initialize params: got %T, want map", frame["params"])
+	}
+	caps, _ := params["clientCapabilities"].(map[string]any)
+	if terminal, present := caps["terminal"]; present {
+		t.Errorf("hermes initialize must not advertise terminal capability, got clientCapabilities.terminal=%v", terminal)
+	}
+}
