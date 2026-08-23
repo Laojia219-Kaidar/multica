@@ -24,6 +24,23 @@ var qoderBlockedArgs = map[string]blockedArgMode{
 	"--yolo": blockedStandalone,
 }
 
+const qoderModelTransportEnv = "QODER_MODEL_TRANSPORT"
+
+// qoderEnv keeps the Qoder CN model stream on its HTTP transport by default.
+// The legacy transport can return HTTP 200 with heartbeat-only SSE traffic and
+// no terminal stop reason for Qwen3.8-Max. A runtime may still override the
+// selector explicitly, and cloning avoids mutating the shared Config.Env map.
+func qoderEnv(extra map[string]string) []string {
+	qoderExtra := make(map[string]string, len(extra)+1)
+	for key, value := range extra {
+		qoderExtra[key] = value
+	}
+	if _, configured := qoderExtra[qoderModelTransportEnv]; !configured {
+		qoderExtra[qoderModelTransportEnv] = "http"
+	}
+	return buildEnv(qoderExtra)
+}
+
 // qoderBackend implements Backend by spawning `qodercli --yolo --acp` and
 // communicating via the ACP (Agent Communication Protocol) JSON-RPC 2.0
 // transport over stdin/stdout.
@@ -100,7 +117,7 @@ func (b *qoderBackend) Execute(ctx context.Context, prompt string, opts ExecOpti
 	if opts.Cwd != "" {
 		cmd.Dir = opts.Cwd
 	}
-	cmd.Env = buildEnv(b.cfg.Env)
+	cmd.Env = qoderEnv(b.cfg.Env)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {

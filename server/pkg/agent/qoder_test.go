@@ -11,6 +11,29 @@ import (
 	"time"
 )
 
+func TestQoderEnvDefaultsToHTTPModelTransport(t *testing.T) {
+	t.Parallel()
+
+	extra := map[string]string{"SAFE_ENV": "kept"}
+	env := qoderEnv(extra)
+
+	if !containsEnv(env, "QODER_MODEL_TRANSPORT=http") {
+		t.Fatal("QODER_MODEL_TRANSPORT=http is missing")
+	}
+	if _, mutated := extra["QODER_MODEL_TRANSPORT"]; mutated {
+		t.Fatal("qoderEnv must not mutate the caller's Config.Env map")
+	}
+}
+
+func TestQoderEnvPreservesExplicitModelTransport(t *testing.T) {
+	t.Parallel()
+
+	env := qoderEnv(map[string]string{"QODER_MODEL_TRANSPORT": "legacy"})
+	if !containsEnv(env, "QODER_MODEL_TRANSPORT=legacy") {
+		t.Fatal("explicit QODER_MODEL_TRANSPORT=legacy override is missing")
+	}
+}
+
 func fakeQoderACPScript() string {
 	return `#!/bin/sh
 # Fake qodercli — exercises argv (--yolo --acp), blocked custom_args, set_model failure, and prompt success.
