@@ -64,7 +64,7 @@ export function WorkWallPage() {
         className="min-h-0 flex-1 overflow-auto px-5 py-4"
         data-testid="work-wall-content"
       >
-        <div className="mx-auto flex w-full max-w-[1600px] flex-col gap-5">
+        <div className="flex w-full flex-col gap-5">
           <WorkWall employees={data} />
           <TerminalLiveSection panes={panes} />
         </div>
