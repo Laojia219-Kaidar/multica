@@ -48,7 +48,7 @@ function StateIcon({ state }: { state: WorkConservingProjection["state"] }) {
 }
 
 /**
- * Fail-closed drilldown anchor for a work-conserving suggestion lineage ID.
+ * Fail-closed drilldown anchor for a work-conserving identity ID.
  * Renders nothing when the authoritative ID is missing, empty, or contains
  * leading/trailing whitespace: a link is
  * built only from the exact payload ID through the canonical workspace path
@@ -58,15 +58,20 @@ function StateIcon({ state }: { state: WorkConservingProjection["state"] }) {
 function LineageLink({
   id,
   buildHref,
+  className,
 }: {
   id: string | undefined;
   buildHref: (id: string) => string;
+  className?: string;
 }) {
   if (!id || id.trim() !== id) return null;
   return (
     <a
       href={buildHref(id)}
-      className="text-muted-foreground underline decoration-dotted underline-offset-2 hover:decoration-solid"
+      className={cn(
+        "text-muted-foreground underline decoration-dotted underline-offset-2 hover:decoration-solid",
+        className,
+      )}
     >
       {id}
     </a>
@@ -285,7 +290,7 @@ export function WorkConservingPanel({ projectId }: { projectId: string }) {
             {lastResult.results.map((row) => (
               <li key={row.issueId} className="rounded-md bg-muted/25 px-2.5 py-2 text-xs">
                 <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
-                  <span className="font-medium">{row.issueId}</span>
+                  <LineageLink id={row.issueId} buildHref={wsPaths.issueDetail} className="font-medium" />
                   <span className="text-muted-foreground">{row.receiver}</span>
                   <span className={cn(
                     "rounded-full px-1.5 py-0 text-[10px] font-medium",
@@ -319,7 +324,7 @@ export function WorkConservingPanel({ projectId }: { projectId: string }) {
               {projection.suggestions.slice(0, 5).map((suggestion) => (
                 <div key={suggestion.issueId} className="rounded-md bg-muted/25 px-2.5 py-2 text-xs">
                   <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
-                    <span className="font-medium">{suggestion.issueId}</span>
+                    <LineageLink id={suggestion.issueId} buildHref={wsPaths.issueDetail} className="font-medium" />
                     <LineageLink id={suggestion.employeeId} buildHref={wsPaths.employeeDossier} />
                     <LineageLink id={suggestion.agentId} buildHref={wsPaths.agentDetail} />
                     <LineageLink id={suggestion.runtimeId} buildHref={wsPaths.runtimeDetail} />
@@ -333,7 +338,7 @@ export function WorkConservingPanel({ projectId }: { projectId: string }) {
               {projection.blockedBacklog.slice(0, 5).map((issue) => (
                 <div key={issue.issueId} className="rounded-md bg-warning/5 px-2.5 py-2 text-xs">
                   <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
-                    <span className="font-medium">{issue.issueId}</span>
+                    <LineageLink id={issue.issueId} buildHref={wsPaths.issueDetail} className="font-medium" />
                     <span className="text-muted-foreground">{issue.receiver}</span>
                   </div>
                   <div className="mt-0.5 text-[11px] text-muted-foreground">

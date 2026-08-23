@@ -502,7 +502,10 @@ describe("WorkConservingPanel", () => {
       await vi.waitFor(() => {
         expect(mutationShared.onSuccessCalled).toBe(1);
       });
-      expect(document.body.textContent).toContain("issue-drain-1");
+      expect(screen.getByRole("link", { name: "issue-drain-1" })).toHaveAttribute(
+        "href",
+        "/hivecosm/issues/issue-drain-1",
+      );
       expect(document.body.textContent).toContain("task-1");
       expect(document.body.textContent).not.toContain("account-1");
       expect(document.body.textContent).not.toContain("digest-1");
@@ -690,14 +693,14 @@ describe("WorkConservingPanel lineage drilldown", () => {
     };
   }
 
-  it("links each suggestion to the canonical employee, agent, and runtime detail pages", () => {
+  it("links each suggestion to the canonical issue, employee, agent, and runtime detail pages", () => {
     const base = projection("ready");
     setProjection({
       ...base,
       suggestions: [
         ...base.suggestions,
         {
-          issueId: "issue-2",
+          issueId: "issue/2",
           goalId: "goal-1",
           employeeId: "employee/2",
           agentId: "agent/2",
@@ -710,6 +713,10 @@ describe("WorkConservingPanel lineage drilldown", () => {
     });
     renderPanel();
 
+    expect(screen.getByRole("link", { name: "issue-1" })).toHaveAttribute(
+      "href",
+      "/hivecosm/issues/issue-1",
+    );
     expect(screen.getByRole("link", { name: "employee-1" })).toHaveAttribute(
       "href",
       "/hivecosm/organization/employees/employee-1",
@@ -726,6 +733,10 @@ describe("WorkConservingPanel lineage drilldown", () => {
     expect(screen.getByRole("link", { name: "employee/2" })).toHaveAttribute(
       "href",
       "/hivecosm/organization/employees/employee%2F2",
+    );
+    expect(screen.getByRole("link", { name: "issue/2" })).toHaveAttribute(
+      "href",
+      "/hivecosm/issues/issue%2F2",
     );
     expect(screen.getByRole("link", { name: "runtime/2" })).toHaveAttribute(
       "href",
@@ -749,10 +760,14 @@ describe("WorkConservingPanel lineage drilldown", () => {
     setProjection({ ...base, suggestions: [missingRuntime] });
     renderPanel();
 
-    // The entry stays visible with its receiver label, but nothing is linked.
-    expect(screen.getByText("issue-gap-1")).toBeInTheDocument();
+    // The exact Issue remains navigable, while missing execution lineage does
+    // not produce any additional link.
+    expect(screen.getByRole("link", { name: "issue-gap-1" })).toHaveAttribute(
+      "href",
+      "/hivecosm/issues/issue-gap-1",
+    );
     expect(screen.getByText("Kai · GLM-5.3")).toBeInTheDocument();
-    expect(screen.queryByRole("link")).toBeNull();
+    expect(screen.getAllByRole("link")).toHaveLength(1);
     // No href may be synthesized from the receiver, model, or provider label.
     expect(document.querySelector('a[href*="Kai"]')).toBeNull();
     expect(document.querySelector('a[href*="GLM"]')).toBeNull();
@@ -777,9 +792,12 @@ describe("WorkConservingPanel lineage drilldown", () => {
     });
     renderPanel();
 
-    expect(screen.getByText("issue-gap-whitespace")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "issue-gap-whitespace" })).toHaveAttribute(
+      "href",
+      "/hivecosm/issues/issue-gap-whitespace",
+    );
     expect(screen.getByText("receiver-whitespace")).toBeInTheDocument();
-    expect(screen.queryByRole("link")).toBeNull();
+    expect(screen.getAllByRole("link")).toHaveLength(1);
   });
 
   it("renders unlinked IDs alongside linked ones when only some lineage IDs exist", () => {
@@ -805,12 +823,16 @@ describe("WorkConservingPanel lineage drilldown", () => {
       "href",
       "/hivecosm/organization/employees/employee-partial",
     );
+    expect(screen.getByRole("link", { name: "issue-partial-1" })).toHaveAttribute(
+      "href",
+      "/hivecosm/issues/issue-partial-1",
+    );
     expect(screen.queryByRole("link", { name: "agent-1" })).toBeNull();
     expect(screen.queryByRole("link", { name: "runtime-1" })).toBeNull();
     expect(screen.getByText("receiver-partial")).toBeInTheDocument();
   });
 
-  it("does not fabricate lineage links for blocked-backlog receivers", () => {
+  it("links blocked backlog Issues without fabricating links from receivers", () => {
     const base = projection("blocked");
     setProjection({
       ...base,
@@ -828,9 +850,72 @@ describe("WorkConservingPanel lineage drilldown", () => {
     });
     renderPanel();
 
-    expect(screen.getByText("issue-bl-1")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "issue-bl-1" })).toHaveAttribute(
+      "href",
+      "/hivecosm/issues/issue-bl-1",
+    );
     expect(screen.getByText("Prism · DeepSeek V4")).toBeInTheDocument();
+    expect(screen.getAllByRole("link")).toHaveLength(1);
+    expect(document.querySelector('a[href*="Prism"]')).toBeNull();
+    expect(document.querySelector('a[href*="DeepSeek"]')).toBeNull();
+  });
+
+  it("fails closed for missing, empty, whitespace-only, or padded Issue IDs", () => {
+    const base = projection("blocked");
+    const missingIssueId = {
+      issueId: "missing-placeholder",
+      goalId: "goal-1",
+      employeeId: "",
+      agentId: "",
+      runtimeId: "",
+      score: 1,
+      receiver: "receiver-missing-issue",
+      wakeCondition: "wake-missing-issue",
+    };
+    delete (missingIssueId as { issueId?: string }).issueId;
+    setProjection({
+      ...base,
+      suggestions: [
+        missingIssueId,
+        {
+          issueId: " issue-padded ",
+          goalId: "goal-1",
+          employeeId: "",
+          agentId: "",
+          runtimeId: "",
+          score: 1,
+          receiver: "receiver-padded-issue",
+          wakeCondition: "wake-padded-issue",
+        },
+      ],
+      blockedBacklog: [
+        {
+          issueId: "",
+          goalId: "goal-1",
+          reasons: ["runtime_offline"],
+          receiver: "receiver-empty-issue",
+          wakeCondition: "wake-empty-issue",
+          eligibleEmployeeCount: 0,
+        },
+        {
+          issueId: "\t",
+          goalId: "goal-1",
+          reasons: ["runtime_offline"],
+          receiver: "receiver-whitespace-issue",
+          wakeCondition: "wake-whitespace-issue",
+          eligibleEmployeeCount: 0,
+        },
+      ],
+    } as WorkConservingProjection);
+    renderPanel();
+
     expect(screen.queryByRole("link")).toBeNull();
+    expect(screen.getByText("receiver-missing-issue")).toBeInTheDocument();
+    expect(screen.getByText("receiver-padded-issue")).toBeInTheDocument();
+    expect(screen.getByText("receiver-empty-issue")).toBeInTheDocument();
+    expect(screen.getByText("receiver-whitespace-issue")).toBeInTheDocument();
+    expect(document.querySelector('a[href*="receiver"]')).toBeNull();
+    expect(document.querySelector('a[href*="wake"]')).toBeNull();
   });
 
   it("renders the source-gap state without any fabricated drilldown link", () => {
