@@ -221,3 +221,24 @@ func TestIssueRejectsCapabilityPathOutsideOwnedRoot(t *testing.T) {
 		t.Fatalf("symlink owned root path err=%v, want unauthorized", err)
 	}
 }
+
+func TestAuthorityAuthorizesRegisteredExactRefAndRejectsUnregisteredRef(t *testing.T) {
+	workDir := t.TempDir()
+	r := New()
+	authority, err := r.Grant(IssueRequest{TaskID: "task", RuntimeID: "runtime", WorkspaceID: "workspace", WorkDir: workDir, Operation: OperationRepoCheckout, Targets: []Target{{URL: "https://github.com/Laojia219-Kaidar/multica.git", Ref: "3e884af478ea9c3b7acd10db837579688f8a32ec"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.RevokeAuthority(authority)
+	req := CheckoutRequest{TaskID: "task", RuntimeID: "runtime", WorkspaceID: "workspace", WorkDir: workDir, URL: "https://github.com/Laojia219-Kaidar/multica.git", Ref: "3e884af478ea9c3b7acd10db837579688f8a32ec", Operation: OperationRepoCheckout, RequestID: "exact-ref-registered"}
+	decision, err := authority.Authorize(req)
+	if err != nil || !decision.Acquired {
+		t.Fatalf("registered exact ref authorize = %+v, err=%v", decision, err)
+	}
+	unregistered := req
+	unregistered.RequestID = "exact-ref-unregistered"
+	unregistered.Ref = "b8bfc936aec4d6347b031dfa93bc6d29d16416b3"
+	if _, err := authority.Authorize(unregistered); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("unregistered ref err=%v, want unauthorized", err)
+	}
+}
