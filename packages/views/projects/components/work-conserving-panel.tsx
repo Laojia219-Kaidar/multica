@@ -10,6 +10,7 @@ import { Skeleton } from "@multica/ui/components/ui/skeleton";
 import { api } from "@multica/core/api";
 import { useAuthStore } from "@multica/core/auth";
 import { useWorkspaceId } from "@multica/core/hooks";
+import { useWorkspacePaths } from "@multica/core/paths";
 import { memberListOptions } from "@multica/core/workspace/queries";
 import { projectKeys, projectWorkConservingOptions } from "@multica/core/projects/queries";
 import type { OrganizationSourceState, WorkConservingDrainResult, WorkConservingProjection } from "@multica/core/types";
@@ -46,6 +47,31 @@ function StateIcon({ state }: { state: WorkConservingProjection["state"] }) {
   return <AlertTriangle className="size-4 text-muted-foreground" />;
 }
 
+/**
+ * Fail-closed drilldown anchor for a work-conserving suggestion lineage ID.
+ * Renders nothing when the authoritative ID is missing or empty: a link is
+ * built only from the exact payload ID through the canonical workspace path
+ * builder, never inferred from a display name, model, Runtime label, or
+ * provider, and never fabricated for a source-gap projection.
+ */
+function LineageLink({
+  id,
+  buildHref,
+}: {
+  id: string | undefined;
+  buildHref: (id: string) => string;
+}) {
+  if (!id) return null;
+  return (
+    <a
+      href={buildHref(id)}
+      className="text-muted-foreground underline decoration-dotted underline-offset-2 hover:decoration-solid"
+    >
+      {id}
+    </a>
+  );
+}
+
 function Metric({ label, value }: { label: string; value: number }) {
   return (
     <div className="rounded-md bg-muted/35 px-3 py-2">
@@ -67,6 +93,7 @@ function isOwnerOrAdmin(
 export function WorkConservingPanel({ projectId }: { projectId: string }) {
   const { t } = useT("projects");
   const workspaceId = useWorkspaceId();
+  const wsPaths = useWorkspacePaths();
   const qc = useQueryClient();
   const userId = useAuthStore((s) => s.user?.id);
   const { data: members, isLoading: membersLoading, isError: membersError } = useQuery({
@@ -292,7 +319,9 @@ export function WorkConservingPanel({ projectId }: { projectId: string }) {
                 <div key={suggestion.issueId} className="rounded-md bg-muted/25 px-2.5 py-2 text-xs">
                   <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
                     <span className="font-medium">{suggestion.issueId}</span>
-                    <span className="text-muted-foreground">{suggestion.employeeId}</span>
+                    <LineageLink id={suggestion.employeeId} buildHref={wsPaths.agentDetail} />
+                    <LineageLink id={suggestion.agentId} buildHref={wsPaths.agentDetail} />
+                    <LineageLink id={suggestion.runtimeId} buildHref={wsPaths.runtimeDetail} />
                     <span className="text-muted-foreground">{suggestion.receiver}</span>
                   </div>
                   <div className="mt-0.5 text-[11px] text-muted-foreground">

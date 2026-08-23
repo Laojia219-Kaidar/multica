@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { useState } from "react";
 import { I18nProvider } from "@multica/core/i18n/react";
+import { WorkspaceSlugProvider } from "@multica/core/paths";
 import { Toaster, toast } from "sonner";
 import enProjects from "../../locales/en/projects.json";
 import type { WorkConservingDrainResult, WorkConservingProjection } from "@multica/core/types";
@@ -119,11 +120,16 @@ function RenderDriver() {
   return <WorkConservingPanel projectId="project-1" />;
 }
 
+// The HiveCosm workspace slug makes canonical workspace paths resolve to the
+// deployed /hivecosm/... route space, so link assertions check the exact
+// drilldown URLs users navigate in production.
 function renderPanel() {
   return render(
     <I18nProvider locale="en" resources={{ en: { projects: enProjects } }}>
-      <Toaster />
-      <RenderDriver />
+      <WorkspaceSlugProvider slug="hivecosm">
+        <Toaster />
+        <RenderDriver />
+      </WorkspaceSlugProvider>
     </I18nProvider>,
   );
 }
@@ -662,5 +668,181 @@ describe("WorkConservingPanel organization source notice", () => {
       "tenant_missing",
     );
     expect(screen.queryByRole("button", { name: /dispatch next action/i })).toBeNull();
+  });
+});
+
+describe("WorkConservingPanel lineage drilldown", () => {
+  beforeEach(() => {
+    mockQueryResult.workConserving = null;
+    mockQueryResult.members = null;
+    mutationShared.isPending = false;
+    mutationShared.invalidateQueries.mockClear();
+    mutationShared.onSuccessCalled = 0;
+    mockDrain.mockReset();
+  });
+
+  function setProjection(data: WorkConservingProjection) {
+    mockQueryResult.workConserving = { data, isLoading: false, isError: false };
+    mockQueryResult.members = {
+      data: [{ user_id: "user-1", role: "owner" }],
+      isLoading: false,
+      isError: false,
+    };
+  }
+
+  it("links each suggestion to the canonical employee, agent, and runtime detail pages", () => {
+    const base = projection("ready");
+    setProjection({
+      ...base,
+      suggestions: [
+        ...base.suggestions,
+        {
+          issueId: "issue-2",
+          goalId: "goal-1",
+          employeeId: "employee/2",
+          agentId: "agent/2",
+          runtimeId: "runtime/2",
+          score: 1,
+          receiver: "receiver-2",
+          wakeCondition: "wake",
+        },
+      ],
+    });
+    renderPanel();
+
+    expect(screen.getByRole("link", { name: "employee-1" })).toHaveAttribute(
+      "href",
+      "/hivecosm/agents/employee-1",
+    );
+    expect(screen.getByRole("link", { name: "agent-1" })).toHaveAttribute(
+      "href",
+      "/hivecosm/agents/agent-1",
+    );
+    expect(screen.getByRole("link", { name: "runtime-1" })).toHaveAttribute(
+      "href",
+      "/hivecosm/runtimes/runtime-1",
+    );
+    // Canonical builder semantics: IDs are URL-encoded, not interpolated raw.
+    expect(screen.getByRole("link", { name: "employee/2" })).toHaveAttribute(
+      "href",
+      "/hivecosm/agents/employee%2F2",
+    );
+    expect(screen.getByRole("link", { name: "runtime/2" })).toHaveAttribute(
+      "href",
+      "/hivecosm/runtimes/runtime%2F2",
+    );
+  });
+
+  it("emits no link for empty or missing lineage IDs and never links the receiver label", () => {
+    const base = projection("ready");
+    const missingRuntime = {
+      issueId: "issue-gap-1",
+      goalId: "goal-1",
+      employeeId: "",
+      agentId: "",
+      runtimeId: "",
+      score: 1,
+      receiver: "Kai · GLM-5.3",
+      wakeCondition: "wake",
+    };
+    delete (missingRuntime as { runtimeId?: string }).runtimeId;
+    setProjection({ ...base, suggestions: [missingRuntime] });
+    renderPanel();
+
+    // The entry stays visible with its receiver label, but nothing is linked.
+    expect(screen.getByText("issue-gap-1")).toBeInTheDocument();
+    expect(screen.getByText("Kai · GLM-5.3")).toBeInTheDocument();
+    expect(screen.queryByRole("link")).toBeNull();
+    // No href may be synthesized from the receiver, model, or provider label.
+    expect(document.querySelector('a[href*="Kai"]')).toBeNull();
+    expect(document.querySelector('a[href*="GLM"]')).toBeNull();
+  });
+
+  it("renders unlinked IDs alongside linked ones when only some lineage IDs exist", () => {
+    const base = projection("ready");
+    setProjection({
+      ...base,
+      suggestions: [
+        {
+          issueId: "issue-partial-1",
+          goalId: "goal-1",
+          employeeId: "employee-partial",
+          agentId: "",
+          runtimeId: "",
+          score: 1,
+          receiver: "receiver-partial",
+          wakeCondition: "wake",
+        },
+      ],
+    });
+    renderPanel();
+
+    expect(screen.getByRole("link", { name: "employee-partial" })).toHaveAttribute(
+      "href",
+      "/hivecosm/agents/employee-partial",
+    );
+    expect(screen.queryByRole("link", { name: "agent-1" })).toBeNull();
+    expect(screen.queryByRole("link", { name: "runtime-1" })).toBeNull();
+    expect(screen.getByText("receiver-partial")).toBeInTheDocument();
+  });
+
+  it("does not fabricate lineage links for blocked-backlog receivers", () => {
+    const base = projection("blocked");
+    setProjection({
+      ...base,
+      suggestions: [],
+      blockedBacklog: [
+        {
+          issueId: "issue-bl-1",
+          goalId: "goal-1",
+          reasons: ["runtime_offline"],
+          receiver: "Prism · DeepSeek V4",
+          wakeCondition: "runtime wakes",
+          eligibleEmployeeCount: 0,
+        },
+      ],
+    });
+    renderPanel();
+
+    expect(screen.getByText("issue-bl-1")).toBeInTheDocument();
+    expect(screen.getByText("Prism · DeepSeek V4")).toBeInTheDocument();
+    expect(screen.queryByRole("link")).toBeNull();
+  });
+
+  it("renders the source-gap state without any fabricated drilldown link", () => {
+    const base = projection("source_gap");
+    const stale = {
+      ...base,
+      suggestions: [
+        {
+          issueId: "stale-issue",
+          goalId: "goal-1",
+          employeeId: "stale-employee",
+          agentId: "stale-agent",
+          runtimeId: "stale-runtime",
+          score: 1,
+          receiver: "stale-receiver",
+          wakeCondition: "wake",
+        },
+      ],
+    };
+    setProjection(stale);
+    renderPanel();
+
+    expect(screen.getByText(/source gap/i)).toBeInTheDocument();
+    expect(document.querySelectorAll("a")).toHaveLength(0);
+  });
+
+  it("renders no drilldown link when the work-conserving query degrades", () => {
+    mockQueryResult.workConserving = { isLoading: false, isError: true };
+    mockQueryResult.members = {
+      data: [{ user_id: "user-1", role: "owner" }],
+      isLoading: false,
+      isError: false,
+    };
+    renderPanel();
+
+    expect(screen.getByText(/source gap/i)).toBeInTheDocument();
+    expect(document.querySelectorAll("a")).toHaveLength(0);
   });
 });
