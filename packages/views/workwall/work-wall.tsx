@@ -283,12 +283,6 @@ function ExecutionChainBlock({ employee: e }: { employee: EmployeeLiveActivityV1
         <div className="truncate" data-testid="owner-card-exec-runtime">
           执行运行时：{e.execution_runtime_carrier ?? "未知"}
           <span className="text-muted-foreground"> {e.execution_runtime_id}</span>
-          {e.execution_model_name ? (
-            <>
-              {" · 模型 "}
-              <span className="text-muted-foreground">{e.execution_model_name}</span>
-            </>
-          ) : null}
           {e.execution_profile_id ? (
             <>
               {" · 档案 "}

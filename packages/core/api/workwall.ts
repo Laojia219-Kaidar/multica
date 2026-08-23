@@ -121,7 +121,6 @@ export const EmployeeLiveActivityV1Schema = z
     // rest of the chain. Never substituted from the Agent model or Receipt.
     execution_runtime_id: z.string().optional(),
     execution_runtime_carrier: z.string().optional(),
-    execution_model_name: z.string().optional(),
     execution_profile_id: z.string().optional(),
     execution_profile_name: z.string().optional(),
 

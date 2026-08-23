@@ -80,7 +80,6 @@ describe("EmployeeLiveActivityV1Schema", () => {
     expect(parsed.execution_receipt_ref).toBeUndefined();
     expect(parsed.execution_runtime_id).toBeUndefined();
     expect(parsed.execution_runtime_carrier).toBeUndefined();
-    expect(parsed.execution_model_name).toBeUndefined();
     expect(parsed.execution_profile_id).toBeUndefined();
     expect(parsed.execution_profile_name).toBeUndefined();
   });
@@ -99,13 +98,11 @@ describe("EmployeeLiveActivityV1Schema", () => {
       ...valid,
       execution_runtime_id: "rt-task-orig",
       execution_runtime_carrier: "codex",
-      execution_model_name: "o3",
       execution_profile_id: "profile-exec",
       execution_profile_name: "Codex 执行档案",
     });
     expect(parsed.execution_runtime_id).toBe("rt-task-orig");
     expect(parsed.execution_runtime_carrier).toBe("codex");
-    expect(parsed.execution_model_name).toBe("o3");
     expect(parsed.execution_profile_id).toBe("profile-exec");
     expect(parsed.execution_profile_name).toBe("Codex 执行档案");
   });

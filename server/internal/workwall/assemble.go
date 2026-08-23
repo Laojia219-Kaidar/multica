@@ -274,7 +274,6 @@ func AssembleAgentCard(
 		// Agent runtime binding.
 		in.ExecutionRuntimeID = chain.ExecutionRuntimeID
 		in.ExecutionRuntimeCarrier = chain.ExecutionRuntimeCarrier
-		in.ExecutionModelName = chain.ExecutionModelName
 		in.ExecutionProfileID = chain.ExecutionProfileID
 		in.ExecutionProfileName = chain.ExecutionProfileName
 		if chain.IssueID != "" {
@@ -291,6 +290,9 @@ func AssembleAgentCard(
 		}
 		if chain.ExecutionRuntimeID != "" {
 			in.SourceRefs = append(in.SourceRefs, "exec-runtime://"+chain.ExecutionRuntimeID)
+		}
+		if chain.ExecutionProfileID != "" {
+			in.SourceRefs = append(in.SourceRefs, "exec-profile://"+chain.ExecutionProfileID)
 		}
 	}
 

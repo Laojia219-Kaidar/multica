@@ -109,7 +109,6 @@ type ExecutionChain struct {
 	// leaves these empty without dropping the rest of the chain.
 	ExecutionRuntimeID      string
 	ExecutionRuntimeCarrier string
-	ExecutionModelName      string
 	ExecutionProfileID      string
 	ExecutionProfileName    string
 }
@@ -136,13 +135,10 @@ func resolveIssuePrefix(ctx context.Context, store chainStore, workspaceID pgtyp
 
 // resolveExecutionChain hydrates the chain for the task currently shown on the
 // card (active task, or the most recent terminal task when idle). Runtime
-// Profile evidence follows the Task's runtime when a task with its own
-// runtime_id exists (HIV-940): the profile is resolved from the Task's
-// runtime, not the agent's current binding. After an A→B rebind the card
-// shows current B but the chain resolves Profile A. When the task has no
-// runtime_id the agent's current runtime profile is the fallback. An idle
-// card (no task) may return a profile-only chain from the current runtime.
-// rt may be nil (no runtime row).
+// Current Profile evidence always follows the Agent's current runtime binding.
+// Execution Profile evidence is resolved separately from the selected Task's
+// exact runtime_id. After an A→B rebind the card therefore shows current
+// Runtime/Profile B and execution Runtime/Profile A. rt may be nil.
 func resolveExecutionChain(
 	ctx context.Context,
 	store chainStore,
@@ -153,15 +149,21 @@ func resolveExecutionChain(
 ) (*ExecutionChain, error) {
 	chain := &ExecutionChain{}
 
-	// Determine which runtime drives the profile and execution fields.
-	// When the task carries its own runtime_id the execution chain derives
-	// from THAT runtime (HIV-940); otherwise the agent's current runtime
-	// is the fallback for the profile. The execution-runtime fields are
-	// populated only when a distinct task runtime is resolved.
-	var (
-		profileRuntime   *db.AgentRuntime
-		taskRuntimeFound *db.AgentRuntime
-	)
+	// Preserve the current Runtime/Profile binding independently of Task
+	// history. A Task runtime must never overwrite these fields.
+	if rt != nil && rt.ProfileID.Valid {
+		profile, err := store.GetRuntimeProfileForWorkWall(ctx, db.GetRuntimeProfileForWorkWallParams{
+			ID:          rt.ProfileID,
+			WorkspaceID: workspaceID,
+		})
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return nil, err
+		}
+		if err == nil {
+			chain.RuntimeProfileID = uuidStr(profile.ID)
+			chain.RuntimeProfileName = profile.DisplayName
+		}
+	}
 
 	if task != nil && task.RuntimeID.Valid {
 		tr, err := store.GetAgentRuntimeForWorkspace(ctx, db.GetAgentRuntimeForWorkspaceParams{
@@ -172,35 +174,24 @@ func resolveExecutionChain(
 			return nil, err
 		}
 		if err == nil {
-			taskRuntimeFound = &tr
-			profileRuntime = taskRuntimeFound
 			chain.ExecutionRuntimeID = uuidStr(tr.ID)
 			chain.ExecutionRuntimeCarrier = tr.Provider
+			if tr.ProfileID.Valid {
+				profile, profileErr := store.GetRuntimeProfileForWorkWall(ctx, db.GetRuntimeProfileForWorkWallParams{
+					ID:          tr.ProfileID,
+					WorkspaceID: workspaceID,
+				})
+				if profileErr != nil && !errors.Is(profileErr, pgx.ErrNoRows) {
+					return nil, profileErr
+				}
+				if profileErr == nil {
+					chain.ExecutionProfileID = uuidStr(profile.ID)
+					chain.ExecutionProfileName = profile.DisplayName
+				}
+			}
 		}
 		// Missing/unknown task runtime: execution fields stay empty, the
 		// rest of the chain is unaffected.
-	}
-
-	if profileRuntime == nil {
-		profileRuntime = rt
-	}
-
-	if profileRuntime != nil && profileRuntime.ProfileID.Valid {
-		profile, err := store.GetRuntimeProfileForWorkWall(ctx, db.GetRuntimeProfileForWorkWallParams{
-			ID:          profileRuntime.ProfileID,
-			WorkspaceID: workspaceID,
-		})
-		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-			return nil, err
-		}
-		if err == nil {
-			chain.RuntimeProfileID = uuidStr(profile.ID)
-			chain.RuntimeProfileName = profile.DisplayName
-			if taskRuntimeFound != nil {
-				chain.ExecutionProfileID = uuidStr(profile.ID)
-				chain.ExecutionProfileName = profile.DisplayName
-			}
-		}
 	}
 
 	if task == nil {

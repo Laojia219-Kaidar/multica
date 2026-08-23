@@ -152,7 +152,7 @@ func TestBuildDTO_EmptyChainFieldsOmitFromWire(t *testing.T) {
 		t.Fatalf("marshal: %v", err)
 	}
 	raw := string(b)
-	for _, key := range []string{"issue_identifier", "runtime_profile_id", "runtime_profile_name", "execution_receipt_ref", "execution_receipt_status", "run_id", "project_id", "execution_runtime_id", "execution_runtime_carrier", "execution_model_name", "execution_profile_id", "execution_profile_name"} {
+	for _, key := range []string{"issue_identifier", "runtime_profile_id", "runtime_profile_name", "execution_receipt_ref", "execution_receipt_status", "run_id", "project_id", "execution_runtime_id", "execution_runtime_carrier", "execution_profile_id", "execution_profile_name"} {
 		if strings.Contains(raw, key) {
 			t.Fatalf("absent chain evidence must be omitted from the wire, found %q in: %s", key, raw)
 		}
@@ -170,7 +170,6 @@ func TestBuildDTO_CopiesExecutionRuntimeFields(t *testing.T) {
 		RuntimeCarrier:          "prime",
 		ExecutionRuntimeID:      "rt-task-orig",
 		ExecutionRuntimeCarrier: "codex",
-		ExecutionModelName:      "o3",
 		ExecutionProfileID:      "profile-exec",
 		ExecutionProfileName:    "Codex 执行档案",
 		SourceRefs:              []string{"agent://AGT-01"},
@@ -188,9 +187,6 @@ func TestBuildDTO_CopiesExecutionRuntimeFields(t *testing.T) {
 	if dto.ExecutionRuntimeCarrier != "codex" {
 		t.Fatalf("execution_runtime_carrier = %q", dto.ExecutionRuntimeCarrier)
 	}
-	if dto.ExecutionModelName != "o3" {
-		t.Fatalf("execution_model_name = %q", dto.ExecutionModelName)
-	}
 	if dto.ExecutionProfileID != "profile-exec" || dto.ExecutionProfileName != "Codex 执行档案" {
 		t.Fatalf("execution profile = %+v", dto)
 	}
@@ -200,7 +196,7 @@ func TestBuildDTO_CopiesExecutionRuntimeFields(t *testing.T) {
 		t.Fatalf("marshal: %v", err)
 	}
 	raw := string(b)
-	for _, key := range []string{`"execution_runtime_id":"rt-task-orig"`, `"execution_runtime_carrier":"codex"`, `"execution_model_name":"o3"`, `"execution_profile_id":"profile-exec"`} {
+	for _, key := range []string{`"execution_runtime_id":"rt-task-orig"`, `"execution_runtime_carrier":"codex"`, `"execution_profile_id":"profile-exec"`} {
 		if !strings.Contains(raw, key) {
 			t.Fatalf("wire JSON missing %s in: %s", key, raw)
 		}

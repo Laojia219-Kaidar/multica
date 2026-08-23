@@ -903,8 +903,8 @@ func rebindChainFixture() *ExecutionChain {
 		IssueID:                 uuidStr(tu),
 		IssueIdentifier:         "HIV-940",
 		IssueTitle:              "Task-runtime lineage",
-		RuntimeProfileID:        "profile-task-rt",
-		RuntimeProfileName:      "Codex 执行档案",
+		RuntimeProfileID:        "profile-current-rt",
+		RuntimeProfileName:      "Prime 当前档案",
 		ExecutionRuntimeID:      "rt-task-uuid",
 		ExecutionRuntimeCarrier: "codex",
 		ExecutionProfileID:      "profile-task-rt",
@@ -944,9 +944,22 @@ func TestAssembleAgentCard_RebindShowsCurrentBExecutionA(t *testing.T) {
 	if got.ExecutionProfileID != "profile-task-rt" || got.ExecutionProfileName != "Codex 执行档案" {
 		t.Fatalf("execution profile = %q / %q", got.ExecutionProfileID, got.ExecutionProfileName)
 	}
-	// Profile on the card follows the task runtime (HIV-940).
-	if got.RuntimeProfileID != "profile-task-rt" {
-		t.Fatalf("runtime_profile_id = %q, want the task runtime's profile", got.RuntimeProfileID)
+	// Current profile remains distinct from the Task execution profile.
+	if got.RuntimeProfileID != "profile-current-rt" || got.RuntimeProfileName != "Prime 当前档案" {
+		t.Fatalf("current runtime profile = %q / %q", got.RuntimeProfileID, got.RuntimeProfileName)
+	}
+	if got.RuntimeProfileID == got.ExecutionProfileID {
+		t.Fatalf("current and execution profiles must remain distinct after rebind: %+v", got)
+	}
+	foundExecutionProfileRef := false
+	for _, ref := range got.SourceRefs {
+		if ref == "exec-profile://profile-task-rt" {
+			foundExecutionProfileRef = true
+			break
+		}
+	}
+	if !foundExecutionProfileRef {
+		t.Fatalf("source refs missing exact execution profile provenance: %v", got.SourceRefs)
 	}
 }
 

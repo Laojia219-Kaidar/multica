@@ -93,7 +93,6 @@ type EmployeeLiveActivityV1 struct {
 	// the chain. Never substituted from the Agent model or Receipt snapshots.
 	ExecutionRuntimeID      string `json:"execution_runtime_id,omitempty"`
 	ExecutionRuntimeCarrier string `json:"execution_runtime_carrier,omitempty"`
-	ExecutionModelName      string `json:"execution_model_name,omitempty"`
 	ExecutionProfileID      string `json:"execution_profile_id,omitempty"`
 	ExecutionProfileName    string `json:"execution_profile_name,omitempty"`
 
@@ -149,7 +148,6 @@ type SnapshotInput struct {
 
 	ExecutionRuntimeID      string
 	ExecutionRuntimeCarrier string
-	ExecutionModelName      string
 	ExecutionProfileID      string
 	ExecutionProfileName    string
 
@@ -235,7 +233,6 @@ func BuildDTO(s SnapshotInput, observedAt time.Time) EmployeeLiveActivityV1 {
 		ExecutionReceiptStatus:  s.ExecutionReceiptStatus,
 		ExecutionRuntimeID:      s.ExecutionRuntimeID,
 		ExecutionRuntimeCarrier: s.ExecutionRuntimeCarrier,
-		ExecutionModelName:      s.ExecutionModelName,
 		ExecutionProfileID:      s.ExecutionProfileID,
 		ExecutionProfileName:    s.ExecutionProfileName,
 		QueuedAt:                s.QueuedAt,

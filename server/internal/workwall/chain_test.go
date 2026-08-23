@@ -542,6 +542,9 @@ func TestResolveExecutionChain_TaskRuntimeRebindShowsExecutionA(t *testing.T) {
 	taskProfile := otherProfileUUID()
 
 	// Agent's current runtime (tu) has profile tu.
+	store.profiles[key(tu, tu)] = db.GetRuntimeProfileForWorkWallRow{
+		ID: tu, WorkspaceID: tu, DisplayName: "Prime 当前档案",
+	}
 	// Task's runtime (taskRT) has profile taskProfile — a DIFFERENT profile.
 	store.runtimes[key(tu, taskRT)] = db.AgentRuntime{
 		ID: taskRT, WorkspaceID: tu, Provider: "codex", Status: "online", ProfileID: taskProfile,
@@ -558,9 +561,9 @@ func TestResolveExecutionChain_TaskRuntimeRebindShowsExecutionA(t *testing.T) {
 		t.Fatalf("resolveExecutionChain: %v", err)
 	}
 
-	// Profile comes from the Task's runtime, not the agent's current.
-	if chain.RuntimeProfileID != uuidStr(taskProfile) || chain.RuntimeProfileName != "Codex 执行档案" {
-		t.Fatalf("profile must follow task runtime, got profile=%q name=%q", chain.RuntimeProfileID, chain.RuntimeProfileName)
+	// Current profile remains bound to the Agent's current runtime.
+	if chain.RuntimeProfileID != uuidStr(tu) || chain.RuntimeProfileName != "Prime 当前档案" {
+		t.Fatalf("profile must follow current runtime, got profile=%q name=%q", chain.RuntimeProfileID, chain.RuntimeProfileName)
 	}
 	// Execution-runtime fields trace the Task's original runtime.
 	if chain.ExecutionRuntimeID != uuidStr(taskRT) {

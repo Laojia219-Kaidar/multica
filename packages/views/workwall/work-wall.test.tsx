@@ -336,7 +336,6 @@ describe("WorkWall execution chain", () => {
             task_id: "33333333-3333-3333-3333-333333333333",
             execution_runtime_id: "rt-task-orig",
             execution_runtime_carrier: "codex",
-            execution_model_name: "o3",
             execution_profile_id: "profile-exec",
             execution_profile_name: "Codex 执行档案",
           }),
@@ -347,8 +346,6 @@ describe("WorkWall execution chain", () => {
     const execRT = screen.getByTestId("owner-card-exec-runtime");
     expect(execRT.textContent).toContain("执行运行时：codex");
     expect(execRT.textContent).toContain("rt-task-orig");
-    expect(execRT.textContent).toContain("模型");
-    expect(execRT.textContent).toContain("o3");
     expect(execRT.textContent).toContain("档案");
     expect(execRT.textContent).toContain("Codex 执行档案");
     expect(execRT.textContent).toContain("profile-exec");
