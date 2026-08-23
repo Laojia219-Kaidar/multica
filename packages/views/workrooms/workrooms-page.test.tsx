@@ -105,6 +105,7 @@ describe("WorkroomsPage states", () => {
 
     expect(await screen.findByText("加载失败")).toBeInTheDocument();
     expect(screen.getByText("无法加载协作空间列表，请重试。")).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toBeInTheDocument();
 
     const retryButton = screen.getByRole("button", { name: "重试" });
     expect(retryButton).toBeInTheDocument();

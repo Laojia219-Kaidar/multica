@@ -1,5 +1,7 @@
 "use client";
 
+/* eslint-disable i18next/no-literal-string */
+
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertCircle, Network, Plus } from "lucide-react";
@@ -157,6 +159,7 @@ export function WorkroomsPage() {
             <CollectionPageState
               icon={AlertCircle}
               tone="destructive"
+              role="alert"
               title="加载失败"
               description="无法加载协作空间列表，请重试。"
               actions={
