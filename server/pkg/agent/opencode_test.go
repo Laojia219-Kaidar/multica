@@ -773,6 +773,91 @@ func TestOpencodeProcessEventsStreamEndsAfterToolBeforeStepFinish(t *testing.T) 
 	close(ch)
 }
 
+func TestOpencodeProcessEventsEmptyZeroUsageCompletionFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	b := &opencodeBackend{cfg: Config{Logger: slog.Default()}}
+	ch := make(chan Message, 256)
+
+	// Regression for HIV-963: OpenCode emitted a structurally closed run with
+	// no text, no tool call, and 0/0 usage. It must not become a false-green
+	// completed task merely because step_finish carried reason "stop".
+	lines := strings.Join([]string{
+		`{"type":"step_start","timestamp":1000,"sessionID":"ses_empty","part":{"type":"step-start"}}`,
+		`{"type":"step_finish","timestamp":1001,"sessionID":"ses_empty","part":{"type":"step-finish","reason":"stop","tokens":{"input":0,"output":0,"cache":{"read":0,"write":0}}}}`,
+	}, "\n")
+
+	result := b.processEvents(strings.NewReader(lines), ch)
+
+	if result.status != "failed" {
+		t.Errorf("status: got %q, want %q", result.status, "failed")
+	}
+	if !strings.Contains(result.errMsg, "empty zero-usage completion") {
+		t.Errorf("errMsg: got %q, want it to identify the empty zero-usage completion", result.errMsg)
+	}
+	if result.output != "" {
+		t.Errorf("output: got %q, want empty", result.output)
+	}
+	if result.noTerminalSignal {
+		t.Error("noTerminalSignal: got true, want false (step_finish was present)")
+	}
+
+	close(ch)
+}
+
+func TestOpencodeProcessEventsTextOnlyZeroUsageCompletionPasses(t *testing.T) {
+	t.Parallel()
+
+	b := &opencodeBackend{cfg: Config{Logger: slog.Default()}}
+	ch := make(chan Message, 256)
+
+	lines := strings.Join([]string{
+		`{"type":"step_start","timestamp":1000,"sessionID":"ses_text_only","part":{"type":"step-start"}}`,
+		`{"type":"text","timestamp":1001,"sessionID":"ses_text_only","part":{"type":"text","text":"done"}}`,
+		`{"type":"step_finish","timestamp":1002,"sessionID":"ses_text_only","part":{"type":"step-finish","reason":"stop","tokens":{"input":0,"output":0,"cache":{"read":0,"write":0}}}}`,
+	}, "\n")
+
+	result := b.processEvents(strings.NewReader(lines), ch)
+
+	if result.status != "completed" {
+		t.Errorf("status: got %q, want %q", result.status, "completed")
+	}
+	if result.output != "done" {
+		t.Errorf("output: got %q, want %q", result.output, "done")
+	}
+	if result.errMsg != "" {
+		t.Errorf("errMsg: got %q, want empty", result.errMsg)
+	}
+
+	close(ch)
+}
+
+func TestOpencodeProcessEventsToolOnlyZeroUsageCompletionPasses(t *testing.T) {
+	t.Parallel()
+
+	b := &opencodeBackend{cfg: Config{Logger: slog.Default()}}
+	ch := make(chan Message, 256)
+
+	// A provider-executed tool is observable output and requires no local
+	// continuation, so a terminal zero-usage step must remain successful.
+	lines := strings.Join([]string{
+		`{"type":"step_start","timestamp":1000,"sessionID":"ses_tool_only","part":{"type":"step-start"}}`,
+		`{"type":"tool_use","timestamp":1001,"sessionID":"ses_tool_only","part":{"type":"tool","tool":"web_search","callID":"call_1","metadata":{"providerExecuted":true},"state":{"status":"completed","input":{"query":"weather"},"output":"sunny"}}}`,
+		`{"type":"step_finish","timestamp":1002,"sessionID":"ses_tool_only","part":{"type":"step-finish","reason":"stop","tokens":{"input":0,"output":0,"cache":{"read":0,"write":0}}}}`,
+	}, "\n")
+
+	result := b.processEvents(strings.NewReader(lines), ch)
+
+	if result.status != "completed" {
+		t.Errorf("status: got %q, want %q", result.status, "completed")
+	}
+	if result.errMsg != "" {
+		t.Errorf("errMsg: got %q, want empty", result.errMsg)
+	}
+
+	close(ch)
+}
+
 func TestOpencodeProcessEventsMultiStepHappyPath(t *testing.T) {
 	t.Parallel()
 

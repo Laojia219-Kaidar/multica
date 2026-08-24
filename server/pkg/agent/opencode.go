@@ -284,6 +284,8 @@ func (b *opencodeBackend) processEvents(r io.Reader, ch chan<- Message) eventRes
 	var usage TokenUsage
 	finalStatus := "completed"
 	var finalError string
+	sawNonEmptyText := false
+	sawToolUse := false
 
 	// Track step bracketing so a stream that ends mid-step is not mistaken for a
 	// clean completion. OpenCode's JSON stream has no terminal result event
@@ -325,8 +327,12 @@ func (b *opencodeBackend) processEvents(r io.Reader, ch chan<- Message) eventRes
 
 		switch event.Type {
 		case "text":
+			if strings.TrimSpace(event.Part.Text) != "" {
+				sawNonEmptyText = true
+			}
 			b.handleTextEvent(event, ch, &output)
 		case "tool_use":
+			sawToolUse = true
 			b.handleToolUseEvent(event, ch)
 			if event.Part.Metadata == nil || !event.Part.Metadata.ProviderExecuted {
 				stepHasContinuationTool = true
@@ -379,6 +385,18 @@ func (b *opencodeBackend) processEvents(r io.Reader, ch chan<- Message) eventRes
 			finalError = "opencode stream ended without a terminal signal (last step required a continuation that never started)"
 		}
 		noTerminalSignal = true
+	}
+
+	// A structurally closed stream is still not a successful model response
+	// when it contains no observable output at all. This is the exact wire shape
+	// produced by a silent provider/carrier failure: step_finish(reason="stop")
+	// with zero usage, but no non-empty text or tool invocation. Fail closed so
+	// callers cannot persist that response as a false-green completion.
+	if finalStatus == "completed" && !sawNonEmptyText && !sawToolUse &&
+		usage.InputTokens == 0 && usage.OutputTokens == 0 &&
+		usage.CacheReadTokens == 0 && usage.CacheWriteTokens == 0 {
+		finalStatus = "failed"
+		finalError = "opencode returned an empty zero-usage completion"
 	}
 
 	return eventResult{
