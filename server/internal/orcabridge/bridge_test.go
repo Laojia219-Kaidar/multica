@@ -113,6 +113,28 @@ type fakeEntry struct {
 	linkages    map[string]LinkageReceipt
 	linkPayload map[string]string
 	events      map[string]map[string]map[string]any // workRef -> key -> payload
+
+	// failAppendKey, when set, makes AppendEvidence for that exact
+	// idempotency key return failAppendErr (recovery coverage).
+	failMu        sync.Mutex
+	failAppendKey string
+	failAppendErr error
+
+	appendAttempts int
+}
+
+func (f *fakeEntry) injectAppendFailure(key string, err error) {
+	f.failMu.Lock()
+	defer f.failMu.Unlock()
+	f.failAppendKey = key
+	f.failAppendErr = err
+}
+
+func (f *fakeEntry) clearAppendFailure() {
+	f.failMu.Lock()
+	defer f.failMu.Unlock()
+	f.failAppendKey = ""
+	f.failAppendErr = nil
 }
 
 func newFakeEntry() *fakeEntry {
@@ -158,6 +180,15 @@ func (f *fakeEntry) RegisterLinkage(ctx context.Context, in LinkageInput) (Linka
 }
 
 func (f *fakeEntry) AppendEvidence(ctx context.Context, in EvidenceInput) (EvidenceReceipt, error) {
+	f.failMu.Lock()
+	failing := in.IdempotencyKey != "" && in.IdempotencyKey == f.failAppendKey && f.failAppendErr != nil
+	f.failMu.Unlock()
+	f.mu.Lock()
+	f.appendAttempts++
+	f.mu.Unlock()
+	if failing {
+		return EvidenceReceipt{}, ErrEvidenceConflict
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	byKey, ok := f.events[in.WorkRef]
@@ -183,6 +214,14 @@ func (f *fakeEntry) LookupEvidence(ctx context.Context, workRef, key string) (Ev
 		return EvidenceRecord{}, false, nil
 	}
 	return EvidenceRecord{EventID: key, IdempotencyKey: key, Payload: payload}, true, nil
+}
+
+// evidenceStored reports whether one evidence key exists on the work chain.
+func (f *fakeEntry) evidenceStored(workRef, key string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	_, ok := f.events[workRef][key]
+	return ok
 }
 
 // fakeAssignmentPort replays the existing dispatch entry: idempotent by
@@ -811,4 +850,305 @@ func mustJSON(v any) []byte {
 		panic(err)
 	}
 	return data
+}
+
+// ---------------------------------------------------------------------------
+// Finding 2: no implicit Issue creation
+// ---------------------------------------------------------------------------
+
+func TestEnsureProjectRunRequiresIssueAnchor(t *testing.T) {
+	client, entry := newFakeClient(), newFakeEntry()
+	tb := &testBridge{Bridge: NewBridge(client, entry, newFakeAssignmentPort(), &fakeDaemonPort{}, bridgeActor()), client: client, entry: entry}
+	chain := validChain()
+	chain.IssueID = "" // project/workspace only
+
+	if _, err := tb.EnsureProjectRun(t.Context(), ProjectRef{Chain: chain, DisplayObjective: "objective"}); !errors.Is(err, ErrIssueAnchorRequired) {
+		t.Fatalf("expected ErrIssueAnchorRequired for project-only scope, got %v", err)
+	}
+	// Zero Orca effects and zero linkage registrations may have happened.
+	if client.runCreates != 0 || client.taskCreates != 0 {
+		t.Fatalf("orca effects after anchor rejection: runs=%d tasks=%d", client.runCreates, client.taskCreates)
+	}
+	if len(entry.linkages) != 0 {
+		t.Fatalf("linkage registered without anchor: %+v", entry.linkages)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Finding 1: bridge-level credential redaction end to end
+// ---------------------------------------------------------------------------
+
+func TestAcceptWorkerResultRedactsCredentialsEndToEnd(t *testing.T) {
+	tb := newAssignmentBridge(t)
+	chain := validChain()
+	mapping, err := tb.EnsureAssignment(t.Context(), dispatchRef(chain))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dispatch, err := tb.RunClaimedTask(t.Context(), DaemonTask{
+		ID: mapping.Chain.TaskID, WorkspaceID: chain.WorkspaceID, IssueID: mapping.Chain.IssueID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	message := workerDoneMessage(dispatch, "succeeded",
+		"used Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.payload.sig plus sk-ant-api03-AAABBBCCCDDDEEE and password=hunter2hunter2hunter2",
+		[]string{"server/internal/orcabridge/bridge.go"})
+	message.ID = "msg_redact00001"
+
+	receipt, err := tb.AcceptWorkerResult(t.Context(), chain, message)
+	if err != nil {
+		t.Fatalf("accept: %v", err)
+	}
+	for _, leaked := range []string{"eyJhbGciOiJIUzI1NiJ9", "sk-ant-api03-AAABBBCCC", "hunter2hunter2hunter2"} {
+		if strings.Contains(receipt.Body, leaked) {
+			t.Fatalf("credential leaked into receipt body: %q", receipt.Body)
+		}
+	}
+	// Stored evidence must be clean.
+	workRef, err := tb.dispatchWorkRef(t.Context(), dispatch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, ok, _ := tb.entry.LookupEvidence(t.Context(), workRef, ResultEvidenceKey(dispatch.OrcaDispatchID))
+	if !ok {
+		t.Fatal("result evidence missing")
+	}
+	storedBody, _ := stored.Payload["body"].(string)
+	for _, leaked := range []string{"eyJhbGciOiJIUzI1NiJ9", "sk-ant-api03-AAABBBCCC", "hunter2hunter2hunter2"} {
+		if strings.Contains(storedBody, leaked) {
+			t.Fatalf("credential leaked into stored evidence: %q", storedBody)
+		}
+	}
+	// Daemon settlement output must be clean too.
+	if len(tb.daemon.completed) != 1 {
+		t.Fatalf("expected one daemon complete, got %d", len(tb.daemon.completed))
+	}
+	if strings.Contains(tb.daemon.completed[0].Output, "eyJhbGciOiJIUzI1NiJ9") {
+		t.Fatalf("credential leaked into daemon output: %q", tb.daemon.completed[0].Output)
+	}
+	// Replay with the same dirty message digests identically (idempotent).
+	if _, err := tb.AcceptWorkerResult(t.Context(), chain, message); err != nil {
+		t.Fatalf("replay after redaction must be idempotent: %v", err)
+	}
+	if len(tb.daemon.completed) != 2 {
+		t.Fatalf("replay must resettle through the daemon lifecycle: %d", len(tb.daemon.completed))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Finding 3: concurrent single-writer behavior
+// ---------------------------------------------------------------------------
+
+func TestEnsureAssignmentConcurrentSingleWriter(t *testing.T) {
+	tb := newAssignmentBridge(t)
+	chain := validChain()
+	ref := dispatchRef(chain)
+	const goroutines = 8
+
+	results := make([]AssignmentMapping, goroutines)
+	errs := make([]error, goroutines)
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
+		go func(slot int) {
+			defer wg.Done()
+			<-start
+			mapping, err := tb.EnsureAssignment(t.Context(), ref)
+			results[slot], errs[slot] = mapping, err
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("goroutine %d failed: %v", i, err)
+		}
+		if results[i] != results[0] {
+			t.Fatalf("goroutine %d mapping diverged: %+v vs %+v", i, results[i], results[0])
+		}
+	}
+	if tb.client.runCreates != 1 || tb.client.taskCreates != 1 {
+		t.Fatalf("concurrent ensure created duplicates: runs=%d tasks=%d", tb.client.runCreates, tb.client.taskCreates)
+	}
+}
+
+func TestRunClaimedTaskConcurrentSingleWriter(t *testing.T) {
+	tb := newAssignmentBridge(t)
+	chain := validChain()
+	mapping, err := tb.EnsureAssignment(t.Context(), dispatchRef(chain))
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed := DaemonTask{ID: mapping.Chain.TaskID, WorkspaceID: chain.WorkspaceID, IssueID: mapping.Chain.IssueID}
+	const goroutines = 8
+
+	results := make([]DispatchMap, goroutines)
+	errs := make([]error, goroutines)
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
+		go func(slot int) {
+			defer wg.Done()
+			<-start
+			resolved, err := tb.RunClaimedTask(t.Context(), claimed)
+			results[slot], errs[slot] = resolved, err
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("goroutine %d failed: %v", i, err)
+		}
+		if results[i].OrcaDispatchID != results[0].OrcaDispatchID {
+			t.Fatalf("goroutine %d dispatch diverged: %s vs %s", i, results[i].OrcaDispatchID, results[0].OrcaDispatchID)
+		}
+	}
+	if tb.client.workerStarts != 1 {
+		t.Fatalf("concurrent claim started %d workers, want exactly 1", tb.client.workerStarts)
+	}
+	if len(tb.daemon.started) != 1 {
+		t.Fatalf("concurrent claim started hivecrew task %d times, want 1", len(tb.daemon.started))
+	}
+}
+
+func TestAcceptWorkerResultConcurrentSingleWriter(t *testing.T) {
+	tb := newAssignmentBridge(t)
+	chain := validChain()
+	mapping, err := tb.EnsureAssignment(t.Context(), dispatchRef(chain))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dispatch, err := tb.RunClaimedTask(t.Context(), DaemonTask{
+		ID: mapping.Chain.TaskID, WorkspaceID: chain.WorkspaceID, IssueID: mapping.Chain.IssueID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	message := workerDoneMessage(dispatch, "succeeded", "implemented", []string{"a.go"})
+	const goroutines = 8
+
+	receipts := make([]ResultReceipt, goroutines)
+	errs := make([]error, goroutines)
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
+		go func(slot int) {
+			defer wg.Done()
+			<-start
+			receipt, err := tb.AcceptWorkerResult(t.Context(), chain, message)
+			receipts[slot], errs[slot] = receipt, err
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("goroutine %d failed: %v", i, err)
+		}
+		if receipts[i].ResultDigest != receipts[0].ResultDigest {
+			t.Fatalf("goroutine %d digest diverged: %s vs %s", i, receipts[i].ResultDigest, receipts[0].ResultDigest)
+		}
+	}
+	// Exactly one settled completion: the daemon lifecycle ran once per
+	// delivery attempt in order, but the evidence key landed exactly once.
+	workRef, err := tb.dispatchWorkRef(t.Context(), dispatch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !tb.entry.evidenceStored(workRef, ResultEvidenceKey(dispatch.OrcaDispatchID)) {
+		t.Fatal("result evidence missing after concurrent writeback")
+	}
+	if len(tb.daemon.completed) != goroutines {
+		t.Fatalf("expected one settlement per concurrent delivery (all on the same evidence), got %d", len(tb.daemon.completed))
+	}
+	for _, completion := range tb.daemon.completed {
+		if completion.TaskID != mapping.Chain.TaskID {
+			t.Fatalf("settlement hit the wrong task: %+v", completion)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Finding 4: recovery after worker-start + StartTask succeed but evidence fails
+// ---------------------------------------------------------------------------
+
+func TestRunClaimedTaskRecoveryAfterEvidenceFailure(t *testing.T) {
+	tb := newAssignmentBridge(t)
+	chain := validChain()
+	mapping, err := tb.EnsureAssignment(t.Context(), dispatchRef(chain))
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed := DaemonTask{ID: mapping.Chain.TaskID, WorkspaceID: chain.WorkspaceID, IssueID: mapping.Chain.IssueID}
+
+	// Inject an evidence append failure for the dispatch linkage key.
+	linkageKey := DispatchLinkageKey(mapping.Chain)
+	tb.entry.injectAppendFailure(linkageKey, errors.New("ledger unavailable"))
+
+	first, err := tb.RunClaimedTask(t.Context(), claimed)
+	if err == nil {
+		t.Fatal("evidence failure must surface an error")
+	}
+	if first.OrcaDispatchID == "" {
+		t.Fatalf("failed call must still return the committed mapping: %+v", first)
+	}
+	// Both real effects must have happened exactly once.
+	if tb.client.workerStarts != 1 {
+		t.Fatalf("worker starts after first attempt = %d, want 1", tb.client.workerStarts)
+	}
+	if len(tb.daemon.started) != 1 {
+		t.Fatalf("hivecrew task starts after first attempt = %d, want 1", len(tb.daemon.started))
+	}
+
+	// Retry while the ledger is still failing: no second worker-start, no
+	// second StartTask, and the committed mapping is returned.
+	retry, err := tb.RunClaimedTask(t.Context(), claimed)
+	if err == nil {
+		t.Fatal("still-failing ledger must keep surfacing the error")
+	}
+	if retry.OrcaDispatchID != first.OrcaDispatchID {
+		t.Fatalf("retry diverged: %+v vs %+v", retry, first)
+	}
+	if tb.client.workerStarts != 1 {
+		t.Fatalf("retry started a second worker: %d", tb.client.workerStarts)
+	}
+	if len(tb.daemon.started) != 1 {
+		t.Fatalf("retry restarted the hivecrew task: %d", len(tb.daemon.started))
+	}
+
+	// Ledger recovers: retry appends the evidence, still without a second
+	// worker-start, and clears the pending state.
+	tb.entry.clearAppendFailure()
+	final, err := tb.RunClaimedTask(t.Context(), claimed)
+	if err != nil {
+		t.Fatalf("recovered retry: %v", err)
+	}
+	if final.OrcaDispatchID != first.OrcaDispatchID {
+		t.Fatalf("recovered retry diverged: %+v vs %+v", final, first)
+	}
+	if tb.client.workerStarts != 1 {
+		t.Fatalf("recovered retry started a second worker: %d", tb.client.workerStarts)
+	}
+	workRef, err := tb.dispatchWorkRef(t.Context(), final)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !tb.entry.evidenceStored(workRef, linkageKey) {
+		t.Fatal("recovered retry did not append the dispatch evidence")
+	}
+	// A further replay is clean with no pending evidence re-attempt side effects.
+	if _, err := tb.RunClaimedTask(t.Context(), claimed); err != nil {
+		t.Fatalf("post-recovery replay: %v", err)
+	}
+	if tb.client.workerStarts != 1 || len(tb.daemon.started) != 1 {
+		t.Fatalf("post-recovery replay duplicated effects: workers=%d starts=%d", tb.client.workerStarts, len(tb.daemon.started))
+	}
 }

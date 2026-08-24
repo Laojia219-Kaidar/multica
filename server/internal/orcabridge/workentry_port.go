@@ -129,7 +129,16 @@ func ResultEvidenceKey(orcaDispatchID string) string {
 }
 
 func (a *WorkEntryServiceAdapter) RegisterLinkage(ctx context.Context, in LinkageInput) (LinkageReceipt, error) {
-	if err := in.Chain.ValidateProjectScope(); err != nil {
+	// The workentry kernel anchors work_refs on issues: its "continued" path
+	// requires an existing issue and its "created" path (ConfirmCreate) would
+	// implicitly create Project and Issue rows. The bridge must never create
+	// company objects, so an existing Issue anchor is mandatory and creation
+	// is never authorized.
+	if !IsValidUUID(in.Chain.IssueID) {
+		return LinkageReceipt{}, fmt.Errorf("%w: mapping kind %q has no existing issue anchor (workspace=%s project=%s)",
+			ErrIssueAnchorRequired, in.MappingKind, in.Chain.WorkspaceID, in.Chain.ProjectID)
+	}
+	if err := in.Chain.ValidateIssueAnchoredProjectScope(); err != nil {
 		return LinkageReceipt{}, err
 	}
 	if strings.TrimSpace(in.Actor.ActorID) == "" ||
@@ -140,21 +149,36 @@ func (a *WorkEntryServiceAdapter) RegisterLinkage(ctx context.Context, in Linkag
 	intent := a.linkageIntent(in)
 	receipt, err := a.Service.Register(ctx, workentry.RegisterRequest{
 		ResolveRequest: workentry.ResolveRequest{
-			Actor:     a.actorIdentity(in.Actor),
-			Intent:    intent,
-			ProjectID: in.Chain.ProjectID,
-			IssueID:   in.Chain.IssueID,
+			Actor:  a.actorIdentity(in.Actor),
+			Intent: intent,
+			// Only the issue selector is passed: the kernel's step-4 project
+			// branch produces a project-level match without an issue id, which
+			// its continued path rejects. Anchoring on the existing issue lets
+			// the kernel derive the project lineage itself and never create.
+			IssueID: in.Chain.IssueID,
 		},
-		ConfirmCreate: true,
+		// Never authorize the kernel's creation path: a linkage whose issue
+		// anchor does not resolve to an existing issue fails closed instead
+		// of implicitly creating Project/Issue rows.
+		ConfirmCreate: false,
 	})
 	if err != nil {
 		if errors.Is(err, workentry.ErrConflict) {
 			return LinkageReceipt{}, fmt.Errorf("%w: workentry register conflict: %v", ErrMappingConflict, err)
 		}
+		if errors.Is(err, workentry.ErrClassificationRequired) {
+			return LinkageReceipt{}, fmt.Errorf("%w: issue %s does not resolve to an existing HiveCrew issue",
+				ErrIssueAnchorRequired, in.Chain.IssueID)
+		}
 		return LinkageReceipt{}, fmt.Errorf("orcabridge: register linkage on work chain: %w", err)
 	}
 	if receipt.WorkRef == "" {
 		return LinkageReceipt{}, fmt.Errorf("orcabridge: workentry register returned an empty work_ref")
+	}
+	if receipt.Created {
+		// Defensive: the kernel created rows despite ConfirmCreate=false.
+		// Fail closed loudly if that ever changes.
+		return LinkageReceipt{}, fmt.Errorf("orcabridge: workentry register created work rows for linkage %q; the bridge never authorizes creation", in.MappingKind)
 	}
 	return LinkageReceipt{WorkRef: receipt.WorkRef, Replayed: receipt.Replay.Replayed}, nil
 }
@@ -209,12 +233,16 @@ func (a *WorkEntryServiceAdapter) AppendEvidence(ctx context.Context, in Evidenc
 	if observedAt.IsZero() {
 		observedAt = time.Now()
 	}
+	// Defense-in-depth: no credential-like content may reach the existing
+	// evidence ledger, whatever the caller supplied. Redaction is
+	// deterministic so idempotent replays digest identically.
+	redactedPayload := RedactStringMap(in.Payload)
 	event := workentry.WorkEventV1{
 		WorkRef:        in.WorkRef,
 		SessionID:      in.SessionID,
 		RunID:          in.RunID,
 		EventType:      workentry.WorkEventType(in.EventType),
-		EventPayload:   in.Payload,
+		EventPayload:   redactedPayload,
 		IdempotencyKey: in.IdempotencyKey,
 		OccurredAt:     observedAt.UTC().Format(time.RFC3339Nano),
 		ObservedAt:     observedAt.UTC().Format(time.RFC3339Nano),

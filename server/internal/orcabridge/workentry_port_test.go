@@ -2,23 +2,45 @@ package orcabridge
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/multica-ai/multica/server/internal/workentry"
 )
 
-// newKernel builds a real workentry kernel over its own memory store. The
-// adapter tests prove the bridge works against the existing service exactly
-// as production would, with no schema and no bridge-owned tables.
+// newKernel builds a real workentry kernel over its own memory store seeded
+// with the issue anchor the bridge chain references. The adapter tests prove
+// the bridge works against the existing service exactly as production would,
+// with no schema and no bridge-owned tables.
 func newKernel(t *testing.T) *WorkEntryServiceAdapter {
 	t.Helper()
-	service := workentry.NewService(workentry.NewMemoryStore())
+	chain := validChain()
+	store := workentry.NewMemoryStore()
+	store.SeedProject(workentry.ProjectRef{ID: chain.ProjectID, WorkspaceID: chain.WorkspaceID, Title: "HiveCrew A1"})
+	store.SeedIssue(workentry.IssueRef{ID: chain.IssueID, WorkspaceID: chain.WorkspaceID, ProjectID: chain.ProjectID, Title: "Bridge anchor issue"})
 	return &WorkEntryServiceAdapter{
-		Service:     service,
-		WorkspaceID: validChain().WorkspaceID,
+		Service:     workentry.NewService(store),
+		WorkspaceID: chain.WorkspaceID,
 	}
 }
+
+// creationCountingStore spies on the kernel's creation path: any call to
+// CommitWorkRegistration means Project/Issue rows were created, which the
+// bridge must never trigger.
+type creationCountingStore struct {
+	*workentry.MemoryStore
+	commits int
+}
+
+func (s *creationCountingStore) CommitWorkRegistration(ctx context.Context, req workentry.CommitWorkRegistrationRequest) (*workentry.CreateWorkResult, error) {
+	s.commits++
+	return s.MemoryStore.CommitWorkRegistration(ctx, req)
+}
+
+// Compile-time assertion that the spy still satisfies the kernel Store.
+var _ workentry.Store = (*creationCountingStore)(nil)
 
 func repeatHex(seed byte) string {
 	out := make([]byte, 64)
@@ -144,5 +166,111 @@ func TestLinkageKeysAreDeterministicAndScoped(t *testing.T) {
 	other.AssignmentID = "c05a0000-0000-4000-8000-000000000009"
 	if DispatchLinkageKey(chain) == DispatchLinkageKey(other) {
 		t.Fatal("dispatch keys must be assignment-scoped")
+	}
+}
+
+// Finding 2 coverage: the bridge must never implicitly create a HiveCrew
+// Issue (or Project). Two proofs: (a) a linkage without an issue anchor is
+// rejected before the kernel is called, and (b) a resolvable anchor lands on
+// the kernel's continued path with zero CommitWorkRegistration calls.
+func TestRegisterLinkageNeverCreatesIssue(t *testing.T) {
+	chain := validChain()
+	store := &creationCountingStore{MemoryStore: workentry.NewMemoryStore()}
+	store.SeedProject(workentry.ProjectRef{ID: chain.ProjectID, WorkspaceID: chain.WorkspaceID, Title: "HiveCrew A1"})
+	store.SeedIssue(workentry.IssueRef{ID: chain.IssueID, WorkspaceID: chain.WorkspaceID, ProjectID: chain.ProjectID, Title: "Bridge anchor issue"})
+	adapter := &WorkEntryServiceAdapter{Service: workentry.NewService(store), WorkspaceID: chain.WorkspaceID}
+	ctx := context.Background()
+
+	// (a) No issue anchor -> fail closed, kernel untouched.
+	noAnchor := chain
+	noAnchor.IssueID = ""
+	if _, err := adapter.RegisterLinkage(ctx, LinkageInput{Chain: noAnchor, Actor: bridgeActor(), MappingKind: "run"}); !errors.Is(err, ErrIssueAnchorRequired) {
+		t.Fatalf("expected ErrIssueAnchorRequired for project-only linkage, got %v", err)
+	}
+	if store.commits != 0 {
+		t.Fatalf("kernel creation path was invoked %d times for an anchor-less linkage", store.commits)
+	}
+
+	// (b) Resolvable anchor -> continued registration, zero creations.
+	first, err := adapter.RegisterLinkage(ctx, LinkageInput{Chain: chain, Actor: bridgeActor(), MappingKind: "run"})
+	if err != nil {
+		t.Fatalf("anchored register: %v", err)
+	}
+	replay, err := adapter.RegisterLinkage(ctx, LinkageInput{Chain: chain, Actor: bridgeActor(), MappingKind: "run"})
+	if err != nil {
+		t.Fatalf("anchored replay: %v", err)
+	}
+	if replay.WorkRef != first.WorkRef || !replay.Replayed {
+		t.Fatalf("replay must return the original work_ref: %+v vs %+v", first, replay)
+	}
+	if store.commits != 0 {
+		t.Fatalf("register triggered %d kernel creations; the bridge must land on the continued path only", store.commits)
+	}
+}
+
+// Finding 2 coverage: an issue anchor that does not resolve to an existing
+// issue must fail closed instead of letting the kernel create one.
+func TestRegisterLinkageRejectsUnresolvableIssueAnchor(t *testing.T) {
+	chain := validChain()
+	chain.IssueID = "c05a0000-0000-4000-8000-0000000000ee" // valid uuid, never seeded
+	store := &creationCountingStore{MemoryStore: workentry.NewMemoryStore()}
+	store.SeedProject(workentry.ProjectRef{ID: chain.ProjectID, WorkspaceID: chain.WorkspaceID, Title: "HiveCrew A1"})
+	adapter := &WorkEntryServiceAdapter{Service: workentry.NewService(store), WorkspaceID: chain.WorkspaceID}
+
+	if _, err := adapter.RegisterLinkage(context.Background(), LinkageInput{Chain: chain, Actor: bridgeActor(), MappingKind: "run"}); !errors.Is(err, ErrIssueAnchorRequired) {
+		t.Fatalf("expected ErrIssueAnchorRequired for unresolvable anchor, got %v", err)
+	}
+	if store.commits != 0 {
+		t.Fatalf("unresolvable anchor still created %d kernel rows", store.commits)
+	}
+}
+
+// Finding 1 coverage at the port: credential-like content in evidence
+// payloads is redacted before the existing ledger append.
+func TestAppendEvidenceRedactsCredentials(t *testing.T) {
+	adapter := newKernel(t)
+	ctx := context.Background()
+	chain := validChain()
+	linkage, err := adapter.RegisterLinkage(ctx, LinkageInput{Chain: chain, Actor: bridgeActor(), MappingKind: "dispatch"})
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	dirty := map[string]any{
+		"body":      "used Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.payload.sig and api_key = sk-ant-api03-EXAMPLEKEY1234567890",
+		"nested":    map[string]any{"token": "token=supersecretvalue123"},
+		"clean":     "ordinary engineering note with no credentials",
+		"unchanged": 42,
+	}
+	if _, err := adapter.AppendEvidence(ctx, EvidenceInput{
+		WorkRef:        linkage.WorkRef,
+		SessionID:      bridgeActor().SessionID,
+		EventType:      "progress",
+		IdempotencyKey: "cred-1",
+		Payload:        dirty,
+		OccurredAt:     time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	stored, ok, err := adapter.LookupEvidence(ctx, linkage.WorkRef, "cred-1")
+	if err != nil || !ok {
+		t.Fatalf("lookup: ok=%v err=%v", ok, err)
+	}
+	body, _ := stored.Payload["body"].(string)
+	if strings.Contains(body, "eyJhbGciOiJIUzI1NiJ9") || strings.Contains(body, "sk-ant-api03-EXAMPLEKEY") {
+		t.Fatalf("credential survived evidence append: %q", body)
+	}
+	if !strings.Contains(body, RedactionMarker) {
+		t.Fatalf("body missing redaction marker: %q", body)
+	}
+	nested, _ := stored.Payload["nested"].(map[string]any)
+	tokenValue, _ := nested["token"].(string)
+	if strings.Contains(tokenValue, "supersecretvalue123") {
+		t.Fatalf("nested credential survived: %q", tokenValue)
+	}
+	if clean, _ := stored.Payload["clean"].(string); clean != "ordinary engineering note with no credentials" {
+		t.Fatalf("clean content was rewritten: %q", clean)
+	}
+	if unchanged, _ := stored.Payload["unchanged"].(int); unchanged != 42 {
+		t.Fatalf("non-string value was rewritten: %v", stored.Payload["unchanged"])
 	}
 }

@@ -59,8 +59,28 @@ type Bridge struct {
 	// Now is injectable for tests; production leaves it as time.Now.
 	Now func() time.Time
 
+	// scopeLocks serializes one mapping scope inside one process so
+	// concurrent callers converge to exactly one Orca object per HiveCrew
+	// object (single-writer behavior); the workentry replay anchors and Orca
+	// marker reconciliation cover cross-process and crash recovery.
+	scopeLocks sync.Map // scope key -> *sync.Mutex
+
 	memoMu sync.Mutex
 	memo   bridgeMemo
+}
+
+// lockScope returns the process-wide mutex for one scope key.
+func (b *Bridge) lockScope(scope string) *sync.Mutex {
+	value, _ := b.scopeLocks.LoadOrStore(scope, &sync.Mutex{})
+	return value.(*sync.Mutex)
+}
+
+// withScopeLock runs fn while holding the scope mutex.
+func (b *Bridge) withScopeLock(scope string, fn func() error) error {
+	mutex := b.lockScope(scope)
+	mutex.Lock()
+	defer mutex.Unlock()
+	return fn()
 }
 
 // memoEntry is one cached mapping plus its frozen payload digest so replay
@@ -73,20 +93,22 @@ type memoEntry struct {
 // bridgeMemo caches resolved mappings inside one process. It is a cache
 // only: every entry can be rebuilt from Orca markers + workentry evidence.
 type bridgeMemo struct {
-	run            map[string]memoEntry      // ws:prj -> orca run id
-	task           map[string]memoEntry      // ws:task -> orca task id
-	runOfWork      map[string]string         // ws:task -> orca run id
-	dispatch       map[string]DispatchMap    // ws:assignment -> mapping
-	taskAssignment map[string]map[string]any // hivecrew task id -> assignment payload
+	run             map[string]memoEntry      // ws:prj -> orca run id
+	task            map[string]memoEntry      // ws:task -> orca task id
+	runOfWork       map[string]string         // ws:task -> orca run id
+	dispatch        map[string]DispatchMap    // ws:assignment -> mapping
+	taskAssignment  map[string]map[string]any // hivecrew task id -> assignment payload
+	evidencePending map[string]bool           // ws:assignment -> dispatch evidence append still failing
 }
 
 func newBridgeMemo() bridgeMemo {
 	return bridgeMemo{
-		run:            map[string]memoEntry{},
-		task:           map[string]memoEntry{},
-		runOfWork:      map[string]string{},
-		dispatch:       map[string]DispatchMap{},
-		taskAssignment: map[string]map[string]any{},
+		run:             map[string]memoEntry{},
+		task:            map[string]memoEntry{},
+		runOfWork:       map[string]string{},
+		dispatch:        map[string]DispatchMap{},
+		taskAssignment:  map[string]map[string]any{},
+		evidencePending: map[string]bool{},
 	}
 }
 
@@ -151,9 +173,34 @@ type ProjectRef struct {
 // namespace. Replays converge through the memo, the workentry registration,
 // and the Orca objective marker; payload drift fails closed.
 func (b *Bridge) EnsureProjectRun(ctx context.Context, ref ProjectRef) (string, error) {
-	if err := ref.Chain.ValidateProjectScope(); err != nil {
+	// An existing Issue anchor is mandatory: the workentry kernel anchors
+	// work_refs on issues and its creation path would implicitly create an
+	// Issue (and Project) row. The bridge never authorizes that path, so a
+	// project/workspace-only call fails closed here with zero Issue creation
+	// instead of creating one.
+	if !IsValidUUID(ref.Chain.IssueID) {
+		return "", fmt.Errorf("%w: EnsureProjectRun requires the issue anchor created by the existing dispatch entry (workspace=%s project=%s)",
+			ErrIssueAnchorRequired, ref.Chain.WorkspaceID, ref.Chain.ProjectID)
+	}
+	if err := ref.Chain.ValidateIssueAnchoredProjectScope(); err != nil {
 		return "", err
 	}
+	var runID string
+	scopeErr := b.withScopeLock("run:"+ref.Chain.WorkspaceID+":"+ref.Chain.ProjectID, func() error {
+		id, err := b.ensureProjectRunLocked(ctx, ref)
+		if err != nil {
+			return err
+		}
+		runID = id
+		return nil
+	})
+	if scopeErr != nil {
+		return "", scopeErr
+	}
+	return runID, nil
+}
+
+func (b *Bridge) ensureProjectRunLocked(ctx context.Context, ref ProjectRef) (string, error) {
 	objective := ProjectRunObjective(ref.DisplayObjective, ref.Chain)
 	digest, err := ObjectiveInput{
 		WorkspaceID:      ref.Chain.WorkspaceID,
@@ -238,7 +285,23 @@ func (b *Bridge) EnsureIssueTask(ctx context.Context, ref TaskRef) (orcaRunID, o
 	if err := ref.Chain.ValidateTaskScope(); err != nil {
 		return "", "", err
 	}
-	runID, err := b.EnsureProjectRun(ctx, ProjectRef{Chain: ref.Chain})
+	var runID, taskID string
+	scopeErr := b.withScopeLock("task:"+ref.Chain.WorkspaceID+":"+ref.Chain.TaskID, func() error {
+		resolvedRun, resolvedTask, err := b.ensureIssueTaskLocked(ctx, ref)
+		if err != nil {
+			return err
+		}
+		runID, taskID = resolvedRun, resolvedTask
+		return nil
+	})
+	if scopeErr != nil {
+		return "", "", scopeErr
+	}
+	return runID, taskID, nil
+}
+
+func (b *Bridge) ensureIssueTaskLocked(ctx context.Context, ref TaskRef) (string, string, error) {
+	runID, err := b.ensureProjectRunLocked(ctx, ProjectRef{Chain: ref.Chain})
 	if err != nil {
 		return "", "", err
 	}
@@ -459,12 +522,36 @@ func (b *Bridge) RunClaimedTask(ctx context.Context, claimed DaemonTask) (Dispat
 		return DispatchMap{}, fmt.Errorf("%w: hivecrew task %s carries no bridge assignment linkage", ErrNotBridgeManaged, claimed.ID)
 	}
 	chain := resolved.chain
+	// Single-writer: one assignment scope, one dispatch, one worker. The
+	// committed mapping is returned even when its evidence append failed, so
+	// callers can observe the committed Orca dispatch alongside the error.
+	var mapping DispatchMap
+	scopeErr := b.withScopeLock("assignment:"+chain.WorkspaceID+":"+chain.AssignmentID, func() error {
+		resolvedMapping, err := b.runClaimedTaskLocked(ctx, claimed, chain, resolved)
+		mapping = resolvedMapping
+		return err
+	})
+	if scopeErr != nil {
+		return mapping, scopeErr
+	}
+	return mapping, nil
+}
+
+func (b *Bridge) runClaimedTaskLocked(ctx context.Context, claimed DaemonTask, chain Chain, resolved taskAssignmentResolution) (DispatchMap, error) {
 	placement := resolved.placement
 
 	if committed, ok := b.memoDispatch(chain); ok {
 		if committed.PlacementDigest != resolved.placementDigest {
 			return committed, fmt.Errorf("%w: dispatch mapping assignment=%s committed %s, replay carried %s",
 				ErrMappingConflict, chain.AssignmentID, committed.PlacementDigest, resolved.placementDigest)
+		}
+		// Recovery path: the dispatch committed earlier (worker started,
+		// HiveCrew task started) but its evidence append failed. Re-attempt
+		// only the evidence; never re-dispatch a worker.
+		if b.evidencePendingFor(chain) {
+			if err := b.retryDispatchEvidence(ctx, chain, committed); err != nil {
+				return committed, err
+			}
 		}
 		return committed, nil
 	}
@@ -487,7 +574,7 @@ func (b *Bridge) RunClaimedTask(ctx context.Context, claimed DaemonTask) (Dispat
 		return DispatchMap{}, err
 	}
 
-	orcaRunID, orcaTaskID, err := b.EnsureIssueTask(ctx, TaskRef{Chain: chain, Instructions: resolved.instructions})
+	orcaRunID, orcaTaskID, err := b.ensureIssueTaskLocked(ctx, TaskRef{Chain: chain, Instructions: resolved.instructions})
 	if err != nil {
 		return DispatchMap{}, err
 	}
@@ -577,11 +664,32 @@ func (b *Bridge) RunClaimedTask(ctx context.Context, claimed DaemonTask) (Dispat
 			chain.TaskID, mapping.OrcaDispatchID, err)
 	}
 
-	if err := b.recordDispatchEvidence(ctx, linkage.WorkRef, mapping); err != nil {
-		return DispatchMap{}, err
-	}
+	// Commit the mapping to the memo before appending evidence: if the
+	// evidence append fails, a retry must converge on the memo mapping and
+	// re-attempt only the evidence, never a second worker-start.
 	b.rememberDispatch(chain, mapping)
+	if err := b.recordDispatchEvidence(ctx, linkage.WorkRef, mapping); err != nil {
+		b.markEvidencePending(chain, true)
+		return mapping, fmt.Errorf("orcabridge: dispatch %s committed but its work-chain evidence append failed (retry is safe): %w",
+			mapping.OrcaDispatchID, err)
+	}
+	b.markEvidencePending(chain, false)
 	return mapping, nil
+}
+
+// retryDispatchEvidence re-attempts the failed evidence append for an already
+// committed dispatch mapping without touching Orca or the daemon lifecycle.
+func (b *Bridge) retryDispatchEvidence(ctx context.Context, chain Chain, mapping DispatchMap) error {
+	workRef, err := b.dispatchWorkRef(ctx, mapping)
+	if err != nil {
+		return err
+	}
+	if err := b.recordDispatchEvidence(ctx, workRef, mapping); err != nil {
+		b.markEvidencePending(chain, true)
+		return fmt.Errorf("orcabridge: dispatch %s evidence append still failing: %w", mapping.OrcaDispatchID, err)
+	}
+	b.markEvidencePending(chain, false)
+	return nil
 }
 
 // ClaimTask claims the next queued task for one runtime through the existing
@@ -695,6 +803,14 @@ func (b *Bridge) AcceptWorkerResult(ctx context.Context, chain Chain, message Or
 		return ResultReceipt{}, fmt.Errorf("%w: message terminal %s, mapped terminal %s",
 			ErrResultIdentityMismatch, message.FromHandle, mapping.WorkerTerminal)
 	}
+	// Redact credential-like content from the worker message before anything
+	// is persisted or digested. Redaction is deterministic, so replays of the
+	// same delivery digest identically.
+	message.Subject = RedactCredentials(message.Subject)
+	message.Body = RedactCredentials(message.Body)
+	result.ReportPath = RedactCredentials(result.ReportPath)
+	result.FilesModified = RedactStringSlice(result.FilesModified)
+
 	digest, err := WorkerResultDigest(message, result)
 	if err != nil {
 		return ResultReceipt{}, err
@@ -703,55 +819,64 @@ func (b *Bridge) AcceptWorkerResult(ctx context.Context, chain Chain, message Or
 	if err != nil {
 		return ResultReceipt{}, err
 	}
-	key := ResultEvidenceKey(mapping.OrcaDispatchID)
-	payload := map[string]any{
-		"mapping":          "result",
-		"workspace_id":     mapping.WorkspaceID,
-		"project_id":       mapping.ProjectID,
-		"issue_id":         mapping.IssueID,
-		"task_id":          mapping.TaskID,
-		"assignment_id":    mapping.AssignmentID,
-		"orca_run_id":      mapping.OrcaRunID,
-		"orca_task_id":     mapping.OrcaTaskID,
-		"orca_dispatch_id": mapping.OrcaDispatchID,
-		"orca_message_id":  message.ID,
-		"worker_terminal":  message.FromHandle,
-		"outcome":          result.Outcome,
-		"subject":          message.Subject,
-		"body":             message.Body,
-		"files_modified":   normalizeFiles(result.FilesModified),
-		"report_path":      result.ReportPath,
-		"result_digest":    digest,
-	}
-	_, appendErr := b.Entry.AppendEvidence(ctx, EvidenceInput{
-		WorkRef:        workRef,
-		SessionID:      b.Actor.SessionID,
-		RunID:          mapping.OrcaRunID,
-		EventType:      "finished",
-		IdempotencyKey: key,
-		Payload:        payload,
-		OccurredAt:     b.now(),
-	})
-	if appendErr != nil && !errors.Is(appendErr, ErrEvidenceConflict) {
-		return ResultReceipt{}, appendErr
-	}
-	if appendErr != nil {
-		// Classify the replay: compare the committed digest.
-		if existing, found, lookupErr := b.Entry.LookupEvidence(ctx, workRef, key); lookupErr == nil && found {
-			if committed, _ := existing.Payload["result_digest"].(string); committed != digest {
-				return ResultReceipt{}, fmt.Errorf("%w: dispatch %s committed %s, replay carried %s",
-					ErrResultReceiptConflict, mapping.OrcaDispatchID, committed, digest)
+	// Single-writer writeback: one scope per Orca dispatch so concurrent
+	// ingest of the same delivery settles exactly once.
+	scopeErr := b.withScopeLock("result:"+mapping.WorkspaceID+":"+mapping.OrcaDispatchID, func() error {
+		key := ResultEvidenceKey(mapping.OrcaDispatchID)
+		payload := map[string]any{
+			"mapping":          "result",
+			"workspace_id":     mapping.WorkspaceID,
+			"project_id":       mapping.ProjectID,
+			"issue_id":         mapping.IssueID,
+			"task_id":          mapping.TaskID,
+			"assignment_id":    mapping.AssignmentID,
+			"orca_run_id":      mapping.OrcaRunID,
+			"orca_task_id":     mapping.OrcaTaskID,
+			"orca_dispatch_id": mapping.OrcaDispatchID,
+			"orca_message_id":  message.ID,
+			"worker_terminal":  message.FromHandle,
+			"outcome":          result.Outcome,
+			"subject":          message.Subject,
+			"body":             message.Body,
+			"files_modified":   normalizeFiles(result.FilesModified),
+			"report_path":      result.ReportPath,
+			"result_digest":    digest,
+		}
+		_, appendErr := b.Entry.AppendEvidence(ctx, EvidenceInput{
+			WorkRef:        workRef,
+			SessionID:      b.Actor.SessionID,
+			RunID:          mapping.OrcaRunID,
+			EventType:      "finished",
+			IdempotencyKey: key,
+			Payload:        payload,
+			OccurredAt:     b.now(),
+		})
+		if appendErr != nil && !errors.Is(appendErr, ErrEvidenceConflict) {
+			return appendErr
+		}
+		if appendErr != nil {
+			// Classify the replay: compare the committed digest.
+			if existing, found, lookupErr := b.Entry.LookupEvidence(ctx, workRef, key); lookupErr == nil && found {
+				if committed, _ := existing.Payload["result_digest"].(string); committed != digest {
+					return fmt.Errorf("%w: dispatch %s committed %s, replay carried %s",
+						ErrResultReceiptConflict, mapping.OrcaDispatchID, committed, digest)
+				}
 			}
 		}
-	}
 
-	// Settle the HiveCrew task through the existing daemon lifecycle. Runs
-	// on both fresh and replayed evidence so a crash between evidence and
-	// settlement is recovered by replaying the same message.
-	if err := b.settleHiveCrewTask(ctx, mapping, result, message); err != nil {
-		return b.resultReceiptFromMapping(mapping, message, result, digest), err
+		// Settle the HiveCrew task through the existing daemon lifecycle. Runs
+		// on both fresh and replayed evidence so a crash between evidence and
+		// settlement is recovered by replaying the same message.
+		return b.settleHiveCrewTask(ctx, mapping, result, message)
+	})
+	if scopeErr != nil && errors.Is(scopeErr, ErrResultReceiptConflict) {
+		return ResultReceipt{}, scopeErr
 	}
-	return b.resultReceiptFromMapping(mapping, message, result, digest), nil
+	receipt := b.resultReceiptFromMapping(mapping, message, result, digest)
+	if scopeErr != nil {
+		return receipt, scopeErr
+	}
+	return receipt, nil
 }
 
 // settleHiveCrewTask settles the HiveCrew task row through the existing
@@ -1155,6 +1280,26 @@ func (b *Bridge) rememberDispatch(chain Chain, mapping DispatchMap) {
 	b.memoMu.Lock()
 	defer b.memoMu.Unlock()
 	b.memo.dispatch[chain.WorkspaceID+":"+chain.AssignmentID] = mapping
+}
+
+// markEvidencePending records that a dispatch mapping committed (worker
+// started, HiveCrew task started) but its work-chain evidence append failed,
+// so retries must re-attempt the evidence without re-dispatching a worker.
+func (b *Bridge) markEvidencePending(chain Chain, pending bool) {
+	b.memoMu.Lock()
+	defer b.memoMu.Unlock()
+	key := chain.WorkspaceID + ":" + chain.AssignmentID
+	if pending {
+		b.memo.evidencePending[key] = true
+		return
+	}
+	delete(b.memo.evidencePending, key)
+}
+
+func (b *Bridge) evidencePendingFor(chain Chain) bool {
+	b.memoMu.Lock()
+	defer b.memoMu.Unlock()
+	return b.memo.evidencePending[chain.WorkspaceID+":"+chain.AssignmentID]
 }
 
 // memoTaskAssignment returns the cached task-scoped assignment payload so

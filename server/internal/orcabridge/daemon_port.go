@@ -100,7 +100,9 @@ func (a *DaemonClientAdapter) CompleteTask(ctx context.Context, completion TaskC
 	}
 	if err := a.client().CompleteTask(ctx,
 		completion.TaskID,
-		completion.Output,
+		// Worker output is persisted on the HiveCrew task row; credential-like
+		// content is redacted before the settlement writeback.
+		RedactCredentials(completion.Output),
 		completion.BranchName,
 		completion.SessionID,
 		completion.WorkDir,
@@ -118,7 +120,8 @@ func (a *DaemonClientAdapter) FailTask(ctx context.Context, failure TaskFailure)
 	}
 	if err := a.client().FailTask(ctx,
 		failure.TaskID,
-		failure.Error,
+		// Failure text may quote worker output; redact before writeback.
+		RedactCredentials(failure.Error),
 		failure.SessionID,
 		failure.WorkDir,
 		failure.FailureReason,

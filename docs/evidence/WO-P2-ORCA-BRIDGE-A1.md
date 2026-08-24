@@ -110,3 +110,49 @@ Execution flow (all idempotent, all through existing HiveCrew surfaces):
 - Real-Orca interaction during A1 was read-only (`run-list`, `dispatch-show`,
   `inbox`, `worker-list` against this dispatch's own context); the bridge
   created no Orca state.
+
+## Independent-review corrections (R1)
+
+Four findings fixed in the same worktree on top of the candidate, without
+scope expansion (still schema-free, no migrations, no handler/daemon wiring):
+
+1. **Credential redaction before writeback.** New `sanitize.go`:
+   `RedactCredentials` / `RedactStringMap` / `RedactStringSlice` redact
+   Bearer/authorization headers, provider keys (`sk-`, `sk-proj-`, `sk-ant-`,
+   `ark-`), and key/value secrets (`api_key`, `access_key`, `secret`,
+   `password`, `passwd`, `token`, `credential`, including JSON/YAML/query
+   forms and credential-keyed map values) with a fixed deterministic marker.
+   Enforced at three layers: bridge (`AcceptWorkerResult` redacts
+   subject/body/report path before digest and evidence), WorkEntry port
+   (`AppendEvidence` redacts payload values; nested maps walked), and Daemon
+   port (`CompleteTask` output, `FailTask` error). Tests cover Bearer, sk-,
+   ark-, token, password plus ordinary-prose negatives, determinism, and an
+   end-to-end worker_done whose body carries credentials.
+2. **No implicit Issue creation.** `EnsureProjectRun` now requires an
+   existing Issue anchor and fails closed with `ErrIssueAnchorRequired` for a
+   project/workspace-only call; `RegisterLinkage` never passes
+   `ConfirmCreate`, passes only the Issue selector (the kernel derives the
+   project), maps `ErrClassificationRequired` to `ErrIssueAnchorRequired`,
+   and rejects a `Created` receipt defensively. Proven by a kernel-level spy
+   store (`creationCountingStore`) asserting zero `CommitWorkRegistration`
+   calls for anchor-less, unresolvable, and successful anchored+replayed
+   registrations, plus a bridge-level zero-Orca-effects test.
+3. **Concurrent single-writer tests.** Per-scope process mutexes
+   (`sync.Map` of keyed locks: run/task/assignment/result scopes) serialize
+   mapping and writeback; `EnsureAssignment`, `RunClaimedTask`, and
+   `AcceptWorkerResult` each have an 8-goroutine test asserting identical
+   results, exactly one Orca create/worker-start, one HiveCrew task start,
+   and one evidence key, all clean under `-race`.
+4. **Recovery after evidence failure.** `RunClaimedTask` memoizes the
+   committed dispatch immediately after worker-start + `StartTask` succeed,
+   so a failing evidence append (and retries while the ledger is down, and
+   the eventual recovery) never triggers a second worker-start; retries
+   re-attempt only the evidence via `retryDispatchEvidence`. The committed
+   mapping is returned alongside the error. Test covers fail → retry-while-
+   failing → recovery → post-recovery replay with `workerStarts == 1`
+   throughout.
+
+R1 verification (go1.26.6 darwin/arm64): `gofmt -l internal/orcabridge/`
+clean; `go test ./internal/orcabridge/ -count=1` ok (67 tests); `go test
+-race ./internal/orcabridge/ -count=1` ok; `go vet ./internal/orcabridge/`
+pass; `go build ./...` pass.

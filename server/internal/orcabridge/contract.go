@@ -57,6 +57,12 @@ var (
 	// ErrNotBridgeManaged means the HiveCrew object carries no bridge
 	// assignment linkage, so the bridge refuses to manage it.
 	ErrNotBridgeManaged = errors.New("orcabridge: object is not managed by this bridge")
+	// ErrIssueAnchorRequired means a mapping registration was attempted
+	// without an existing HiveCrew Issue anchor. The bridge never authorizes
+	// workentry creation, so it can never implicitly create an Issue (or
+	// Project) row; callers must supply the Issue the existing dispatch entry
+	// already created.
+	ErrIssueAnchorRequired = errors.New("orcabridge: an existing HiveCrew issue anchor is required and the bridge never creates one")
 )
 
 var (
@@ -98,6 +104,20 @@ func (c Chain) ValidateProjectScope() error {
 	}
 	if !isUUID(c.ProjectID) {
 		return fmt.Errorf("%w: project id %q is not a canonical uuid", ErrInvalidChain, c.ProjectID)
+	}
+	return nil
+}
+
+// ValidateIssueAnchoredProjectScope checks the identifiers required to map a
+// project Orca Run: workspace, project, and an existing Issue anchor. The
+// issue anchor is mandatory because the workentry kernel anchors work_refs on
+// issues, and the bridge never authorizes the kernel's creation path.
+func (c Chain) ValidateIssueAnchoredProjectScope() error {
+	if err := c.ValidateProjectScope(); err != nil {
+		return err
+	}
+	if !isUUID(c.IssueID) {
+		return fmt.Errorf("%w: issue anchor %q is not a canonical uuid", ErrInvalidChain, c.IssueID)
 	}
 	return nil
 }
