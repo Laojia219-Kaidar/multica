@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // fakeClient records every Orca call and answers from a scriptable state.
@@ -214,6 +215,39 @@ func (f *fakeEntry) LookupEvidence(ctx context.Context, workRef, key string) (Ev
 		return EvidenceRecord{}, false, nil
 	}
 	return EvidenceRecord{EventID: key, IdempotencyKey: key, Payload: payload}, true, nil
+}
+
+// ClaimScope implements the port's atomic first-writer-wins claim with the
+// same semantics as the production adapter: absent key -> acquired; same
+// payload -> acquired (replay); different payload -> held with the parsed
+// holder. One mutex arbitrates all claimants, exactly like the kernel's
+// unique-key append does per (work_ref, idempotency_key).
+func (f *fakeEntry) ClaimScope(ctx context.Context, in ScopeClaimInput) (ScopeClaimResult, error) {
+	if in.WorkRef == "" || in.ClaimKey == "" || in.InstanceID == "" || in.SessionID == "" {
+		return ScopeClaimResult{}, ErrInvalidChain
+	}
+	payload := map[string]any{
+		"claim":       true,
+		"instance_id": in.InstanceID,
+		"generation":  in.Generation,
+		"expires_at":  in.ExpiresAt.UTC().Format(time.RFC3339Nano),
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	byKey, ok := f.events[in.WorkRef]
+	if !ok {
+		byKey = map[string]map[string]any{}
+		f.events[in.WorkRef] = byKey
+	}
+	existing, ok := byKey[in.ClaimKey]
+	if !ok {
+		byKey[in.ClaimKey] = payload
+		return ScopeClaimResult{Acquired: true}, nil
+	}
+	if payloadDigest(existing) == payloadDigest(payload) {
+		return ScopeClaimResult{Acquired: true}, nil
+	}
+	return ScopeClaimResult{Acquired: false, Holder: parseScopeClaimHolder(existing)}, nil
 }
 
 // evidenceStored reports whether one evidence key exists on the work chain.
@@ -1150,5 +1184,222 @@ func TestRunClaimedTaskRecoveryAfterEvidenceFailure(t *testing.T) {
 	}
 	if tb.client.workerStarts != 1 || len(tb.daemon.started) != 1 {
 		t.Fatalf("post-recovery replay duplicated effects: workers=%d starts=%d", tb.client.workerStarts, len(tb.daemon.started))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// R3: cross-instance coordination (two independent Bridge objects sharing
+// the same Orca client and WorkEntry ledger)
+// ---------------------------------------------------------------------------
+
+// twinBridges builds two independent Bridge instances over one shared Orca
+// client, one shared WorkEntry ledger, and one shared dispatch entry, with
+// tight claim timing so barrier tests stay fast and deterministic.
+func twinBridges(t *testing.T) (*testBridge, *testBridge) {
+	t.Helper()
+	client, entry := newFakeClient(), newFakeEntry()
+	assignment, daemon := newFakeAssignmentPort(), &fakeDaemonPort{}
+	actorA := bridgeActor()
+	actorB := bridgeActor()
+	actorB.SessionID = "bridge-session-2"
+	mk := func(actor ActorIdentity) *testBridge {
+		bridge := NewBridge(client, entry, assignment, daemon, actor)
+		bridge.InstanceID = "bridge-" + actor.SessionID
+		bridge.ClaimPoll = time.Millisecond
+		bridge.ClaimMaxWait = 2 * time.Second
+		bridge.LeaseTTL = 5 * time.Second
+		return &testBridge{Bridge: bridge, client: client, entry: entry, assignment: assignment, daemon: daemon}
+	}
+	return mk(actorA), mk(actorB)
+}
+
+// runBarrier launches fn on both bridges behind one start barrier and
+// returns both results.
+func runBarrier[A any](t *testing.T, a, b *testBridge, fn func(*testBridge) (A, error)) (A, A, error, error) {
+	t.Helper()
+	type outcome struct {
+		value A
+		err   error
+	}
+	outcomes := make([]outcome, 2)
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for slot, tb := range []*testBridge{a, b} {
+		wg.Add(1)
+		go func(slot int, tb *testBridge) {
+			defer wg.Done()
+			<-start
+			value, err := fn(tb)
+			outcomes[slot] = outcome{value: value, err: err}
+		}(slot, tb)
+	}
+	close(start)
+	wg.Wait()
+	return outcomes[0].value, outcomes[1].value, outcomes[0].err, outcomes[1].err
+}
+
+func TestTwoBridgesOneRun(t *testing.T) {
+	a, b := twinBridges(t)
+	chain := validChain()
+	ref := ProjectRef{Chain: chain, DisplayObjective: "shared objective"}
+
+	runA, runB, errA, errB := runBarrier(t, a, b, func(tb *testBridge) (string, error) {
+		return tb.EnsureProjectRun(t.Context(), ref)
+	})
+	if errA != nil || errB != nil {
+		t.Fatalf("bridge errors: %v / %v", errA, errB)
+	}
+	if runA != runB {
+		t.Fatalf("two bridges observed different runs: %s vs %s", runA, runB)
+	}
+	if a.client.runCreates != 1 {
+		t.Fatalf("two bridges created %d runs, want exactly 1", a.client.runCreates)
+	}
+	// Replays after both committed still converge without new creates.
+	again, err := b.EnsureProjectRun(t.Context(), ref)
+	if err != nil || again != runA {
+		t.Fatalf("post-barrier replay: %s vs %s (err %v)", again, runA, err)
+	}
+	if a.client.runCreates != 1 {
+		t.Fatalf("replay created another run: %d", a.client.runCreates)
+	}
+}
+
+func TestTwoBridgesOneTask(t *testing.T) {
+	a, b := twinBridges(t)
+	chain := validChain()
+	ref := TaskRef{Chain: chain, Instructions: instructions()}
+
+	type mapping struct {
+		run, task string
+	}
+	mapA, mapB, errA, errB := runBarrier(t, a, b, func(tb *testBridge) (mapping, error) {
+		run, task, err := tb.EnsureIssueTask(t.Context(), ref)
+		return mapping{run: run, task: task}, err
+	})
+	if errA != nil || errB != nil {
+		t.Fatalf("bridge errors: %v / %v", errA, errB)
+	}
+	if mapA != mapB {
+		t.Fatalf("two bridges observed different mappings: %+v vs %+v", mapA, mapB)
+	}
+	if a.client.taskCreates != 1 || a.client.runCreates != 1 {
+		t.Fatalf("creates: runs=%d tasks=%d, want 1/1", a.client.runCreates, a.client.taskCreates)
+	}
+}
+
+func TestTwoBridgesOneWorker(t *testing.T) {
+	a, b := twinBridges(t)
+	chain := validChain()
+	// Both bridges register the assignment (idempotent through the shared
+	// dispatch entry and work chain) so both can resolve the claimed task;
+	// the worker-start race is what the claim must arbitrate.
+	mapping, err := a.EnsureAssignment(t.Context(), dispatchRef(chain))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.EnsureAssignment(t.Context(), dispatchRef(chain)); err != nil {
+		t.Fatalf("second bridge assignment replay: %v", err)
+	}
+	claimed := DaemonTask{ID: mapping.Chain.TaskID, WorkspaceID: chain.WorkspaceID, IssueID: mapping.Chain.IssueID}
+
+	dispatchA, dispatchB, errA, errB := runBarrier(t, a, b, func(tb *testBridge) (DispatchMap, error) {
+		return tb.RunClaimedTask(t.Context(), claimed)
+	})
+	if errA != nil || errB != nil {
+		t.Fatalf("bridge errors: %v / %v", errA, errB)
+	}
+	if dispatchA.OrcaDispatchID != dispatchB.OrcaDispatchID {
+		t.Fatalf("two bridges observed different dispatches: %s vs %s", dispatchA.OrcaDispatchID, dispatchB.OrcaDispatchID)
+	}
+	if a.client.workerStarts != 1 {
+		t.Fatalf("two bridges started %d workers, want exactly 1", a.client.workerStarts)
+	}
+	if len(a.daemon.started) != 1 {
+		t.Fatalf("hivecrew task started %d times across bridges, want 1", len(a.daemon.started))
+	}
+	if a.client.runCreates != 1 || a.client.taskCreates != 1 {
+		t.Fatalf("creates under contention: runs=%d tasks=%d, want 1/1", a.client.runCreates, a.client.taskCreates)
+	}
+}
+
+// Restart path: a fresh Bridge instance (empty memo, new session) must
+// observe the committed mapping and never re-create Orca objects.
+func TestSecondBridgeRestartNeverRecreates(t *testing.T) {
+	a, b := twinBridges(t)
+	chain := validChain()
+	runA, err := a.EnsureProjectRun(t.Context(), ProjectRef{Chain: chain, DisplayObjective: "restart objective"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Bridge B is a "restarted" instance: fresh memo, different session.
+	runB, err := b.EnsureProjectRun(t.Context(), ProjectRef{Chain: chain, DisplayObjective: "restart objective"})
+	if err != nil {
+		t.Fatalf("restart bridge: %v", err)
+	}
+	if runB != runA {
+		t.Fatalf("restart bridge saw a different run: %s vs %s", runB, runA)
+	}
+	if a.client.runCreates != 1 {
+		t.Fatalf("restart path created %d runs, want 1", a.client.runCreates)
+	}
+}
+
+// Lease takeover: a holder that crashed between claiming and creating (no
+// evidence, no Orca object) must be taken over after lease expiry so exactly
+// one RunCreate still happens across both instances.
+func TestLeaseExpiryTakeoverAfterCrashedHolder(t *testing.T) {
+	a, b := twinBridges(t)
+	chain := validChain()
+	// Bridge A claims with a short lease, then dies before creating.
+	a.LeaseTTL = 5 * time.Millisecond
+	a.client.runCreateErr = errors.New("crashed after claim")
+	if _, err := a.EnsureProjectRun(t.Context(), ProjectRef{Chain: chain, DisplayObjective: "takeover objective"}); err == nil {
+		t.Fatal("crashed holder should surface its create error")
+	}
+	a.client.runCreateErr = nil
+	// Short lease so B's acquire observes expiry quickly.
+	b.LeaseTTL = 5 * time.Millisecond
+	b.ClaimPoll = time.Millisecond
+	b.ClaimMaxWait = 2 * time.Second
+
+	runB, err := b.EnsureProjectRun(t.Context(), ProjectRef{Chain: chain, DisplayObjective: "takeover objective"})
+	if err != nil {
+		t.Fatalf("takeover: %v", err)
+	}
+	if runB == "" {
+		t.Fatal("takeover returned no run")
+	}
+	// The fake counter counts attempts: A's failed attempt plus exactly one
+	// successful create by the takeover winner.
+	if len(a.client.runs) != 1 || a.client.runs[0].ID != runB {
+		t.Fatalf("takeover left %d runs (%v), want exactly %s", len(a.client.runs), a.client.runs, runB)
+	}
+	if a.client.runCreates != 2 {
+		t.Fatalf("takeover attempts = %d, want A(failed)+B(success)=2", a.client.runCreates)
+	}
+}
+
+// Live lease: while the holder's lease is valid and nothing is committed, a
+// peer fails closed instead of creating a duplicate.
+func TestLiveLeaseFailsClosed(t *testing.T) {
+	a, b := twinBridges(t)
+	chain := validChain()
+	// A claims then crashes (create error), leaving a live long lease.
+	a.client.runCreateErr = errors.New("holder crashed")
+	if _, err := a.EnsureProjectRun(t.Context(), ProjectRef{Chain: chain, DisplayObjective: "held objective"}); err == nil {
+		t.Fatal("crashed holder should error")
+	}
+	a.client.runCreateErr = nil
+	// B: long lease, short max wait -> must fail closed with ErrScopeHeld.
+	b.LeaseTTL = 5 * time.Second
+	b.ClaimPoll = time.Millisecond
+	b.ClaimMaxWait = 30 * time.Millisecond
+
+	if _, err := b.EnsureProjectRun(t.Context(), ProjectRef{Chain: chain, DisplayObjective: "held objective"}); !errors.Is(err, ErrScopeHeld) {
+		t.Fatalf("expected ErrScopeHeld, got %v", err)
+	}
+	if len(a.client.runs) != 0 {
+		t.Fatalf("fail-closed path still produced %d run objects", len(a.client.runs))
 	}
 }

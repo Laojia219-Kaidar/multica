@@ -59,28 +59,18 @@ type Bridge struct {
 	// Now is injectable for tests; production leaves it as time.Now.
 	Now func() time.Time
 
-	// scopeLocks serializes one mapping scope inside one process so
-	// concurrent callers converge to exactly one Orca object per HiveCrew
-	// object (single-writer behavior); the workentry replay anchors and Orca
-	// marker reconciliation cover cross-process and crash recovery.
-	scopeLocks sync.Map // scope key -> *sync.Mutex
+	// Cross-instance creation coordination (R3): claims are arbitrated on
+	// the shared WorkEntry ledger, not per-Bridge mutexes. InstanceID
+	// identifies this Bridge instance in claim payloads; LeaseTTL bounds a
+	// crashed holder before takeover; ClaimPoll and ClaimMaxWait bound the
+	// acquire loop. Zero values use the Default* constants.
+	InstanceID   string
+	LeaseTTL     time.Duration
+	ClaimPoll    time.Duration
+	ClaimMaxWait time.Duration
 
 	memoMu sync.Mutex
 	memo   bridgeMemo
-}
-
-// lockScope returns the process-wide mutex for one scope key.
-func (b *Bridge) lockScope(scope string) *sync.Mutex {
-	value, _ := b.scopeLocks.LoadOrStore(scope, &sync.Mutex{})
-	return value.(*sync.Mutex)
-}
-
-// withScopeLock runs fn while holding the scope mutex.
-func (b *Bridge) withScopeLock(scope string, fn func() error) error {
-	mutex := b.lockScope(scope)
-	mutex.Lock()
-	defer mutex.Unlock()
-	return fn()
 }
 
 // memoEntry is one cached mapping plus its frozen payload digest so replay
@@ -185,19 +175,7 @@ func (b *Bridge) EnsureProjectRun(ctx context.Context, ref ProjectRef) (string, 
 	if err := ref.Chain.ValidateIssueAnchoredProjectScope(); err != nil {
 		return "", err
 	}
-	var runID string
-	scopeErr := b.withScopeLock("run:"+ref.Chain.WorkspaceID+":"+ref.Chain.ProjectID, func() error {
-		id, err := b.ensureProjectRunLocked(ctx, ref)
-		if err != nil {
-			return err
-		}
-		runID = id
-		return nil
-	})
-	if scopeErr != nil {
-		return "", scopeErr
-	}
-	return runID, nil
+	return b.ensureProjectRunLocked(ctx, ref)
 }
 
 func (b *Bridge) ensureProjectRunLocked(ctx context.Context, ref ProjectRef) (string, error) {
@@ -231,6 +209,30 @@ func (b *Bridge) ensureProjectRunLocked(ctx context.Context, ref ProjectRef) (st
 		return "", err
 	}
 
+	record := func(orcaRunID string) error {
+		return b.recordLinkageEvidence(ctx, linkage.WorkRef, RunLinkageKey(ref.Chain), map[string]any{
+			"mapping":      "run",
+			"workspace_id": ref.Chain.WorkspaceID,
+			"project_id":   ref.Chain.ProjectID,
+			"orca_run_id":  orcaRunID,
+			"digest":       digest,
+		})
+	}
+	adopt := func(orcaRunID string) (string, error) {
+		if err := record(orcaRunID); err != nil {
+			return "", err
+		}
+		b.rememberRun(ref.Chain, orcaRunID, digest)
+		return orcaRunID, nil
+	}
+
+	// Evidence-first: another Bridge instance may already have committed
+	// this scope's mapping (crash-free cross-instance replay).
+	if committed := b.readCommittedRun(ctx, linkage.WorkRef, ref.Chain); committed != "" {
+		b.rememberRun(ref.Chain, committed, digest)
+		return committed, nil
+	}
+
 	// Reconcile Orca: a previous call may have created the Run but crashed
 	// before recording it. The marker in the objective is the recovery truth.
 	runs, err := b.Client.RunList(ctx)
@@ -240,17 +242,49 @@ func (b *Bridge) ensureProjectRunLocked(ctx context.Context, ref ProjectRef) (st
 	for _, run := range runs {
 		ws, prj, ok := RunMarkerScan(run.Objective)
 		if ok && ws == ref.Chain.WorkspaceID && prj == ref.Chain.ProjectID {
-			if err := b.recordLinkageEvidence(ctx, linkage.WorkRef, RunLinkageKey(ref.Chain), map[string]any{
-				"mapping":      "run",
-				"workspace_id": ref.Chain.WorkspaceID,
-				"project_id":   ref.Chain.ProjectID,
-				"orca_run_id":  run.ID,
-				"digest":       digest,
-			}); err != nil {
-				return "", err
+			return adopt(run.ID)
+		}
+	}
+
+	// Creation claim: exactly one Bridge instance (across independent
+	// objects, connections, and restarts) may call RunCreate for this scope.
+	claimErr := b.acquireCreateClaim(ctx, linkage.WorkRef, runCreateClaimBase(ref.Chain), func(ctx context.Context) bool {
+		return b.readCommittedRun(ctx, linkage.WorkRef, ref.Chain) != ""
+	})
+	if claimErr != nil {
+		if errors.Is(claimErr, ErrScopeAlreadyCommitted) {
+			if committed := b.readCommittedRun(ctx, linkage.WorkRef, ref.Chain); committed != "" {
+				b.rememberRun(ref.Chain, committed, digest)
+				return committed, nil
 			}
-			b.rememberRun(ref.Chain, run.ID, digest)
-			return run.ID, nil
+			// The holder committed Orca-side but not yet on the chain; one
+			// bounded re-scan adopts the marker instead of creating.
+			runs, err := b.Client.RunList(ctx)
+			if err != nil {
+				return "", fmt.Errorf("orcabridge: re-scan runs after committed scope: %w", err)
+			}
+			for _, run := range runs {
+				ws, prj, ok := RunMarkerScan(run.Objective)
+				if ok && ws == ref.Chain.WorkspaceID && prj == ref.Chain.ProjectID {
+					return adopt(run.ID)
+				}
+			}
+			return "", fmt.Errorf("orcabridge: run scope %s/%s reported committed but no marker or evidence is observable",
+				ref.Chain.WorkspaceID, ref.Chain.ProjectID)
+		}
+		return "", claimErr
+	}
+
+	// Double-check inside the claim: the previous holder may have created
+	// the Run Orca-side before crashing.
+	runs, err = b.Client.RunList(ctx)
+	if err != nil {
+		return "", fmt.Errorf("orcabridge: re-scan runs inside claim: %w", err)
+	}
+	for _, run := range runs {
+		ws, prj, ok := RunMarkerScan(run.Objective)
+		if ok && ws == ref.Chain.WorkspaceID && prj == ref.Chain.ProjectID {
+			return adopt(run.ID)
 		}
 	}
 
@@ -258,17 +292,25 @@ func (b *Bridge) ensureProjectRunLocked(ctx context.Context, ref ProjectRef) (st
 	if err != nil {
 		return "", fmt.Errorf("orcabridge: create orca run: %w", err)
 	}
-	if err := b.recordLinkageEvidence(ctx, linkage.WorkRef, RunLinkageKey(ref.Chain), map[string]any{
-		"mapping":      "run",
-		"workspace_id": ref.Chain.WorkspaceID,
-		"project_id":   ref.Chain.ProjectID,
-		"orca_run_id":  runID,
-		"digest":       digest,
-	}); err != nil {
+	if err := record(runID); err != nil {
 		return "", err
 	}
 	b.rememberRun(ref.Chain, runID, digest)
 	return runID, nil
+}
+
+// readCommittedRun reads the Orca run id this scope committed on the work
+// chain, verifying it against the handle grammar before use.
+func (b *Bridge) readCommittedRun(ctx context.Context, workRef string, chain Chain) string {
+	record, found, err := b.Entry.LookupEvidence(ctx, workRef, RunLinkageKey(chain))
+	if err != nil || !found {
+		return ""
+	}
+	orcaRunID, _ := record.Payload["orca_run_id"].(string)
+	if err := ValidateOrcaRunID(orcaRunID); err != nil {
+		return ""
+	}
+	return orcaRunID
 }
 
 // TaskRef identifies one HiveCrew issue task orchestration request.
@@ -285,19 +327,7 @@ func (b *Bridge) EnsureIssueTask(ctx context.Context, ref TaskRef) (orcaRunID, o
 	if err := ref.Chain.ValidateTaskScope(); err != nil {
 		return "", "", err
 	}
-	var runID, taskID string
-	scopeErr := b.withScopeLock("task:"+ref.Chain.WorkspaceID+":"+ref.Chain.TaskID, func() error {
-		resolvedRun, resolvedTask, err := b.ensureIssueTaskLocked(ctx, ref)
-		if err != nil {
-			return err
-		}
-		runID, taskID = resolvedRun, resolvedTask
-		return nil
-	})
-	if scopeErr != nil {
-		return "", "", scopeErr
-	}
-	return runID, taskID, nil
+	return b.ensureIssueTaskLocked(ctx, ref)
 }
 
 func (b *Bridge) ensureIssueTaskLocked(ctx context.Context, ref TaskRef) (string, string, error) {
@@ -335,48 +365,106 @@ func (b *Bridge) ensureIssueTaskLocked(ctx context.Context, ref TaskRef) (string
 	if err != nil {
 		return "", "", err
 	}
-	tasks, err := b.Client.TaskList(ctx, runID)
-	if err != nil {
-		return "", "", fmt.Errorf("orcabridge: reconcile tasks before create: %w", err)
+	record := func(orcaTaskID string) error {
+		return b.recordLinkageEvidence(ctx, linkage.WorkRef, TaskLinkageKey(ref.Chain), map[string]any{
+			"mapping":      "task",
+			"workspace_id": ref.Chain.WorkspaceID,
+			"project_id":   ref.Chain.ProjectID,
+			"issue_id":     ref.Chain.IssueID,
+			"task_id":      ref.Chain.TaskID,
+			"orca_run_id":  runID,
+			"orca_task_id": orcaTaskID,
+			"digest":       digest,
+		})
 	}
-	for _, task := range tasks {
-		ws, prj, issue, taskID, ok := TaskMarkerScan(task.Spec)
-		if ok && ws == ref.Chain.WorkspaceID && prj == ref.Chain.ProjectID &&
-			issue == ref.Chain.IssueID && taskID == ref.Chain.TaskID {
-			if err := b.recordLinkageEvidence(ctx, linkage.WorkRef, TaskLinkageKey(ref.Chain), map[string]any{
-				"mapping":      "task",
-				"workspace_id": ref.Chain.WorkspaceID,
-				"project_id":   ref.Chain.ProjectID,
-				"issue_id":     ref.Chain.IssueID,
-				"task_id":      ref.Chain.TaskID,
-				"orca_run_id":  runID,
-				"orca_task_id": task.ID,
-				"digest":       digest,
-			}); err != nil {
+	adopt := func(orcaTaskID string) (string, string, error) {
+		if err := record(orcaTaskID); err != nil {
+			return "", "", err
+		}
+		b.rememberTask(ref.Chain, runID, orcaTaskID, digest)
+		return runID, orcaTaskID, nil
+	}
+	scanOrcaTask := func() (string, error) {
+		tasks, err := b.Client.TaskList(ctx, runID)
+		if err != nil {
+			return "", fmt.Errorf("orcabridge: reconcile tasks: %w", err)
+		}
+		for _, task := range tasks {
+			ws, prj, issue, taskID, ok := TaskMarkerScan(task.Spec)
+			if ok && ws == ref.Chain.WorkspaceID && prj == ref.Chain.ProjectID &&
+				issue == ref.Chain.IssueID && taskID == ref.Chain.TaskID {
+				return task.ID, nil
+			}
+		}
+		return "", nil
+	}
+
+	// Evidence-first: another Bridge instance may already have committed
+	// this task mapping.
+	if committed := b.readCommittedTask(ctx, linkage.WorkRef, ref.Chain); committed != "" {
+		b.rememberTask(ref.Chain, runID, committed, digest)
+		return runID, committed, nil
+	}
+	if orphan, err := scanOrcaTask(); err != nil {
+		return "", "", err
+	} else if orphan != "" {
+		return adopt(orphan)
+	}
+
+	// Creation claim: exactly one Bridge instance may call TaskCreate.
+	claimErr := b.acquireCreateClaim(ctx, linkage.WorkRef, taskCreateClaimBase(ref.Chain), func(ctx context.Context) bool {
+		return b.readCommittedTask(ctx, linkage.WorkRef, ref.Chain) != ""
+	})
+	if claimErr != nil {
+		if errors.Is(claimErr, ErrScopeAlreadyCommitted) {
+			if committed := b.readCommittedTask(ctx, linkage.WorkRef, ref.Chain); committed != "" {
+				b.rememberTask(ref.Chain, runID, committed, digest)
+				return runID, committed, nil
+			}
+			orphan, err := scanOrcaTask()
+			if err != nil {
 				return "", "", err
 			}
-			b.rememberTask(ref.Chain, runID, task.ID, digest)
-			return runID, task.ID, nil
+			if orphan != "" {
+				return adopt(orphan)
+			}
+			return "", "", fmt.Errorf("orcabridge: task scope %s/%s reported committed but no marker or evidence is observable",
+				ref.Chain.WorkspaceID, ref.Chain.TaskID)
 		}
+		return "", "", claimErr
 	}
+
+	// Double-check inside the claim: an orphan Orca task from a crashed
+	// previous holder is adopted rather than duplicated.
+	if orphan, err := scanOrcaTask(); err != nil {
+		return "", "", err
+	} else if orphan != "" {
+		return adopt(orphan)
+	}
+
 	createdTaskID, err := b.Client.TaskCreate(ctx, TaskCreateInput{RunID: runID, Spec: spec, Title: title})
 	if err != nil {
 		return "", "", fmt.Errorf("orcabridge: create orca task: %w", err)
 	}
-	if err := b.recordLinkageEvidence(ctx, linkage.WorkRef, TaskLinkageKey(ref.Chain), map[string]any{
-		"mapping":      "task",
-		"workspace_id": ref.Chain.WorkspaceID,
-		"project_id":   ref.Chain.ProjectID,
-		"issue_id":     ref.Chain.IssueID,
-		"task_id":      ref.Chain.TaskID,
-		"orca_run_id":  runID,
-		"orca_task_id": createdTaskID,
-		"digest":       digest,
-	}); err != nil {
+	if err := record(createdTaskID); err != nil {
 		return "", "", err
 	}
 	b.rememberTask(ref.Chain, runID, createdTaskID, digest)
 	return runID, createdTaskID, nil
+}
+
+// readCommittedTask reads the Orca task id this scope committed on the work
+// chain, verifying the handle grammar before use.
+func (b *Bridge) readCommittedTask(ctx context.Context, workRef string, chain Chain) string {
+	record, found, err := b.Entry.LookupEvidence(ctx, workRef, TaskLinkageKey(chain))
+	if err != nil || !found {
+		return ""
+	}
+	orcaTaskID, _ := record.Payload["orca_task_id"].(string)
+	if err := ValidateOrcaTaskID(orcaTaskID); err != nil {
+		return ""
+	}
+	return orcaTaskID
 }
 
 // ---------------------------------------------------------------------------
@@ -522,19 +610,11 @@ func (b *Bridge) RunClaimedTask(ctx context.Context, claimed DaemonTask) (Dispat
 		return DispatchMap{}, fmt.Errorf("%w: hivecrew task %s carries no bridge assignment linkage", ErrNotBridgeManaged, claimed.ID)
 	}
 	chain := resolved.chain
-	// Single-writer: one assignment scope, one dispatch, one worker. The
-	// committed mapping is returned even when its evidence append failed, so
-	// callers can observe the committed Orca dispatch alongside the error.
-	var mapping DispatchMap
-	scopeErr := b.withScopeLock("assignment:"+chain.WorkspaceID+":"+chain.AssignmentID, func() error {
-		resolvedMapping, err := b.runClaimedTaskLocked(ctx, claimed, chain, resolved)
-		mapping = resolvedMapping
-		return err
-	})
-	if scopeErr != nil {
-		return mapping, scopeErr
-	}
-	return mapping, nil
+	// The creation claim inside guards one dispatch and one worker across
+	// Bridge instances. The committed mapping is returned even when its
+	// evidence append failed, so callers can observe the committed Orca
+	// dispatch alongside the error.
+	return b.runClaimedTaskLocked(ctx, claimed, chain, resolved)
 }
 
 func (b *Bridge) runClaimedTaskLocked(ctx context.Context, claimed DaemonTask, chain Chain, resolved taskAssignmentResolution) (DispatchMap, error) {
@@ -577,6 +657,68 @@ func (b *Bridge) runClaimedTaskLocked(ctx context.Context, claimed DaemonTask, c
 	orcaRunID, orcaTaskID, err := b.ensureIssueTaskLocked(ctx, TaskRef{Chain: chain, Instructions: resolved.instructions})
 	if err != nil {
 		return DispatchMap{}, err
+	}
+
+	// Commit read helpers shared by the claim probe and the waiter path.
+	committedMapping := func() DispatchMap {
+		record, found, err := b.Entry.LookupEvidence(ctx, linkage.WorkRef, DispatchLinkageKey(chain))
+		if err != nil || !found {
+			return DispatchMap{}
+		}
+		mapping, err := dispatchMapFromPayload(record.Payload)
+		if err != nil || mapping.OrcaDispatchID == "" {
+			return DispatchMap{}
+		}
+		return mapping
+	}
+	// Worker-start claim: exactly one Bridge instance may call WorkerStart
+	// for this assignment scope. The probe also treats an Orca-side orphan
+	// dispatch (crashed between start and evidence) as committed so waiters
+	// adopt instead of racing a second start.
+	claimErr := b.acquireCreateClaim(ctx, linkage.WorkRef, workerStartClaimBase(chain), func(ctx context.Context) bool {
+		if committedMapping() != (DispatchMap{}) {
+			return true
+		}
+		if dispatch, err := b.Client.DispatchShow(ctx, orcaTaskID); err == nil &&
+			dispatch != nil && dispatch.ID != "" && dispatch.RunID == orcaRunID {
+			return true
+		}
+		return false
+	})
+	if claimErr != nil {
+		if errors.Is(claimErr, ErrScopeAlreadyCommitted) {
+			if mapping := committedMapping(); mapping.OrcaDispatchID != "" {
+				b.rememberDispatch(chain, mapping)
+				return mapping, nil
+			}
+			// Adopt the Orca-side orphan left by the crashed holder.
+			if dispatch, err := b.Client.DispatchShow(ctx, orcaTaskID); err == nil &&
+				dispatch != nil && dispatch.ID != "" && dispatch.RunID == orcaRunID {
+				mapping := DispatchMap{
+					WorkspaceID:     chain.WorkspaceID,
+					ProjectID:       chain.ProjectID,
+					IssueID:         chain.IssueID,
+					TaskID:          chain.TaskID,
+					AssignmentID:    chain.AssignmentID,
+					ContractVersion: ContractVersion,
+					PlacementDigest: resolved.placementDigest,
+					OrcaRunID:       dispatch.RunID,
+					OrcaTaskID:      dispatch.TaskID,
+					OrcaDispatchID:  dispatch.ID,
+					WorkerTerminal:  dispatch.AssigneeHandle,
+					WorkerState:     "unknown",
+					Status:          "active",
+				}
+				if err := b.recordDispatchEvidence(ctx, linkage.WorkRef, mapping); err != nil {
+					return mapping, err
+				}
+				b.rememberDispatch(chain, mapping)
+				return mapping, nil
+			}
+			return DispatchMap{}, fmt.Errorf("orcabridge: worker scope %s/%s reported committed but no dispatch evidence or orphan is observable",
+				chain.WorkspaceID, chain.AssignmentID)
+		}
+		return DispatchMap{}, claimErr
 	}
 
 	// Reconcile: a previous call may have started the worker dispatch but
@@ -819,10 +961,14 @@ func (b *Bridge) AcceptWorkerResult(ctx context.Context, chain Chain, message Or
 	if err != nil {
 		return ResultReceipt{}, err
 	}
-	// Single-writer writeback: one scope per Orca dispatch so concurrent
-	// ingest of the same delivery settles exactly once.
-	scopeErr := b.withScopeLock("result:"+mapping.WorkspaceID+":"+mapping.OrcaDispatchID, func() error {
-		key := ResultEvidenceKey(mapping.OrcaDispatchID)
+	// Writeback: the result evidence key is dispatch-scoped and the ledger
+	// append is first-writer-wins, so concurrent ingest of the same delivery
+	// converges on one evidence row; drift fails closed below. Duplicate
+	// settlement on replay is intentional so a crash between evidence and
+	// settlement is recovered by replaying the same delivery.
+	key := ResultEvidenceKey(mapping.OrcaDispatchID)
+	{
+		_ = key
 		payload := map[string]any{
 			"mapping":          "result",
 			"workspace_id":     mapping.WorkspaceID,
@@ -852,13 +998,13 @@ func (b *Bridge) AcceptWorkerResult(ctx context.Context, chain Chain, message Or
 			OccurredAt:     b.now(),
 		})
 		if appendErr != nil && !errors.Is(appendErr, ErrEvidenceConflict) {
-			return appendErr
+			return ResultReceipt{}, appendErr
 		}
 		if appendErr != nil {
 			// Classify the replay: compare the committed digest.
 			if existing, found, lookupErr := b.Entry.LookupEvidence(ctx, workRef, key); lookupErr == nil && found {
 				if committed, _ := existing.Payload["result_digest"].(string); committed != digest {
-					return fmt.Errorf("%w: dispatch %s committed %s, replay carried %s",
+					return ResultReceipt{}, fmt.Errorf("%w: dispatch %s committed %s, replay carried %s",
 						ErrResultReceiptConflict, mapping.OrcaDispatchID, committed, digest)
 				}
 			}
@@ -867,16 +1013,12 @@ func (b *Bridge) AcceptWorkerResult(ctx context.Context, chain Chain, message Or
 		// Settle the HiveCrew task through the existing daemon lifecycle. Runs
 		// on both fresh and replayed evidence so a crash between evidence and
 		// settlement is recovered by replaying the same message.
-		return b.settleHiveCrewTask(ctx, mapping, result, message)
-	})
-	if scopeErr != nil && errors.Is(scopeErr, ErrResultReceiptConflict) {
-		return ResultReceipt{}, scopeErr
+		settleErr := b.settleHiveCrewTask(ctx, mapping, result, message)
+		if settleErr != nil {
+			return b.resultReceiptFromMapping(mapping, message, result, digest), settleErr
+		}
+		return b.resultReceiptFromMapping(mapping, message, result, digest), nil
 	}
-	receipt := b.resultReceiptFromMapping(mapping, message, result, digest)
-	if scopeErr != nil {
-		return receipt, scopeErr
-	}
-	return receipt, nil
 }
 
 // settleHiveCrewTask settles the HiveCrew task row through the existing

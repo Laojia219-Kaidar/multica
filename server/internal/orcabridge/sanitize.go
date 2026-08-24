@@ -22,8 +22,13 @@ const RedactionMarker = "[REDACTED:credential]"
 // "token of gratitude", "password policy") is never rewritten.
 var credentialPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{8,}`),
-	regexp.MustCompile(`\bsk-(?:proj-|ant-)?[A-Za-z0-9_-]{8,}`),
-	regexp.MustCompile(`\bark-[A-Za-z0-9_-]{8,}`),
+	// Provider API keys, including dotted/sub-tagged forms such as
+	// sk-sp-H.ABCDEFGHIJKLMNOP: an sk-/ark- prefix (optionally sk-proj-/
+	// sk-ant-) followed by an at-least-8-character token of letters,
+	// digits, dots, hyphens, or underscores that starts alphanumeric and
+	// ends alnum/underscore so sentence punctuation is not swallowed.
+	regexp.MustCompile(`\bsk-(?:proj-|ant-)?[A-Za-z0-9][A-Za-z0-9._-]{6,}[A-Za-z0-9_]`),
+	regexp.MustCompile(`\bark-[A-Za-z0-9][A-Za-z0-9._-]{6,}[A-Za-z0-9_]`),
 	regexp.MustCompile(`(?i)\b(api[_-]?key|access[_-]?key|secret|password|passwd|token|credential)\b["']?(\s*[:=]\s*)["']?([^\s"']{8,})["']?`),
 }
 
@@ -60,10 +65,33 @@ func ContainsCredentials(value string) bool {
 // the key, so the value alone carries no safe context.
 var credentialKeyPattern = regexp.MustCompile(`(?i)^(?:api[_-]?key|access[_-]?key|access[_-]?token|auth[_-]?token|refresh[_-]?token|secret|password|passwd|token|credential)s?$`)
 
+// RedactValue recursively redacts one arbitrary evidence value: strings are
+// redacted, maps are walked, and arrays/slices (including slices of maps and
+// slices of strings, arbitrarily nested) are redacted element-wise. Other
+// values are preserved as-is. The input is never mutated.
+func RedactValue(value any) any {
+	switch typed := value.(type) {
+	case string:
+		return RedactCredentials(typed)
+	case map[string]any:
+		return RedactStringMap(typed)
+	case []any:
+		out := make([]any, len(typed))
+		for i, element := range typed {
+			out[i] = RedactValue(element)
+		}
+		return out
+	case []string:
+		return RedactStringSlice(typed)
+	default:
+		return value
+	}
+}
+
 // RedactStringMap returns a copy of payload with credential-keyed values
-// replaced by the redaction marker and every other string value redacted.
-// Non-string values under non-credential keys are preserved as-is; nested
-// maps are walked. The input is never mutated.
+// replaced by the redaction marker and every other value redacted
+// recursively (maps and arrays included). Scalar values under
+// non-credential keys are preserved as-is. The input is never mutated.
 func RedactStringMap(payload map[string]any) map[string]any {
 	if payload == nil {
 		return nil
@@ -72,19 +100,12 @@ func RedactStringMap(payload map[string]any) map[string]any {
 	for key, value := range payload {
 		if credentialKeyPattern.MatchString(key) {
 			switch value.(type) {
-			case string, map[string]any, []string:
+			case string, map[string]any, []string, []any:
 				out[key] = RedactionMarker
 				continue
 			}
 		}
-		switch typed := value.(type) {
-		case string:
-			out[key] = RedactCredentials(typed)
-		case map[string]any:
-			out[key] = RedactStringMap(typed)
-		default:
-			out[key] = value
-		}
+		out[key] = RedactValue(value)
 	}
 	return out
 }

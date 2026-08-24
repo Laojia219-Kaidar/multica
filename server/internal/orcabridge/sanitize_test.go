@@ -112,3 +112,112 @@ func TestRedactStringMapAndSlice(t *testing.T) {
 		t.Fatal("nil slice must stay nil")
 	}
 }
+
+// R3 finding: dotted provider-key forms (e.g. sk-sp-H.ABCDEFGHIJKLMNOP)
+// must be redacted. Synthetic values only.
+func TestRedactCredentialsDottedProviderKeys(t *testing.T) {
+	cases := []string{
+		"sk-sp-H.ABCDEFGHIJKLMNOP",
+		"call used sk-sp-H.ABCDEFGHIJKLMNOP to authenticate",
+		"key=sk-live-AbCdEf.GhIjKlMnOp",
+		"sk-proj-Q1w2e3.r4t5y6u7i8o9p0",
+		"sk-ant-ZX.cvbnmasdfghjkl",
+		"ark-cn-beijing.ABCDEFGHIJK",
+		"export ORCA_KEY=sk-sp-H.ABCDEFGHIJKLMNOP",
+	}
+	for _, input := range cases {
+		out := RedactCredentials(input)
+		if ContainsCredentials(out) {
+			t.Fatalf("dotted provider key survived: %q -> %q", input, out)
+		}
+		if !strings.Contains(out, RedactionMarker) {
+			t.Fatalf("missing marker: %q -> %q", input, out)
+		}
+	}
+}
+
+func TestRedactCredentialsDottedFormNegatives(t *testing.T) {
+	// Prose containing hyphenated words but no sk-/ark- token of credential
+	// shape must stay untouched.
+	precise := []string{
+		"skipped the migration as instructed",
+		"task-sp-hello world",
+		"arkansas and skyline are not keys",
+		"the sk- prefix family is documented",
+	}
+	for _, input := range precise {
+		if out := RedactCredentials(input); out != input {
+			t.Fatalf("prose rewritten: %q -> %q", input, out)
+		}
+	}
+}
+
+// R3 finding: recursively nested arrays/slices of maps/strings are redacted.
+func TestRedactValueRecursiveNesting(t *testing.T) {
+	nested := map[string]any{
+		"summary": "worker used sk-sp-H.ABCDEFGHIJKLMNOP",
+		"steps": []any{
+			map[string]any{"detail": "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.abc.def"},
+			"plain step text",
+			[]any{map[string]any{"api_key": "0123456789abcdef"}},
+			[]string{"token=abcdefgh12345678", "clean entry"},
+		},
+		"attachments": []string{"sk-sp-H.ABCDEFGHIJKLMNOP"},
+		"count":       3,
+	}
+	redacted := RedactStringMap(nested)
+
+	if summary, _ := redacted["summary"].(string); ContainsCredentials(summary) {
+		t.Fatalf("top-level string leaked: %q", summary)
+	}
+	steps, _ := redacted["steps"].([]any)
+	if len(steps) != 4 {
+		t.Fatalf("steps array reshaped: %+v", steps)
+	}
+	stepMap, _ := steps[0].(map[string]any)
+	if detail, _ := stepMap["detail"].(string); ContainsCredentials(detail) {
+		t.Fatalf("map inside array leaked: %q", detail)
+	}
+	if plain, _ := steps[1].(string); plain != "plain step text" {
+		t.Fatalf("plain array string rewritten: %q", plain)
+	}
+	inner, _ := steps[2].([]any)
+	innerMap, _ := inner[0].(map[string]any)
+	if apiKey, _ := innerMap["api_key"].(string); apiKey != RedactionMarker {
+		t.Fatalf("credential-keyed map inside nested array not marked: %q", apiKey)
+	}
+	strSlice, _ := steps[3].([]string)
+	if ContainsCredentials(strSlice[0]) || strSlice[1] != "clean entry" {
+		t.Fatalf("string slice inside array wrong: %+v", strSlice)
+	}
+	if att, _ := redacted["attachments"].([]string); ContainsCredentials(att[0]) {
+		t.Fatalf("attachment leaked: %+v", att)
+	}
+	if count, _ := redacted["count"].(int); count != 3 {
+		t.Fatalf("scalar rewritten: %v", redacted["count"])
+	}
+	// Inputs must be unmutated.
+	if nested["summary"].(string) != "worker used sk-sp-H.ABCDEFGHIJKLMNOP" {
+		t.Fatal("input map mutated")
+	}
+	originalSteps := nested["steps"].([]any)
+	originalInner, _ := originalSteps[2].([]any)
+	originalInnerMap, _ := originalInner[0].(map[string]any)
+	if originalInnerMap["api_key"].(string) != "0123456789abcdef" {
+		t.Fatal("nested input mutated")
+	}
+}
+
+// RedactValue handles bare values without a wrapping map.
+func TestRedactValueBare(t *testing.T) {
+	if out := RedactValue("sk-sp-H.ABCDEFGHIJKLMNOP"); ContainsCredentials(out.(string)) {
+		t.Fatal("bare string leaked")
+	}
+	list := RedactValue([]any{"password=hunter2hunter2hunter2", 42})
+	if ContainsCredentials(list.([]any)[0].(string)) || list.([]any)[1].(int) != 42 {
+		t.Fatalf("bare slice wrong: %+v", list)
+	}
+	if out := RedactValue(3.14); out.(float64) != 3.14 {
+		t.Fatal("scalar changed")
+	}
+}

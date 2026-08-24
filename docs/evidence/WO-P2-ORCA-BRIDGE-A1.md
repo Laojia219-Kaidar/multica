@@ -156,3 +156,49 @@ R1 verification (go1.26.6 darwin/arm64): `gofmt -l internal/orcabridge/`
 clean; `go test ./internal/orcabridge/ -count=1` ok (67 tests); `go test
 -race ./internal/orcabridge/ -count=1` ok; `go vet ./internal/orcabridge/`
 pass; `go build ./...` pass.
+
+## Independent-review corrections (R3)
+
+Two blockers fixed on top of 83f339cca, no scope expansion:
+
+1. **Cross-instance creation coordination.** The per-Bridge mutexes of R1
+   only serialized one process. New `coordination.go` moves the arbiter onto
+   the shared WorkEntry ledger: `WorkEntryPort.ClaimScope` (the smallest
+   interface operation needed) performs an atomic first-writer-wins claim by
+   appending a checkpoint event whose idempotency key is the claim key — the
+   kernel's unique-key append is the compare-and-swap register, so exactly
+   one Bridge instance can hold a creation claim per scope (run, task,
+   worker-start). The claim is lease- and generation-backed: a holder that
+   crashes mid-create is taken over after lease expiry by appending
+   generation+1 (a fresh key, arbitrated by the same append), and a live
+   holder past the bounded wait makes the peer fail closed with
+   `ErrScopeHeld` — never a duplicate create. Every acquire goes through the
+   ledger (deliberately no in-process fast path), and each create section
+   double-checks committed evidence plus Orca-side markers inside the claim,
+   so waiters return the committed result without creating. Barrier tests
+   run two independent Bridge objects sharing one Orca client and one
+   WorkEntry ledger and prove exactly one Run, one Task, one Dispatch/Worker
+   (`TestTwoBridgesOneRun/OneTask/OneWorker`), plus restart
+   (`TestSecondBridgeRestartNeverRecreates`), lease-expiry takeover
+   (`TestLeaseExpiryTakeoverAfterCrashedHolder`), and live-lease fail-closed
+   (`TestLiveLeaseFailsClosed`). **Honest durability statement**: the
+   protocol is lease/CAS-backed and its atomicity is exactly the atomicity
+   of the backing workentry store — cross-process when the kernel runs its
+   PostgreSQL store (unique append per work_ref+idempotency_key); the
+   in-memory test double enforces the same register within one process and
+   proves the protocol, not cross-process durability.
+2. **Sanitizer hardening.** Dotted provider-key forms
+   (`sk-sp-H.ABCDEFGHIJKLMNOP`, `ark-cn-beijing.ABCDEFGHIJK`, `sk-live-x.Y`,
+   and `sk-proj-`/`sk-ant-` variants) are redacted: the provider patterns
+   now accept dot-separated tokens with an alphanumeric start/end. Nested
+   structures are redacted recursively via `RedactValue` — maps, arrays,
+   slices of maps/strings, arbitrarily deep — while scalar passthrough and
+   input immutability are preserved. Enforced at all three layers (bridge
+   message, WorkEntry evidence payload, Daemon complete/fail output); all
+   test values are synthetic (AWS-documented example key, alphabet
+   sequences, repeated patterns).
+
+R3 verification (go1.26.6 darwin/arm64): `gofmt -l internal/orcabridge/`
+clean; `go test ./internal/orcabridge -count=1` ok (79 tests);
+`go test -race ./internal/orcabridge -count=1` ok; `go vet
+./internal/orcabridge` pass; `go build ./...` pass; `git diff --check` clean.

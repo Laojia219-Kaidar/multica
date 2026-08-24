@@ -28,6 +28,17 @@ type WorkEntryPort interface {
 	// LookupEvidence reads one stored event by idempotency key without
 	// writing, so writeback can classify replays before appending.
 	LookupEvidence(ctx context.Context, workRef, idempotencyKey string) (EvidenceRecord, bool, error)
+
+	// ClaimScope attempts one atomic first-writer-wins claim of a creation
+	// scope on the shared ledger. It is the smallest coordination primitive
+	// the bridge needs to prevent duplicate Orca creates across independent
+	// Bridge instances: the append is unique per (work_ref, idempotency_key),
+	// so the first claim payload wins, an identical replay by the same
+	// holder reconfirms, and any other caller observes the holder. Atomicity
+	// and durability are exactly those of the backing workentry store (the
+	// PostgreSQL kernel is cross-process; the in-memory double is
+	// per-process).
+	ClaimScope(ctx context.Context, in ScopeClaimInput) (ScopeClaimResult, error)
 }
 
 // LinkageInput is one bridge mapping registration on the existing chain.
@@ -258,6 +269,71 @@ func (a *WorkEntryServiceAdapter) AppendEvidence(ctx context.Context, in Evidenc
 		return EvidenceReceipt{}, fmt.Errorf("orcabridge: append evidence on work chain: %w", err)
 	}
 	return EvidenceReceipt{EventID: result.EventID, Sequence: result.Sequence, Replayed: result.Replayed}, nil
+}
+
+// ClaimScope implements the coordination primitive on the existing kernel:
+// one checkpoint event whose idempotency key is the claim key. The kernel's
+// append is atomic per key (unique constraint in the PostgreSQL store), so
+// this is a compare-and-swap register without any schema change.
+func (a *WorkEntryServiceAdapter) ClaimScope(ctx context.Context, in ScopeClaimInput) (ScopeClaimResult, error) {
+	if strings.TrimSpace(in.WorkRef) == "" || strings.TrimSpace(in.ClaimKey) == "" ||
+		strings.TrimSpace(in.InstanceID) == "" || strings.TrimSpace(in.SessionID) == "" {
+		return ScopeClaimResult{}, fmt.Errorf("%w: scope claim input is incomplete", ErrInvalidChain)
+	}
+	payload := map[string]any{
+		"claim":       true,
+		"instance_id": in.InstanceID,
+		"generation":  in.Generation,
+		"expires_at":  in.ExpiresAt.UTC().Format(time.RFC3339Nano),
+	}
+	if _, err := a.Service.Event(ctx, workentry.WorkEventV1{
+		WorkRef:        in.WorkRef,
+		SessionID:      in.SessionID,
+		EventType:      workentry.EventCheckpoint,
+		EventPayload:   payload,
+		IdempotencyKey: in.ClaimKey,
+		OccurredAt:     in.ExpiresAt.UTC().Format(time.RFC3339Nano),
+		ObservedAt:     in.ExpiresAt.UTC().Format(time.RFC3339Nano),
+	}); err != nil {
+		if !errors.Is(err, workentry.ErrConflict) {
+			return ScopeClaimResult{}, fmt.Errorf("orcabridge: append scope claim: %w", err)
+		}
+		// Held: read the holder payload from the ledger.
+		result, lookupErr := a.Service.Replay(ctx, workentry.ReplayRequest{
+			WorkspaceID:    a.WorkspaceID,
+			IdempotencyKey: in.ClaimKey,
+			Kind:           "event",
+			WorkRef:        in.WorkRef,
+		})
+		if lookupErr != nil {
+			return ScopeClaimResult{}, fmt.Errorf("orcabridge: read scope claim holder: %w", lookupErr)
+		}
+		if result.Event == nil {
+			return ScopeClaimResult{}, fmt.Errorf("orcabridge: scope claim %s conflicted but no holder event exists", in.ClaimKey)
+		}
+		return ScopeClaimResult{Acquired: false, Holder: parseScopeClaimHolder(result.Event.EventPayload)}, nil
+	}
+	return ScopeClaimResult{Acquired: true}, nil
+}
+
+// parseScopeClaimHolder rebuilds the holder record from a stored claim
+// payload. Unparsable payloads report Parsed=false so callers can take over
+// at the next generation instead of trusting a corrupt lease.
+func parseScopeClaimHolder(payload map[string]any) ScopeClaimHolder {
+	instanceID, _ := payload["instance_id"].(string)
+	generation := 0
+	switch typed := payload["generation"].(type) {
+	case float64:
+		generation = int(typed)
+	case int:
+		generation = typed
+	}
+	expiresRaw, _ := payload["expires_at"].(string)
+	expiresAt, err := time.Parse(time.RFC3339Nano, expiresRaw)
+	if err != nil || instanceID == "" {
+		return ScopeClaimHolder{Parsed: false}
+	}
+	return ScopeClaimHolder{InstanceID: instanceID, Generation: generation, ExpiresAt: expiresAt, Parsed: true}
 }
 
 func (a *WorkEntryServiceAdapter) LookupEvidence(ctx context.Context, workRef, idempotencyKey string) (EvidenceRecord, bool, error) {

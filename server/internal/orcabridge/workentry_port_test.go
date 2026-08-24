@@ -274,3 +274,53 @@ func TestAppendEvidenceRedactsCredentials(t *testing.T) {
 		t.Fatalf("non-string value was rewritten: %v", stored.Payload["unchanged"])
 	}
 }
+
+// R3: dotted provider keys and nested arrays are redacted before the
+// existing ledger append.
+func TestAppendEvidenceRedactsDottedKeysAndNestedArrays(t *testing.T) {
+	adapter := newKernel(t)
+	ctx := context.Background()
+	chain := validChain()
+	linkage, err := adapter.RegisterLinkage(ctx, LinkageInput{Chain: chain, Actor: bridgeActor(), MappingKind: "dispatch"})
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	dirty := map[string]any{
+		"artifact": "signed with sk-sp-H.ABCDEFGHIJKLMNOP",
+		"trace": []any{
+			map[string]any{"line": "refresh used ark-cn-beijing.ABCDEFGHIJK"},
+			"Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.abc.def",
+		},
+		"tokens": []string{"sk-sp-H.ABCDEFGHIJKLMNOP"},
+	}
+	if _, err := adapter.AppendEvidence(ctx, EvidenceInput{
+		WorkRef:        linkage.WorkRef,
+		SessionID:      bridgeActor().SessionID,
+		EventType:      "progress",
+		IdempotencyKey: "dotted-1",
+		Payload:        dirty,
+		OccurredAt:     time.Date(2026, 8, 24, 13, 0, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	stored, ok, err := adapter.LookupEvidence(ctx, linkage.WorkRef, "dotted-1")
+	if err != nil || !ok {
+		t.Fatalf("lookup: ok=%v err=%v", ok, err)
+	}
+	artifact, _ := stored.Payload["artifact"].(string)
+	if strings.Contains(artifact, "sk-sp-H.ABCDEFGHIJKLMNOP") {
+		t.Fatalf("dotted key leaked: %q", artifact)
+	}
+	trace, _ := stored.Payload["trace"].([]any)
+	traceMap, _ := trace[0].(map[string]any)
+	if line, _ := traceMap["line"].(string); strings.Contains(line, "ark-cn-beijing.ABCDEFGHIJK") {
+		t.Fatalf("dotted ark key leaked from map in array: %q", line)
+	}
+	if bearer, _ := trace[1].(string); strings.Contains(bearer, "eyJhbGciOiJIUzI1NiJ9") {
+		t.Fatalf("bearer leaked from string in array: %q", bearer)
+	}
+	tokens, _ := stored.Payload["tokens"].([]string)
+	if len(tokens) == 1 && strings.Contains(tokens[0], "sk-sp-H.ABCDEFGHIJKLMNOP") {
+		t.Fatalf("dotted key leaked from string slice: %+v", tokens)
+	}
+}

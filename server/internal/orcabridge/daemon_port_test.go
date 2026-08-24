@@ -102,3 +102,28 @@ func TestDaemonPortValidatesTaskIDs(t *testing.T) {
 		}
 	}
 }
+
+// R3: dotted provider-key forms are redacted before daemon settlement.
+func TestDaemonPortRedactsDottedProviderKeys(t *testing.T) {
+	recorder := &daemonRecordingServer{}
+	server := httptest.NewServer(http.HandlerFunc(recorder.handler))
+	defer server.Close()
+	port := NewDaemonLifecyclePort(daemon.NewClient(server.URL))
+
+	err := port.CompleteTask(context.Background(), TaskCompletion{
+		TaskID: testTaskID,
+		Output: "signed artifact with sk-sp-H.ABCDEFGHIJKLMNOP and ark-cn-beijing.ABCDEFGHIJK",
+	})
+	if err != nil {
+		t.Fatalf("CompleteTask: %v", err)
+	}
+	output, _ := recorder.lastBody()["output"].(string)
+	for _, leaked := range []string{"sk-sp-H.ABCDEFGHIJKLMNOP", "ark-cn-beijing.ABCDEFGHIJK"} {
+		if strings.Contains(output, leaked) {
+			t.Fatalf("dotted provider key leaked into daemon output: %q", output)
+		}
+	}
+	if !strings.Contains(output, RedactionMarker) {
+		t.Fatalf("output missing redaction marker: %q", output)
+	}
+}
