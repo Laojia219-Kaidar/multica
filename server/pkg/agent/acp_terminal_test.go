@@ -1,0 +1,737 @@
+//go:build unix
+
+package agent
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"syscall"
+	"testing"
+	"time"
+)
+
+// newTestTerminalManager builds a manager over a cancellable context that
+// tests must be able to cancel (which also reaps every spawned process).
+// trustedTaskEnv optionally carries already-filtered trusted task
+// pointers ("KEY=VALUE"), mirroring the kimi backend's construction.
+func newTestTerminalManager(t *testing.T, trustedTaskEnv ...string) (*acpTerminalManager, context.CancelFunc) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(func() {
+		cancel()
+		time.Sleep(20 * time.Millisecond) // let ctx-driven kills land before the test ends
+	})
+	return newACPTerminalManager(ctx, t.TempDir(), slog.Default(), trustedTaskEnv...), cancel
+}
+
+// createTestTerminal drives terminal/create through dispatch and fails the
+// test unless it succeeds, returning the new terminal id.
+func createTestTerminal(t *testing.T, m *acpTerminalManager, params string) string {
+	t.Helper()
+	res, terr := m.dispatch("terminal/create", json.RawMessage(params))
+	if terr != nil {
+		t.Fatalf("terminal/create failed: code=%d msg=%q", terr.code, terr.message)
+	}
+	id, _ := res.(map[string]any)["terminalId"].(string)
+	if id == "" {
+		t.Fatalf("terminal/create returned no terminalId: %#v", res)
+	}
+	return id
+}
+
+// outputTestTerminal drives terminal/output and returns the response.
+func outputTestTerminal(t *testing.T, m *acpTerminalManager, sessionID, id string) acpTerminalOutputResponse {
+	t.Helper()
+	res, terr := m.dispatch("terminal/output", terminalIDParams(sessionID, id))
+	if terr != nil {
+		t.Fatalf("terminal/output failed: code=%d msg=%q", terr.code, terr.message)
+	}
+	o, ok := res.(acpTerminalOutputResponse)
+	if !ok {
+		t.Fatalf("terminal/output returned %T, want acpTerminalOutputResponse", res)
+	}
+	return o
+}
+
+// waitTestTerminalExit drives terminal/wait_for_exit and fails unless it
+// returns an exit status.
+func waitTestTerminalExit(t *testing.T, m *acpTerminalManager, sessionID, id string) acpTerminalExitStatus {
+	t.Helper()
+	res, terr := m.dispatch("terminal/wait_for_exit", terminalIDParams(sessionID, id))
+	if terr != nil {
+		t.Fatalf("terminal/wait_for_exit failed: code=%d msg=%q", terr.code, terr.message)
+	}
+	status, ok := res.(acpTerminalExitStatus)
+	if !ok {
+		t.Fatalf("terminal/wait_for_exit returned %T, want acpTerminalExitStatus", res)
+	}
+	return status
+}
+
+func terminalIDParams(sessionID, terminalID string) json.RawMessage {
+	return json.RawMessage(`{"sessionId":"` + sessionID + `","terminalId":"` + terminalID + `"}`)
+}
+
+func testJSONString(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
+}
+
+// TestACPTerminalCreateRejectsInvalidRequests pins the fail-closed
+// validation of terminal/create: empty command, missing session, invalid
+// output limits, malformed env names and credential-like env names are
+// all rejected with a structured -32602 before any process is spawned.
+func TestACPTerminalCreateRejectsInvalidRequests(t *testing.T) {
+	t.Parallel()
+	m, _ := newTestTerminalManager(t)
+
+	badRequests := map[string]string{
+		"empty command":    `{"sessionId":"ses_1","command":""}`,
+		"missing command":  `{"sessionId":"ses_1"}`,
+		"missing session":  `{"command":"/bin/sh"}`,
+		"zero limit":       `{"sessionId":"ses_1","command":"/bin/sh","outputByteLimit":0}`,
+		"negative limit":   `{"sessionId":"ses_1","command":"/bin/sh","outputByteLimit":-5}`,
+		"malformed env":    `{"sessionId":"ses_1","command":"/bin/sh","env":[{"name":"BAD=NAME","value":"x"}]}`,
+		"empty env name":   `{"sessionId":"ses_1","command":"/bin/sh","env":[{"name":"","value":"x"}]}`,
+		"non-string env":   `{"sessionId":"ses_1","command":"/bin/sh","env":"PATH=/bin"}`,
+		"provider key":     `{"sessionId":"ses_1","command":"/bin/sh","env":[{"name":"KIMI_API_KEY","value":"x"}]}`,
+		"daemon token":     `{"sessionId":"ses_1","command":"/bin/sh","env":[{"name":"MULTICA_TOKEN","value":"x"}]}`,
+		"auth token":       `{"sessionId":"ses_1","command":"/bin/sh","env":[{"name":"ANTHROPIC_AUTH_TOKEN","value":"x"}]}`,
+		"aws session":      `{"sessionId":"ses_1","command":"/bin/sh","env":[{"name":"AWS_SESSION_TOKEN","value":"x"}]}`,
+		"generic secret":   `{"sessionId":"ses_1","command":"/bin/sh","env":[{"name":"MY_SECRET","value":"x"}]}`,
+		"malformed params": `{"sessionId":`,
+	}
+	for name, params := range badRequests {
+		_, terr := m.dispatch("terminal/create", json.RawMessage(params))
+		if terr == nil {
+			t.Errorf("%s: expected terminal/create to be rejected", name)
+			continue
+		}
+		if terr.code != -32602 {
+			t.Errorf("%s: error code = %d, want -32602 (msg=%q)", name, terr.code, terr.message)
+		}
+	}
+
+	// Safe request-scoped names kimi's Bash tool actually sends must pass.
+	res, terr := m.dispatch("terminal/create", json.RawMessage(`{"sessionId":"ses_1","command":"/bin/echo","args":["ok"],"env":[{"name":"NO_COLOR","value":"1"},{"name":"TERM","value":"dumb"},{"name":"GIT_TERMINAL_PROMPT","value":"0"},{"name":"SHELL","value":"/bin/sh"}]}`))
+	if terr != nil {
+		t.Fatalf("terminal/create rejected kimi-style env: code=%d msg=%q", terr.code, terr.message)
+	}
+	if id, _ := res.(map[string]any)["terminalId"].(string); id == "" {
+		t.Fatal("terminal/create returned no terminalId for a valid request")
+	}
+}
+
+// TestACPTerminalExecutesCommandCombinedOutputAndExitCode pins the core
+// happy path: the spawned process runs in the requested cwd, stdout and
+// stderr are combined into one buffer, and wait_for_exit reports the real
+// exit code (non-zero included) once the process is reaped.
+func TestACPTerminalExecutesCommandCombinedOutputAndExitCode(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	m, _ := newTestTerminalManager(t)
+
+	id := createTestTerminal(t, m, `{"sessionId":"ses_1","command":"/bin/sh","args":["-c","pwd; echo stdout-line; echo stderr-line 1>&2; exit 7"],"cwd":`+testJSONString(dir)+`}`)
+
+	waitTestTerminalExit(t, m, "ses_1", id)
+	out := outputTestTerminal(t, m, "ses_1", id)
+	if !strings.Contains(out.Output, "stdout-line") || !strings.Contains(out.Output, "stderr-line") {
+		t.Errorf("combined output missing streams: %q", out.Output)
+	}
+	if !strings.Contains(out.Output, dir) {
+		t.Errorf("terminal did not run in requested cwd %s, output=%q", dir, out.Output)
+	}
+	if out.ExitStatus == nil || out.ExitStatus.ExitCode == nil || *out.ExitStatus.ExitCode != 7 {
+		t.Errorf("output exitStatus = %+v, want exitCode 7", out.ExitStatus)
+	}
+
+	status := waitTestTerminalExit(t, m, "ses_1", id)
+	if status.ExitCode == nil || *status.ExitCode != 7 {
+		t.Errorf("wait_for_exit = %+v, want exitCode 7", status)
+	}
+	if status.Signal != "" {
+		t.Errorf("wait_for_exit signal = %q, want empty for a normal exit", status.Signal)
+	}
+}
+
+// TestACPTerminalOutputIsIncremental pins that output is captured as it
+// is produced, not buffered until exit: an early poll sees the first
+// line while a later poll sees the rest.
+func TestACPTerminalOutputIsIncremental(t *testing.T) {
+	t.Parallel()
+	m, _ := newTestTerminalManager(t)
+
+	id := createTestTerminal(t, m, `{"sessionId":"ses_1","command":"/bin/sh","args":["-c","echo first-line; sleep 5; echo second-line"]}`)
+
+	// Wait for the first line (appears within milliseconds); the 5s sleep
+	// guarantees the second line cannot exist yet.
+	var early string
+	deadline := time.Now().Add(4 * time.Second)
+	for time.Now().Before(deadline) {
+		early = outputTestTerminal(t, m, "ses_1", id).Output
+		if strings.Contains(early, "first-line") {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !strings.Contains(early, "first-line") {
+		t.Fatalf("early poll never saw first-line: %q", early)
+	}
+	if strings.Contains(early, "second-line") {
+		t.Fatalf("early poll saw second-line before it was produced: %q", early)
+	}
+
+	// Kill instead of waiting out the 5s sleep; the exit must be by signal.
+	if _, terr := m.dispatch("terminal/kill", terminalIDParams("ses_1", id)); terr != nil {
+		t.Fatalf("terminal/kill: code=%d msg=%q", terr.code, terr.message)
+	}
+	status := waitTestTerminalExit(t, m, "ses_1", id)
+	if status.Signal == "" {
+		t.Errorf("killed terminal wait_for_exit = %+v, want a signal", status)
+	}
+}
+
+// TestACPTerminalOutputTruncationHonorsRequestLimit pins the bounded
+// buffer: a smaller positive outputByteLimit keeps only the newest bytes,
+// sets truncated=true, and never exceeds the requested bound.
+func TestACPTerminalOutputTruncationHonorsRequestLimit(t *testing.T) {
+	t.Parallel()
+	m, _ := newTestTerminalManager(t)
+
+	id := createTestTerminal(t, m, `{"sessionId":"ses_1","command":"/bin/sh","args":["-c","yes HEADxxxx | head -n 20; echo TAIL-MARKER"],"outputByteLimit":64}`)
+	waitTestTerminalExit(t, m, "ses_1", id)
+
+	out := outputTestTerminal(t, m, "ses_1", id)
+	if len(out.Output) > 64 {
+		t.Errorf("output length = %d, want <= 64 (request limit)", len(out.Output))
+	}
+	if !out.Truncated {
+		t.Errorf("truncated = false, want true after dropping head bytes")
+	}
+	if !strings.Contains(out.Output, "TAIL-MARKER") {
+		t.Errorf("bounded buffer should keep the newest bytes, got %q", out.Output)
+	}
+	if strings.Count(out.Output, "HEAD") > 5 {
+		t.Errorf("expected head bytes dropped, got %q", out.Output)
+	}
+}
+
+// TestACPTerminalDaemonMaximumClampsLargeRequestLimit pins the daemon-side
+// ceiling: kimi asks for 4 MiB, but the daemon keeps at most
+// acpTerminalMaxOutputBytes and reports truncation.
+func TestACPTerminalDaemonMaximumClampsLargeRequestLimit(t *testing.T) {
+	t.Parallel()
+	m, _ := newTestTerminalManager(t)
+
+	id := createTestTerminal(t, m, `{"sessionId":"ses_1","command":"/bin/sh","args":["-c","seq 1 400000"],"outputByteLimit":16777216}`)
+	waitTestTerminalExit(t, m, "ses_1", id)
+
+	out := outputTestTerminal(t, m, "ses_1", id)
+	if len(out.Output) > acpTerminalMaxOutputBytes {
+		t.Errorf("output length = %d, want <= daemon max %d", len(out.Output), acpTerminalMaxOutputBytes)
+	}
+	if !out.Truncated {
+		t.Errorf("truncated = false, want true after clamping to the daemon maximum")
+	}
+}
+
+// TestACPTerminalReleaseInvalidatesID pins that a released terminal can
+// never be touched again through any terminal method: every later access
+// fails closed with -32002 (kimi-cli's resource-not-found code).
+func TestACPTerminalReleaseInvalidatesID(t *testing.T) {
+	t.Parallel()
+	m, _ := newTestTerminalManager(t)
+
+	id := createTestTerminal(t, m, `{"sessionId":"ses_1","command":"/bin/echo","args":["done"]}`)
+	waitTestTerminalExit(t, m, "ses_1", id)
+
+	if _, terr := m.dispatch("terminal/release", terminalIDParams("ses_1", id)); terr != nil {
+		t.Fatalf("terminal/release: code=%d msg=%q", terr.code, terr.message)
+	}
+	for _, method := range []string{"terminal/output", "terminal/wait_for_exit", "terminal/kill", "terminal/release"} {
+		_, terr := m.dispatch(method, terminalIDParams("ses_1", id))
+		if terr == nil {
+			t.Errorf("%s after release: expected error, got none", method)
+			continue
+		}
+		if terr.code != -32002 {
+			t.Errorf("%s after release: code = %d, want -32002 (msg=%q)", method, terr.code, terr.message)
+		}
+	}
+}
+
+// TestACPTerminalUnknownIDAndMalformedParamsFailClosed pins that unknown
+// terminal ids and malformed requests return structured errors promptly
+// instead of hanging or crashing the Run.
+func TestACPTerminalUnknownIDAndMalformedParamsFailClosed(t *testing.T) {
+	t.Parallel()
+	m, _ := newTestTerminalManager(t)
+
+	for _, method := range []string{"terminal/output", "terminal/wait_for_exit", "terminal/kill", "terminal/release"} {
+		done := make(chan *acpTerminalError, 1)
+		go func(method string) {
+			_, terr := m.dispatch(method, terminalIDParams("ses_1", "term-does-not-exist"))
+			done <- terr
+		}(method)
+		select {
+		case terr := <-done:
+			if terr == nil || terr.code != -32002 {
+				t.Errorf("%s unknown id: got %+v, want code -32002", method, terr)
+			}
+		case <-time.After(3 * time.Second):
+			t.Fatalf("%s unknown id: dispatch hung", method)
+		}
+	}
+
+	for _, params := range []string{
+		`{"sessionId":"ses_1"}`,            // no terminalId
+		`{"sessionId":"ses_1","terminalId`, // malformed JSON
+	} {
+		_, terr := m.dispatch("terminal/output", json.RawMessage(params))
+		if terr == nil || terr.code != -32602 {
+			t.Errorf("malformed params %s: got %+v, want code -32602", params, terr)
+		}
+	}
+	// A request with no sessionId addresses no session the terminal could
+	// belong to; the ownership lookup must fail closed (-32002), never
+	// fall through to a sessionless match.
+	if _, terr := m.dispatch("terminal/output", json.RawMessage(`{"terminalId":"term-x"}`)); terr == nil || terr.code != -32002 {
+		t.Errorf("no-session access: got %+v, want code -32002", terr)
+	}
+}
+
+// TestACPTerminalSessionOwnershipEnforced pins that a terminal belongs to
+// exactly one session of the owning client: an id addressed from another
+// session fails closed exactly like an unknown id (no existence oracle),
+// and — the review P1 scenario — a foreign terminal/release must be
+// rejected WITHOUT invalidating the owner's terminal, so afterwards the
+// owner can still terminal/output and then terminal/release successfully.
+func TestACPTerminalSessionOwnershipEnforced(t *testing.T) {
+	t.Parallel()
+	m, _ := newTestTerminalManager(t)
+
+	id := createTestTerminal(t, m, `{"sessionId":"ses_owner","command":"/bin/echo","args":["hi"]}`)
+	waitTestTerminalExit(t, m, "ses_owner", id)
+
+	if _, terr := m.dispatch("terminal/output", terminalIDParams("ses_other", id)); terr == nil || terr.code != -32002 {
+		t.Errorf("foreign session access: got %+v, want code -32002", terr)
+	}
+	if _, terr := m.dispatch("terminal/output", terminalIDParams("ses_owner", id)); terr != nil {
+		t.Errorf("owning session access should succeed, got code=%d msg=%q", terr.code, terr.message)
+	}
+	if _, terr := m.dispatch("terminal/kill", terminalIDParams("ses_other", id)); terr == nil || terr.code != -32002 {
+		t.Errorf("foreign session kill: got %+v, want code -32002", terr)
+	}
+	if _, terr := m.dispatch("terminal/release", terminalIDParams("ses_other", id)); terr == nil || terr.code != -32002 {
+		t.Errorf("foreign session must not be able to release a terminal: got %+v, want code -32002", terr)
+	}
+
+	// P1: the rejected foreign release must have left the owner's
+	// terminal fully intact — still readable…
+	out := outputTestTerminal(t, m, "ses_owner", id)
+	if !strings.Contains(out.Output, "hi") {
+		t.Errorf("owner output after rejected foreign release = %q, want the echoed line", out.Output)
+	}
+	// …and still releasable by its actual owner.
+	if _, terr := m.dispatch("terminal/release", terminalIDParams("ses_owner", id)); terr != nil {
+		t.Fatalf("owner release after rejected foreign release: code=%d msg=%q", terr.code, terr.message)
+	}
+	// Only the owner's own release invalidates the id.
+	if _, terr := m.dispatch("terminal/output", terminalIDParams("ses_owner", id)); terr == nil || terr.code != -32002 {
+		t.Errorf("output after owner release: got %+v, want code -32002", terr)
+	}
+}
+
+// waitForChildPID reads a pid file written by a terminal's descendant.
+func waitForChildPID(t *testing.T, pidFile string) int {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if raw, err := os.ReadFile(pidFile); err == nil {
+			if pid, err := strconv.Atoi(strings.TrimSpace(string(raw))); err == nil && pid > 0 {
+				return pid
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("terminal child never reported its pid via %s", pidFile)
+	return 0
+}
+
+// assertProcessGone polls signal-0 until the pid is reaped.
+func assertProcessGone(t *testing.T, pid int) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if err := syscall.Kill(pid, 0); errors.Is(err, syscall.ESRCH) {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("pid %d survived the cleanup it was tied to", pid)
+}
+
+// TestACPTerminalCancellationKillsProcesses pins that spawned processes
+// are tied to the parent Task context: cancelling the run context
+// terminates the terminal process AND its descendants (whole process
+// group), and a blocked wait_for_exit still returns afterwards.
+func TestACPTerminalCancellationKillsProcesses(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	pidFile := filepath.Join(dir, "child.pid")
+	m, cancel := newTestTerminalManager(t)
+
+	id := createTestTerminal(t, m, `{"sessionId":"ses_1","command":"/bin/sh","args":["-c","sleep 600 & echo $! > `+pidFile+`; wait"]}`)
+	childPID := waitForChildPID(t, pidFile)
+	if err := syscall.Kill(childPID, 0); err != nil {
+		t.Fatalf("pre-cancel liveness check failed: %v", err)
+	}
+
+	cancel()
+
+	// The blocked wait must return (kill + acpTerminalWaitGrace bound it),
+	// reporting death by signal.
+	status := waitTestTerminalExit(t, m, "ses_1", id)
+	if status.Signal == "" && status.ExitCode == nil {
+		t.Errorf("wait_for_exit after cancel = %+v, want a terminal outcome", status)
+	}
+	assertProcessGone(t, childPID)
+}
+
+// TestACPTerminalCloseAllKillsRemaining pins client-shutdown cleanup:
+// terminals the agent never released die with the bridge, descendants
+// included, and later creates are refused.
+func TestACPTerminalCloseAllKillsRemaining(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	pidFile := filepath.Join(dir, "child.pid")
+	m, _ := newTestTerminalManager(t)
+
+	createTestTerminal(t, m, `{"sessionId":"ses_1","command":"/bin/sh","args":["-c","sleep 600 & echo $! > `+pidFile+`; wait"]}`)
+	childPID := waitForChildPID(t, pidFile)
+
+	m.closeAll()
+
+	assertProcessGone(t, childPID)
+	if _, terr := m.dispatch("terminal/create", json.RawMessage(`{"sessionId":"ses_1","command":"/bin/echo"}`)); terr == nil {
+		t.Error("terminal/create after closeAll should be refused")
+	}
+}
+
+// TestACPTerminalSecretEnvNotInherited proves the terminal child does not
+// inherit provider/API credentials or daemon task tokens: only the
+// allowlisted host environment plus the (screened) request-scoped
+// variables are present, and representative secret names and values are
+// absent from the child's environment.
+func TestACPTerminalSecretEnvNotInherited(t *testing.T) {
+	// t.Setenv forbids t.Parallel().
+	secrets := map[string]string{
+		"KIMI_API_KEY":          "sk-kimi-leak-123",
+		"MOONSHOT_API_KEY":      "sk-moonshot-leak-123",
+		"ANTHROPIC_AUTH_TOKEN":  "sk-ant-leak-123",
+		"OPENAI_API_KEY":        "sk-openai-leak-123",
+		"AWS_SECRET_ACCESS_KEY": "aws-secret-leak-123",
+		"MULTICA_TOKEN":         "mat-task-token-leak-123",
+	}
+	for k, v := range secrets {
+		t.Setenv(k, v)
+	}
+
+	m, _ := newTestTerminalManager(t)
+
+	id := createTestTerminal(t, m, `{"sessionId":"ses_1","command":"/usr/bin/env","env":[{"name":"FOO","value":"bar"},{"name":"NO_COLOR","value":"1"}]}`)
+	waitTestTerminalExit(t, m, "ses_1", id)
+
+	envDump := outputTestTerminal(t, m, "ses_1", id).Output
+	for name := range secrets {
+		if strings.Contains(envDump, name+"=") {
+			t.Errorf("terminal child inherited credential env %s", name)
+		}
+	}
+	if strings.Contains(envDump, "leak-123") {
+		t.Error("terminal child environment contains a secret value")
+	}
+	for _, want := range []string{"FOO=bar", "NO_COLOR=1", "PATH=", "HOME="} {
+		if !strings.Contains(envDump, want) {
+			t.Errorf("terminal child env missing allowlisted/request entry %q", want)
+		}
+	}
+}
+
+// envValue returns the value of name from an /usr/bin/env style dump,
+// or "" when the name is absent.
+func envValue(dump, name string) string {
+	for _, line := range strings.Split(dump, "\n") {
+		if strings.HasPrefix(line, name+"=") {
+			return strings.TrimPrefix(line, name+"=")
+		}
+	}
+	return ""
+}
+
+// taskConfigPointerEnv builds a Config.Env-shaped map carrying the two
+// trusted task pointers plus values that must NEVER reach a terminal
+// child: the daemon task token, provider credentials and arbitrary
+// MULTICA_* entries (HIV-880). The capability file is deliberately
+// never created on disk — the bridge must pass the path string without
+// ever opening or parsing the file.
+func taskConfigPointerEnv(t *testing.T) (map[string]string, string) {
+	t.Helper()
+	capFile := filepath.Join(t.TempDir(), "capability.json")
+	return map[string]string{
+		"MULTICA_DAEMON_PORT":                "8791",
+		"MULTICA_LOCAL_AUTH_CAPABILITY_FILE": capFile,
+		"MULTICA_TOKEN":                      "mat-task-token-leak-880",
+		"KIMI_API_KEY":                       "sk-kimi-leak-880",
+		"MOONSHOT_API_KEY":                   "sk-moonshot-leak-880",
+		"MULTICA_WORKSPACE_ID":               "ws-leak-880",
+		"MULTICA_ARBITRARY":                  "multica-arbitrary-leak-880",
+	}, capFile
+}
+
+// assertOnlyTrustedMulticaNames fails the test when the terminal child's
+// /usr/bin/env dump carries any MULTICA_* name other than the two
+// trusted pointers.
+func assertOnlyTrustedMulticaNames(t *testing.T, envDump string) {
+	t.Helper()
+	for _, line := range strings.Split(envDump, "\n") {
+		if !strings.HasPrefix(line, "MULTICA_") {
+			continue
+		}
+		name := strings.SplitN(line, "=", 2)[0]
+		if name != "MULTICA_DAEMON_PORT" && name != "MULTICA_LOCAL_AUTH_CAPABILITY_FILE" {
+			t.Errorf("terminal child env carries untrusted MULTICA_* entry %q", line)
+		}
+	}
+}
+
+// TestACPTerminalTaskConfigPointerEnvInherited pins the HIV-880 fix: the
+// terminal child inherits EXACTLY the two trusted task-scoped daemon
+// variables (MULTICA_DAEMON_PORT, MULTICA_LOCAL_AUTH_CAPABILITY_FILE)
+// with the values from THIS Task's Config.Env — so the CLI inside the
+// terminal can recover the task-scoped Multica credential — while
+// MULTICA_TOKEN, provider credentials, arbitrary MULTICA_* Config.Env
+// entries and even conflicting values in the daemon's own host
+// environment all stay excluded (the host process environment is never
+// the source for these two names).
+func TestACPTerminalTaskConfigPointerEnvInherited(t *testing.T) {
+	// t.Setenv forbids t.Parallel().
+	// Conflicting host values prove config sourcing: had the bridge kept
+	// reading the daemon process environment (the HIV-878 attempt), the
+	// child would see these host values instead of the config ones.
+	t.Setenv("MULTICA_DAEMON_PORT", "host-port-must-be-ignored-880")
+	t.Setenv("MULTICA_LOCAL_AUTH_CAPABILITY_FILE", "/host/capability-must-be-ignored-880")
+	cfgEnv, capFile := taskConfigPointerEnv(t)
+
+	m, _ := newTestTerminalManager(t, acpTerminalTrustedTaskEnvFromConfig(cfgEnv)...)
+
+	id := createTestTerminal(t, m, `{"sessionId":"ses_1","command":"/usr/bin/env"}`)
+	waitTestTerminalExit(t, m, "ses_1", id)
+
+	envDump := outputTestTerminal(t, m, "ses_1", id).Output
+	if got := envValue(envDump, "MULTICA_DAEMON_PORT"); got != "8791" {
+		t.Errorf("MULTICA_DAEMON_PORT = %q, want the Task config value %q", got, "8791")
+	}
+	if got := envValue(envDump, "MULTICA_LOCAL_AUTH_CAPABILITY_FILE"); got != capFile {
+		t.Errorf("MULTICA_LOCAL_AUTH_CAPABILITY_FILE = %q, want the Task config path %q", got, capFile)
+	}
+	for _, hostLeak := range []string{"host-port-must-be-ignored-880", "/host/capability-must-be-ignored-880"} {
+		if strings.Contains(envDump, hostLeak) {
+			t.Errorf("terminal child env sourced %q from the daemon host environment instead of the Task config", hostLeak)
+		}
+	}
+	for _, name := range []string{"MULTICA_TOKEN", "KIMI_API_KEY", "MOONSHOT_API_KEY", "MULTICA_WORKSPACE_ID", "MULTICA_ARBITRARY"} {
+		if envValue(envDump, name) != "" {
+			t.Errorf("terminal child inherited non-trusted Config.Env entry %s", name)
+		}
+	}
+	for _, leak := range []string{"leak-880"} {
+		if strings.Contains(envDump, leak) {
+			t.Errorf("terminal child environment leaked a Config.Env secret value (%q)", leak)
+		}
+	}
+	assertOnlyTrustedMulticaNames(t, envDump)
+}
+
+// TestACPTerminalTaskConfigPointerPropagatesWithoutHostEnv pins the
+// exact HIV-879 live shape: the daemon process environment carries
+// NEITHER pointer — the daemon injects both only into the Task-specific
+// agentEnv (Config.Env) — and the terminal child still receives both
+// with the Task config values.
+func TestACPTerminalTaskConfigPointerPropagatesWithoutHostEnv(t *testing.T) {
+	// t.Setenv forbids t.Parallel().
+	// Deterministically strip both names from the daemon process
+	// environment. t.Setenv records the prior values (set or unset) and
+	// restores them on cleanup, so os.Unsetenv here is test-safe.
+	t.Setenv("MULTICA_DAEMON_PORT", "")
+	t.Setenv("MULTICA_LOCAL_AUTH_CAPABILITY_FILE", "")
+	os.Unsetenv("MULTICA_DAEMON_PORT")
+	os.Unsetenv("MULTICA_LOCAL_AUTH_CAPABILITY_FILE")
+	cfgEnv, capFile := taskConfigPointerEnv(t)
+
+	m, _ := newTestTerminalManager(t, acpTerminalTrustedTaskEnvFromConfig(cfgEnv)...)
+
+	id := createTestTerminal(t, m, `{"sessionId":"ses_1","command":"/usr/bin/env"}`)
+	waitTestTerminalExit(t, m, "ses_1", id)
+
+	envDump := outputTestTerminal(t, m, "ses_1", id).Output
+	if got := envValue(envDump, "MULTICA_DAEMON_PORT"); got != "8791" {
+		t.Errorf("MULTICA_DAEMON_PORT = %q, want the Task config value %q despite the host environment lacking it", got, "8791")
+	}
+	if got := envValue(envDump, "MULTICA_LOCAL_AUTH_CAPABILITY_FILE"); got != capFile {
+		t.Errorf("MULTICA_LOCAL_AUTH_CAPABILITY_FILE = %q, want the Task config path %q despite the host environment lacking it", got, capFile)
+	}
+}
+
+// TestACPTerminalNoTrustedPointersWithoutConfig pins the flip side: when
+// the Task's Config.Env carries neither pointer, the terminal child gets
+// neither — even if the daemon's host process environment happens to
+// define them. The trusted pointers are Task-scoped, not host-scoped.
+func TestACPTerminalNoTrustedPointersWithoutConfig(t *testing.T) {
+	// t.Setenv forbids t.Parallel().
+	t.Setenv("MULTICA_DAEMON_PORT", "host-only-port-880")
+	t.Setenv("MULTICA_LOCAL_AUTH_CAPABILITY_FILE", "/host-only-capability-880")
+
+	m, _ := newTestTerminalManager(t) // no trusted task env: config carried neither
+
+	id := createTestTerminal(t, m, `{"sessionId":"ses_1","command":"/usr/bin/env"}`)
+	waitTestTerminalExit(t, m, "ses_1", id)
+
+	envDump := outputTestTerminal(t, m, "ses_1", id).Output
+	for _, name := range acpTerminalTrustedTaskEnv {
+		if envValue(envDump, name) != "" {
+			t.Errorf("terminal child inherited %s from the host environment without a Task config source", name)
+		}
+	}
+}
+
+// TestACPTerminalTrustedTaskEnvFromConfig unit-pins the extraction
+// filter: exactly the two trusted names, in acpTerminalTrustedTaskEnv
+// order, values verbatim; everything else in Config.Env — including
+// MULTICA_TOKEN and provider credentials — stays behind.
+func TestACPTerminalTrustedTaskEnvFromConfig(t *testing.T) {
+	t.Parallel()
+	cfgEnv, capFile := taskConfigPointerEnv(t)
+
+	got := acpTerminalTrustedTaskEnvFromConfig(cfgEnv)
+	want := []string{"MULTICA_DAEMON_PORT=8791", "MULTICA_LOCAL_AUTH_CAPABILITY_FILE=" + capFile}
+	if len(got) != len(want) {
+		t.Fatalf("acpTerminalTrustedTaskEnvFromConfig() = %#v, want %#v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("entry %d = %q, want %q", i, got[i], want[i])
+		}
+	}
+
+	if entries := acpTerminalTrustedTaskEnvFromConfig(nil); len(entries) != 0 {
+		t.Errorf("nil Config.Env produced %#v, want no entries", entries)
+	}
+	if entries := acpTerminalTrustedTaskEnvFromConfig(map[string]string{}); len(entries) != 0 {
+		t.Errorf("empty Config.Env produced %#v, want no entries", entries)
+	}
+	secretsOnly := map[string]string{
+		"MULTICA_TOKEN": "mat-task-token-leak-880",
+		"KIMI_API_KEY":  "sk-kimi-leak-880",
+	}
+	if entries := acpTerminalTrustedTaskEnvFromConfig(secretsOnly); len(entries) != 0 {
+		t.Errorf("Config.Env with only secrets produced %#v, want no entries", entries)
+	}
+}
+
+// TestACPTerminalManagerVetsTrustedTaskEnv pins the manager-boundary
+// fence: even if a future caller hands the constructor unfiltered
+// entries, only well-formed entries named exactly like the two trusted
+// pointers survive (first occurrence wins), so MULTICA_TOKEN, provider
+// credentials and generic host names can never reach a terminal child
+// through the trusted path.
+func TestACPTerminalManagerVetsTrustedTaskEnv(t *testing.T) {
+	t.Parallel()
+	m, _ := newTestTerminalManager(t,
+		"MULTICA_TOKEN=mat-task-token-leak-880",
+		"KIMI_API_KEY=sk-kimi-leak-880",
+		"PATH=/should-not-pass-through-trusted-path",
+		"MULTICA_DAEMON_PORT=8791",
+		"MULTICA_DAEMON_PORT=second-occurrence-must-lose",
+		"MULTICA_LOCAL_AUTH_CAPABILITY_FILE=/task/capability-880",
+		"MULTICA_LOCAL_AUTH_CAPABILITY_FILE",
+		"MULTICA_DAEMON_PORT",
+		"MULTICA_ANYTHING_ELSE=multica-arbitrary-leak-880",
+	)
+
+	want := []string{"MULTICA_DAEMON_PORT=8791", "MULTICA_LOCAL_AUTH_CAPABILITY_FILE=/task/capability-880"}
+	if len(m.trustedTaskEnv) != len(want) {
+		t.Fatalf("vetted trusted env = %#v, want %#v", m.trustedTaskEnv, want)
+	}
+	for i := range want {
+		if m.trustedTaskEnv[i] != want[i] {
+			t.Errorf("vetted entry %d = %q, want %q", i, m.trustedTaskEnv[i], want[i])
+		}
+	}
+
+	// End-to-end: the spawned child sees exactly the vetted entries.
+	id := createTestTerminal(t, m, `{"sessionId":"ses_1","command":"/usr/bin/env"}`)
+	waitTestTerminalExit(t, m, "ses_1", id)
+	envDump := outputTestTerminal(t, m, "ses_1", id).Output
+	if got := envValue(envDump, "MULTICA_DAEMON_PORT"); got != "8791" {
+		t.Errorf("MULTICA_DAEMON_PORT = %q, want the first vetted value", got)
+	}
+	if got := envValue(envDump, "MULTICA_LOCAL_AUTH_CAPABILITY_FILE"); got != "/task/capability-880" {
+		t.Errorf("MULTICA_LOCAL_AUTH_CAPABILITY_FILE = %q, want the vetted path", got)
+	}
+	if strings.Contains(envDump, "leak-880") {
+		t.Errorf("terminal child env leaked a value the vet should have dropped: %q", envDump)
+	}
+	assertOnlyTrustedMulticaNames(t, envDump)
+}
+
+// TestACPTerminalTaskCapabilityRequestOverrideRejected pins that the
+// model cannot inject or override the trusted task identity through
+// request-scoped env: every MULTICA_* request name — the two trusted
+// names included — is still rejected with -32602 before any process is
+// spawned, so those values can only ever come from the daemon host.
+func TestACPTerminalTaskCapabilityRequestOverrideRejected(t *testing.T) {
+	t.Parallel()
+	m, _ := newTestTerminalManager(t)
+
+	for _, name := range []string{
+		"MULTICA_DAEMON_PORT",
+		"MULTICA_LOCAL_AUTH_CAPABILITY_FILE",
+		"MULTICA_TOKEN",
+		"MULTICA_ANYTHING_ELSE",
+	} {
+		params := `{"sessionId":"ses_1","command":"/bin/echo","env":[{"name":` + testJSONString(name) + `,"value":"attacker"}]}`
+		_, terr := m.dispatch("terminal/create", json.RawMessage(params))
+		if terr == nil {
+			t.Errorf("request env %s: expected terminal/create to be rejected", name)
+			continue
+		}
+		if terr.code != -32602 {
+			t.Errorf("request env %s: error code = %d, want -32602 (msg=%q)", name, terr.code, terr.message)
+		}
+	}
+}
+
+// TestACPTerminalIDsUniqueAndUnguessable pins that ids across many
+// terminals never repeat and carry no sequential structure.
+func TestACPTerminalIDsUniqueAndUnguessable(t *testing.T) {
+	t.Parallel()
+	m, _ := newTestTerminalManager(t)
+	seen := make(map[string]bool)
+	for i := 0; i < 8; i++ {
+		id := createTestTerminal(t, m, `{"sessionId":"ses_1","command":"/bin/echo","args":["x"]}`)
+		if seen[id] {
+			t.Fatalf("duplicate terminal id %s", id)
+		}
+		seen[id] = true
+		if id == "term-"+strconv.Itoa(i) || id == "term-"+strconv.Itoa(i+1) {
+			t.Fatalf("terminal id %s is sequentially guessable", id)
+		}
+	}
+}
