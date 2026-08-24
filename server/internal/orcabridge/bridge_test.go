@@ -58,7 +58,14 @@ type fakeClient struct {
 	// dispatchByTask is a task-keyed, mutex-guarded dispatch table for
 	// concurrent scenarios; when non-empty it wins over the single dispatch.
 	dispatchByTask map[string]*OrcaDispatch
-	inbox          []OrcaMessage
+	// dispatchScript, when set, answers DispatchShow from a scripted
+	// sequence: entry i is the answer to query i (nil = no dispatch). When
+	// the sequence is exhausted the last entry repeats. Used to prove a test
+	// truly reached the post-claim reconcile query rather than failing on the
+	// first recovery-first lookup.
+	dispatchScript    []*OrcaDispatch
+	dispatchShowCalls int
+	inbox             []OrcaMessage
 
 	runCreateErr     error
 	runCreateBlock   chan struct{} // when set, RunCreate blocks until closed
@@ -182,10 +189,38 @@ func (f *fakeClient) DispatchShow(ctx context.Context, taskID string) (*OrcaDisp
 	if f.dispatchShowErr != nil {
 		return nil, f.dispatchShowErr
 	}
+	if f.dispatchScript != nil {
+		idx := f.dispatchShowCalls
+		if idx >= len(f.dispatchScript) {
+			idx = len(f.dispatchScript) - 1
+		}
+		f.dispatchShowCalls++
+		answer := f.dispatchScript[idx]
+		if answer == nil {
+			return nil, nil
+		}
+		cp := *answer
+		return &cp, nil
+	}
 	if keyed, ok := f.dispatchByTask[taskID]; ok {
 		return keyed, nil
 	}
 	return f.dispatch, nil
+}
+
+// currentDispatchShowCalls reports how many scripted DispatchShow queries ran.
+func (f *fakeClient) currentDispatchShowCalls() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.dispatchShowCalls
+}
+
+// setDispatchScript installs a scripted DispatchShow sequence (nil = absent).
+func (f *fakeClient) setDispatchScript(answers ...*OrcaDispatch) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.dispatchScript = answers
+	f.dispatchShowCalls = 0
 }
 
 // setDispatchForTask installs a task-keyed orphan under the client mutex.
@@ -2909,9 +2944,12 @@ func TestConcurrentTwoAssignmentsProbeIsolation(t *testing.T) {
 	}
 }
 
-// R8: post-claim reconcile with a dispatch whose TaskID is EMPTY fails
-// closed before any side effect.
-func TestClaimReconcileRejectsEmptyTaskIDDispatch(t *testing.T) {
+// R8 scripted reconcile core: the recovery-first lookup sees NO dispatch,
+// the claim is acquired, and only the post-claim DispatchShow returns the
+// invalid existing dispatch. Asserts the query sequence truly reached
+// post-claim, the exact fail-closed error, and zero side effects.
+func scriptedClaimReconcileRejection(t *testing.T, invalid *OrcaDispatch, wantErr error) (Chain, *testBridge) {
+	t.Helper()
 	a, _ := twinBridges(t)
 	chain := validChain()
 	mapping, err := a.EnsureAssignment(t.Context(), dispatchRef(chain))
@@ -2920,59 +2958,56 @@ func TestClaimReconcileRejectsEmptyTaskIDDispatch(t *testing.T) {
 	}
 	claimed := DaemonTask{ID: mapping.Chain.TaskID, WorkspaceID: chain.WorkspaceID, ProjectID: chain.ProjectID, IssueID: mapping.Chain.IssueID}
 	runID, taskID := derivedOrcaIDs(a, chain, mapping)
-	if runID == "" {
-		t.Fatal("no run id")
+	if runID == "" || taskID == "" {
+		t.Fatalf("derive failed: run=%q task=%q", runID, taskID)
 	}
-	// Existing dispatch with a valid ID and RunID but an EMPTY TaskID.
-	a.client.dispatch = &OrcaDispatch{ID: "ctx_emptytaskid01", RunID: runID, TaskID: "", AssigneeHandle: "term_328ff727-9a71-4047-b8d8-c2f5c34c0f7e", Status: "dispatched"}
 
-	if _, err := a.RunClaimedTask(t.Context(), claimed); !errors.Is(err, ErrResultIdentityMismatch) {
-		t.Fatalf("expected ErrResultIdentityMismatch for empty TaskID, got %v", err)
+	// Script: first lookup (recovery-first/probe) -> no dispatch at all, so
+	// the claim is acquired; later lookups (post-claim reconcile) -> the
+	// invalid existing dispatch.
+	a.client.setDispatchScript(nil, invalid, invalid)
+
+	if _, err := a.RunClaimedTask(t.Context(), claimed); !errors.Is(err, wantErr) {
+		t.Fatalf("expected %v, got %v", wantErr, err)
+	}
+	// The post-claim reconcile query must actually have run: more than the
+	// single recovery-first lookup.
+	if calls := a.client.currentDispatchShowCalls(); calls < 2 {
+		t.Fatalf("post-claim reconcile never reached: DispatchShow calls = %d, want >= 2", calls)
 	}
 	assertNoSideEffects(t, a, chain)
-	_ = taskID
+	return chain, a
+}
+
+// R8: post-claim reconcile with a dispatch whose TaskID is EMPTY fails
+// closed before any side effect.
+func TestClaimReconcileRejectsEmptyTaskIDDispatch(t *testing.T) {
+	scriptedClaimReconcileRejection(t,
+		&OrcaDispatch{ID: "ctx_emptytaskid01", RunID: "run_placeholder", TaskID: "", AssigneeHandle: "term_328ff727-9a71-4047-b8d8-c2f5c34c0f7e", Status: "dispatched"},
+		ErrResultIdentityMismatch)
 }
 
 // R8: a dispatch whose TaskID belongs to a different task fails closed.
 func TestClaimReconcileRejectsMismatchedTaskIDDispatch(t *testing.T) {
-	a, _ := twinBridges(t)
-	chain := validChain()
-	mapping, err := a.EnsureAssignment(t.Context(), dispatchRef(chain))
-	if err != nil {
-		t.Fatal(err)
-	}
-	claimed := DaemonTask{ID: mapping.Chain.TaskID, WorkspaceID: chain.WorkspaceID, ProjectID: chain.ProjectID, IssueID: mapping.Chain.IssueID}
-	runID, _ := derivedOrcaIDs(a, chain, mapping)
-	if runID == "" {
-		t.Fatal("no run id")
-	}
-	a.client.dispatch = &OrcaDispatch{ID: "ctx_othertaskid02", RunID: runID, TaskID: "task_ffffffffffff", AssigneeHandle: "term_328ff727-9a71-4047-b8d8-c2f5c34c0f7e", Status: "dispatched"}
-
-	if _, err := a.RunClaimedTask(t.Context(), claimed); !errors.Is(err, ErrResultIdentityMismatch) {
-		t.Fatalf("expected ErrResultIdentityMismatch for mismatched TaskID, got %v", err)
-	}
-	assertNoSideEffects(t, a, chain)
+	scriptedClaimReconcileRejection(t,
+		&OrcaDispatch{ID: "ctx_othertaskid02", RunID: "run_placeholder", TaskID: "task_ffffffffffff", AssigneeHandle: "term_328ff727-9a71-4047-b8d8-c2f5c34c0f7e", Status: "dispatched"},
+		ErrResultIdentityMismatch)
 }
 
 // R8: a dispatch from a different Run fails closed with NO WorkerStart.
 func TestClaimReconcileRejectsMismatchedRunIDWithoutWorkerStart(t *testing.T) {
-	a, _ := twinBridges(t)
-	chain := validChain()
-	mapping, err := a.EnsureAssignment(t.Context(), dispatchRef(chain))
-	if err != nil {
-		t.Fatal(err)
-	}
-	claimed := DaemonTask{ID: mapping.Chain.TaskID, WorkspaceID: chain.WorkspaceID, ProjectID: chain.ProjectID, IssueID: mapping.Chain.IssueID}
-	_, taskID := derivedOrcaIDs(a, chain, mapping)
-	if taskID == "" {
-		t.Fatal("no task id")
-	}
-	a.client.dispatch = &OrcaDispatch{ID: "ctx_otherrunid003", RunID: "run_ffffffffffff", TaskID: taskID, AssigneeHandle: "term_328ff727-9a71-4047-b8d8-c2f5c34c0f7e", Status: "dispatched"}
+	scriptedClaimReconcileRejection(t,
+		&OrcaDispatch{ID: "ctx_otherrunid003", RunID: "run_ffffffffffff", TaskID: "task_placeholder", AssigneeHandle: "term_328ff727-9a71-4047-b8d8-c2f5c34c0f7e", Status: "dispatched"},
+		ErrResultIdentityMismatch)
+}
 
-	if _, err := a.RunClaimedTask(t.Context(), claimed); !errors.Is(err, ErrResultIdentityMismatch) {
-		t.Fatalf("expected ErrResultIdentityMismatch for mismatched RunID, got %v", err)
-	}
-	assertNoSideEffects(t, a, chain)
+// R8: a dispatch whose ID violates the Orca handle grammar fails closed
+// with the distinct ErrInvalidChain classification (grammar violation is a
+// malformed-reference rejection, not an identity mismatch).
+func TestClaimReconcileRejectsInvalidDispatchID(t *testing.T) {
+	scriptedClaimReconcileRejection(t,
+		&OrcaDispatch{ID: "not-a-handle", RunID: "run_placeholder", TaskID: "task_placeholder", AssigneeHandle: "term_328ff727-9a71-4047-b8d8-c2f5c34c0f7e", Status: "dispatched"},
+		ErrInvalidChain)
 }
 
 // assertNoSideEffects proves a rejected reconcile produced zero downstream

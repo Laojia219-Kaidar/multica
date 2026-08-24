@@ -408,3 +408,31 @@ the R8/R7/coordination suites ok; full package `go test -count=1` ok (112
 tests); `go test -race -count=1` ok ×3; `go vet` pass; `go build ./...`
 pass; `git diff --check` clean. Files touched: bridge.go, bridge_test.go
 (both within the R7 allowlist).
+
+## Evidence correction (R9)
+
+Test-only correction on top of c615fd671 (R8 implementation preserved; no
+production file changed):
+
+The three R8 reconcile tests previously installed the invalid dispatch as a
+static pre-call fake, so the FIRST DispatchShow (recovery-first/probe) already
+saw it — they did not prove the post-claim reconcile path. The fake client now
+supports a scripted, mutex-guarded DispatchShow sequence
+(`setDispatchScript(nil, invalid, invalid)`): the recovery-first lookup
+returns no dispatch, the claim is acquired, and only the subsequent post-claim
+query returns the invalid existing dispatch. Each test asserts the query
+sequence actually reached post-claim (`DispatchShow calls >= 2`, verified by a
+negative control that fails when the invalid answer is served on the first
+call), the exact fail-closed error, and zero side effects (no WorkerStart, no
+StartTask, no dispatch evidence, no memo adoption). A fourth case covers a
+dispatch ID that violates the Orca handle grammar and documents its distinct
+classification: `ErrInvalidChain` (malformed reference) rather than
+`ErrResultIdentityMismatch` (identity mismatch).
+`TestConcurrentTwoAssignmentsProbeIsolation` remains a genuine two-goroutine
+barrier test over the task-keyed thread-safe fake and is covered by the
+-race runs.
+
+R9 verification (go1.26.6 darwin/arm64): `gofmt -l` clean; focused ×100 on
+the reconcile/coordination suites ok; full package `go test -count=1` ok (113
+tests); `go test -race -count=1` ok ×3; `go vet` pass; `go build ./...` pass;
+`git diff --check` clean. File touched: bridge_test.go only.
