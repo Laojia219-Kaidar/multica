@@ -6,6 +6,14 @@ WHERE issue_id = $1
 ORDER BY created_at ASC, id ASC
 LIMIT $2;
 
+-- name: ListRecentActivitiesForIssue :many
+-- The newest $2 activities for an issue (newest-first). Used by the work wall
+-- "recent events" projection so LIMIT selects the latest rows, not the oldest.
+SELECT * FROM activity_log
+WHERE issue_id = $1
+ORDER BY created_at DESC, id DESC
+LIMIT $2;
+
 -- name: GetActivity :one
 SELECT * FROM activity_log
 WHERE id = $1;

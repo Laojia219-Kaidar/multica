@@ -45,6 +45,9 @@ func TestSnapshotQueriesRunAgainstRealSchema(t *testing.T) {
 	if _, err := q.ListActivitiesForIssue(ctx, db.ListActivitiesForIssueParams{IssueID: ws, Limit: 5}); err != nil {
 		t.Fatalf("ListActivitiesForIssue: %v", err)
 	}
+	if _, err := q.ListRecentActivitiesForIssue(ctx, db.ListRecentActivitiesForIssueParams{IssueID: ws, Limit: 5}); err != nil {
+		t.Fatalf("ListRecentActivitiesForIssue: %v", err)
+	}
 
 	svc := NewService(q)
 	snap, err := svc.Snapshot(ctx, ws)

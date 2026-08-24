@@ -186,3 +186,46 @@ func (q *Queries) ListActivitiesForIssue(ctx context.Context, arg ListActivities
 	}
 	return items, nil
 }
+
+const listRecentActivitiesForIssue = `-- name: ListRecentActivitiesForIssue :many
+SELECT id, workspace_id, issue_id, actor_type, actor_id, action, details, created_at FROM activity_log
+WHERE issue_id = $1
+ORDER BY created_at DESC, id DESC
+LIMIT $2
+`
+
+type ListRecentActivitiesForIssueParams struct {
+	IssueID pgtype.UUID `json:"issue_id"`
+	Limit   int32       `json:"limit"`
+}
+
+// The newest $2 activities for an issue (newest-first). Used by the work wall
+// "recent events" projection so LIMIT selects the latest rows, not the oldest.
+func (q *Queries) ListRecentActivitiesForIssue(ctx context.Context, arg ListRecentActivitiesForIssueParams) ([]ActivityLog, error) {
+	rows, err := q.db.Query(ctx, listRecentActivitiesForIssue, arg.IssueID, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ActivityLog{}
+	for rows.Next() {
+		var i ActivityLog
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.IssueID,
+			&i.ActorType,
+			&i.ActorID,
+			&i.Action,
+			&i.Details,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}

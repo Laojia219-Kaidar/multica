@@ -73,7 +73,7 @@ func (s *Service) Snapshot(ctx context.Context, workspaceID pgtype.UUID) ([]live
 		if !t.IssueID.Valid {
 			continue
 		}
-		acts, err := s.Q.ListActivitiesForIssue(ctx, db.ListActivitiesForIssueParams{
+		acts, err := s.Q.ListRecentActivitiesForIssue(ctx, db.ListRecentActivitiesForIssueParams{
 			IssueID: t.IssueID,
 			Limit:   5,
 		})
