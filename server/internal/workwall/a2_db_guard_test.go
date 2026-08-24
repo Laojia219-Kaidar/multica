@@ -6,6 +6,7 @@ package workwall
 
 import (
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -34,8 +35,35 @@ var a2AllowedDBHosts = map[string]bool{
 
 // a2ProductionDBPort is the default PostgreSQL port this product's
 // production/shared containers listen on. A DSN targeting it is refused
-// (B7): dedicated test databases must live on a non-production port.
-const a2ProductionDBPort = "5432"
+// (B7/B8): dedicated test databases must live on a non-production port.
+const a2ProductionDBPort = 5432
+
+// a2DedicatedTestPort parses the DSN's port and applies the B8 constraints:
+// it must be present, a plain decimal run of digits (no sign, whitespace,
+// underscores, or separators), in the valid TCP range 1..65535, and must not
+// normalize to the default production port (so "05432" and "5432" are both
+// rejected). Any parse or range failure is fail-closed.
+func a2DedicatedTestPort(raw string) bool {
+	if raw == "" {
+		return false // missing port: driver default is 5432
+	}
+	for _, r := range raw {
+		if r < '0' || r > '9' {
+			return false // nonnumeric characters, signs, separators, spaces
+		}
+	}
+	port, err := strconv.Atoi(raw)
+	if err != nil {
+		return false // unparseable (overflow) port
+	}
+	if port < 1 || port > 65535 {
+		return false // outside the valid TCP port range
+	}
+	if port == a2ProductionDBPort {
+		return false // normalized production port (also rejects "05432")
+	}
+	return true
+}
 
 // a2DedicatedTestDB reports whether the DSN names exactly one of the
 // dedicated throwaway test databases AND is reachable only fail-closed:
@@ -56,11 +84,10 @@ func a2DedicatedTestDB(ds string) bool {
 	if !a2AllowedDBHosts[strings.ToLower(u.Hostname())] {
 		return false
 	}
-	// B7 fail-closed port: an explicit port is required and must not be the
-	// default production port; a missing port (i.e. the driver default,
-	// 5432) is also refused.
-	port := u.Port()
-	if port == "" || port == a2ProductionDBPort {
+	// B7/B8 fail-closed port: an explicit, numeric, in-range port that does
+	// not normalize to the default production port. Leading-zero forms such
+	// as "05432" parse to 5432 and are rejected by the same rule.
+	if !a2DedicatedTestPort(u.Port()) {
 		return false
 	}
 	return true
@@ -152,5 +179,42 @@ func TestA2DedicatedTestDBHostAndPortFailClosed(t *testing.T) {
 	// IPv6 loopback with a dedicated port remains allowed.
 	if !a2DedicatedTestDB("postgres://u:p@[::1]:54329/a2b1_itest?sslmode=disable") {
 		t.Errorf("ipv6 loopback with dedicated port must be allowed")
+	}
+}
+
+// TestA2DedicatedTestDBPortNumericParsing proves the B8 constraints: the
+// port must parse as a number in 1..65535 and must not normalize to the
+// production port — so "05432" is rejected exactly like "5432" — while
+// nonnumeric, zero, out-of-range, and missing ports are refused outright.
+func TestA2DedicatedTestDBPortNumericParsing(t *testing.T) {
+	// Direct constraint-level checks.
+	for _, ok := range []string{"54329", "1", "65535"} {
+		if !a2DedicatedTestPort(ok) {
+			t.Errorf("port %q must be accepted (numeric, in range, non-production)", ok)
+		}
+	}
+	for _, bad := range []string{"", "abc", "54a32", "0", "-1", "65536", "99999", "5432", "05432", "+54329", "5432 ", " 54329", "5,429", "0x...", "٣٥"} {
+		if a2DedicatedTestPort(bad) {
+			t.Errorf("port %q must be refused (fail closed)", bad)
+		}
+	}
+
+	// Full-DSN form: leading-zero production port and invalid ports are
+	// rejected even with an allowlisted name and loopback host.
+	for _, ds := range []string{
+		"postgres://u:p@localhost:05432/a2b1_itest?sslmode=disable",
+		"postgres://u:p@localhost:0/a2b1_itest?sslmode=disable",
+		"postgres://u:p@localhost:65536/a2b1_itest?sslmode=disable",
+		"postgres://u:p@localhost:abc/a2b1_itest?sslmode=disable",
+		"postgres://u:p@localhost/a2b1_itest?sslmode=disable",
+	} {
+		if a2DedicatedTestDB(ds) {
+			t.Errorf("DSN with invalid/production port must be refused (fail closed)")
+		}
+	}
+
+	// Sanity: the accepted dedicated-port DSN still passes the whole guard.
+	if !a2DedicatedTestDB("postgres://u:p@localhost:54329/a2b1_itest?sslmode=disable") {
+		t.Errorf("valid dedicated-port DSN must be allowed")
 	}
 }
