@@ -7,8 +7,9 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"os"
+	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -56,9 +57,10 @@ func TestMain(m *testing.M) {
 
 	// HIVECREW_DB_FREE_FRONTIER=1 selects a named, process-scoped hermetic
 	// mode: no pgxpool, no Ping, no socket, no migration, no env/credential
-	// enumeration, no running service. It serves only the existing pure
-	// fixtures that a focused -run regex selects explicitly; without such a
-	// selector this mode refuses to run rather than masquerading as a
+	// enumeration, no running service. It serves only the pure fixtures named
+	// verbatim in the fixed in-code selector allowlist dbFreeFixtureSelectors;
+	// a missing, empty, broad, unanchored, alternated, or DB-dependent
+	// selector is refused before m.Run() rather than masquerading as a
 	// whole-package result. The ready-frontier handler-response fixtures get
 	// their evidence from an in-context snapshot, so GetIssueFrontier touches
 	// no Handler DB field and a zero-value receiver is sufficient and
@@ -66,8 +68,9 @@ func TestMain(m *testing.M) {
 	// testPool. This mode proves entry safety and the selected fixtures only;
 	// it is not a PASS for the DB-dependent suite.
 	if os.Getenv("HIVECREW_DB_FREE_FRONTIER") == "1" {
-		if !testRunFlagPresent() {
-			fmt.Println("handler tests refuse to run: HIVECREW_DB_FREE_FRONTIER=1 requires an explicit -run selection of pure fixture tests")
+		selector, present := explicitTestRunSelector(os.Args[1:])
+		if !dbFreeSelectorAllowed(selector, present) {
+			fmt.Printf("handler tests refuse to run: HIVECREW_DB_FREE_FRONTIER=1 serves only the fixed pure fixture selector allowlist %q, not %s\n", dbFreeAllowlistSummary(), describeTestRunSelector(selector, present))
 			os.Exit(1)
 		}
 		testHandler = newDBFreeFrontierHandler()
@@ -131,72 +134,606 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-// rejectSharedPostgresDSN refuses any DSN that targets the shared loopback
-// development Postgres on port 5432 (localhost or 127.0.0.1). It is a pure
-// string check — it never parses credentials into a pool and never dials —
-// and TestMain applies it unconditionally, in every mode, before m.Run().
-// An empty DSN is not rejected here; missing-URL handling belongs to the
-// required-mode and honest-SKIP branches.
+// sharedPostgresPort is the development port the shared loopback Postgres
+// instance listens on. Any loopback endpoint resolving to this port — whether
+// the port is spelled out or left to the libpq default — refuses to run.
+const sharedPostgresPort = "5432"
+
+// dsnEndpoint is one explicit connection target extracted from a DSN. An
+// empty port means "libpq default", which resolves to the shared development
+// port and is therefore treated as 5432 for guard purposes.
+type dsnEndpoint struct {
+	host string
+	port string
+}
+
+// rejectSharedPostgresDSN refuses any DSN whose explicit endpoints include the
+// shared loopback development Postgres on port 5432 (localhost, 127.0.0.1 or
+// [::1], compared case-insensitively, with an explicit or defaulted port).
+// It is a pure syntactic check on the DSN string itself: it never calls
+// pgconn/pgx/pgxpool.ParseConfig or any other loader that would read PG
+// environment, service files or passfiles, it reads no files, enumerates no
+// environment, and dials no socket; TestMain applies it unconditionally, in
+// every mode, before m.Run(). Parse failures fail closed. Error messages are
+// fixed strings that deliberately contain no part of the DSN, so credentials
+// can never leak through a rejection. An empty DSN is not rejected here;
+// missing-URL handling belongs to the required-mode and honest-SKIP branches.
+//
+// Both libpq DSN forms are understood. URL form (postgres:// and
+// postgresql://) has its authority split on commas locally so every
+// host[:port] fallback endpoint is checked, including multi-host spellings
+// that net/url itself refuses. Keyword/value form uses a minimal
+// quote/backslash-aware lexer restricted to host,
+// hostaddr and port; libpq's port pairing applies (no port list means the
+// default port for every host, a single port applies to every host, and
+// otherwise the port count must equal the host count), and hostaddr is
+// checked alongside host because libpq dials the address when both are
+// given. A dedicated loopback database on a non-5432 port and a non-loopback
+// database on 5432 both pass.
 func rejectSharedPostgresDSN(dbURL string) error {
-	if dbURL == "" {
+	dsn := strings.TrimSpace(dbURL)
+	if dsn == "" {
 		return nil
 	}
-	parsed, err := url.Parse(dbURL)
+	endpoints, err := parseExplicitDSNEndpoints(dsn)
 	if err != nil {
-		return fmt.Errorf("DATABASE_URL is not a parseable URL: %v", err)
+		return fmt.Errorf("DATABASE_URL cannot be safely parsed into explicit endpoints: %v", err)
 	}
-	host := parsed.Hostname()
-	if host != "localhost" && host != "127.0.0.1" {
-		return nil
-	}
-	port := parsed.Port()
-	if port == "" {
-		port = "5432"
-	}
-	if port == "5432" {
-		return fmt.Errorf("DATABASE_URL targets the shared loopback Postgres on port 5432 (host %s); handler tests require a dedicated database", host)
+	for _, ep := range endpoints {
+		if isSharedLoopbackEndpoint(ep) {
+			return fmt.Errorf("DATABASE_URL targets the shared loopback Postgres development port %s; handler tests require a dedicated database on a distinct port", sharedPostgresPort)
+		}
 	}
 	return nil
 }
 
-// testRunFlagPresent reports whether the test binary was invoked with an
-// explicit -run/-test.run selector. DB-free hermetic mode only serves
-// explicitly selected pure fixture tests, never the whole package.
-func testRunFlagPresent() bool {
-	for _, arg := range os.Args[1:] {
-		if arg == "-test.run" || strings.HasPrefix(arg, "-test.run=") {
-			return true
+func isSharedLoopbackEndpoint(ep dsnEndpoint) bool {
+	if !isLoopbackHost(ep.host) {
+		return false
+	}
+	return ep.port == "" || ep.port == sharedPostgresPort
+}
+
+func isLoopbackHost(host string) bool {
+	host = strings.ToLower(strings.Trim(host, "[]"))
+	return host == "localhost" || host == "127.0.0.1" || host == "::1"
+}
+
+func parseExplicitDSNEndpoints(dsn string) ([]dsnEndpoint, error) {
+	if strings.HasPrefix(dsn, "postgres://") || strings.HasPrefix(dsn, "postgresql://") {
+		return parseURLDSNEndpoints(dsn)
+	}
+	if strings.Contains(dsn, "://") {
+		return nil, fmt.Errorf("unsupported URL scheme in connection string")
+	}
+	return parseKeywordValueDSNEndpoints(dsn)
+}
+
+// parseURLDSNEndpoints extracts every explicit endpoint from URL form. The
+// authority is split by hand because net/url rejects multi-host authorities
+// whose final element carries no port, while libpq and pgx both accept the
+// comma-separated form; the guard must understand it too. A URL without an
+// authority carries no explicit endpoint and passes (missing-URL handling
+// belongs elsewhere). Host literals are percent-decoded so an encoded
+// loopback spelling cannot slip past the classification.
+func parseURLDSNEndpoints(dsn string) ([]dsnEndpoint, error) {
+	scheme := "postgres://"
+	if strings.HasPrefix(dsn, "postgresql://") {
+		scheme = "postgresql://"
+	}
+	authority := dsn[len(scheme):]
+	end := len(authority)
+	for _, c := range []byte{'/', '?', '#'} {
+		if idx := strings.IndexByte(authority, c); idx >= 0 && idx < end {
+			end = idx
 		}
 	}
-	return false
+	authority = authority[:end]
+	if i := strings.LastIndex(authority, "@"); i >= 0 {
+		authority = authority[i+1:]
+	}
+	if authority == "" {
+		return nil, nil
+	}
+	var endpoints []dsnEndpoint
+	for _, piece := range strings.Split(authority, ",") {
+		piece = strings.TrimSpace(piece)
+		if piece == "" {
+			return nil, fmt.Errorf("connection URL contains an empty host entry")
+		}
+		ep := splitURLHostPiece(piece)
+		host, err := unescapeHostLiteral(ep.host)
+		if err != nil {
+			return nil, err
+		}
+		if !validHostLiteral(host) {
+			return nil, fmt.Errorf("connection URL carries a malformed host entry")
+		}
+		if ep.port != "" && !validPortLiteral(ep.port) {
+			return nil, fmt.Errorf("connection URL carries a malformed port entry")
+		}
+		endpoints = append(endpoints, dsnEndpoint{host: host, port: ep.port})
+	}
+	return endpoints, nil
+}
+
+// unescapeHostLiteral decodes percent-encoded octets in a host literal. It is
+// a pure byte scan; a truncated or invalid escape fails closed.
+func unescapeHostLiteral(host string) (string, error) {
+	if !strings.Contains(host, "%") {
+		return host, nil
+	}
+	var out strings.Builder
+	for i := 0; i < len(host); i++ {
+		c := host[i]
+		if c != '%' {
+			out.WriteByte(c)
+			continue
+		}
+		if i+2 >= len(host) {
+			return "", fmt.Errorf("truncated percent escape in connection string host")
+		}
+		hi, ok1 := hexNibble(host[i+1])
+		lo, ok2 := hexNibble(host[i+2])
+		if !ok1 || !ok2 {
+			return "", fmt.Errorf("invalid percent escape in connection string host")
+		}
+		out.WriteByte(hi<<4 | lo)
+		i += 2
+	}
+	return out.String(), nil
+}
+
+func hexNibble(c byte) (byte, bool) {
+	switch {
+	case c >= '0' && c <= '9':
+		return c - '0', true
+	case c >= 'a' && c <= 'f':
+		return c - 'a' + 10, true
+	case c >= 'A' && c <= 'F':
+		return c - 'A' + 10, true
+	}
+	return 0, false
+}
+
+// validHostLiteral accepts any non-empty host spelling that could plausibly
+// reach a dialer, rejecting control characters and whitespace.
+func validHostLiteral(host string) bool {
+	if host == "" {
+		return false
+	}
+	for i := 0; i < len(host); i++ {
+		if host[i] <= ' ' || host[i] == 0x7f {
+			return false
+		}
+	}
+	return true
+}
+
+// validPortLiteral accepts only decimal ports, the only form libpq dials.
+func validPortLiteral(port string) bool {
+	if port == "" {
+		return false
+	}
+	for i := 0; i < len(port); i++ {
+		if port[i] < '0' || port[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// splitURLHostPiece splits one element of a (possibly multi-host) URL
+// authority into host and port. Bracketed IPv6 literals keep their brackets
+// so the loopback check can classify them; a missing port is reported as "",
+// meaning the libpq default.
+func splitURLHostPiece(piece string) dsnEndpoint {
+	if strings.HasPrefix(piece, "[") {
+		if end := strings.Index(piece, "]"); end >= 0 {
+			host := piece[:end+1]
+			port := ""
+			if rest := piece[end+1:]; strings.HasPrefix(rest, ":") {
+				port = rest[1:]
+			}
+			return dsnEndpoint{host: host, port: port}
+		}
+		return dsnEndpoint{host: piece}
+	}
+	if strings.Count(piece, ":") > 1 {
+		// A bare unbracketed value with several colons cannot carry a port
+		// unambiguously; keep it whole as the host so loopback literals are
+		// still classified fail-closed.
+		return dsnEndpoint{host: piece}
+	}
+	if i := strings.LastIndex(piece, ":"); i >= 0 {
+		return dsnEndpoint{host: piece[:i], port: piece[i+1:]}
+	}
+	return dsnEndpoint{host: piece}
+}
+
+// parseKeywordValueDSN lexes a libpq keyword/value connection string into raw
+// key/value pairs with minimal quote/backslash-aware rules: single-quoted
+// values with backslash escapes, optional whitespace around '=', unquoted
+// values terminated by whitespace, and duplicate keys resolved last-wins. It
+// is a pure string scan — no files, no environment, no sockets.
+func parseKeywordValueDSN(dsn string) (map[string]string, error) {
+	values := make(map[string]string)
+	isSpace := func(c byte) bool {
+		return c == ' ' || c == '\t' || c == '\n' || c == '\r'
+	}
+	i := 0
+	n := len(dsn)
+	for i < n {
+		for i < n && isSpace(dsn[i]) {
+			i++
+		}
+		if i >= n {
+			break
+		}
+		start := i
+		for i < n && dsn[i] != '=' && !isSpace(dsn[i]) {
+			i++
+		}
+		if i == start {
+			return nil, fmt.Errorf("malformed keyword/value connection string")
+		}
+		key := strings.ToLower(dsn[start:i])
+		for i < n && isSpace(dsn[i]) {
+			i++
+		}
+		if i >= n || dsn[i] != '=' {
+			return nil, fmt.Errorf("malformed keyword/value connection string")
+		}
+		i++
+		for i < n && isSpace(dsn[i]) {
+			i++
+		}
+		var value strings.Builder
+		if i < n && dsn[i] == '\'' {
+			i++
+			closed := false
+			for i < n {
+				c := dsn[i]
+				if c == '\\' {
+					i++
+					if i >= n {
+						return nil, fmt.Errorf("truncated escape in quoted connection string value")
+					}
+					value.WriteByte(dsn[i])
+					i++
+					continue
+				}
+				if c == '\'' {
+					i++
+					closed = true
+					break
+				}
+				value.WriteByte(c)
+				i++
+			}
+			if !closed {
+				return nil, fmt.Errorf("unterminated quoted value in keyword/value connection string")
+			}
+		} else {
+			for i < n && !isSpace(dsn[i]) {
+				value.WriteByte(dsn[i])
+				i++
+			}
+		}
+		values[key] = value.String()
+	}
+	return values, nil
+}
+
+// parseKeywordValueDSNEndpoints extracts the explicit connection targets from
+// keyword/value form. hostaddr is checked alongside host because libpq dials
+// the address when both are present, so it is an equally authoritative
+// endpoint. libpq port pairing applies to each list: no ports means the
+// default port for every host, one port applies to every host, and otherwise
+// the counts must match exactly.
+func parseKeywordValueDSNEndpoints(dsn string) ([]dsnEndpoint, error) {
+	values, err := parseKeywordValueDSN(dsn)
+	if err != nil {
+		return nil, err
+	}
+	var endpoints []dsnEndpoint
+	for _, key := range []string{"host", "hostaddr"} {
+		raw, ok := values[key]
+		if !ok || strings.TrimSpace(raw) == "" {
+			continue
+		}
+		hosts := splitDSNList(raw)
+		ports := splitDSNList(values["port"])
+		switch {
+		case len(ports) == 0:
+		case len(ports) == 1:
+		case len(ports) == len(hosts):
+		default:
+			return nil, fmt.Errorf("port list does not match the host list in keyword/value connection string")
+		}
+		for idx, host := range hosts {
+			if host == "" {
+				return nil, fmt.Errorf("empty host entry in keyword/value connection string")
+			}
+			if !validHostLiteral(host) {
+				return nil, fmt.Errorf("keyword/value connection string carries a malformed host entry")
+			}
+			var port string
+			switch {
+			case len(ports) == 0:
+			case len(ports) == 1:
+				port = ports[0]
+			default:
+				port = ports[idx]
+			}
+			if port != "" && !validPortLiteral(port) {
+				return nil, fmt.Errorf("keyword/value connection string carries a malformed port entry")
+			}
+			endpoints = append(endpoints, dsnEndpoint{host: host, port: port})
+		}
+	}
+	return endpoints, nil
+}
+
+// splitDSNList splits a comma-separated host or port list, trimming
+// whitespace; an absent or blank value yields no elements.
+func splitDSNList(raw string) []string {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		out = append(out, strings.TrimSpace(p))
+	}
+	return out
+}
+
+// dbFreeFixtureSelectors is the fixed, in-code allowlist of pure fixture
+// selectors that HIVECREW_DB_FREE_FRONTIER=1 may serve. Every entry is an
+// anchored, verbatim -test.run value naming a test that needs no database, no
+// environment and no socket. Anything else — a missing or empty selector, a
+// broad regex such as "^$", ".", ".*" or "Test.*", an unanchored name, an
+// alternation, or a known DB-dependent test — is refused before m.Run().
+// Membership is enforced by TestDBFreeSelectorGate's executable table, not by
+// comment.
+var dbFreeFixtureSelectors = map[string]string{
+	"^TestDSNRejectsSharedPort5432$": "pure in-process entry-guard DSN table",
+	"^TestDBFreeSelectorGate$":       "pure selector gate accept/reject table",
+}
+
+// dbFreeSelectorAllowed reports whether an explicit -test.run selector is on
+// the fixed pure fixture allowlist. A missing or empty selector never
+// qualifies: DB-free mode serves named fixtures only, never the package.
+func dbFreeSelectorAllowed(selector string, present bool) bool {
+	if !present || selector == "" {
+		return false
+	}
+	_, ok := dbFreeFixtureSelectors[selector]
+	return ok
+}
+
+// dbFreeAllowlistSummary lists the allowlisted selectors in stable order for
+// refusal messages.
+func dbFreeAllowlistSummary() []string {
+	keys := make([]string, 0, len(dbFreeFixtureSelectors))
+	for k := range dbFreeFixtureSelectors {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// describeTestRunSelector renders a refusal-safe description of whatever
+// selector the caller supplied, without touching the DSN or any credential.
+func describeTestRunSelector(selector string, present bool) string {
+	if !present {
+		return "<no -test.run selector>"
+	}
+	if selector == "" {
+		return "<empty -test.run selector>"
+	}
+	return strconv.Quote(selector)
+}
+
+// explicitTestRunSelector extracts the effective -test.run selector from test
+// binary arguments. It understands both -test.run=VALUE and -test.run VALUE
+// spellings and, like the flag package, lets the last occurrence win. It is a
+// pure function of its argument slice: no environment, no files, no sockets.
+func explicitTestRunSelector(args []string) (string, bool) {
+	selector := ""
+	present := false
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "-test.run" {
+			present = true
+			selector = ""
+			if i+1 < len(args) {
+				i++
+				selector = args[i]
+			}
+			continue
+		}
+		if v, ok := strings.CutPrefix(arg, "-test.run="); ok {
+			present = true
+			selector = v
+		}
+	}
+	return selector, present
 }
 
 // TestDSNRejectsSharedPort5432 pins the entry-safety contract of the shared
-// loopback port guard. It exercises rejectSharedPostgresDSN purely in-process
-// — no pool, no socket, no DATABASE_URL dependency — so it runs under
-// HIVECREW_DB_FREE_FRONTIER=1 with a focused -run regex.
+// loopback port guard across every DSN form it must understand. It exercises
+// rejectSharedPostgresDSN purely in-process — no pool, no socket, no
+// DATABASE_URL dependency — so it runs under HIVECREW_DB_FREE_FRONTIER=1 with
+// its allowlisted -run selector. The leak assertions prove every rejection is
+// fail-closed without echoing the DSN or any credential fragment back out.
 func TestDSNRejectsSharedPort5432(t *testing.T) {
 	rejected := []string{
+		// URL form: loopback host on explicit or defaulted 5432, any case.
 		"postgres://synthetic:synthetic@127.0.0.1:5432/synthetic",
 		"postgres://synthetic:synthetic@localhost:5432/synthetic",
 		"postgres://synthetic:synthetic@localhost/synthetic",
 		"postgres://synthetic:synthetic@127.0.0.1/synthetic?sslmode=disable",
+		"postgres://synthetic:synthetic@LOCALHOST:5432/synthetic",
+		"postgres://synthetic:synthetic@LocalHost/synthetic",
+		"postgresql://synthetic:synthetic@localhost:5432/synthetic",
+		"postgres://synthetic:synthetic@[::1]:5432/synthetic",
+		// Percent-encoded loopback spelling cannot slip past classification.
+		"postgres://synthetic:synthetic@local%68ost:5432/synthetic",
+		// URL multi-host fallback list: one shared endpoint rejects the DSN.
+		"postgres://synthetic:synthetic@localhost:5432,db.internal.example:5433/synthetic",
+		"postgres://synthetic:synthetic@db.internal.example:5433,127.0.0.1/synthetic",
+		// Keyword/value form: quoted and unquoted, any case, spaced syntax.
+		"host=localhost port=5432 user=synthetic password=synthetic dbname=synthetic",
+		"host='localhost' port='5432' dbname=synthetic",
+		"host=LOCALHOST port=5432 dbname=synthetic",
+		"host=127.0.0.1 dbname=synthetic",
+		"host = 'localhost' port = 5432 dbname = synthetic",
+		"host='127.0.0.1' port=5432 dbname=synthetic",
+		// Keyword/value multi-host: one shared endpoint rejects the DSN.
+		"host=localhost,db.internal.example port=5432 dbname=synthetic",
+		"host=localhost,db.internal.example port=5432,5433 dbname=synthetic",
+		"host=localhost,db.internal.example dbname=synthetic",
+		"host=db.internal.example,localhost port=5433, dbname=synthetic",
+		// hostaddr overrides the dial target and must be guarded too.
+		"host=db.internal.example hostaddr=127.0.0.1 port=5432 dbname=synthetic",
+		"hostaddr=localhost dbname=synthetic",
 	}
 	for _, dsn := range rejected {
-		if err := rejectSharedPostgresDSN(dsn); err == nil {
+		err := rejectSharedPostgresDSN(dsn)
+		if err == nil {
 			t.Fatalf("shared loopback 5432 DSN accepted: %q", dsn)
 		}
+		assertNoDSNLeak(t, dsn, err)
 	}
 
 	accepted := []string{
 		"",
+		// URL dedicated loopback on a non-5432 port.
 		"postgres://synthetic:synthetic@127.0.0.1:5433/synthetic",
 		"postgres://synthetic:synthetic@localhost:15432/synthetic",
+		"postgres://synthetic:synthetic@[::1]:5433/synthetic",
+		// URL non-loopback on 5432, single host and multi-host.
 		"postgres://synthetic:synthetic@db.internal.example:5432/synthetic",
+		"postgres://synthetic:synthetic@db.internal.example:5432,db2.internal.example:5433/synthetic",
+		"postgres://synthetic:synthetic@db.internal.example:5433,db2.internal.example/synthetic",
+		// Keyword/value dedicated loopback on a non-5432 port.
+		"host=localhost port=5433 dbname=synthetic",
+		"host='127.0.0.1' port=15432 dbname=synthetic",
+		"host=[::1] port=5433 dbname=synthetic",
+		// Keyword/value non-loopback on 5432, single host and multi-host.
+		"host=db.internal.example port=5432 dbname=synthetic",
+		"host=DB.INTERNAL.EXAMPLE port=5432 dbname=synthetic",
+		"host=db.internal.example,db2.internal.example port=5432,5433 dbname=synthetic",
+		"host=db.internal.example,db2.internal.example port=5432 dbname=synthetic",
+		// No explicit endpoints: missing-URL handling belongs to the SKIP branch.
+		"dbname=synthetic",
 	}
 	for _, dsn := range accepted {
 		if err := rejectSharedPostgresDSN(dsn); err != nil {
 			t.Fatalf("dedicated DSN rejected: %q: %v", dsn, err)
+		}
+	}
+
+	// Fail-closed parse errors; each also proves no DSN/credential leak.
+	malformed := []string{
+		"host='localhost",
+		"host='localhost' port='5432' password='never-closed",
+		"host",
+		"host=localhost port=5432,5433,5434 dbname=synthetic",
+		"mysql://synthetic:synthetic@localhost:5432/synthetic",
+		"postgres://synthetic:synthetic@localhost,,db.internal.example/synthetic",
+		"postgres://synthetic:synthetic@localhost:54%33/synthetic",
+		"postgres://synthetic:synthetic@local%6host:5432/synthetic",
+		"host='local host' port=5432 dbname=synthetic",
+		"host=localhost port=54x32 dbname=synthetic",
+	}
+	for _, dsn := range malformed {
+		err := rejectSharedPostgresDSN(dsn)
+		if err == nil {
+			t.Fatalf("malformed DSN accepted: %q", dsn)
+		}
+		assertNoDSNLeak(t, dsn, err)
+	}
+}
+
+// assertNoDSNLeak proves an entry-guard error is fail-closed without carrying
+// its input back out: neither the full DSN nor any credential/host fragment
+// present in the input may appear in the message.
+func assertNoDSNLeak(t *testing.T, dsn string, err error) {
+	t.Helper()
+	msg := err.Error()
+	if strings.Contains(msg, dsn) {
+		t.Fatalf("guard error leaks the full DSN %q in %q", dsn, msg)
+	}
+	for _, fragment := range []string{"synthetic", "never-closed", "localhost", "LOCALHOST", "127.0.0.1", "::1", "db.internal.example"} {
+		if strings.Contains(strings.ToLower(dsn), strings.ToLower(fragment)) && strings.Contains(msg, fragment) {
+			t.Fatalf("guard error leaks DSN fragment %q from %q in %q", fragment, dsn, msg)
+		}
+	}
+}
+
+// TestDBFreeSelectorGate pins the HIVECREW_DB_FREE_FRONTIER selector contract
+// with an executable table instead of comments: the fixed allowlist accepts
+// exactly the two pure fixture selectors and refuses every missing, empty,
+// broad, unanchored, alternated, or DB-dependent selector before m.Run(). It
+// is itself pure — no DB, no environment, no socket — so it runs inside the
+// DB-free mode it governs.
+func TestDBFreeSelectorGate(t *testing.T) {
+	accepted := []string{
+		"^TestDSNRejectsSharedPort5432$",
+		"^TestDBFreeSelectorGate$",
+	}
+	for _, selector := range accepted {
+		if !dbFreeSelectorAllowed(selector, true) {
+			t.Fatalf("allowlisted pure fixture selector refused: %q", selector)
+		}
+	}
+
+	refused := []struct {
+		selector string
+		present  bool
+		why      string
+	}{
+		{"", false, "missing -test.run flag"},
+		{"", true, "empty -test.run value"},
+		{"^$", true, "empty-pattern selector"},
+		{".", true, "match-anything selector"},
+		{".*", true, "match-anything selector"},
+		{"^.*$", true, "match-anything selector"},
+		{"Test.*", true, "broad prefix regex"},
+		{"^Test", true, "broad prefix regex"},
+		{"TestDSNRejectsSharedPort5432", true, "unanchored allowlisted name"},
+		{"^TestDSNRejectsSharedPort5432$", false, "allowlisted value without -test.run"},
+		{"^TestDSNRejectsSharedPort5432$|^TestDBFreeSelectorGate$", true, "alternation outside allowlist"},
+		{"^TestDeleteIssueRejectsInvalidUUID$", true, "known DB-dependent test"},
+		{"^TestFrontier_TodoHealthyAgent_Ready$", true, "known DB-dependent frontier test"},
+		{"^TestNoSuchFixture$", true, "unknown test name"},
+	}
+	for _, tc := range refused {
+		if dbFreeSelectorAllowed(tc.selector, tc.present) {
+			t.Fatalf("selector %q (present=%v; %s) accepted by the DB-free gate", tc.selector, tc.present, tc.why)
+		}
+	}
+
+	// Selector extraction understands both flag spellings and last-wins.
+	extraction := []struct {
+		args     []string
+		selector string
+		present  bool
+	}{
+		{[]string{"-test.run", "^TestDBFreeSelectorGate$"}, "^TestDBFreeSelectorGate$", true},
+		{[]string{"-test.run=^TestDBFreeSelectorGate$"}, "^TestDBFreeSelectorGate$", true},
+		{[]string{"-test.paniconexit0=true", "-test.run=^TestDSNRejectsSharedPort5432$", "-test.timeout=10m0s"}, "^TestDSNRejectsSharedPort5432$", true},
+		{[]string{"-test.run=^First$", "-test.run=^Second$"}, "^Second$", true},
+		{[]string{"-test.timeout=10m0s"}, "", false},
+		{[]string{"-test.run"}, "", true},
+	}
+	for _, tc := range extraction {
+		selector, present := explicitTestRunSelector(tc.args)
+		if selector != tc.selector || present != tc.present {
+			t.Fatalf("explicitTestRunSelector(%v) = (%q, %v); want (%q, %v)", tc.args, selector, present, tc.selector, tc.present)
 		}
 	}
 }
