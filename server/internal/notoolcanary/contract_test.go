@@ -69,6 +69,9 @@ func TestParseZaraIssueMismatchFailsClosed(t *testing.T) {
 		kind     string
 	}{
 		"nonempty handoff": {note: "ordinary handoff", provider: ZaraProvider, kind: ZaraTaskKind},
+		"space handoff":    {note: " ", provider: ZaraProvider, kind: ZaraTaskKind},
+		"newline handoff":  {note: "\n", provider: ZaraProvider, kind: ZaraTaskKind},
+		"tab handoff":      {note: "\t", provider: ZaraProvider, kind: ZaraTaskKind},
 		"wrong provider":   {provider: Provider, kind: ZaraTaskKind},
 		"wrong task kind":  {provider: ZaraProvider, kind: "review"},
 	}

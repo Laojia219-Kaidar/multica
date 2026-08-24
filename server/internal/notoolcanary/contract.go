@@ -121,7 +121,7 @@ func Parse(note, actualProvider, actualTaskKind, actualIssueID string) (State, C
 	if IsSingleUseIssue(actualIssueID) {
 		if actualProvider != ZaraProvider ||
 			actualTaskKind != ZaraTaskKind ||
-			strings.TrimSpace(note) != "" {
+			note != "" {
 			return Invalid, Contract{}
 		}
 		return Valid, zaraContract()

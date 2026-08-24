@@ -310,6 +310,13 @@ func TestZaraStrictCanaryNeverAutoRetries(t *testing.T) {
 	if !retryEligible("timeout", ordinary) {
 		t.Fatal("ordinary retry eligibility regressed")
 	}
+
+	chatOnly := task
+	chatOnly.IssueID = pgtype.UUID{}
+	chatOnly.ChatSessionID = pgtype.UUID{Bytes: [16]byte{2}, Valid: true}
+	if !retryEligible("timeout", chatOnly) {
+		t.Fatal("chat-only retry eligibility regressed")
+	}
 }
 
 func TestTaskFailureClassifiers(t *testing.T) {
