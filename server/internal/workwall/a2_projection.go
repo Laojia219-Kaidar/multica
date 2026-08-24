@@ -2,6 +2,7 @@ package workwall
 
 import (
 	"encoding/json"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -105,6 +106,14 @@ type A2PaneInput struct {
 	Agent          *db.Agent                     // employee display identity
 	Now            time.Time
 	StaleThreshold time.Duration
+
+	// RequestWorkspaceID is the workspace the snapshot was requested for.
+	// RefWorkspaceID / RefProjectID are the ids embedded in the work_ref.
+	// When RequestWorkspaceID is set, a work_ref embedding a different (or
+	// missing) workspace is foreign data and fails closed: no pane.
+	RequestWorkspaceID string
+	RefWorkspaceID     string
+	RefProjectID       string
 }
 
 // a2TerminalEvent is the closed event type whose arrival claims the work
@@ -122,6 +131,88 @@ func a2WorkingKind(t string) bool {
 	default:
 		return false
 	}
+}
+
+// a2ForeignWorkRef reports whether the work_ref embeds a workspace that does
+// not match the requesting workspace. A missing embedded workspace is also
+// foreign when a request workspace is known: an unattributable work_ref must
+// never project.
+func a2ForeignWorkRef(in A2PaneInput) bool {
+	if in.RequestWorkspaceID == "" {
+		return false
+	}
+	return in.RefWorkspaceID == "" || !strings.EqualFold(in.RefWorkspaceID, in.RequestWorkspaceID)
+}
+
+// a2ProjectDrift reports whether the work_ref's embedded project id disagrees
+// with the Issue authority's project. Empty/non-UUID claims are not compared
+// (nothing provable to check); a provable disagreement is drift.
+func a2ProjectDrift(in A2PaneInput) bool {
+	if in.Issue == nil || !in.Issue.ProjectID.Valid || in.RefProjectID == "" {
+		return false
+	}
+	return !strings.EqualFold(in.RefProjectID, uuidStr(in.Issue.ProjectID))
+}
+
+// a2CanonicalReceipt returns the receipt only when it is provably about this
+// tenant, task, and issue. Foreign rows are dropped, never trusted.
+func a2CanonicalReceipt(in A2PaneInput) *db.ExecutionReceipt {
+	r := in.Receipt
+	if r == nil {
+		return nil
+	}
+	if in.RequestWorkspaceID != "" && !strings.EqualFold(uuidStr(r.WorkspaceID), in.RequestWorkspaceID) {
+		return nil
+	}
+	if r.TaskID.Valid && in.Task != nil && in.Task.ID.Valid &&
+		uuidStr(r.TaskID) != uuidStr(in.Task.ID) {
+		return nil
+	}
+	if r.IssueID.Valid && in.Issue != nil && in.Issue.ID.Valid &&
+		uuidStr(r.IssueID) != uuidStr(in.Issue.ID) {
+		return nil
+	}
+	return r
+}
+
+// a2BoundDispatch returns the dispatch receipt only when it is precisely
+// bound to THIS task (and issue, when known): a later re-dispatch of the
+// issue for a different task must never hijack this pane's ownership.
+func a2BoundDispatch(in A2PaneInput) *db.AssignmentDispatchReceipt {
+	d := in.Dispatch
+	if d == nil || in.Task == nil || !in.Task.ID.Valid {
+		return nil
+	}
+	if !d.InitialTaskID.Valid || uuidStr(d.InitialTaskID) != uuidStr(in.Task.ID) {
+		return nil
+	}
+	if in.Issue != nil && in.Issue.ID.Valid && d.IssueID.Valid &&
+		uuidStr(d.IssueID) != uuidStr(in.Issue.ID) {
+		return nil
+	}
+	return d
+}
+
+// a2TaskNonTerminal reports whether the tenant-bound task is currently in
+// flight. A missing task is never in flight.
+func a2TaskNonTerminal(t *db.AgentTaskQueue) bool {
+	if t == nil {
+		return false
+	}
+	switch t.Status {
+	case "queued", "dispatched", "running", "waiting_local_directory":
+		return true
+	default:
+		return false
+	}
+}
+
+// a2HasExactEvidence reports whether this pane carries an exact assignment
+// chain for its task: either a dispatch receipt precisely bound to the task
+// (initial_task_id), or a tenant/task/issue-verified execution receipt for
+// it. Ledger events and heartbeats alone are never evidence.
+func a2HasExactEvidence(in A2PaneInput) bool {
+	return a2BoundDispatch(in) != nil || a2CanonicalReceipt(in) != nil
 }
 
 // a2IssueTerminal reports whether the Issue state authority confirms the work
@@ -275,6 +366,53 @@ func a2Truncate(s string, max int) string {
 	return string(r[:max])
 }
 
+// a2CredentialMarkers are substrings that never belong in a projected
+// display value (stage / phase / step / blocker_reason). Matching is
+// case-insensitive and fail-closed: a value that merely looks like it could
+// carry a credential is dropped entirely, never surfaced.
+var a2CredentialMarkers = []string{
+	"sk-", "gsk_", "rk-", "ghp_", "gho_", "ghu_", "github_pat_",
+	"xoxb-", "xoxp-", "xoxa-", "akia", "asymakey",
+	"api_key", "apikey", "secret", "token", "password", "passwd",
+	"bearer ", "authorization:", "credential", "private_key",
+	"-----begin", "ssh-rsa", "ecdsa-", "connect.sid",
+}
+
+// a2TokenShapedRun matches an unbroken 24+ character run of token-alphabet
+// characters (hex/base64/url-safe), which no honest stage or blocker reason
+// contains but every synthetic key material string does.
+var a2TokenShapedRun = regexp.MustCompile(`[A-Za-z0-9_-]{24,}`)
+
+// a2DisplayValue sanitizes one allowlisted display value: it collapses
+// control characters and whitespace, drops credential-marked or token-shaped
+// values entirely (empty string), and truncates to max runes. It is the only
+// path by which payload or blocker text may reach a pane.
+func a2DisplayValue(s string, max int) string {
+	if max <= 0 {
+		return ""
+	}
+	s = strings.Map(func(r rune) rune {
+		if r < 32 || r == 0x7f {
+			return ' '
+		}
+		return r
+	}, s)
+	s = strings.Join(strings.Fields(s), " ")
+	if s == "" {
+		return ""
+	}
+	lower := strings.ToLower(s)
+	for _, marker := range a2CredentialMarkers {
+		if strings.Contains(lower, marker) {
+			return ""
+		}
+	}
+	if a2TokenShapedRun.MatchString(s) {
+		return ""
+	}
+	return a2Truncate(s, max)
+}
+
 // a2EventSummary renders a sanitized human summary from the structured event
 // kind, the canonical blocker_reason column, and the allowlisted payload keys
 // above — never from raw payload text.
@@ -308,9 +446,9 @@ func a2EventSummary(anchor db.WorkEvent) string {
 	default:
 		b.WriteString("事件更新")
 	}
-	if anchor.BlockerReason.Valid && strings.TrimSpace(anchor.BlockerReason.String) != "" {
+	if reason := a2DisplayValue(textStr(anchor.BlockerReason), 80); reason != "" {
 		b.WriteString("：")
-		b.WriteString(a2Truncate(strings.TrimSpace(anchor.BlockerReason.String), 80))
+		b.WriteString(reason)
 		return a2Truncate(b.String(), a2MaxSummaryRunes)
 	}
 	if stage := a2SafePayloadStage(anchor.EventPayload); stage != "" {
@@ -331,11 +469,21 @@ func a2SafePayloadStage(payload []byte) string {
 		return ""
 	}
 	for _, k := range a2SafePayloadKeys {
-		if v, ok := m[k].(string); ok && strings.TrimSpace(v) != "" {
-			return a2Truncate(strings.TrimSpace(v), 60)
+		if v, ok := m[k].(string); ok {
+			if clean := a2DisplayValue(v, 60); clean != "" {
+				return clean
+			}
 		}
 	}
 	return ""
+}
+
+// a2VerifiedTerminalInput returns a copy of the input whose receipt is the
+// tenant/task/issue-verified one (or none). Unverified receipts must never
+// feed the terminal-state decision.
+func a2VerifiedTerminalInput(in A2PaneInput) A2PaneInput {
+	in.Receipt = a2CanonicalReceipt(in)
+	return in
 }
 
 // ProjectA2Pane derives one Work Wall pane from the canonical inputs. It is
@@ -343,13 +491,17 @@ func a2SafePayloadStage(payload []byte) string {
 // replay), and only the A2 rules below decide state and working.
 //
 // State precedence:
-//  1. canonical terminal evidence from receipt / task / issue-cancelled —
-//     the authorities describe the WORK, so they outrank delivery noise
+//  1. project drift — the work_ref and the Issue authority disagree about
+//     the project; the pane renders only as issue_state_mismatch (never
+//     working, never completion) so drift is visible but never trusted;
+//  2. canonical terminal evidence from receipt / task / issue-cancelled —
+//     the authorities describe the WORK, so they outrank delivery noise;
+//     a receipt is only canonical after tenant/task/issue verification
 //     (terminal text anywhere is never evidence);
-//  2. replay — terminal history replayed late or duplicated (never working);
-//  3. issue_state_mismatch — a finished claim the Issue authority does not
+//  3. replay — terminal history replayed late or duplicated (never working);
+//  4. issue_state_mismatch — a finished claim the Issue authority does not
 //     confirm (never working, never completion);
-//  4. active — in-flight work; Working additionally requires an actively
+//  5. active — in-flight work; Working additionally requires an actively
 //     executing event kind AND a fresh session-matched heartbeat, so a
 //     missing heartbeat fails closed.
 //
@@ -357,6 +509,11 @@ func a2SafePayloadStage(payload []byte) string {
 // always anchored on a canonical event row.
 func ProjectA2Pane(in A2PaneInput) (A2PaneV1, bool) {
 	if len(in.Events) == 0 {
+		return A2PaneV1{}, false
+	}
+	// B2 fail-closed: a work_ref that does not embed the requesting
+	// workspace is foreign data; it must never project into this snapshot.
+	if a2ForeignWorkRef(in) {
 		return A2PaneV1{}, false
 	}
 	threshold := in.StaleThreshold
@@ -384,12 +541,16 @@ func ProjectA2Pane(in A2PaneInput) (A2PaneV1, bool) {
 		pane.LastEventAt = &t
 	}
 
-	// Dispatch-to-employee ownership: the assignment receipt binds the work
-	// to the accountable digital employee; the task assignee is the fallback.
+	// Dispatch-to-employee ownership: ONLY a dispatch receipt precisely
+	// bound to this task (initial_task_id) may carry ownership — the latest
+	// issue dispatch must never win, because a later re-dispatch would
+	// silently re-attribute finished work to a different employee. Without a
+	// task-bound dispatch the pane falls back to the task assignee (tenant-
+	// verified via GetAgentTaskInWorkspace) and exposes no dispatch command.
 	employeeID := ""
-	if in.Dispatch != nil && in.Dispatch.LocalAgentID.Valid {
-		employeeID = uuidStr(in.Dispatch.LocalAgentID)
-		pane.DispatchCommandID = uuidStr(in.Dispatch.CommandID)
+	if bound := a2BoundDispatch(in); bound != nil && bound.LocalAgentID.Valid {
+		employeeID = uuidStr(bound.LocalAgentID)
+		pane.DispatchCommandID = uuidStr(bound.CommandID)
 		pane.SourceRefs = append(pane.SourceRefs, "dispatch://"+pane.DispatchCommandID)
 	}
 	if employeeID == "" && in.Task != nil && in.Task.AgentID.Valid {
@@ -420,7 +581,9 @@ func ProjectA2Pane(in A2PaneInput) (A2PaneV1, bool) {
 
 	// Execution state (see function doc for precedence).
 	state := A2ExecutionActive
-	if canonical, ok := a2CanonicalTerminal(in); ok {
+	if a2ProjectDrift(in) {
+		state = A2ExecutionIssueMismatch
+	} else if canonical, ok := a2CanonicalTerminal(a2VerifiedTerminalInput(in)); ok {
 		state = canonical
 	} else if a2IsReplay(anchor, terminal, a2HasDuplicateEventID(in.Events)) {
 		state = A2ExecutionReplay
@@ -435,19 +598,23 @@ func ProjectA2Pane(in A2PaneInput) (A2PaneV1, bool) {
 	}
 	pane.ExecutionState = state
 
-	// Working is the single fail-closed conclusion: only genuinely active,
-	// actively-executing work with a fresh session-matched heartbeat counts.
+	// Working is the single fail-closed conclusion. It requires ALL of:
+	// an active state, an actively-executing event kind, a current
+	// nonterminal tenant-bound task, exact dispatch/receipt evidence for
+	// that task, and a fresh session-matched heartbeat. A ledger event plus
+	// a heartbeat alone must NEVER count as working.
 	pane.Working = state == A2ExecutionActive &&
 		a2WorkingKind(anchor.EventType) &&
+		a2TaskNonTerminal(in.Task) &&
+		a2HasExactEvidence(in) &&
 		heartbeatFresh
 
 	// Completion time comes from canonical columns only.
 	if state == A2ExecutionCompleted {
-		switch {
-		case in.Receipt != nil && in.Receipt.CompletedAt.Valid:
-			t := in.Receipt.CompletedAt.Time
+		if r := a2CanonicalReceipt(in); r != nil && r.CompletedAt.Valid {
+			t := r.CompletedAt.Time
 			pane.CompletedAt = &t
-		case in.Task != nil && in.Task.CompletedAt.Valid:
+		} else if in.Task != nil && in.Task.CompletedAt.Valid {
 			t := in.Task.CompletedAt.Time
 			pane.CompletedAt = &t
 		}

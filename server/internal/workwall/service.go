@@ -291,11 +291,15 @@ func (s *Service) A2Snapshot(ctx context.Context, workspaceID pgtype.UUID, event
 	for _, ref := range refs {
 		evs := byRef[ref]
 		anchor, _ := a2AnchorEvent(evs)
+		refWorkspace, refProject, _, _ := workentry.ParseWorkRef(ref)
 		in := A2PaneInput{
-			WorkRef:        ref,
-			Events:         evs,
-			Now:            s.now(),
-			StaleThreshold: s.threshold(),
+			WorkRef:            ref,
+			Events:             evs,
+			Now:                s.now(),
+			StaleThreshold:     s.threshold(),
+			RequestWorkspaceID: uuidStr(workspaceID),
+			RefWorkspaceID:     refWorkspace,
+			RefProjectID:       refProject,
 		}
 		if err := s.attachA2Inputs(ctx, workspaceID, anchor, presenceBySession, &in); err != nil {
 			return nil, err
@@ -312,6 +316,12 @@ func (s *Service) A2Snapshot(ctx context.Context, workspaceID pgtype.UUID, event
 // read models for one work_ref. A missing row (pgx.ErrNoRows) is an absent
 // optional input and the projection fails closed around it; any other error
 // aborts the snapshot.
+// attachA2Inputs resolves the Issue / Task / Assignment / Receipt / Agent
+// read models for one work_ref. All reads are tenant-scoped and every
+// cross-model claim is verified against this workspace/task/issue before it
+// is attached; a mismatched row is dropped, never trusted. A missing row
+// (pgx.ErrNoRows) is an absent optional input and the projection fails
+// closed around it; any other error aborts the snapshot.
 func (s *Service) attachA2Inputs(ctx context.Context, workspaceID pgtype.UUID, anchor *db.WorkEvent, presenceBySession map[string]db.TerminalPresence, in *A2PaneInput) error {
 	_, _, issueIDStr, taskIDStr := workentry.ParseWorkRef(in.WorkRef)
 
@@ -342,41 +352,66 @@ func (s *Service) attachA2Inputs(ctx context.Context, workspaceID pgtype.UUID, a
 		if err == nil {
 			in.Issue = &issue
 		}
-		dispatch, err := s.Q.GetLatestAssignmentDispatchReceiptByIssue(ctx, db.GetLatestAssignmentDispatchReceiptByIssueParams{
-			WorkspaceID: workspaceID,
-			IssueID:     issueID,
-		})
-		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-			return err
-		}
-		if err == nil {
-			in.Dispatch = &dispatch
-			if !taskID.Valid && dispatch.InitialTaskID.Valid {
-				taskID = dispatch.InitialTaskID
-			}
-		}
 	}
 
 	if taskID.Valid {
-		task, err := s.Q.GetAgentTask(ctx, taskID)
+		// B2: tenant-scoped task read. GetAgentTaskInWorkspace only returns
+		// the task when its owning agent lives in this workspace, so a task
+		// id from another tenant can never cross-read here.
+		task, err := s.Q.GetAgentTaskInWorkspace(ctx, db.GetAgentTaskInWorkspaceParams{
+			ID:          taskID,
+			WorkspaceID: workspaceID,
+		})
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return err
 		}
 		if err == nil {
 			in.Task = &task
 		}
+
 		receipt, err := s.Q.GetExecutionReceipt(ctx, taskID)
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return err
 		}
 		if err == nil {
-			in.Receipt = &receipt
+			// B2: the receipt is keyed by task_id only, so it is attached
+			// only after explicitly proving it belongs to this workspace,
+			// task, and (when known) issue. A foreign row is dropped.
+			if uuidStr(receipt.WorkspaceID) == uuidStr(workspaceID) &&
+				uuidStr(receipt.TaskID) == uuidStr(taskID) &&
+				(!issueID.Valid || uuidStr(receipt.IssueID) == uuidStr(issueID)) {
+				in.Receipt = &receipt
+			}
+		}
+
+		// B2: assignment ownership is recovered ONLY through the receipt's
+		// assignment_command_id with a workspace-scoped lookup, and only
+		// when the recovered dispatch is precisely bound to THIS task (and
+		// issue). GetLatestAssignmentDispatchReceiptByIssue is deliberately
+		// never used: a later re-dispatch of the issue must not re-attribute
+		// this pane's work to a different employee.
+		if in.Receipt != nil && in.Receipt.AssignmentCommandID.Valid {
+			dispatch, err := s.Q.GetAssignmentDispatchReceipt(ctx, db.GetAssignmentDispatchReceiptParams{
+				WorkspaceID: workspaceID,
+				CommandID:   in.Receipt.AssignmentCommandID,
+			})
+			if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+				return err
+			}
+			if err == nil &&
+				uuidStr(dispatch.InitialTaskID) == uuidStr(taskID) &&
+				(!issueID.Valid || uuidStr(dispatch.IssueID) == uuidStr(issueID)) {
+				in.Dispatch = &dispatch
+			}
 		}
 	}
 
+	// Employee identity: the task-bound dispatch wins; otherwise the task
+	// assignee (already tenant-verified by GetAgentTaskInWorkspace). The
+	// latest issue dispatch is never consulted.
 	var agentID pgtype.UUID
-	if in.Dispatch != nil {
-		agentID = in.Dispatch.LocalAgentID
+	if bound := a2BoundDispatch(*in); bound != nil {
+		agentID = bound.LocalAgentID
 	}
 	if !agentID.Valid && in.Task != nil {
 		agentID = in.Task.AgentID

@@ -232,6 +232,9 @@ func TestA2SnapshotTerminalHeartbeatSurfacesTerminal(t *testing.T) {
 		 VALUES ($1, 'mac-a2', $2, 'go test', 'shard')`, wsID, session); err != nil {
 		t.Fatalf("seed terminal_presence: %v", err)
 	}
+	// Full evidence chain for this task: execution-receipt claim + dispatch
+	// receipt precisely bound to it (working requires both task and evidence).
+	a2SeedEvidence(ctx, t, pool, wsID, issueID, taskID, "")
 
 	panes, err := NewService(db.New(pool)).A2Snapshot(ctx, a2WsUUID(t, wsID), 0)
 	if err != nil {
@@ -245,7 +248,10 @@ func TestA2SnapshotTerminalHeartbeatSurfacesTerminal(t *testing.T) {
 		t.Fatalf("surface = %q, want terminal", p.SurfaceKind)
 	}
 	if !p.Working {
-		t.Fatalf("fresh session-matched heartbeat + live evidence should count as working")
+		t.Fatalf("task + exact dispatch/receipt evidence + fresh session-matched heartbeat should count as working")
+	}
+	if p.DispatchCommandID == "" {
+		t.Fatalf("task-bound dispatch should be exposed as dispatch_command_id")
 	}
 	// The sanitized summary carries the structured stage only.
 	blob, err := json.Marshal(p)
@@ -254,5 +260,412 @@ func TestA2SnapshotTerminalHeartbeatSurfacesTerminal(t *testing.T) {
 	}
 	if string(blob) == "" {
 		t.Fatal("empty pane json")
+	}
+}
+
+// --- B2 rework integration: tenant/project isolation + precise ownership ----
+
+const a2Digest = "sha256:" + "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+// a2SeedSecondWorkspace seeds a fully independent second tenant with its own
+// runtime/agent/issue/task and returns its ids. Used for cross-tenant checks.
+func a2SeedSecondWorkspace(ctx context.Context, t *testing.T, pool *pgxpool.Pool) (wsID, agentID, issueID, taskID string) {
+	t.Helper()
+	slug := fmt.Sprintf("a2-wall-foreign-%d", time.Now().UnixNano())
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO workspace (name, slug) VALUES ($1, $1) RETURNING id::text`, slug).Scan(&wsID); err != nil {
+		t.Fatalf("seed foreign workspace: %v", err)
+	}
+	var rtID string
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO agent_runtime (workspace_id, name, runtime_mode, provider) VALUES ($1, 'a2-rt2', 'local', 'prime') RETURNING id::text`, wsID).Scan(&rtID); err != nil {
+		t.Fatalf("seed foreign runtime: %v", err)
+	}
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO agent (workspace_id, name, runtime_mode, kind, runtime_id) VALUES ($1, 'Foreign', 'local', 'user', $2) RETURNING id::text`, wsID, rtID).Scan(&agentID); err != nil {
+		t.Fatalf("seed foreign agent: %v", err)
+	}
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO issue (workspace_id, title, status, creator_type, creator_id) VALUES ($1, 'A2 foreign', 'in_progress', 'agent', $2) RETURNING id::text`, wsID, agentID).Scan(&issueID); err != nil {
+		t.Fatalf("seed foreign issue: %v", err)
+	}
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO agent_task_queue (agent_id, issue_id, runtime_id, status) VALUES ($1, $2, $3, 'running') RETURNING id::text`, agentID, issueID, rtID).Scan(&taskID); err != nil {
+		t.Fatalf("seed foreign task: %v", err)
+	}
+	return wsID, agentID, issueID, taskID
+}
+
+func a2InsertTask(ctx context.Context, t *testing.T, pool *pgxpool.Pool, agentID, issueID, rtID, status string) string {
+	t.Helper()
+	var id string
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO agent_task_queue (agent_id, issue_id, runtime_id, status) VALUES ($1, $2, $3, $4) RETURNING id::text`,
+		agentID, issueID, rtID, status).Scan(&id); err != nil {
+		t.Fatalf("seed task(%s): %v", status, err)
+	}
+	return id
+}
+
+func a2RuntimeID(ctx context.Context, t *testing.T, pool *pgxpool.Pool, wsID string) string {
+	t.Helper()
+	var rtID string
+	if err := pool.QueryRow(ctx,
+		`SELECT id::text FROM agent_runtime WHERE workspace_id = $1 ORDER BY created_at DESC LIMIT 1`, wsID).Scan(&rtID); err != nil {
+		t.Fatalf("read runtime: %v", err)
+	}
+	return rtID
+}
+
+// TestA2SnapshotCrossWorkspaceNeverLeaks proves two isolation layers: the
+// ledger query never returns another tenant's rows, and even a row stored in
+// THIS tenant whose work_ref embeds a foreign (or missing) workspace is
+// skipped by the projection (fail-closed), never rendered.
+func TestA2SnapshotCrossWorkspaceNeverLeaks(t *testing.T) {
+	url := os.Getenv("DATABASE_URL")
+	if url == "" {
+		t.Skip("DATABASE_URL not set")
+	}
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, url)
+	if err != nil {
+		t.Fatalf("pool: %v", err)
+	}
+	defer pool.Close()
+
+	wsA, _, issueA, taskA := a2SeedWorkspace(ctx, t, pool)
+	wsB, _, _, taskB := a2SeedSecondWorkspace(ctx, t, pool)
+	now := time.Now().UTC()
+
+	// Foreign tenant's ledger row: invisible to a ws-A snapshot via SQL scope.
+	refB := fmt.Sprintf("hivecrew://%s/work/prj/%s/%s", wsB, "", taskB)
+	a2InsertEvent(ctx, t, pool, wsB, refB, "sess-b", "progress", `{}`,
+		now.Add(-time.Minute), now.Add(-time.Minute))
+
+	// Drift row: stored under ws-A but the work_ref embeds ws-B's uuid.
+	driftRef := fmt.Sprintf("hivecrew://%s/work/prj/%s/%s", wsB, issueA, taskA)
+	a2InsertEvent(ctx, t, pool, wsA, driftRef, "sess-a", "progress", `{}`,
+		now.Add(-time.Minute), now.Add(-time.Minute))
+
+	// Honest row for the same tenant: the only pane that may render.
+	goodRef := fmt.Sprintf("hivecrew://%s/work/prj/%s/%s", wsA, issueA, taskA)
+	a2InsertEvent(ctx, t, pool, wsA, goodRef, "sess-a", "progress", `{}`,
+		now.Add(-2*time.Minute), now.Add(-2*time.Minute))
+
+	panes, err := NewService(db.New(pool)).A2Snapshot(ctx, a2WsUUID(t, wsA), 0)
+	if err != nil {
+		t.Fatalf("A2Snapshot: %v", err)
+	}
+	if len(panes) != 1 {
+		t.Fatalf("expected exactly 1 pane (foreign + drifted rows must not render), got %d: %+v", len(panes), panes)
+	}
+	if panes[0].WorkRef != goodRef {
+		t.Fatalf("rendered work_ref = %q, want the tenant-honest row", panes[0].WorkRef)
+	}
+	if panes[0].WorkspaceID != wsA {
+		t.Fatalf("pane workspace = %q, want %q", panes[0].WorkspaceID, wsA)
+	}
+}
+
+// TestA2SnapshotProjectDriftIsMismatch proves a work_ref whose embedded
+// project disagrees with the Issue authority renders only as
+// issue_state_mismatch (visible drift, never working, never completion).
+func TestA2SnapshotProjectDriftIsMismatch(t *testing.T) {
+	url := os.Getenv("DATABASE_URL")
+	if url == "" {
+		t.Skip("DATABASE_URL not set")
+	}
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, url)
+	if err != nil {
+		t.Fatalf("pool: %v", err)
+	}
+	defer pool.Close()
+
+	wsID, agentID, issueID, taskID := a2SeedWorkspace(ctx, t, pool)
+	rtID := a2RuntimeID(ctx, t, pool, wsID)
+	now := time.Now().UTC()
+
+	// Two real projects in the same workspace; the issue belongs to P2.
+	p1, p2 := "", ""
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO project (workspace_id, title) VALUES ($1, 'P1') RETURNING id::text`, wsID).Scan(&p1); err != nil {
+		t.Fatalf("seed project P1: %v", err)
+	}
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO project (workspace_id, title) VALUES ($1, 'P2') RETURNING id::text`, wsID).Scan(&p2); err != nil {
+		t.Fatalf("seed project P2: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE issue SET project_id = $2 WHERE id = $1`, issueID, p2); err != nil {
+		t.Fatalf("set issue project: %v", err)
+	}
+	_ = agentID
+
+	// work_ref claims P1; Issue authority says P2. Presence session is
+	// per-run unique (terminal_presence has a unique key on host+session).
+	driftSession := fmt.Sprintf("sess-a2-drift-%d", time.Now().UnixNano())
+	driftRef := fmt.Sprintf("hivecrew://%s/work/%s/%s/%s", wsID, p1, issueID, taskID)
+	a2InsertEvent(ctx, t, pool, wsID, driftRef, driftSession, "progress", `{}`,
+		now.Add(-time.Minute), now.Add(-time.Minute))
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO terminal_presence (workspace_id, host, session_name, current_command) VALUES ($1, 'mac-a2p', $2, 'go test')`, wsID, driftSession); err != nil {
+		t.Fatalf("seed presence: %v", err)
+	}
+
+	panes, err := NewService(db.New(pool)).A2Snapshot(ctx, a2WsUUID(t, wsID), 0)
+	if err != nil {
+		t.Fatalf("A2Snapshot: %v", err)
+	}
+	if len(panes) != 1 {
+		t.Fatalf("expected 1 pane, got %d", len(panes))
+	}
+	p := panes[0]
+	if p.ExecutionState != A2ExecutionIssueMismatch {
+		t.Fatalf("execution_state = %q, want issue_state_mismatch (project drift)", p.ExecutionState)
+	}
+	if p.Working {
+		t.Fatalf("project drift must never count as working, even with a fresh heartbeat")
+	}
+
+	// Same shape but with a completed canonical receipt: drift still wins.
+	task2 := a2InsertTask(ctx, t, pool, agentID, issueID, rtID, "completed")
+	ref2 := fmt.Sprintf("hivecrew://%s/work/%s/%s/%s", wsID, p1, issueID, task2)
+	a2InsertEvent(ctx, t, pool, wsID, ref2, "sess-b", "progress", `{}`,
+		now.Add(-time.Minute), now.Add(-time.Minute))
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO execution_receipt (task_id, workspace_id, issue_id, assignment_command_id,
+		   work_order_ref, work_order_revision, work_order_digest, input_digest,
+		   employee_ref, employee_revision, employee_digest,
+		   binding_ref, binding_revision, binding_digest,
+		   agent_ref, agent_revision, agent_digest,
+		   runtime_snapshot, runtime_digest, claimed_at, terminal_status, completed_at, finalized_at)
+		 VALUES ($1,$2,$3,'00000000-0000-0000-0000-000000000000',
+		   'wo://x','r1',$4,$4,'emp://x','r1',$4,'bind://x','r1',$4,'agent://x','r1',$4,
+		   '{}'::json,$4,$5,'completed',$5,$5)`,
+		task2, wsID, issueID, a2Digest, now.Add(-time.Minute)); err != nil {
+		t.Fatalf("seed execution receipt: %v", err)
+	}
+
+	panes2, err := NewService(db.New(pool)).A2Snapshot(ctx, a2WsUUID(t, wsID), 0)
+	if err != nil {
+		t.Fatalf("A2Snapshot: %v", err)
+	}
+	for _, pane := range panes2 {
+		if pane.WorkRef == ref2 {
+			if pane.ExecutionState != A2ExecutionIssueMismatch {
+				t.Fatalf("drifted completed work: execution_state = %q, want issue_state_mismatch", pane.ExecutionState)
+			}
+			if pane.CompletedAt != nil {
+				t.Fatalf("drifted pane must never carry completed_at")
+			}
+		}
+	}
+}
+
+// TestA2SnapshotLaterRedispatchKeepsOriginalEmployee proves a later
+// re-dispatch of the same issue (new command, new task, new agent) never
+// re-attributes an earlier work_ref's pane: ownership comes only from a
+// dispatch precisely bound to the pane's task.
+func TestA2SnapshotLaterRedispatchKeepsOriginalEmployee(t *testing.T) {
+	url := os.Getenv("DATABASE_URL")
+	if url == "" {
+		t.Skip("DATABASE_URL not set")
+	}
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, url)
+	if err != nil {
+		t.Fatalf("pool: %v", err)
+	}
+	defer pool.Close()
+
+	wsID, agentA, issueID, task1 := a2SeedWorkspace(ctx, t, pool)
+	rtID := a2RuntimeID(ctx, t, pool, wsID)
+	now := time.Now().UTC()
+
+	// A second employee in the same workspace.
+	var agentB string
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO agent (workspace_id, name, runtime_mode, kind, runtime_id) VALUES ($1, 'Rival', 'local', 'user', $2) RETURNING id::text`, wsID, rtID).Scan(&agentB); err != nil {
+		t.Fatalf("seed agent B: %v", err)
+	}
+
+	// The pane's work_ref is bound to task-1 (agent A).
+	ref1 := fmt.Sprintf("hivecrew://%s/work/prj/%s/%s", wsID, issueID, task1)
+	a2InsertEvent(ctx, t, pool, wsID, ref1, "sess-a", "progress", `{}`,
+		now.Add(-5*time.Minute), now.Add(-5*time.Minute))
+
+	// task-1's execution receipt references command C1 (per-run id).
+	var cmd1 string
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO execution_receipt (task_id, workspace_id, issue_id, assignment_command_id,
+		   work_order_ref, work_order_revision, work_order_digest, input_digest,
+		   employee_ref, employee_revision, employee_digest,
+		   binding_ref, binding_revision, binding_digest,
+		   agent_ref, agent_revision, agent_digest,
+		   runtime_snapshot, runtime_digest, claimed_at, terminal_status, completed_at, finalized_at)
+		 VALUES ($1,$2,$3,gen_random_uuid(),
+		   'wo://x','r1',$4,$4,'emp://x','r1',$4,'bind://x','r1',$4,'agent://x','r1',$4,
+		   '{}'::json,$4,$5,'completed',$5,$5) RETURNING assignment_command_id::text`,
+		task1, wsID, issueID, a2Digest, now.Add(-4*time.Minute)).Scan(&cmd1); err != nil {
+		t.Fatalf("seed receipt(task1): %v", err)
+	}
+
+	// C1 dispatch is precisely bound to task-1 and agent A.
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO assignment_dispatch_receipt (command_id, workspace_id, issue_id, local_agent_id, initial_task_id,
+		   work_order_ref, work_order_revision, work_order_digest, input_digest,
+		   employee_ref, employee_revision, employee_digest,
+		   binding_ref, binding_revision, binding_digest,
+		   agent_ref, agent_revision, agent_digest)
+		 VALUES ($1,$2,$3,$4,$5,'wo://x','r1',$6,$6,'emp://x','r1',$6,'bind://x','r1',$6,'agent://x','r1',$6)`,
+		cmd1, wsID, issueID, agentA, task1, a2Digest); err != nil {
+		t.Fatalf("seed dispatch C1: %v", err)
+	}
+
+	// LATER re-dispatch C2 for the same issue but task-2 / agent B. This is
+	// the row GetLatestAssignmentDispatchReceiptByIssue used to return.
+	task2 := a2InsertTask(ctx, t, pool, agentB, issueID, rtID, "running")
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO assignment_dispatch_receipt (command_id, workspace_id, issue_id, local_agent_id, initial_task_id,
+		   work_order_ref, work_order_revision, work_order_digest, input_digest,
+		   employee_ref, employee_revision, employee_digest,
+		   binding_ref, binding_revision, binding_digest,
+		   agent_ref, agent_revision, agent_digest)
+		 VALUES (gen_random_uuid(),$1,$2,$3,$4,'wo://x','r2',$5,$5,'emp://x','r2',$5,'bind://x','r2',$5,'agent://x','r2',$5)`,
+		wsID, issueID, agentB, task2, a2Digest); err != nil {
+		t.Fatalf("seed dispatch C2: %v", err)
+	}
+
+	// The re-dispatch's own work lands in the ledger under ref(task-2).
+	ref2 := fmt.Sprintf("hivecrew://%s/work/prj/%s/%s", wsID, issueID, task2)
+	a2InsertEvent(ctx, t, pool, wsID, ref2, "sess-b", "progress", `{}`,
+		now.Add(-1*time.Minute), now.Add(-1*time.Minute))
+
+	panes, err := NewService(db.New(pool)).A2Snapshot(ctx, a2WsUUID(t, wsID), 0)
+	if err != nil {
+		t.Fatalf("A2Snapshot: %v", err)
+	}
+	if len(panes) != 2 {
+		t.Fatalf("expected 2 panes, got %d: %+v", len(panes), panes)
+	}
+	for _, p := range panes {
+		switch p.WorkRef {
+		case ref1:
+			// Original pane keeps agent A and its precisely bound command C1.
+			if p.EmployeeID != agentA {
+				t.Fatalf("task-1 pane employee = %q, want original agent %q (later re-dispatch must not hijack)", p.EmployeeID, agentA)
+			}
+			if p.DispatchCommandID != cmd1 {
+				t.Fatalf("task-1 pane dispatch = %q, want its own command %q", p.DispatchCommandID, cmd1)
+			}
+			if p.EmployeeName != "Shard" {
+				t.Fatalf("task-1 pane employee_name = %q, want Shard", p.EmployeeName)
+			}
+			if p.ExecutionState != A2ExecutionCompleted {
+				t.Fatalf("task-1 pane execution_state = %q, want completed (canonical receipt)", p.ExecutionState)
+			}
+		case ref2:
+			// New pane owns agent B through its own task (no dispatch bound
+			// to task-2 exists via its receipt, so no command is exposed).
+			if p.EmployeeID != agentB {
+				t.Fatalf("task-2 pane employee = %q, want agent B %q", p.EmployeeID, agentB)
+			}
+			if p.DispatchCommandID != "" {
+				t.Fatalf("task-2 pane must not expose a dispatch command without precise binding, got %q", p.DispatchCommandID)
+			}
+		default:
+			t.Fatalf("unexpected pane work_ref %q", p.WorkRef)
+		}
+	}
+}
+
+// a2SeedEvidence inserts an execution-receipt CLAIM (terminal_status NULL)
+// for the task plus a dispatch receipt precisely bound to it. agentID may be
+// empty to reuse the task's own agent; the receipt command is returned.
+func a2SeedEvidence(ctx context.Context, t *testing.T, pool *pgxpool.Pool, wsID, issueID, taskID, agentID string) string {
+	t.Helper()
+	if agentID == "" {
+		if err := pool.QueryRow(ctx,
+			`SELECT agent_id::text FROM agent_task_queue WHERE id = $1`, taskID).Scan(&agentID); err != nil {
+			t.Fatalf("read task agent: %v", err)
+		}
+	}
+	var cmd string
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO execution_receipt (task_id, workspace_id, issue_id, assignment_command_id,
+		   work_order_ref, work_order_revision, work_order_digest, input_digest,
+		   employee_ref, employee_revision, employee_digest,
+		   binding_ref, binding_revision, binding_digest,
+		   agent_ref, agent_revision, agent_digest,
+		   runtime_snapshot, runtime_digest, claimed_at)
+		 VALUES ($1,$2,$3,gen_random_uuid(),
+		   'wo://x','r1',$4,$4,'emp://x','r1',$4,'bind://x','r1',$4,'agent://x','r1',$4,
+		   '{}'::json,$4,$5) RETURNING assignment_command_id::text`,
+		taskID, wsID, issueID, a2Digest, time.Now().UTC()).Scan(&cmd); err != nil {
+		t.Fatalf("seed receipt claim: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO assignment_dispatch_receipt (command_id, workspace_id, issue_id, local_agent_id, initial_task_id,
+		   work_order_ref, work_order_revision, work_order_digest, input_digest,
+		   employee_ref, employee_revision, employee_digest,
+		   binding_ref, binding_revision, binding_digest,
+		   agent_ref, agent_revision, agent_digest)
+		 VALUES ($1,$2,$3,$4,$5,'wo://x','r1',$6,$6,'emp://x','r1',$6,'bind://x','r1',$6,'agent://x','r1',$6)`,
+		cmd, wsID, issueID, agentID, taskID, a2Digest); err != nil {
+		t.Fatalf("seed dispatch: %v", err)
+	}
+	return cmd
+}
+
+// TestA2SnapshotEventPlusHeartbeatAloneNeverWorking proves end-to-end that a
+// live event, a running task, and a fresh session-matched heartbeat are still
+// NOT working without exact dispatch/receipt evidence for the task.
+func TestA2SnapshotEventPlusHeartbeatAloneNeverWorking(t *testing.T) {
+	url := os.Getenv("DATABASE_URL")
+	if url == "" {
+		t.Skip("DATABASE_URL not set")
+	}
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, url)
+	if err != nil {
+		t.Fatalf("pool: %v", err)
+	}
+	defer pool.Close()
+
+	wsID, agentID, issueID, taskID := a2SeedWorkspace(ctx, t, pool)
+	ref := fmt.Sprintf("hivecrew://%s/work/prj/%s/%s", wsID, issueID, taskID)
+	now := time.Now().UTC()
+	session := fmt.Sprintf("sess-a2-noev-%d", time.Now().UnixNano())
+	a2InsertEvent(ctx, t, pool, wsID, ref, session, "progress", `{"stage":"build"}`,
+		now.Add(-time.Minute), now.Add(-time.Minute))
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO terminal_presence (workspace_id, host, session_name, current_command, agent_hint)
+		 VALUES ($1, 'mac-a2n', $2, 'go test', $3)`, wsID, session, agentID); err != nil {
+		t.Fatalf("seed terminal_presence: %v", err)
+	}
+	// No execution_receipt, no assignment_dispatch_receipt: bare task only.
+
+	panes, err := NewService(db.New(pool)).A2Snapshot(ctx, a2WsUUID(t, wsID), 0)
+	if err != nil {
+		t.Fatalf("A2Snapshot: %v", err)
+	}
+	if len(panes) != 1 {
+		t.Fatalf("expected 1 pane, got %d", len(panes))
+	}
+	p := panes[0]
+	if p.SurfaceKind != A2SurfaceTerminal {
+		t.Fatalf("surface = %q, want terminal (heartbeat is real, evidence is not)", p.SurfaceKind)
+	}
+	if p.Working {
+		t.Fatalf("event + heartbeat + bare task without exact dispatch/receipt evidence must never count as working")
+	}
+	if p.ExecutionState != A2ExecutionActive {
+		t.Fatalf("execution_state = %q, want active", p.ExecutionState)
+	}
+	if p.EmployeeID != agentID {
+		t.Fatalf("employee fallback = %q, want task agent %q", p.EmployeeID, agentID)
+	}
+	if p.DispatchCommandID != "" {
+		t.Fatalf("no dispatch evidence: dispatch_command_id must stay empty")
 	}
 }
