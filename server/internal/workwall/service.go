@@ -3,10 +3,16 @@ package workwall
 import (
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
+	"sort"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/liveactivity"
+	"github.com/multica-ai/multica/server/internal/util"
+	"github.com/multica-ai/multica/server/internal/workentry"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -201,4 +207,197 @@ func partitionWorkspaceTasks(tasks []db.AgentTaskQueue) (activeByAgent, outcomeB
 		}
 	}
 	return activeByAgent, outcomeByAgent
+}
+
+// A2 Work Wall projection slice: read-only panes from the canonical
+// work_event ledger joined with Issue / Task / Assignment / Run / Receipt
+// read models. No handler/router wiring in this slice; callers compose
+// Service.A2Snapshot directly.
+
+const (
+	// a2DefaultEventLimit is the ledger window size when the caller passes a
+	// non-positive limit.
+	a2DefaultEventLimit = 200
+	// a2MaxEventLimit caps the ledger window so one snapshot stays bounded.
+	a2MaxEventLimit = 1000
+	// a2MaxPanes caps how many distinct work_refs project per snapshot.
+	a2MaxPanes = 50
+)
+
+// A2Snapshot projects one Work Wall pane per work_ref found in the newest
+// window of the canonical work_event ledger. It is strictly read-only: the
+// ledger stays append-only, and every pane is anchored on a stable
+// source_event_id with dispatch-to-employee ownership resolved from the
+// assignment dispatch receipt (task assignee as fallback). Panes whose
+// session has no matching terminal_presence heartbeat surface as
+// event_console — API-only routes never get a faked terminal.
+func (s *Service) A2Snapshot(ctx context.Context, workspaceID pgtype.UUID, eventLimit int32) ([]A2PaneV1, error) {
+	if eventLimit <= 0 {
+		eventLimit = a2DefaultEventLimit
+	}
+	if eventLimit > a2MaxEventLimit {
+		eventLimit = a2MaxEventLimit
+	}
+	events, err := s.Q.ListRecentWorkEvents(ctx, db.ListRecentWorkEventsParams{
+		WorkspaceID: workspaceID,
+		Limit:       eventLimit,
+	})
+	if err != nil {
+		return nil, err
+	}
+	presenceRows, err := s.Q.ListFreshTerminalPresence(ctx, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	// The query orders heartbeat_at DESC, so the first row per session name
+	// is the freshest heartbeat for that session.
+	presenceBySession := make(map[string]db.TerminalPresence, len(presenceRows))
+	for i := range presenceRows {
+		p := presenceRows[i]
+		if _, ok := presenceBySession[p.SessionName]; !ok {
+			presenceBySession[p.SessionName] = p
+		}
+	}
+
+	byRef := make(map[string][]db.WorkEvent, len(events))
+	for i := range events {
+		ref := events[i].WorkRef
+		byRef[ref] = append(byRef[ref], events[i])
+	}
+
+	// Deterministic work_ref order: newest anchor event first, then ref.
+	refs := make([]string, 0, len(byRef))
+	anchorOf := make(map[string]db.WorkEvent, len(byRef))
+	for ref, evs := range byRef {
+		anchor, _ := a2AnchorEvent(evs)
+		if anchor == nil {
+			continue
+		}
+		refs = append(refs, ref)
+		anchorOf[ref] = *anchor
+	}
+	sort.Slice(refs, func(i, j int) bool {
+		c := compareA2Observation(anchorOf[refs[i]], anchorOf[refs[j]])
+		if c != 0 {
+			return c > 0
+		}
+		return refs[i] < refs[j]
+	})
+	if len(refs) > a2MaxPanes {
+		refs = refs[:a2MaxPanes]
+	}
+
+	panes := make([]A2PaneV1, 0, len(refs))
+	for _, ref := range refs {
+		evs := byRef[ref]
+		anchor, _ := a2AnchorEvent(evs)
+		in := A2PaneInput{
+			WorkRef:        ref,
+			Events:         evs,
+			Now:            s.now(),
+			StaleThreshold: s.threshold(),
+		}
+		if err := s.attachA2Inputs(ctx, workspaceID, anchor, presenceBySession, &in); err != nil {
+			return nil, err
+		}
+		if pane, ok := ProjectA2Pane(in); ok {
+			panes = append(panes, pane)
+		}
+	}
+	SortA2Panes(panes)
+	return panes, nil
+}
+
+// attachA2Inputs resolves the Issue / Task / Assignment / Receipt / Agent
+// read models for one work_ref. A missing row (pgx.ErrNoRows) is an absent
+// optional input and the projection fails closed around it; any other error
+// aborts the snapshot.
+func (s *Service) attachA2Inputs(ctx context.Context, workspaceID pgtype.UUID, anchor *db.WorkEvent, presenceBySession map[string]db.TerminalPresence, in *A2PaneInput) error {
+	_, _, issueIDStr, taskIDStr := workentry.ParseWorkRef(in.WorkRef)
+
+	var issueID, taskID pgtype.UUID
+	if issueIDStr != "" {
+		id, err := util.ParseUUID(issueIDStr)
+		if err != nil {
+			return fmt.Errorf("a2 work_ref %q: %w", in.WorkRef, err)
+		}
+		issueID = id
+	}
+	if taskIDStr != "" {
+		id, err := util.ParseUUID(taskIDStr)
+		if err != nil {
+			return fmt.Errorf("a2 work_ref %q: %w", in.WorkRef, err)
+		}
+		taskID = id
+	}
+
+	if issueID.Valid {
+		issue, err := s.Q.GetIssueInWorkspace(ctx, db.GetIssueInWorkspaceParams{
+			ID:          issueID,
+			WorkspaceID: workspaceID,
+		})
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return err
+		}
+		if err == nil {
+			in.Issue = &issue
+		}
+		dispatch, err := s.Q.GetLatestAssignmentDispatchReceiptByIssue(ctx, db.GetLatestAssignmentDispatchReceiptByIssueParams{
+			WorkspaceID: workspaceID,
+			IssueID:     issueID,
+		})
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return err
+		}
+		if err == nil {
+			in.Dispatch = &dispatch
+			if !taskID.Valid && dispatch.InitialTaskID.Valid {
+				taskID = dispatch.InitialTaskID
+			}
+		}
+	}
+
+	if taskID.Valid {
+		task, err := s.Q.GetAgentTask(ctx, taskID)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return err
+		}
+		if err == nil {
+			in.Task = &task
+		}
+		receipt, err := s.Q.GetExecutionReceipt(ctx, taskID)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return err
+		}
+		if err == nil {
+			in.Receipt = &receipt
+		}
+	}
+
+	var agentID pgtype.UUID
+	if in.Dispatch != nil {
+		agentID = in.Dispatch.LocalAgentID
+	}
+	if !agentID.Valid && in.Task != nil {
+		agentID = in.Task.AgentID
+	}
+	if agentID.Valid {
+		agent, err := s.Q.GetAgentInWorkspace(ctx, db.GetAgentInWorkspaceParams{
+			ID:          agentID,
+			WorkspaceID: workspaceID,
+		})
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return err
+		}
+		if err == nil {
+			in.Agent = &agent
+		}
+	}
+
+	if anchor != nil && anchor.SessionID.Valid {
+		if p, ok := presenceBySession[anchor.SessionID.String]; ok {
+			in.Presence = &p
+		}
+	}
+	return nil
 }
