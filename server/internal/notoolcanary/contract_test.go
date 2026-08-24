@@ -40,6 +40,57 @@ func TestParseOrdinaryHandoffNotPresent(t *testing.T) {
 	}
 }
 
+func TestParseZaraExactEmptyHandoffUsesStaticClosedContract(t *testing.T) {
+	state, contract := Parse("", ZaraProvider, ZaraTaskKind, ZaraIssueID)
+	if state != Valid {
+		t.Fatalf("state = %v, want Valid", state)
+	}
+	want := zaraContract()
+	if contract != want {
+		t.Fatalf("contract = %#v, want %#v", contract, want)
+	}
+	combined := Prompt(contract) + RuntimeBrief(state, contract)
+	for _, required := range []string{ZaraInstruction, ZaraDeliveryPrefix, ZaraRequestSHA256, "max_tool_calls is 0"} {
+		if !strings.Contains(combined, required) {
+			t.Fatalf("static Zara contract missing %q:\n%s", required, combined)
+		}
+	}
+	for _, forbidden := range []string{"multica ", "issue get", "comment add", "Available Commands", "repository"} {
+		if strings.Contains(combined, forbidden) {
+			t.Fatalf("static Zara contract contains forbidden workflow %q:\n%s", forbidden, combined)
+		}
+	}
+}
+
+func TestParseZaraIssueMismatchFailsClosed(t *testing.T) {
+	cases := map[string]struct {
+		note     string
+		provider string
+		kind     string
+	}{
+		"nonempty handoff": {note: "ordinary handoff", provider: ZaraProvider, kind: ZaraTaskKind},
+		"wrong provider":   {provider: Provider, kind: ZaraTaskKind},
+		"wrong task kind":  {provider: ZaraProvider, kind: "review"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			state, _ := Parse(tc.note, tc.provider, tc.kind, ZaraIssueID)
+			if state != Invalid {
+				t.Fatalf("state = %v, want Invalid", state)
+			}
+		})
+	}
+}
+
+func TestSingleUseIssueIsExact(t *testing.T) {
+	if !IsSingleUseIssue(ZaraIssueID) {
+		t.Fatal("Zara Issue must be single-use")
+	}
+	if IsSingleUseIssue(IssueID) || IsSingleUseIssue("") || IsSingleUseIssue("3ec06127-a2e7-46b0-8ae8-115a97fe9a24") {
+		t.Fatal("single-use gate matched a non-Zara Issue")
+	}
+}
+
 func TestParseMarkerVariantsFailClosed(t *testing.T) {
 	cases := map[string]string{
 		"stale canary":        strings.Replace(validMarker(), CanaryID, "WO-C1-04-HIV719-QWEN-DGX-FRESH-CANARY-014", 1),

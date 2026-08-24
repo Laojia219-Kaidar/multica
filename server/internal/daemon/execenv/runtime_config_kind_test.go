@@ -116,6 +116,23 @@ func TestBuildMetaSkillContentNoToolMarkerMismatchRejectsWithoutFallback(t *test
 	}
 }
 
+func TestBuildMetaSkillContentZaraExactIssueEmptyHandoffSuppressesToolWorkflow(t *testing.T) {
+	out := buildMetaSkillContent(notoolcanary.ZaraProvider, TaskContextForEnv{
+		IssueID:  notoolcanary.ZaraIssueID,
+		TaskKind: notoolcanary.ZaraTaskKind,
+	})
+	for _, required := range []string{notoolcanary.ZaraDeliveryPrefix, "max_tool_calls is 0", "closed single-use run"} {
+		if !strings.Contains(out, required) {
+			t.Fatalf("required Zara runtime contract %q missing:\n%s", required, out)
+		}
+	}
+	for _, forbidden := range []string{"multica ", "issue get", "comment add", "Available Commands", "Workflow", "Repositories", "Skills"} {
+		if strings.Contains(out, forbidden) {
+			t.Fatalf("Zara runtime brief contains forbidden workflow %q:\n%s", forbidden, out)
+		}
+	}
+}
+
 func TestBuildMetaSkillContentBoundedWorkspaceSuppressesToolWorkflow(t *testing.T) {
 	marker := boundPilotRuntimeMarker(t, boundedworkspace.WorkspaceToolPolicy, "Edit the named pilot fixture.")
 	out := buildMetaSkillContent("qwen", TaskContextForEnv{

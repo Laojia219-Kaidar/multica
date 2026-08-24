@@ -11,6 +11,8 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/events"
+	"github.com/multica-ai/multica/server/internal/notoolcanary"
+	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/taskfailure"
 )
@@ -288,6 +290,25 @@ func TestProviderNetworkRetrySchedule(t *testing.T) {
 		if got := retryEligible(tc.reason, mkTask(tc.attempt, tc.max)); got != tc.want {
 			t.Errorf("%s: retryEligible(%q, attempt=%d/max=%d) = %v, want %v", tc.name, tc.reason, tc.attempt, tc.max, got, tc.want)
 		}
+	}
+}
+
+func TestZaraStrictCanaryNeverAutoRetries(t *testing.T) {
+	task := db.AgentTaskQueue{
+		Attempt:     1,
+		MaxAttempts: 99,
+		IssueID:     util.MustParseUUID(notoolcanary.ZaraIssueID),
+	}
+	for reason := range retryableReasons {
+		if retryEligible(reason, task) {
+			t.Fatalf("single-use Zara Canary became retry eligible for %q", reason)
+		}
+	}
+
+	ordinary := task
+	ordinary.IssueID = pgtype.UUID{Bytes: [16]byte{1}, Valid: true}
+	if !retryEligible("timeout", ordinary) {
+		t.Fatal("ordinary retry eligibility regressed")
 	}
 }
 

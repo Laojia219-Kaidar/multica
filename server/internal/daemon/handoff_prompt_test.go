@@ -119,6 +119,37 @@ func TestBuildPrompt_NoToolMarkerMismatchRejectsWithoutFallback(t *testing.T) {
 	}
 }
 
+func TestBuildPrompt_ZaraExactIssueEmptyHandoffUsesClosedRoute(t *testing.T) {
+	out := BuildPrompt(Task{
+		IssueID:  notoolcanary.ZaraIssueID,
+		TaskKind: notoolcanary.ZaraTaskKind,
+	}, notoolcanary.ZaraProvider)
+	for _, required := range []string{notoolcanary.ZaraInstruction, notoolcanary.ZaraRequestSHA256, "max_tool_calls is 0"} {
+		if !strings.Contains(out, required) {
+			t.Fatalf("required Zara contract %q missing:\n%s", required, out)
+		}
+	}
+	for _, forbidden := range []string{"multica ", "issue get", "comment list", "comment add", "Available Commands", "repository"} {
+		if strings.Contains(out, forbidden) {
+			t.Fatalf("Zara closed prompt contains forbidden workflow %q:\n%s", forbidden, out)
+		}
+	}
+}
+
+func TestBuildPrompt_ZaraIssueMismatchRejectsWithoutFallback(t *testing.T) {
+	out := BuildPrompt(Task{
+		IssueID:     notoolcanary.ZaraIssueID,
+		TaskKind:    notoolcanary.ZaraTaskKind,
+		HandoffNote: "ordinary handoff",
+	}, notoolcanary.ZaraProvider)
+	if out != notoolcanary.InvalidPrompt() {
+		t.Fatalf("Zara mismatch did not take fixed rejection path:\n%s", out)
+	}
+	if strings.Contains(out, "multica ") || strings.Contains(out, "issue get") {
+		t.Fatalf("Zara mismatch fell through to ordinary prompt:\n%s", out)
+	}
+}
+
 func TestBuildPrompt_BoundedWorkspaceUsesClosedNoShellRoute(t *testing.T) {
 	marker := boundPilotPromptMarker(t, boundedworkspace.WorkspaceToolPolicy, "Edit the named pilot fixture.")
 	out := BuildPrompt(Task{

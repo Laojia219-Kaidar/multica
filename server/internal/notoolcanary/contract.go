@@ -25,6 +25,16 @@ const (
 	ToolPolicy     = "deny"
 	MaxToolCalls   = 0
 	Provider       = "qwen"
+
+	ZaraCanaryID       = "WO-C1-04-ZARA-QODERCN-STRICT-CANARY-R4"
+	ZaraIssueID        = "3ec06127-a2e7-46b0-8ae8-115a97fe9a23"
+	ZaraTaskKind       = "work"
+	ZaraInstruction    = "Return exactly ZARA_QODERCN_STRICT_R4_20260824_BE5B39F9_OK and nothing else."
+	ZaraDeliveryPrefix = "ZARA_QODERCN_STRICT_R4_20260824_BE5B39F9_OK"
+	ZaraToolPolicy     = "deny"
+	ZaraMaxToolCalls   = 0
+	ZaraProvider       = "qoder"
+	ZaraRequestSHA256  = "c2b257f7b1cc94fea8463464b6aaea53904e2d53d5b3541650b5a6d0a912f098"
 )
 
 // State distinguishes an ordinary handoff from a valid or rejected member of
@@ -78,11 +88,44 @@ func CanonicalMarker(requestSHA256 string) (string, error) {
 	return MarkerPrefix + string(payload), nil
 }
 
-// Parse accepts only the fresh Canary-015 contract on the exact HIV-719 work
-// task. The future Request digest is carried in the marker and must be a lower-
-// case SHA-256; its exact value is bound later by the static authorization
-// package without changing this source policy.
+func zaraContract() Contract {
+	return Contract{
+		CanaryID:       ZaraCanaryID,
+		DeliveryPrefix: ZaraDeliveryPrefix,
+		Instruction:    ZaraInstruction,
+		IssueID:        ZaraIssueID,
+		MaxToolCalls:   ZaraMaxToolCalls,
+		Provider:       ZaraProvider,
+		RequestSHA256:  ZaraRequestSHA256,
+		TaskKind:       ZaraTaskKind,
+		ToolPolicy:     ZaraToolPolicy,
+	}
+}
+
+// IsSingleUseIssue identifies the exact source-bound Canary whose authority
+// permits one run only. Backend retry eligibility uses this same constant so a
+// failed first attempt cannot produce an automatic retry child.
+func IsSingleUseIssue(issueID string) bool {
+	return issueID == ZaraIssueID
+}
+
+// Parse accepts the legacy marker-bound Canary-015 contract on HIV-719 and the
+// source-bound Zara R4 contract on HIV-964. The former carries a lower-case
+// Request digest in its marker; the latter binds its exact digest in source
+// because the existing assignment API has no handoff-note input.
 func Parse(note, actualProvider, actualTaskKind, actualIssueID string) (State, Contract) {
+	// HIV-964 cannot carry a handoff marker through the existing assignment API,
+	// so its request digest and full policy are compiled into this source
+	// candidate. Bind the exception to all three live fields and reject every
+	// mismatch instead of falling through to the ordinary tool-bearing route.
+	if IsSingleUseIssue(actualIssueID) {
+		if actualProvider != ZaraProvider ||
+			actualTaskKind != ZaraTaskKind ||
+			strings.TrimSpace(note) != "" {
+			return Invalid, Contract{}
+		}
+		return Valid, zaraContract()
+	}
 	if !strings.HasPrefix(note, MarkerNamespace) {
 		return NotPresent, Contract{}
 	}
@@ -127,6 +170,13 @@ func isLowerSHA256(value string) bool {
 // intentionally self-contained and carries no Multica CLI or other tool
 // mandate.
 func Prompt(contract Contract) string {
+	if contract.CanaryID == ZaraCanaryID {
+		return "You are executing the governed HiveCrew Zara Qoder CN strict no-tool Canary R4.\n\n" +
+			"Tools are denied and max_tool_calls is 0. Do not call, request, or simulate any tool. Do not inspect files, issue state, comments, MCP, the network, or the host.\n\n" +
+			contract.Instruction + "\n\n" +
+			"Canary ID: " + contract.CanaryID + "\n" +
+			"Request SHA256: " + contract.RequestSHA256 + "\n"
+	}
 	return "You are executing the governed HiveCrew Canary-015 no-tool reasoning check.\n\n" +
 		"Do not call, request, or simulate any tool. Do not inspect files, issue state, comments, the network, or the host. Use reasoning only.\n\n" +
 		"Task: " + contract.Instruction + "\n\n" +
@@ -149,6 +199,11 @@ func RuntimeBrief(state State, contract Contract) string {
 	if state == Invalid {
 		return "# HiveCrew No-Tool Canary Contract Rejected\n\n" +
 			"Do not call, request, or simulate any tool. Follow the per-turn rejection prompt exactly.\n"
+	}
+	if contract.CanaryID == ZaraCanaryID {
+		return "# HiveCrew Zara Qoder CN Strict No-Tool Canary R4\n\n" +
+			"This is a closed single-use run. Tools are denied and max_tool_calls is 0. Do not call, request, or simulate any tool.\n\n" +
+			"Follow only the per-turn prompt and return exactly " + contract.DeliveryPrefix + ".\n"
 	}
 	return "# HiveCrew No-Tool Canary Runtime\n\n" +
 		"This is a closed, reasoning-only Canary-015 run. Do not call, request, or simulate any tool.\n\n" +
