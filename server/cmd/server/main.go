@@ -497,6 +497,15 @@ func main() {
 	if err := schedulerMgr.Register(scheduler.WriteLeaseCleanupJob(pool, time.Hour)); err != nil {
 		slog.Warn("scheduler: failed to register canonical_write_lease_cancel_cleanup job", "error", err)
 	}
+	// HCOPS-V3 audit R4 (HIV-982): periodic agent.status convergence.
+	// Task transitions refresh agent.status post-commit; a crash between the
+	// task commit and that refresh (or a missed recompute in a bulk
+	// cancel/offline-fail path) used to leave the column stale until the
+	// agent's next transition. The set-based reconcile bounds the drift
+	// window to one tick cycle; rolling back is removing this registration.
+	if err := schedulerMgr.Register(scheduler.AgentStatusReconcileJob(queries)); err != nil {
+		slog.Warn("scheduler: failed to register agent_status_reconcile job", "error", err)
+	}
 	// Lane B / P2: legacy in_review batch drain. Registered only when the
 	// review cell is enabled without the Authority dispatch gate; each tick
 	// drains a bounded per-workspace batch (never the whole queue at once).

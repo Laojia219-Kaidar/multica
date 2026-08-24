@@ -6452,6 +6452,56 @@ func (q *Queries) ReclaimStaleDispatchedTasksForRuntimes(ctx context.Context, ar
 	return items, nil
 }
 
+const reconcileAllAgentStatuses = `-- name: ReconcileAllAgentStatuses :execrows
+UPDATE agent AS a
+SET status = derived.status, updated_at = now()
+FROM (
+    SELECT a2.id,
+           CASE WHEN EXISTS (
+               SELECT 1 FROM agent_task_queue q
+               WHERE q.agent_id = a2.id AND q.status IN ('dispatched', 'running', 'waiting_local_directory')
+           ) THEN 'working' ELSE 'idle' END AS status
+    FROM agent a2
+    WHERE a2.archived_at IS NULL
+) derived
+WHERE a.id = derived.id
+  AND a.status <> derived.status
+`
+
+// Set-based convergence of agent.status to the active-task predicate, for the
+// periodic agent_status_reconcile scheduler job (HCOPS-V3 R4 / HIV-982).
+//
+// The derived status expression is the SAME predicate as
+// RefreshAgentStatusFromTasks above — working ⇔ the agent has a task in
+// ('dispatched', 'running', 'waiting_local_directory'), idle otherwise. The
+// two queries MUST be edited in lockstep: this one exists precisely so a
+// crash between a task-status commit and its post-commit
+// RefreshAgentStatusFromTasks call (or a missed recompute after bulk
+// cancel/archive of offline-runtimes' tasks) heals on the next tick instead
+// of waiting for the next task transition.
+//
+// Workspace-bounded: agent_task_queue carries no workspace_id, so every
+// agent row is evaluated strictly against its own tasks; the agent row IS
+// the workspace boundary and no cross-workspace truth can leak. The
+// population is every non-archived agent across all workspaces of this
+// deployment (archived agents are invisible to every list/presence surface;
+// rewriting them would only churn updated_at).
+//
+// Idempotent + churn-free: the WHERE guard skips rows whose status already
+// matches the derived value, so a steady-state tick affects 0 rows and never
+// bumps updated_at. One statement corrects BOTH directions atomically
+// (stale working→idle and stale idle→working), taking the same row locks as
+// the per-agent refresh, with which it shares the predicate — last writer
+// wins with the same value, so there is no lock-order or interleaving
+// hazard.
+func (q *Queries) ReconcileAllAgentStatuses(ctx context.Context) (int64, error) {
+	result, err := q.db.Exec(ctx, reconcileAllAgentStatuses)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const recoverOrphanedTasksForRuntime = `-- name: RecoverOrphanedTasksForRuntime :many
 UPDATE agent_task_queue
 SET status = 'failed',
