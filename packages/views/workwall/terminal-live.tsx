@@ -1,80 +1,93 @@
 "use client";
 
 import { useState } from "react";
-import type { TerminalPane } from "@multica/core/api/workwall";
+import type { A2Pane } from "@multica/core/api/workwall";
+import {
+  Card,
+  CardContent,
+  CardHeader,
+} from "@multica/ui/components/ui/card";
+import { Badge } from "@multica/ui/components/ui/badge";
+import { ScrollArea } from "@multica/ui/components/ui/scroll-area";
 
-// Terminal 现场 — 每个宿主 tmux pane 的实时尾部输出（只读投影）。
-// 数据来自宿主采集器（scripts/terminal-presence-collector.sh），10 秒心跳，
-// 超过 15 分钟未心跳的 pane 由后端过滤。这里是 Owner 看数字员工
-// "此刻真正在 terminal 里干什么"的现场。
+// Terminal 现场 — A2 终端 pane 的独立列表视图。
+// 与工作墙上的内联 pane 不同：这里展示全部 terminal kind 的 pane，
+// 按 session_id 映射到真实 TerminalPane.session_name。
+// 绝不伪造终端 — 只渲染后端返回的真实 pane。
 
 function timeLabel(iso: string) {
   const d = new Date(iso);
   const diff = Math.max(0, Math.floor((Date.now() - d.getTime()) / 1000));
-  if (diff < 60) return `${diff}秒前`;
-  if (diff < 3600) return `${Math.floor(diff / 60)}分钟前`;
+  if (diff < 60) return `${diff} 秒前`;
+  if (diff < 3600) return `${Math.floor(diff / 60)} 分钟前`;
   return d.toLocaleTimeString("zh-CN", { hour12: false });
 }
 
-function PaneCard({ pane }: { pane: TerminalPane }) {
-  const [open, setOpen] = useState(false);
+function PaneCard({ pane }: { pane: A2Pane }) {
+  const [expanded, setExpanded] = useState(false);
   const lines = pane.tail_text.split("\n").filter((l) => l.trim() !== "");
   const preview = lines.slice(-3).join("\n");
+
   return (
-    <div
-      className="rounded-md border border-green-800 bg-black font-mono text-green-300"
-      data-testid="terminal-live-pane"
-    >
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs"
-        aria-expanded={open}
-      >
-        <span className="rounded bg-green-900 px-1.5 py-0.5 text-green-100">
-          {pane.session_name}
+    <Card className="flex flex-col overflow-hidden" data-testid="terminal-live-pane">
+      <CardHeader className="flex flex-row items-center gap-2 py-2">
+        <Badge variant="outline" className="font-mono">
+          {pane.session_id}
+        </Badge>
+        <span className="truncate text-xs text-muted-foreground">
+          {pane.display_name}
         </span>
-        <span className="text-green-500">
-          {pane.host}:{pane.window_index}.{pane.pane_index}
+        <span className="ml-auto text-[10px] text-muted-foreground">
+          {timeLabel(pane.observed_at)}
         </span>
-        {pane.agent_hint ? (
-          <span className="truncate text-green-200">{pane.agent_hint}</span>
-        ) : null}
-        <span className="ml-auto whitespace-nowrap text-green-600">
-          {pane.current_command || "idle"} · {timeLabel(pane.heartbeat_at)}
-        </span>
-      </button>
-      <pre
-        className="max-h-40 overflow-auto border-t border-green-900 px-3 py-2 text-[11px] leading-relaxed text-green-400"
-        data-testid="terminal-live-tail"
-      >
-        {open ? pane.tail_text : preview || "（无输出）"}
-      </pre>
-    </div>
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          className="rounded border border-border px-2 py-0.5 text-[10px] text-muted-foreground hover:bg-muted"
+          aria-expanded={expanded}
+        >
+          {expanded ? "收起" : "展开"}
+        </button>
+      </CardHeader>
+      <CardContent className="pb-2 pt-0">
+        <ScrollArea
+          className={`rounded-md border border-surface-border bg-surface p-2 font-mono text-[11px] leading-relaxed ${
+            expanded ? "h-48" : "h-20"
+          }`}
+          data-testid="terminal-live-tail"
+        >
+          <pre className="whitespace-pre-wrap break-words text-surface-foreground/80">
+            {expanded ? pane.tail_text : preview || "（无输出）"}
+          </pre>
+        </ScrollArea>
+      </CardContent>
+    </Card>
   );
 }
 
-export function TerminalLiveSection({ panes }: { panes: TerminalPane[] }) {
-  const hosts = Array.from(new Set(panes.map((p) => p.host)));
+export function TerminalLiveSection({ panes }: { panes: A2Pane[] }) {
+  // Only show terminal-kind panes here; event_console lives elsewhere.
+  const terminalPanes = panes.filter((p) => p.kind === "terminal");
+  const hosts = Array.from(
+    new Set(terminalPanes.map((p) => p.session_id.split(":")[0] ?? "")),
+  );
+
   return (
     <section className="mt-4" data-testid="terminal-live-section">
       <div className="mb-2 flex items-center gap-2">
-        <h2 className="text-sm font-semibold">Terminal 现场</h2>
-        <span className="text-xs text-zinc-500">
-          {panes.length} 个活跃 pane · {hosts.length} 台主机 · 采集心跳 10s
+        <h2 className="text-sm font-medium">Terminal 现场</h2>
+        <span className="text-xs text-muted-foreground">
+          {terminalPanes.length} 个活跃 pane · {hosts.length} 台主机 · 采集心跳 5s
         </span>
       </div>
-      {panes.length === 0 ? (
-        <p className="text-xs text-zinc-500">
+      {terminalPanes.length === 0 ? (
+        <p className="rounded-md border border-dashed border-border px-3 py-4 text-center text-xs text-muted-foreground">
           暂无活跃 Terminal 现场——宿主采集器未运行或所有会话已结束。
         </p>
       ) : (
-        <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
-          {panes.map((p) => (
-            <PaneCard
-              key={`${p.host}:${p.session_name}:${p.window_index}:${p.pane_index}`}
-              pane={p}
-            />
+        <div className="grid grid-cols-1 gap-2 md:grid-cols-2 lg:grid-cols-3">
+          {terminalPanes.map((p) => (
+            <PaneCard key={`${p.pane_id}:${p.session_id}`} pane={p} />
           ))}
         </div>
       )}

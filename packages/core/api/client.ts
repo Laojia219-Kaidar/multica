@@ -3675,6 +3675,13 @@ export class ApiClient {
     return this.fetch("/api/work-wall/terminal-presence");
   }
 
+  /** A2 CEO 工作现场快照: strict hivecrew.workwall.a2-snapshot.v1 envelope.
+   *  Fail-closed: the caller must parse with parseA2WorkWallSnapshot() which
+   *  rejects unknown keys and invalid enums. */
+  async getA2WorkWallSnapshot(): Promise<unknown> {
+    return this.fetch("/api/work-wall/a2/snapshot");
+  }
+
   // Employee memory candidate layer (Slice-M1). Promotion is proposal-only.
   async createMemoryCandidate(body: {
     employee_id: string;

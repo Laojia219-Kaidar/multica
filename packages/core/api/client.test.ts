@@ -3429,3 +3429,65 @@ describe("ApiClient model discovery response schema", () => {
     expect(result.status).toBe("completed");
   });
 });
+
+describe("ApiClient A2 work wall snapshot", () => {
+  function stubJSON(body: unknown) {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      ),
+    );
+  }
+
+  it("getA2WorkWallSnapshot returns raw JSON for caller-side strict parsing", async () => {
+    const payload = {
+      schema_version: "hivecrew.workwall.a2-snapshot.v1",
+      workspace_id: "ws-1",
+      cursor: "cur-42",
+      observed_at: "2026-08-24T12:00:00Z",
+      event_limit: 100,
+      panes: [
+        {
+          schema_version: "hivecrew.workwall.a2-pane.v1",
+          pane_id: "pane-1",
+          employee_id: "emp-1",
+          session_id: "sess-1",
+          kind: "terminal",
+          display_name: "Pixel",
+          presence_state: "working",
+          work_stage: "coding",
+          tail_text: "hello",
+          observed_at: "2026-08-24T12:00:00Z",
+          freshness_state: "fresh",
+        },
+      ],
+    };
+    stubJSON(payload);
+
+    const raw = await new ApiClient("https://api.example.test")
+      .getA2WorkWallSnapshot();
+
+    // Returns unknown — caller must run parseA2WorkWallSnapshot
+    expect(raw).toEqual(payload);
+  });
+
+  it("getA2WorkWallSnapshot throws on non-2xx (fail-closed, no silent fallback)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ error: "not found" }), {
+          status: 404,
+          statusText: "Not Found",
+          headers: { "Content-Type": "application/json" },
+        }),
+      ),
+    );
+
+    const client = new ApiClient("https://api.example.test");
+    await expect(client.getA2WorkWallSnapshot()).rejects.toThrow("not found");
+  });
+});

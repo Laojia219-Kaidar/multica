@@ -1,13 +1,26 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import type {
-  EmployeeLiveActivityV1,
+  A2Pane,
   PresenceState,
+  WorkStage,
 } from "@multica/core/api/workwall";
+import { joinA2PanesByEmployee } from "@multica/core/api/workwall";
+import type { EmployeeLiveActivityV1 } from "@multica/core/api/workwall";
+import {
+  Card,
+  CardContent,
+  CardHeader,
+} from "@multica/ui/components/ui/card";
+import { Badge } from "@multica/ui/components/ui/badge";
+import { Input } from "@multica/ui/components/ui/input";
+import { ScrollArea } from "@multica/ui/components/ui/scroll-area";
 
-// Self-contained Chinese labels for the first slice; formal i18n wiring into
-// packages/views/locales is left to the mainline integrator.
+// PAGE_SIZE fixed at 8 for the 4×2 CEO worksite.
+// 34 employees => 8/8/8/8/2 = 5 pages.
+const PAGE_SIZE = 8;
+
 const PRESENCE_LABEL: Record<PresenceState, string> = {
   offline: "离线",
   idle: "空闲",
@@ -19,18 +32,21 @@ const PRESENCE_LABEL: Record<PresenceState, string> = {
   unknown: "未知",
 };
 
-const PRESENCE_ICON: Record<PresenceState, string> = {
-  offline: "✖",
-  idle: "○",
-  queued: "▷",
-  working: "▶",
-  waiting: "◔",
-  blocked: "⚠",
-  recently_completed: "✓",
-  unknown: "?",
+const PRESENCE_VARIANT: Record<
+  PresenceState,
+  "default" | "secondary" | "outline" | "destructive"
+> = {
+  working: "default",
+  queued: "secondary",
+  waiting: "secondary",
+  recently_completed: "secondary",
+  idle: "outline",
+  offline: "outline",
+  unknown: "outline",
+  blocked: "destructive",
 };
 
-const STAGE_LABEL: Record<string, string> = {
+const STAGE_LABEL: Record<WorkStage, string> = {
   planning: "规划",
   research: "研究",
   coding: "编码",
@@ -44,211 +60,300 @@ const STAGE_LABEL: Record<string, string> = {
   unknown: "未知",
 };
 
-function presenceText(p: PresenceState) {
-  return `${PRESENCE_ICON[p]} ${PRESENCE_LABEL[p]}`;
-}
-
 export interface WorkWallProps {
   employees: EmployeeLiveActivityV1[];
+  panes: A2Pane[];
 }
 
-export function WorkWall({ employees }: WorkWallProps) {
-  const [expandedId, setExpandedId] = useState<string | null>(null);
-  const [presenceFilter, setPresenceFilter] = useState<PresenceState | "all">("all");
+/**
+ * A2 工作现场 — 4×2 CEO worksite.
+ *
+ * Employee roster remains primary. Panes are joined onto the roster by
+ * employee_id; the newest pane per employee is shown (terminal wins over
+ * event_console when both exist). Unmatched panes are counted but never
+ * rendered as employees — we never fabricate a roster entry.
+ *
+ * Geometry: xl breakpoint → 4 columns × 2 rows = 8 cards per page.
+ * Pagination resets when filters change.
+ */
+export function WorkWall({ employees, panes }: WorkWallProps) {
+  const [presenceFilter, setPresenceFilter] = useState<PresenceState | "all">(
+    "all",
+  );
   const [query, setQuery] = useState("");
   const [projectFilter, setProjectFilter] = useState<string>("all");
-  const [runtimeFilter, setRuntimeFilter] = useState<string>("all");
-  const [modelFilter, setModelFilter] = useState<string>("all");
+  const [page, setPage] = useState(0);
 
-  const projects = Array.from(
-    new Set(employees.map((e) => e.project_title).filter((v): v is string => !!v)),
-  ).sort();
-  const runtimes = Array.from(
-    new Set(employees.map((e) => e.runtime_provider).filter((v): v is string => !!v)),
-  ).sort();
-  const models = Array.from(
-    new Set(employees.map((e) => e.model_name).filter((v): v is string => !!v)),
-  ).sort();
+  const projects = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          employees.map((e) => e.project_title).filter((v): v is string => !!v),
+        ),
+      ).sort(),
+    [employees],
+  );
+
+  const join = useMemo(
+    () => joinA2PanesByEmployee(employees, panes),
+    [employees, panes],
+  );
 
   const q = query.trim().toLowerCase();
-  const filtered = employees.filter((e) => {
-    if (presenceFilter !== "all" && e.presence_state !== presenceFilter) return false;
-    if (projectFilter !== "all" && e.project_title !== projectFilter) return false;
-    if (runtimeFilter !== "all" && e.runtime_provider !== runtimeFilter) return false;
-    if (modelFilter !== "all" && e.model_name !== modelFilter) return false;
-    if (q !== "") {
-      const hay = [e.display_name, e.project_title, e.issue_title, e.model_name]
-        .filter((v): v is string => !!v)
-        .join(" ")
-        .toLowerCase();
-      if (!hay.includes(q)) return false;
-    }
-    return true;
-  });
+  const filtered = useMemo(() => {
+    return employees.filter((e) => {
+      if (presenceFilter !== "all" && e.presence_state !== presenceFilter) {
+        return false;
+      }
+      if (projectFilter !== "all" && e.project_title !== projectFilter) {
+        return false;
+      }
+      if (q !== "") {
+        const hay = [
+          e.display_name,
+          e.project_title,
+          e.issue_title,
+          e.model_name,
+        ]
+          .filter((v): v is string => !!v)
+          .join(" ")
+          .toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+      return true;
+    });
+  }, [employees, presenceFilter, projectFilter, q]);
+
+  // Reset page to 0 whenever any filter changes.
+  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const safePage = Math.min(page, totalPages - 1);
+  const pageItems = filtered.slice(
+    safePage * PAGE_SIZE,
+    (safePage + 1) * PAGE_SIZE,
+  );
+
+  const handlePresenceChange = (v: PresenceState | "all") => {
+    setPresenceFilter(v);
+    setPage(0);
+  };
+  const handleProjectChange = (v: string) => {
+    setProjectFilter(v);
+    setPage(0);
+  };
+  const handleQueryChange = (v: string) => {
+    setQuery(v);
+    setPage(0);
+  };
+
+  const activeCount = filtered.length;
+  const unmatchedCount = join.unmatchedCount;
 
   return (
-    <div className="work-wall flex flex-col gap-3" data-testid="work-wall">
-      <StatusBar employees={employees} />
-      <div className="flex flex-wrap items-center gap-2 text-xs">
-        {(["all", ...Object.keys(PRESENCE_LABEL)] as Array<PresenceState | "all">).map((p) => (
-          <button
-            key={p}
-            type="button"
-            className={`rounded px-2 py-1 ${presenceFilter === p ? "bg-green-900 text-green-100" : "bg-zinc-800 text-zinc-300"}`}
-            onClick={() => setPresenceFilter(p)}
-          >
-            {p === "all" ? `全部 ${employees.length}` : `${PRESENCE_ICON[p as PresenceState]} ${PRESENCE_LABEL[p as PresenceState]}`}
-          </button>
-        ))}
-        <input
-          type="search"
-          placeholder="搜索员工/项目/议题/模型"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          className="rounded border border-green-900 bg-black px-2 py-1 text-green-200"
-          data-testid="work-wall-search"
-        />
-        <FilterSelect label="项目" values={projects} value={projectFilter} onChange={setProjectFilter} />
-        <FilterSelect label="Runtime" values={runtimes} value={runtimeFilter} onChange={setRuntimeFilter} />
-        <FilterSelect label="模型" values={models} value={modelFilter} onChange={setModelFilter} />
-      </div>
-
-      <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
-        {filtered.map((e) => (
-          <TerminalCard
-            key={e.agent_id}
-            employee={e}
-            expanded={expandedId === e.agent_id}
-            onToggle={() =>
-              setExpandedId((cur) => (cur === e.agent_id ? null : e.agent_id))
-            }
+    <div className="work-wall flex flex-col gap-4" data-testid="work-wall">
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="flex flex-wrap items-center gap-1">
+          {(
+            [
+              "all",
+              "working",
+              "queued",
+              "waiting",
+              "blocked",
+              "idle",
+              "offline",
+              "unknown",
+              "recently_completed",
+            ] as Array<PresenceState | "all">
+          ).map((p) => (
+            <button
+              key={p}
+              type="button"
+              className={
+                presenceFilter === p
+                  ? "inline-flex h-7 items-center rounded-full border border-border bg-secondary px-2.5 text-xs font-medium text-secondary-foreground"
+                  : "inline-flex h-7 items-center rounded-full border border-transparent px-2.5 text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
+              }
+              onClick={() => handlePresenceChange(p)}
+              data-testid={`work-wall-presence-${p}`}
+            >
+              {p === "all" ? "全部" : PRESENCE_LABEL[p as PresenceState]}
+            </button>
+          ))}
+        </div>
+        <div className="ml-auto flex items-center gap-2">
+          <Input
+            type="search"
+            placeholder="搜索员工 / 项目 / 议题 / 模型"
+            value={query}
+            onChange={(e) => handleQueryChange(e.target.value)}
+            className="h-8 w-56 text-xs"
+            data-testid="work-wall-search"
           />
-        ))}
+          {projects.length > 0 ? (
+            <select
+              value={projectFilter}
+              onChange={(e) => handleProjectChange(e.target.value)}
+              className="h-8 w-40 rounded-md border border-border bg-background px-2 text-xs text-foreground"
+              data-testid="work-wall-filter-project"
+            >
+              <option value="all">全部项目</option>
+              {projects.map((p) => (
+                <option key={p} value={p}>
+                  {p}
+                </option>
+              ))}
+            </select>
+          ) : null}
+        </div>
+      </div>
+
+      <div
+        className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4"
+        data-testid="work-wall-grid"
+      >
+        {pageItems.map((emp) => {
+          const pane = join.matched.get(emp.employee_id);
+          return (
+            <WorkSiteCard
+              key={emp.employee_id}
+              employee={emp}
+              pane={pane ?? null}
+            />
+          );
+        })}
+      </div>
+
+      <div
+        className="flex items-center justify-between text-xs text-muted-foreground"
+        data-testid="work-wall-pagination"
+      >
+        <div>
+          显示 {safePage * PAGE_SIZE + 1}–
+          {Math.min((safePage + 1) * PAGE_SIZE, activeCount)} 共 {activeCount} 人
+          {unmatchedCount > 0 ? (
+            <span className="ml-2">
+              · {unmatchedCount} 个未匹配 pane
+            </span>
+          ) : null}
+        </div>
+        <div className="flex items-center gap-1">
+          <button
+            type="button"
+            disabled={safePage === 0}
+            onClick={() => setPage((p) => Math.max(0, p - 1))}
+            className="rounded border border-border px-2 py-1 text-xs disabled:opacity-40"
+            data-testid="work-wall-prev-page"
+          >
+            上一页
+          </button>
+          <span className="tabular-nums">
+            {safePage + 1} / {totalPages}
+          </span>
+          <button
+            type="button"
+            disabled={safePage >= totalPages - 1}
+            onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
+            className="rounded border border-border px-2 py-1 text-xs disabled:opacity-40"
+            data-testid="work-wall-next-page"
+          >
+            下一页
+          </button>
+        </div>
       </div>
     </div>
   );
 }
 
-function FilterSelect({
-  label,
-  values,
-  value,
-  onChange,
-}: {
-  label: string;
-  values: string[];
-  value: string;
-  onChange: (v: string) => void;
-}) {
-  if (values.length === 0) return null;
-  return (
-    <label className="flex items-center gap-1 text-zinc-400">
-      {label}
-      <select
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        className="rounded border border-green-900 bg-black px-1 py-1 text-green-200"
-        data-testid={`work-wall-filter-${label}`}
-      >
-        <option value="all">全部</option>
-        {values.map((v) => (
-          <option key={v} value={v}>
-            {v}
-          </option>
-        ))}
-      </select>
-    </label>
-  );
-}
-
-function StatusBar({ employees }: { employees: EmployeeLiveActivityV1[] }) {
-  const count = (p: PresenceState) =>
-    employees.filter((e) => e.presence_state === p).length;
-  const waitingBlocked = count("waiting") + count("blocked");
-  const offlineUnknown = count("offline") + count("unknown");
-  const totalTokens = employees.reduce((sum, e) => sum + (e.token_usage ?? 0), 0);
-
-  return (
-    <div
-      className="flex flex-wrap items-center gap-3 border border-green-900 bg-black px-3 py-2 font-mono text-xs text-green-300"
-      data-testid="work-wall-status-bar"
-    >
-      <span>员工 {employees.length}</span>
-      <span>工作中 {count("working")}</span>
-      <span>排队中 {count("queued")}</span>
-      <span>等待/阻塞 {waitingBlocked}</span>
-      <span>空闲 {count("idle")}</span>
-      <span>离线/未知 {offlineUnknown}</span>
-      <span className="ml-auto">Token {totalTokens}</span>
-    </div>
-  );
-}
-
-function TerminalCard({
-  employee: e,
-  expanded,
-  onToggle,
+function WorkSiteCard({
+  employee,
+  pane,
 }: {
   employee: EmployeeLiveActivityV1;
-  expanded: boolean;
-  onToggle: () => void;
+  pane: A2Pane | null;
 }) {
+  const variant = PRESENCE_VARIANT[employee.presence_state];
+
   return (
-    <div
-      className={`terminal-card rounded-md border border-green-800 bg-black font-mono text-green-300 ${expanded ? "col-span-full" : ""}`}
-      data-testid="terminal-card"
+    <Card
+      className="flex h-full flex-col overflow-hidden"
+      data-testid="work-site-card"
+      data-employee-id={employee.employee_id}
     >
-      <button
-        type="button"
-        onClick={onToggle}
-        className="flex w-full items-center gap-2 px-3 py-2 text-left"
-        aria-expanded={expanded}
-      >
-        <span className="truncate text-sm font-semibold text-green-100">
-          {e.display_name}
-        </span>
-        <span className="ml-auto whitespace-nowrap text-xs">
-          {presenceText(e.presence_state)}
-        </span>
-        <span className="text-xs text-green-500">{expanded ? "−" : "+"}</span>
-      </button>
-
-      <div className="border-t border-green-900 px-3 py-2 text-xs">
-        <div className="truncate">
-          {e.model_name ?? "未计量"} · {e.runtime_provider ?? "无 runtime"}
+      <CardHeader className="flex flex-row items-center gap-2 py-3">
+        <div className="flex min-w-0 flex-1 flex-col">
+          <div className="flex items-center gap-2">
+            <span className="truncate text-sm font-medium">
+              {employee.display_name}
+            </span>
+            <Badge variant={variant} className="h-4 text-[10px]">
+              {PRESENCE_LABEL[employee.presence_state]}
+            </Badge>
+          </div>
+          <div className="mt-0.5 truncate text-xs text-muted-foreground">
+            {employee.position_name ?? employee.work_stage
+              ? `${employee.position_name ?? ""}${
+                  employee.position_name && employee.work_stage ? " · " : ""
+                }${STAGE_LABEL[employee.work_stage] ?? employee.work_stage}`
+              : employee.department_name ?? "—"}
+          </div>
         </div>
-        {e.project_title ? (
-          <div className="truncate">项目：{e.project_title}</div>
+      </CardHeader>
+      <CardContent className="flex flex-1 flex-col gap-2 pb-3 pt-0">
+        {employee.project_title ? (
+          <div className="truncate text-xs text-muted-foreground">
+            <span className="text-foreground/60">项目：</span>
+            {employee.project_title}
+          </div>
         ) : null}
-        {e.issue_title ? (
-          <div className="truncate">议题：{e.issue_title}</div>
+        {employee.issue_title ? (
+          <div className="truncate text-xs">
+            <span className="text-muted-foreground">
+              {employee.issue_identifier ? `${employee.issue_identifier} ` : ""}
+            </span>
+            {employee.issue_title}
+          </div>
         ) : null}
-        {e.work_stage !== "none" ? (
-          <div>阶段：{STAGE_LABEL[e.work_stage] ?? e.work_stage}</div>
-        ) : null}
-        {e.blocked_reason ? <div>阻塞：{e.blocked_reason}</div> : null}
-        {e.next_action ? <div className="truncate">下一动作：{e.next_action}</div> : null}
-      </div>
 
-      {expanded ? (
-        <div className="border-t border-green-900 px-3 py-2 text-xs" data-testid="terminal-card-expanded">
-          {e.recent_events.length > 0 ? (
-            <div className="flex flex-col gap-1">
-              {e.recent_events.slice(-5).map((ev) => (
-                <div key={ev.event_id} className="truncate">
-                  <span className="text-green-600">{ev.kind}</span> · {ev.safe_summary}
-                </div>
-              ))}
+        {/* Pane region: terminal or event_console — mutually exclusive.
+            When no pane is joined, we never fabricate one. */}
+        {pane ? (
+          <div className="mt-auto">
+            <div className="mb-1 flex items-center justify-between text-[10px] uppercase tracking-wide text-muted-foreground">
+              <span>{pane.kind === "terminal" ? "Terminal" : "事件台"}</span>
+              <span
+                className="font-mono tabular-nums"
+                data-testid="pane-session-id"
+              >
+                {pane.session_id}
+              </span>
             </div>
-          ) : (
-            <div>暂无活动事件</div>
-          )}
-          {e.last_heartbeat_at ? (
-            <div className="mt-1">心跳：{e.last_heartbeat_at}</div>
+            <ScrollArea
+              className="h-24 rounded-md border border-surface-border bg-surface p-2 text-[11px] leading-relaxed"
+              data-testid="pane-tail"
+            >
+              <pre className="whitespace-pre-wrap break-words font-mono text-surface-foreground/80">
+                {pane.tail_text || "（无输出）"}
+              </pre>
+            </ScrollArea>
+          </div>
+        ) : (
+          <div className="mt-auto rounded-md border border-dashed border-border px-2 py-3 text-center text-[11px] text-muted-foreground">
+            暂无现场 pane
+          </div>
+        )}
+
+        <div className="flex items-center justify-between text-[10px] text-muted-foreground">
+          <span className="truncate">
+            {employee.model_name ?? "未计量"}
+            {employee.runtime_provider ? ` · ${employee.runtime_provider}` : ""}
+          </span>
+          {employee.token_usage ? (
+            <span className="font-mono tabular-nums">
+              {employee.token_usage.toLocaleString()} tok
+            </span>
           ) : null}
-          <div className="mt-1">出处：{e.source_refs.join(" ")}</div>
         </div>
-      ) : null}
-    </div>
+      </CardContent>
+    </Card>
   );
 }

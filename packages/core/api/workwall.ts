@@ -147,3 +147,108 @@ export const TerminalPaneSchema = z
   .strict();
 
 export type TerminalPane = z.infer<typeof TerminalPaneSchema>;
+
+// A2 "CEO 工作现场快照协议 (hivecrew.workwall.a2-snapshot.v1)
+// Frozen backend contract: GET /api/work-wall/a2/snapshot
+// Strict zod: unknown keys rejected, enums exact.
+
+export const A2PaneKindSchema = z.enum([
+  "terminal",
+  "event_console",
+]);
+
+export type A2PaneKind = z.infer<typeof A2PaneKindSchema>;
+
+export const A2PaneSchema = z
+  .object({
+    schema_version: z.literal("hivecrew.workwall.a2-pane.v1"),
+    pane_id: z.string(),
+    employee_id: z.string(),
+    session_id: z.string(),
+    kind: A2PaneKindSchema,
+    display_name: z.string(),
+    position_name: z.string().optional(),
+    department_name: z.string().optional(),
+    avatar_url: z.string().optional(),
+    presence_state: PresenceStateSchema,
+    work_stage: WorkStageSchema,
+    activity_summary: z.string().optional(),
+    issue_identifier: z.string().optional(),
+    issue_title: z.string().optional(),
+    model_name: z.string().optional(),
+    runtime_provider: z.string().optional(),
+    tail_text: z.string(),
+    last_event_at: z.string().optional(), // RFC3339
+    observed_at: z.string(), // RFC3339
+    freshness_state: FreshnessStateSchema,
+  })
+  .strict();
+
+export type A2Pane = z.infer<typeof A2PaneSchema>;
+
+export const A2SnapshotSchema = z
+  .object({
+    schema_version: z.literal("hivecrew.workwall.a2-snapshot.v1"),
+    workspace_id: z.string(),
+    cursor: z.string(),
+    observed_at: z.string(), // RFC3339
+    event_limit: z.number().int().nonnegative(),
+    panes: z.array(A2PaneSchema),
+  })
+  .strict();
+
+export type A2Snapshot = z.infer<typeof A2SnapshotSchema>;
+
+export function parseA2WorkWallSnapshot(input: unknown): A2Snapshot {
+  return A2SnapshotSchema.parse(input);
+}
+
+// Join A2 panes onto an employee roster (primary = employee list).
+// For each employee, pick the newest pane (by observed_at desc).
+// terminal and event_console are mutually exclusive per employee:
+// when both exist, terminal wins (it is the richer signal).
+// Returns { matched: pane joined by employee_id, unmatchedCount: panes with no employee match }.
+export interface A2JoinedResult {
+  matched: Map<string, A2Pane>;
+  unmatchedCount: number;
+}
+
+export function joinA2PanesByEmployee(
+  employees: Array<{ employee_id: string }>,
+  panes: A2Pane[],
+): A2JoinedResult {
+  // Group panes by employee_id, keeping newest (by observed_at) per kind,
+  // with terminal > event_console precedence.
+  const byEmployee = new Map<string, A2Pane>();
+  for (const pane of panes) {
+    const existing = byEmployee.get(pane.employee_id);
+    if (!existing) {
+      byEmployee.set(pane.employee_id, pane);
+      continue;
+    }
+    // terminal wins over event_console
+    if (existing.kind === "event_console" && pane.kind === "terminal") {
+      byEmployee.set(pane.employee_id, pane);
+      continue;
+    }
+    if (existing.kind === pane.kind &&
+        new Date(pane.observed_at) > new Date(existing.observed_at)) {
+      byEmployee.set(pane.employee_id, pane);
+    }
+  }
+
+  const matched = new Map<string, A2Pane>();
+  let unmatchedCount = 0;
+
+  for (const emp of employees) {
+    const pane = byEmployee.get(emp.employee_id);
+    if (pane) matched.set(emp.employee_id, pane);
+  }
+
+  const employeeIds = new Set(employees.map((e) => e.employee_id));
+  for (const pane of panes) {
+    if (!employeeIds.has(pane.employee_id)) unmatchedCount++;
+  }
+
+  return { matched, unmatchedCount };
+}
