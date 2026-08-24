@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"reflect"
 	"testing"
 	"time"
@@ -757,15 +756,10 @@ type a2Exec interface {
 
 func a2TestConn(t *testing.T, ctx context.Context) (*pgxpool.Pool, pgx.Tx) {
 	t.Helper()
-	ds := os.Getenv("DATABASE_URL")
-	if ds == "" {
-		t.Skip("DATABASE_URL not set: no dedicated test DB, integration explicitly skipped")
-	}
-	// B5-2/B5-4: strict dedicated-name allowlist; substring matches like
-	// "contest" or "latest" are refused. The DSN itself is never logged.
-	if !a2DedicatedTestDB(ds) {
-		t.Skip("DATABASE_URL does not name a dedicated A2 test database (exact-name allowlist): integration explicitly skipped")
-	}
+	// The eligibility decision (unset env / non-dedicated name) is owned by
+	// a2RequireDedicatedTestDB in a2_db_guard_test.go — the one canonical
+	// guard for this package. It never logs the DSN.
+	ds := a2RequireDedicatedTestDB(t)
 	pool, err := pgxpool.New(ctx, ds)
 	if err != nil {
 		t.Fatalf("pool: %v", err)

@@ -5,6 +5,7 @@ package workwall
 // The DSN itself is never logged anywhere in this suite.
 
 import (
+	"os"
 	"strings"
 	"testing"
 
@@ -31,6 +32,22 @@ func a2DedicatedTestDB(ds string) bool {
 	}
 	name := strings.TrimPrefix(u.Path, "/")
 	return a2DedicatedTestDBNames[strings.ToLower(name)]
+}
+
+// a2RequireDedicatedTestDB is the single canonical DB-eligibility decision
+// for every DB-backed test in this package: it returns the DSN only when the
+// environment names one of the dedicated throwaway databases, and otherwise
+// records an honest explicit SKIP. The DSN string is never logged or echoed.
+func a2RequireDedicatedTestDB(t *testing.T) string {
+	t.Helper()
+	ds := os.Getenv("DATABASE_URL")
+	if ds == "" {
+		t.Skip("DATABASE_URL not set: no dedicated test DB, integration explicitly skipped")
+	}
+	if !a2DedicatedTestDB(ds) {
+		t.Skip("DATABASE_URL does not name a dedicated A2 test database (exact-name allowlist): integration explicitly skipped")
+	}
+	return ds
 }
 
 // TestA2DedicatedTestDBExactNameOnly proves the guard is an exact-name
