@@ -375,3 +375,36 @@ R7 verification (go1.26.6 darwin/arm64): `gofmt -l` clean; focused ×100 on
 the R7/coordination suites ok; full package `go test -count=1` ok (109
 tests); `go test -race -count=1` ok ×3; `go vet` pass; `go build ./...`
 pass; `git diff --check` clean.
+
+## Independent-review corrections (R8)
+
+One post-claim reconcile blocker fixed on top of 50cce783c:
+
+**One shared exact identity validator for every existing dispatch.**
+`validateOrphanDispatchIdentity(dispatch, orcaRunID, orcaTaskID)` requires a
+handle-valid dispatch ID, a nonempty RunID exactly equal to the expected run,
+and a nonempty TaskID exactly equal to the expected task; any empty or
+mismatched field returns `ErrResultIdentityMismatch`. It is applied at every
+site that observes an existing dispatch: recovery-first adoption, the claim
+probe, `ErrScopeAlreadyCommitted` orphan adoption, the post-claim reconcile
+(the previously loose `dispatch.RunID == orcaRunID` outer check), the
+waiter's adoption branch, and the per-scope orphan probe. A rejected
+reconcile therefore fails closed BEFORE WorkerStart, StartTask, any evidence
+append, or memo adoption.
+
+New tests: `TestClaimReconcileRejectsEmptyTaskIDDispatch`,
+`TestClaimReconcileRejectsMismatchedTaskIDDispatch`, and
+`TestClaimReconcileRejectsMismatchedRunIDWithoutWorkerStart`, each asserting
+`ErrResultIdentityMismatch` plus zero worker starts, zero daemon starts, no
+dispatch evidence, and no memo adoption (shared `assertNoSideEffects`).
+`TestConcurrentTwoAssignmentsProbeIsolation` is now a genuine two-goroutine
+barrier test: the fake client gained a task-keyed, mutex-guarded dispatch
+table, both assignment-specific mismatches are installed concurrently, and
+both calls must surface their own `ErrResultIdentityMismatch` with zero side
+effects.
+
+R8 verification (go1.26.6 darwin/arm64): `gofmt -l` clean; focused ×100 on
+the R8/R7/coordination suites ok; full package `go test -count=1` ok (112
+tests); `go test -race -count=1` ok ×3; `go vet` pass; `go build ./...`
+pass; `git diff --check` clean. Files touched: bridge.go, bridge_test.go
+(both within the R7 allowlist).

@@ -799,21 +799,20 @@ func (b *Bridge) runClaimedTaskLocked(ctx context.Context, claimed DaemonTask, c
 	// for this assignment scope. The probe also treats an Orca-side orphan
 	// dispatch (crashed between start and evidence) as committed so waiters
 	// adopt instead of racing a second start.
-	orphanMatches := func() *OrcaDispatch {
+	// orphanForScope returns the existing Orca dispatch for this scope after
+	// the ONE shared exact identity validation. A present-but-mismatched
+	// dispatch is a hard error (fail closed before any side effect); an
+	// absent dispatch (no observable dispatch) is (nil, nil) so the caller
+	// continues to its own create path.
+	orphanForScope := func() (*OrcaDispatch, error) {
 		dispatch, err := b.Client.DispatchShow(ctx, orcaTaskID)
 		if err != nil || dispatch == nil || dispatch.ID == "" {
-			return nil
+			return nil, nil
 		}
-		// An orphan counts as committed only when it belongs to exactly this
-		// run AND task. An absent or mismatched TaskID is an unknown
-		// identity and is never treated as progress.
-		if dispatch.RunID != orcaRunID {
-			return nil
+		if err := validateOrphanDispatchIdentity(dispatch, orcaRunID, orcaTaskID); err != nil {
+			return nil, err
 		}
-		if dispatch.TaskID == "" || dispatch.TaskID != orcaTaskID {
-			return nil
-		}
-		return dispatch
+		return dispatch, nil
 	}
 
 	// Recovery-first (no claim needed): a dispatch already committed for this
@@ -828,10 +827,9 @@ func (b *Bridge) runClaimedTaskLocked(ctx context.Context, claimed DaemonTask, c
 		}
 		return mapping, nil
 	}
-	if orphan := orphanMatches(); orphan != nil {
-		if err := ValidateOrcaDispatchID(orphan.ID); err != nil {
-			return DispatchMap{}, err
-		}
+	if orphan, verr := orphanForScope(); verr != nil {
+		return DispatchMap{}, verr
+	} else if orphan != nil {
 		if resolved.placementDigest == "" {
 			return DispatchMap{}, fmt.Errorf("%w: cannot adopt orphan dispatch without a frozen placement digest", ErrInvalidChain)
 		}
@@ -867,23 +865,18 @@ func (b *Bridge) runClaimedTaskLocked(ctx context.Context, claimed DaemonTask, c
 		if baseKey != workerStartClaimBase(chain) {
 			return nil
 		}
-		if dispatch, err := b.Client.DispatchShow(ctx, orcaTaskID); err == nil && dispatch != nil && dispatch.ID != "" {
-			if dispatch.RunID != orcaRunID {
-				return fmt.Errorf("%w: orphan dispatch %s run %s does not match expected run %s",
-					ErrResultIdentityMismatch, dispatch.ID, dispatch.RunID, orcaRunID)
-			}
-			if dispatch.TaskID == "" || dispatch.TaskID != orcaTaskID {
-				return fmt.Errorf("%w: orphan dispatch %s task %q does not match expected task %s",
-					ErrResultIdentityMismatch, dispatch.ID, dispatch.TaskID, orcaTaskID)
-			}
+		dispatch, err := b.Client.DispatchShow(ctx, orcaTaskID)
+		if err != nil || dispatch == nil || dispatch.ID == "" {
+			return nil
 		}
-		return nil
+		return validateOrphanDispatchIdentity(dispatch, orcaRunID, orcaTaskID)
 	}
 	claim, claimErr := b.acquireCreateClaim(ctx, linkage.WorkRef, workerStartClaimBase(chain), func(ctx context.Context) bool {
 		if committedMapping() != (DispatchMap{}) {
 			return true
 		}
-		return orphanMatches() != nil
+		orphan, verr := orphanForScope()
+		return verr == nil && orphan != nil
 	}, workerOrphanProbe)
 	if claimErr != nil {
 		if errors.Is(claimErr, ErrScopeAlreadyCommitted) {
@@ -898,12 +891,11 @@ func (b *Bridge) runClaimedTaskLocked(ctx context.Context, claimed DaemonTask, c
 				return mapping, nil
 			}
 			// Adopt the Orca-side orphan left by the crashed holder — only
-			// after full identity validation (run AND task) and with the
+			// after the one shared exact identity validation and with the
 			// caller's frozen placement digest, never a zero digest.
-			if dispatch := orphanMatches(); dispatch != nil {
-				if err := ValidateOrcaDispatchID(dispatch.ID); err != nil {
-					return DispatchMap{}, err
-				}
+			if dispatch, verr := orphanForScope(); verr != nil {
+				return DispatchMap{}, verr
+			} else if dispatch != nil {
 				if resolved.placementDigest == "" {
 					return DispatchMap{}, fmt.Errorf("%w: cannot adopt orphan dispatch without a frozen placement digest", ErrInvalidChain)
 				}
@@ -941,9 +933,18 @@ func (b *Bridge) runClaimedTaskLocked(ctx context.Context, claimed DaemonTask, c
 	// crashed before appending evidence. A structured CLI "no dispatch"
 	// answer is safe to pass through to worker-start; an unavailable CLI
 	// (unknown effects) fails closed so a second dispatch cannot be created.
+	// ANY existing dispatch is validated by the one shared exact identity
+	// validator BEFORE adoption: an empty or mismatched RunID/TaskID fails
+	// closed with ErrResultIdentityMismatch and never reaches WorkerStart,
+	// StartTask, evidence append, or memo adoption.
 	dispatch, showErr := b.Client.DispatchShow(ctx, orcaTaskID)
 	if showErr != nil && !isOrcaCLIAnswer(showErr) {
 		return DispatchMap{}, fmt.Errorf("orcabridge: reconcile dispatch before worker start: %w", showErr)
+	}
+	if showErr == nil && dispatch != nil && dispatch.ID != "" {
+		if verr := validateOrphanDispatchIdentity(dispatch, orcaRunID, orcaTaskID); verr != nil {
+			return DispatchMap{}, verr
+		}
 	}
 	var mapping DispatchMap
 	if showErr == nil && dispatch != nil && dispatch.ID != "" && dispatch.RunID == orcaRunID {
@@ -1338,6 +1339,31 @@ func (b *Bridge) waitForCommittedTask(ctx context.Context, workRef string, chain
 // by the barrier winner: matching evidence (placement verified by the
 // committedMapping closure) or the Orca-side orphan. Returns the mapping or
 // ErrScopeAttemptInFlight if nothing appears in time.
+// validateOrphanDispatchIdentity is the one shared exact identity validator
+// for any existing Orca dispatch observed during post-claim reconciliation.
+// It requires a handle-valid dispatch ID, a nonempty RunID exactly equal to
+// the expected run, and a nonempty TaskID exactly equal to the expected
+// task. Any empty or mismatched field returns ErrResultIdentityMismatch so
+// the caller fails closed BEFORE entering WorkerStart, StartTask, evidence
+// appends, or memo adoption.
+func validateOrphanDispatchIdentity(dispatch *OrcaDispatch, orcaRunID, orcaTaskID string) error {
+	if dispatch == nil || dispatch.ID == "" {
+		return fmt.Errorf("%w: no dispatch observable for expected task %s", ErrResultIdentityMismatch, orcaTaskID)
+	}
+	if err := ValidateOrcaDispatchID(dispatch.ID); err != nil {
+		return err
+	}
+	if dispatch.RunID == "" || dispatch.RunID != orcaRunID {
+		return fmt.Errorf("%w: dispatch %s run %q does not match expected run %s",
+			ErrResultIdentityMismatch, dispatch.ID, dispatch.RunID, orcaRunID)
+	}
+	if dispatch.TaskID == "" || dispatch.TaskID != orcaTaskID {
+		return fmt.Errorf("%w: dispatch %s task %q does not match expected task %s",
+			ErrResultIdentityMismatch, dispatch.ID, dispatch.TaskID, orcaTaskID)
+	}
+	return nil
+}
+
 func (b *Bridge) waitForCommittedDispatch(ctx context.Context, chain Chain, workRef, orcaRunID, orcaTaskID, resolvedPlacementDigest string, committedMapping func() DispatchMap) (DispatchMap, error) {
 	deadline := b.now().Add(b.claimMaxWait())
 	for attempt := 0; attempt < maxClaimAttempts; attempt++ {
@@ -1358,15 +1384,7 @@ func (b *Bridge) waitForCommittedDispatch(ctx context.Context, chain Chain, work
 		// TaskID is rejected here rather than filtered out above.
 		if dispatch, err := b.Client.DispatchShow(ctx, orcaTaskID); err == nil &&
 			dispatch != nil && dispatch.ID != "" {
-			if dispatch.RunID != orcaRunID {
-				return DispatchMap{}, fmt.Errorf("%w: orphan dispatch %s run %s does not match expected run %s",
-					ErrResultIdentityMismatch, dispatch.ID, dispatch.RunID, orcaRunID)
-			}
-			if dispatch.TaskID == "" || dispatch.TaskID != orcaTaskID {
-				return DispatchMap{}, fmt.Errorf("%w: orphan dispatch %s task %q does not match expected task %s",
-					ErrResultIdentityMismatch, dispatch.ID, dispatch.TaskID, orcaTaskID)
-			}
-			if err := ValidateOrcaDispatchID(dispatch.ID); err != nil {
+			if err := validateOrphanDispatchIdentity(dispatch, orcaRunID, orcaTaskID); err != nil {
 				return DispatchMap{}, err
 			}
 			// The adopted mapping inherits the caller's frozen placement

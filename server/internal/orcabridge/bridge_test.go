@@ -51,10 +51,14 @@ type fakeClient struct {
 	order *opLog
 	mu    sync.Mutex
 
-	runs     []OrcaRun
-	tasks    map[string][]OrcaTask // run id -> tasks
+	runs  []OrcaRun
+	tasks map[string][]OrcaTask // run id -> tasks
+	// dispatch is the single shared orphan (legacy scenarios).
 	dispatch *OrcaDispatch
-	inbox    []OrcaMessage
+	// dispatchByTask is a task-keyed, mutex-guarded dispatch table for
+	// concurrent scenarios; when non-empty it wins over the single dispatch.
+	dispatchByTask map[string]*OrcaDispatch
+	inbox          []OrcaMessage
 
 	runCreateErr     error
 	runCreateBlock   chan struct{} // when set, RunCreate blocks until closed
@@ -72,7 +76,7 @@ type fakeClient struct {
 }
 
 func newFakeClient() *fakeClient {
-	return &fakeClient{tasks: map[string][]OrcaTask{}, order: &opLog{}}
+	return &fakeClient{tasks: map[string][]OrcaTask{}, dispatchByTask: map[string]*OrcaDispatch{}, order: &opLog{}}
 }
 
 func (f *fakeClient) RunCreate(ctx context.Context, objective string) (string, error) {
@@ -178,7 +182,17 @@ func (f *fakeClient) DispatchShow(ctx context.Context, taskID string) (*OrcaDisp
 	if f.dispatchShowErr != nil {
 		return nil, f.dispatchShowErr
 	}
+	if keyed, ok := f.dispatchByTask[taskID]; ok {
+		return keyed, nil
+	}
 	return f.dispatch, nil
+}
+
+// setDispatchForTask installs a task-keyed orphan under the client mutex.
+func (f *fakeClient) setDispatchForTask(taskID string, dispatch *OrcaDispatch) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.dispatchByTask[taskID] = dispatch
 }
 
 func (f *fakeClient) InboxMessages(ctx context.Context) ([]OrcaMessage, error) {
@@ -2828,13 +2842,12 @@ func TestWaiterDoesNotSucceedWhileStartPending(t *testing.T) {
 	}
 }
 
-// Item 6: two assignments running concurrently each keep their own orphan
-// probe; the second must not replace the first's validation.
+// Item 6 (R8 form): two assignments validated CONCURRENTLY, each against its
+// own task-keyed orphan, through a thread-safe fake. Both must surface their
+// own ErrResultIdentityMismatch with zero side effects.
 func TestConcurrentTwoAssignmentsProbeIsolation(t *testing.T) {
 	a, _ := twinBridges(t)
 	chain := validChain()
-	// Two distinct assignments (different command ids) on the same chain
-	// shape, both with mismatched orphans visible.
 	m1, err := a.EnsureAssignment(t.Context(), dispatchRef(chain))
 	if err != nil {
 		t.Fatal(err)
@@ -2845,59 +2858,152 @@ func TestConcurrentTwoAssignmentsProbeIsolation(t *testing.T) {
 	chain2.IssueID = chain.IssueID
 	chain2.TaskID = "c05a0000-0000-4000-8000-000000000041"
 	chain2.AssignmentID = "c05a0000-0000-4000-8000-000000000051"
-	ref2 := dispatchRef(chain2)
-	m2, err := a.EnsureAssignment(t.Context(), ref2)
+	m2, err := a.EnsureAssignment(t.Context(), dispatchRef(chain2))
 	if err != nil {
 		t.Fatal(err)
 	}
 	claimed1 := DaemonTask{ID: m1.Chain.TaskID, WorkspaceID: chain.WorkspaceID, ProjectID: chain.ProjectID, IssueID: chain.IssueID}
 	claimed2 := DaemonTask{ID: m2.Chain.TaskID, WorkspaceID: chain2.WorkspaceID, ProjectID: chain2.ProjectID, IssueID: chain2.IssueID}
 
-	// Both scopes get expired claims + held barriers, forcing the waiter
-	// path, with per-scope mismatched orphans.
-	for _, tc := range []struct {
-		base   string
-		chain  Chain
-		orphan *OrcaDispatch
-	}{
-		{workerStartClaimBase(m1.Chain), m1.Chain, &OrcaDispatch{ID: "ctx_mm_a", RunID: "run_ffffffffffff", TaskID: "task_aaaaaaaaaaaa", AssigneeHandle: "term_328ff727-9a71-4047-b8d8-c2f5c34c0f7e", Status: "dispatched"}},
-		{workerStartClaimBase(m2.Chain), m2.Chain, &OrcaDispatch{ID: "ctx_mm_b", RunID: "run_eeeeeeeeeeee", TaskID: "task_bbbbbbbbbbbb", AssigneeHandle: "term_328ff727-9a71-4047-b8d8-c2f5c34c0f7e", Status: "dispatched"}},
-	} {
-		if err := a.entry.injectClaimWin(tc.base, "bridge-other", true); err != nil {
+	// Resolve each assignment's own Orca task id, then install per-task
+	// mismatched orphans under the client mutex (thread-safe).
+	_, task1 := derivedOrcaIDs(a, chain, m1)
+	_, task2 := derivedOrcaIDs(a, chain2, m2)
+	if task1 == "" || task2 == "" {
+		t.Fatalf("derive failed: task1=%q task2=%q", task1, task2)
+	}
+	a.client.setDispatchForTask(task1, &OrcaDispatch{ID: "ctx_mmaaaaaaaaaaaa1", RunID: "run_ffffffffffff", TaskID: "task_aaaaaaaaaaaa", AssigneeHandle: "term_328ff727-9a71-4047-b8d8-c2f5c34c0f7e", Status: "dispatched"})
+	a.client.setDispatchForTask(task2, &OrcaDispatch{ID: "ctx_mmbbbbbbbbbb2", RunID: "run_eeeeeeeeeeee", TaskID: "task_bbbbbbbbbbbb", AssigneeHandle: "term_328ff727-9a71-4047-b8d8-c2f5c34c0f7e", Status: "dispatched"})
+
+	// Expired claims + held barriers force both scopes down the reconcile
+	// path concurrently.
+	for _, base := range []string{workerStartClaimBase(m1.Chain), workerStartClaimBase(m2.Chain)} {
+		if err := a.entry.injectClaimWin(base, "bridge-other", true); err != nil {
 			t.Fatal(err)
 		}
-		if err := a.entry.injectBarrierHeld(effectBarrierKey(tc.base, 0), "bridge-other"); err != nil {
+		if err := a.entry.injectBarrierHeld(effectBarrierKey(base, 0), "bridge-other"); err != nil {
 			t.Fatal(err)
 		}
 	}
 	a.ClaimPoll = time.Millisecond
 	a.ClaimMaxWait = 200 * time.Millisecond
 
-	// The fake exposes a single mutable dispatch, so the two scopes are driven
-	// one at a time; each call must validate against ITS OWN scope's orphan
-	// and reject. This still proves per-scope probe isolation: had the second
-	// call's probe replaced the first's (the field-based bug), the second
-	// scope would have validated against the first scope's orphan data and
-	// the errors would cross-contaminate.
-	cases := []struct {
-		orphan  OrcaDispatch
-		claimed DaemonTask
-		label   string
-	}{
-		{OrcaDispatch{ID: "ctx_mm_a", RunID: "run_ffffffffffff", TaskID: "task_aaaaaaaaaaaa", AssigneeHandle: "term_328ff727-9a71-4047-b8d8-c2f5c34c0f7e", Status: "dispatched"}, claimed1, "assignment A"},
-		{OrcaDispatch{ID: "ctx_mm_b", RunID: "run_eeeeeeeeeeee", TaskID: "task_bbbbbbbbbbbb", AssigneeHandle: "term_328ff727-9a71-4047-b8d8-c2f5c34c0f7e", Status: "dispatched"}, claimed2, "assignment B"},
-	}
-	for _, tc := range cases {
-		orphan := tc.orphan
-		a.client.mu.Lock()
-		a.client.dispatch = &orphan
-		a.client.mu.Unlock()
-		_, err := a.RunClaimedTask(t.Context(), tc.claimed)
+	errs := make([]error, 2)
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	wg.Add(2)
+	go func() { defer wg.Done(); <-start; _, errs[0] = a.RunClaimedTask(t.Context(), claimed1) }()
+	go func() { defer wg.Done(); <-start; _, errs[1] = a.RunClaimedTask(t.Context(), claimed2) }()
+	close(start)
+	wg.Wait()
+	for i, err := range errs {
 		if !errors.Is(err, ErrResultIdentityMismatch) {
-			t.Fatalf("%s: expected ErrResultIdentityMismatch from its own probe, got %v", tc.label, err)
+			t.Fatalf("assignment %d: expected ErrResultIdentityMismatch from its own scope, got %v", i, err)
 		}
-		if a.client.workerStarts != 0 {
-			t.Fatalf("%s: no worker may start on mismatch: %d", tc.label, a.client.workerStarts)
+	}
+	if a.client.workerStarts != 0 {
+		t.Fatalf("no worker may start on mismatch: %d", a.client.workerStarts)
+	}
+	if len(a.daemon.started) != 0 {
+		t.Fatalf("no daemon start may run on mismatch: %d", len(a.daemon.started))
+	}
+}
+
+// R8: post-claim reconcile with a dispatch whose TaskID is EMPTY fails
+// closed before any side effect.
+func TestClaimReconcileRejectsEmptyTaskIDDispatch(t *testing.T) {
+	a, _ := twinBridges(t)
+	chain := validChain()
+	mapping, err := a.EnsureAssignment(t.Context(), dispatchRef(chain))
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed := DaemonTask{ID: mapping.Chain.TaskID, WorkspaceID: chain.WorkspaceID, ProjectID: chain.ProjectID, IssueID: mapping.Chain.IssueID}
+	runID, taskID := derivedOrcaIDs(a, chain, mapping)
+	if runID == "" {
+		t.Fatal("no run id")
+	}
+	// Existing dispatch with a valid ID and RunID but an EMPTY TaskID.
+	a.client.dispatch = &OrcaDispatch{ID: "ctx_emptytaskid01", RunID: runID, TaskID: "", AssigneeHandle: "term_328ff727-9a71-4047-b8d8-c2f5c34c0f7e", Status: "dispatched"}
+
+	if _, err := a.RunClaimedTask(t.Context(), claimed); !errors.Is(err, ErrResultIdentityMismatch) {
+		t.Fatalf("expected ErrResultIdentityMismatch for empty TaskID, got %v", err)
+	}
+	assertNoSideEffects(t, a, chain)
+	_ = taskID
+}
+
+// R8: a dispatch whose TaskID belongs to a different task fails closed.
+func TestClaimReconcileRejectsMismatchedTaskIDDispatch(t *testing.T) {
+	a, _ := twinBridges(t)
+	chain := validChain()
+	mapping, err := a.EnsureAssignment(t.Context(), dispatchRef(chain))
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed := DaemonTask{ID: mapping.Chain.TaskID, WorkspaceID: chain.WorkspaceID, ProjectID: chain.ProjectID, IssueID: mapping.Chain.IssueID}
+	runID, _ := derivedOrcaIDs(a, chain, mapping)
+	if runID == "" {
+		t.Fatal("no run id")
+	}
+	a.client.dispatch = &OrcaDispatch{ID: "ctx_othertaskid02", RunID: runID, TaskID: "task_ffffffffffff", AssigneeHandle: "term_328ff727-9a71-4047-b8d8-c2f5c34c0f7e", Status: "dispatched"}
+
+	if _, err := a.RunClaimedTask(t.Context(), claimed); !errors.Is(err, ErrResultIdentityMismatch) {
+		t.Fatalf("expected ErrResultIdentityMismatch for mismatched TaskID, got %v", err)
+	}
+	assertNoSideEffects(t, a, chain)
+}
+
+// R8: a dispatch from a different Run fails closed with NO WorkerStart.
+func TestClaimReconcileRejectsMismatchedRunIDWithoutWorkerStart(t *testing.T) {
+	a, _ := twinBridges(t)
+	chain := validChain()
+	mapping, err := a.EnsureAssignment(t.Context(), dispatchRef(chain))
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed := DaemonTask{ID: mapping.Chain.TaskID, WorkspaceID: chain.WorkspaceID, ProjectID: chain.ProjectID, IssueID: mapping.Chain.IssueID}
+	_, taskID := derivedOrcaIDs(a, chain, mapping)
+	if taskID == "" {
+		t.Fatal("no task id")
+	}
+	a.client.dispatch = &OrcaDispatch{ID: "ctx_otherrunid003", RunID: "run_ffffffffffff", TaskID: taskID, AssigneeHandle: "term_328ff727-9a71-4047-b8d8-c2f5c34c0f7e", Status: "dispatched"}
+
+	if _, err := a.RunClaimedTask(t.Context(), claimed); !errors.Is(err, ErrResultIdentityMismatch) {
+		t.Fatalf("expected ErrResultIdentityMismatch for mismatched RunID, got %v", err)
+	}
+	assertNoSideEffects(t, a, chain)
+}
+
+// assertNoSideEffects proves a rejected reconcile produced zero downstream
+// effects: no worker start, no daemon start, no dispatch evidence, no memo.
+func assertNoSideEffects(t *testing.T, tb *testBridge, chain Chain) {
+	t.Helper()
+	if tb.client.workerStarts != 0 {
+		t.Fatalf("worker starts = %d, want 0", tb.client.workerStarts)
+	}
+	if len(tb.daemon.started) != 0 {
+		t.Fatalf("daemon starts = %d, want 0", len(tb.daemon.started))
+	}
+	// No dispatch evidence may have been appended on the dispatch chain.
+	tb.entry.mu.Lock()
+	for wf, byKey := range tb.entry.events {
+		if wf != "hivecrew://ws/work/prj-dispatch" {
+			continue
 		}
+		for k := range byKey {
+			if strings.Contains(k, "dispatch-evidence/") || (strings.Contains(k, "/dispatch/") && !strings.Contains(k, "dispatch-start")) {
+				tb.entry.mu.Unlock()
+				t.Fatalf("dispatch evidence appended on rejection: %s", k)
+			}
+		}
+	}
+	tb.entry.mu.Unlock()
+	// No memo adoption for this assignment chain.
+	tb.memoMu.Lock()
+	_, memoized := tb.memo.dispatch[chain.WorkspaceID+":"+chain.AssignmentID]
+	tb.memoMu.Unlock()
+	if memoized {
+		t.Fatal("rejected dispatch was memoized")
 	}
 }
