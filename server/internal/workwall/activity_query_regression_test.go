@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"strconv"
 	"testing"
 	"time"
 
@@ -221,11 +222,15 @@ func validateHIV981TestDatabaseURL(rawURL string) (*url.URL, error) {
 		return nil, fmt.Errorf("TEST_DATABASE_URL host %s is not loopback", host)
 	}
 
-	port := u.Port()
-	if port == "" {
+	portText := u.Port()
+	if portText == "" {
 		return nil, fmt.Errorf("TEST_DATABASE_URL must specify an explicit non-5432 port")
 	}
-	if port == "5432" {
+	port, err := strconv.Atoi(portText)
+	if err != nil || port < 1 || port > 65535 {
+		return nil, fmt.Errorf("TEST_DATABASE_URL must use a valid TCP port 1-65535")
+	}
+	if port == 5432 {
 		return nil, fmt.Errorf("TEST_DATABASE_URL must not use port 5432 (refusing production port)")
 	}
 	return u, nil
@@ -249,6 +254,21 @@ func TestValidateHIV981TestDatabaseURL(t *testing.T) {
 		{
 			name:    "default postgres port",
 			rawURL:  "postgres://postgres@127.0.0.1:5432/hivecrew_test",
+			wantErr: true,
+		},
+		{
+			name:    "zero-padded default postgres port",
+			rawURL:  "postgres://postgres@127.0.0.1:05432/hivecrew_test",
+			wantErr: true,
+		},
+		{
+			name:    "invalid port text",
+			rawURL:  "postgres://postgres@127.0.0.1:abc/hivecrew_test",
+			wantErr: true,
+		},
+		{
+			name:    "port out of range",
+			rawURL:  "postgres://postgres@127.0.0.1:65536/hivecrew_test",
 			wantErr: true,
 		},
 		{
