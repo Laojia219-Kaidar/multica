@@ -3933,6 +3933,62 @@ type TaskFailRequest struct {
 	RetiredSessionID string `json:"retired_session_id,omitempty"`
 }
 
+// reconcileFailedDaemonTaskIssue closes the issue-state portion of a daemon
+// failure callback after TaskService.FailTask has committed its terminal
+// transition. FailTask already owns retry creation, failure comments,
+// settlement, analytics, and task:failed publication; calling
+// HandleFailedTasks here would repeat those side effects.
+//
+// The guarded UPDATE is both the active-retry check and the replay/concurrency
+// fence. Only the callback that changes in_progress to todo publishes the
+// corresponding issue event. A queued retry (including a deferred backoff)
+// keeps the issue in progress for the next attempt.
+func (h *Handler) reconcileFailedDaemonTaskIssue(ctx context.Context, task db.AgentTaskQueue) error {
+	if !task.IssueID.Valid {
+		return nil
+	}
+	if h.DB == nil {
+		return errors.New("failed task issue reconciliation requires database executor")
+	}
+
+	issue, err := h.Queries.GetIssue(ctx, task.IssueID)
+	if err != nil {
+		return fmt.Errorf("load failed task issue for reconciliation: %w", err)
+	}
+	if issue.Status != "in_progress" {
+		return nil
+	}
+
+	updatedAt := time.Now().UTC()
+	tag, err := h.DB.Exec(ctx, `
+		UPDATE issue
+		SET status = 'todo', updated_at = $2
+		WHERE id = $1
+		  AND status = 'in_progress'
+		  AND NOT EXISTS (
+			SELECT 1
+			FROM agent_task_queue
+			WHERE issue_id = $1
+			  AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
+		  )
+	`, task.IssueID, updatedAt)
+	if err != nil {
+		return fmt.Errorf("reconcile failed task issue: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return nil
+	}
+
+	issue.Status = "todo"
+	issue.UpdatedAt = pgtype.Timestamptz{Time: updatedAt, Valid: true}
+	h.publish(protocol.EventIssueUpdated, uuidToString(issue.WorkspaceID), "system", "", map[string]any{
+		"issue":          issueToResponse(issue, h.getIssuePrefix(ctx, issue.WorkspaceID)),
+		"status_changed": true,
+		"prev_status":    "in_progress",
+	})
+	return nil
+}
+
 func (h *Handler) FailTask(w http.ResponseWriter, r *http.Request) {
 	taskID := chi.URLParam(r, "taskId")
 
@@ -3963,6 +4019,14 @@ func (h *Handler) FailTask(w http.ResponseWriter, r *http.Request) {
 		// isTransientError) — retries and the fail, gap flag, and retry land
 		// exactly once (MUL-5305). An invalid request body still returns 400 above.
 		slog.Warn("fail task failed", "task_id", taskID, "error", err)
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if err := h.reconcileFailedDaemonTaskIssue(r.Context(), *task); err != nil {
+		// FailTask's terminal transition is already durable. Return a transient
+		// response so the daemon replays the callback; FailTask's terminal guard
+		// suppresses duplicate side effects and the issue CAS is retried safely.
+		slog.Warn("fail task issue reconciliation failed", "task_id", taskID, "error", err)
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}

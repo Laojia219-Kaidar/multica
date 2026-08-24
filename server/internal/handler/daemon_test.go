@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -18,11 +20,258 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/multica-ai/multica/server/internal/auth"
 	"github.com/multica-ai/multica/server/internal/daemonws"
+	"github.com/multica-ai/multica/server/internal/events"
+	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/middleware"
 	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
+	"github.com/prometheus/client_golang/prometheus"
 )
+
+func failTaskForIssueReconcileTest(t *testing.T, taskID, failureReason string) *httptest.ResponseRecorder {
+	t.Helper()
+	w := httptest.NewRecorder()
+	req := newDaemonTokenRequest(http.MethodPost, "/api/daemon/tasks/"+taskID+"/fail", map[string]any{
+		"error":          "HIV-1015 failure fixture",
+		"failure_reason": failureReason,
+	}, testWorkspaceID, "hiv-1015-daemon")
+	req = withURLParam(req, "taskId", taskID)
+	testHandler.FailTask(w, req)
+	return w
+}
+
+func createRunningIssueFailureFixture(t *testing.T, maxAttempts int32) (runtimeID, agentID, issueID, taskID string) {
+	t.Helper()
+	ctx := context.Background()
+	runtimeID = createClaimReclaimRuntime(t, ctx, "HIV-1015 runtime")
+	agentID, issueID = createClaimReclaimAgentAndIssue(t, ctx, runtimeID, "HIV-1015 agent")
+
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO agent_task_queue (
+			agent_id, runtime_id, issue_id, status, priority,
+			attempt, max_attempts, created_at, dispatched_at, started_at
+		)
+		VALUES ($1, $2, $3, 'running', 0, 1, $4, now(), now(), now())
+		RETURNING id
+	`, agentID, runtimeID, issueID, maxAttempts).Scan(&taskID); err != nil {
+		t.Fatalf("setup: create running task: %v", err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM comment WHERE source_task_id = $1`, taskID)
+		testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE parent_task_id = $1`, taskID)
+		testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE id = $1`, taskID)
+	})
+	return runtimeID, agentID, issueID, taskID
+}
+
+func failedTaskMetricTotal(t *testing.T, m *obsmetrics.BusinessMetrics) float64 {
+	t.Helper()
+	registry := prometheus.NewPedanticRegistry()
+	registry.MustRegister(m.Collectors()...)
+	families, err := registry.Gather()
+	if err != nil {
+		t.Fatalf("gather task failure metrics: %v", err)
+	}
+	for _, family := range families {
+		if family.GetName() != "multica_agent_task_failed_total" {
+			continue
+		}
+		var total float64
+		for _, metric := range family.Metric {
+			total += metric.GetCounter().GetValue()
+		}
+		return total
+	}
+	t.Fatal("multica_agent_task_failed_total metric family missing")
+	return 0
+}
+
+func subscribeFailureReconcileEvents(issueID, taskID string) (taskFailed, issueUpdated *atomic.Int32) {
+	taskFailed = &atomic.Int32{}
+	issueUpdated = &atomic.Int32{}
+	testHandler.Bus.Subscribe(protocol.EventTaskFailed, func(e events.Event) {
+		payload, ok := e.Payload.(map[string]any)
+		if ok && payload["task_id"] == taskID {
+			taskFailed.Add(1)
+		}
+	})
+	testHandler.Bus.Subscribe(protocol.EventIssueUpdated, func(e events.Event) {
+		payload, ok := e.Payload.(map[string]any)
+		if !ok || payload["prev_status"] != "in_progress" {
+			return
+		}
+		issue, ok := payload["issue"].(IssueResponse)
+		if ok && issue.ID == issueID {
+			issueUpdated.Add(1)
+		}
+	})
+	return taskFailed, issueUpdated
+}
+
+func TestFailTask_ReconcilesStrandedIssueExactlyOnce(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	_, _, issueID, taskID := createRunningIssueFailureFixture(t, 1)
+	taskFailed, issueUpdated := subscribeFailureReconcileEvents(issueID, taskID)
+	metrics := obsmetrics.NewBusinessMetrics()
+	previousMetrics := testHandler.TaskService.Metrics
+	testHandler.TaskService.Metrics = metrics
+	t.Cleanup(func() { testHandler.TaskService.Metrics = previousMetrics })
+
+	if w := failTaskForIssueReconcileTest(t, taskID, "agent_error"); w.Code != http.StatusOK {
+		t.Fatalf("first FailTask: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if w := failTaskForIssueReconcileTest(t, taskID, "agent_error"); w.Code != http.StatusOK {
+		t.Fatalf("replayed FailTask: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var issueStatus string
+	if err := testPool.QueryRow(ctx, `SELECT status FROM issue WHERE id = $1`, issueID).Scan(&issueStatus); err != nil {
+		t.Fatalf("read issue status: %v", err)
+	}
+	if issueStatus != "todo" {
+		t.Fatalf("issue status = %q, want todo after terminal failure with no active task", issueStatus)
+	}
+	var comments, retries int
+	if err := testPool.QueryRow(ctx, `SELECT count(*) FROM comment WHERE source_task_id = $1`, taskID).Scan(&comments); err != nil {
+		t.Fatalf("count failure comments: %v", err)
+	}
+	if err := testPool.QueryRow(ctx, `SELECT count(*) FROM agent_task_queue WHERE parent_task_id = $1`, taskID).Scan(&retries); err != nil {
+		t.Fatalf("count retry tasks: %v", err)
+	}
+	if comments != 1 || retries != 0 || taskFailed.Load() != 1 || issueUpdated.Load() != 1 {
+		t.Fatalf("side effects comments=%d retries=%d task_failed=%d issue_updated=%d; want 1,0,1,1",
+			comments, retries, taskFailed.Load(), issueUpdated.Load())
+	}
+	if got := failedTaskMetricTotal(t, metrics); got != 1 {
+		t.Fatalf("task failure analytics count = %v, want 1 across fresh + replay", got)
+	}
+}
+
+func TestFailTask_DoesNotResetIssueWithActiveRetry(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	_, _, issueID, taskID := createRunningIssueFailureFixture(t, 2)
+	taskFailed, issueUpdated := subscribeFailureReconcileEvents(issueID, taskID)
+
+	if w := failTaskForIssueReconcileTest(t, taskID, "runtime_offline"); w.Code != http.StatusOK {
+		t.Fatalf("first FailTask: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if w := failTaskForIssueReconcileTest(t, taskID, "runtime_offline"); w.Code != http.StatusOK {
+		t.Fatalf("replayed FailTask: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var issueStatus string
+	if err := testPool.QueryRow(ctx, `SELECT status FROM issue WHERE id = $1`, issueID).Scan(&issueStatus); err != nil {
+		t.Fatalf("read issue status: %v", err)
+	}
+	var comments, retries int
+	if err := testPool.QueryRow(ctx, `SELECT count(*) FROM comment WHERE source_task_id = $1`, taskID).Scan(&comments); err != nil {
+		t.Fatalf("count failure comments: %v", err)
+	}
+	if err := testPool.QueryRow(ctx, `SELECT count(*) FROM agent_task_queue WHERE parent_task_id = $1`, taskID).Scan(&retries); err != nil {
+		t.Fatalf("count retry tasks: %v", err)
+	}
+	if issueStatus != "in_progress" || comments != 0 || retries != 1 || taskFailed.Load() != 1 || issueUpdated.Load() != 0 {
+		t.Fatalf("status=%q comments=%d retries=%d task_failed=%d issue_updated=%d; want in_progress,0,1,1,0",
+			issueStatus, comments, retries, taskFailed.Load(), issueUpdated.Load())
+	}
+}
+
+func TestFailTask_DoesNotResetIssueWithAnyActiveTaskState(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+
+	for _, activeStatus := range []string{"queued", "dispatched", "running", "waiting_local_directory", "deferred"} {
+		t.Run(activeStatus, func(t *testing.T) {
+			ctx := context.Background()
+			runtimeID, agentID, issueID, taskID := createRunningIssueFailureFixture(t, 1)
+			taskFailed, issueUpdated := subscribeFailureReconcileEvents(issueID, taskID)
+
+			var activeTaskID string
+			if err := testPool.QueryRow(ctx, `
+				INSERT INTO agent_task_queue (
+					agent_id, runtime_id, issue_id, status, priority,
+					attempt, max_attempts, created_at
+				)
+				VALUES ($1, $2, $3, $4, 0, 1, 1, now())
+				RETURNING id
+			`, agentID, runtimeID, issueID, activeStatus).Scan(&activeTaskID); err != nil {
+				t.Fatalf("setup: create %s active task: %v", activeStatus, err)
+			}
+
+			if w := failTaskForIssueReconcileTest(t, taskID, "agent_error"); w.Code != http.StatusOK {
+				t.Fatalf("first FailTask: expected 200, got %d: %s", w.Code, w.Body.String())
+			}
+			if w := failTaskForIssueReconcileTest(t, taskID, "agent_error"); w.Code != http.StatusOK {
+				t.Fatalf("replayed FailTask: expected 200, got %d: %s", w.Code, w.Body.String())
+			}
+
+			var issueStatus, siblingStatus string
+			if err := testPool.QueryRow(ctx, `SELECT status FROM issue WHERE id = $1`, issueID).Scan(&issueStatus); err != nil {
+				t.Fatalf("read issue status: %v", err)
+			}
+			if err := testPool.QueryRow(ctx, `SELECT status FROM agent_task_queue WHERE id = $1`, activeTaskID).Scan(&siblingStatus); err != nil {
+				t.Fatalf("read sibling task status: %v", err)
+			}
+			if issueStatus != "in_progress" || siblingStatus != activeStatus || taskFailed.Load() != 1 || issueUpdated.Load() != 0 {
+				t.Fatalf("issue=%q sibling=%q task_failed=%d issue_updated=%d; want in_progress,%s,1,0",
+					issueStatus, siblingStatus, taskFailed.Load(), issueUpdated.Load(), activeStatus)
+			}
+		})
+	}
+}
+
+func TestFailTask_ConcurrentReplayReconcilesOnce(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	_, _, issueID, taskID := createRunningIssueFailureFixture(t, 1)
+	taskFailed, issueUpdated := subscribeFailureReconcileEvents(issueID, taskID)
+
+	start := make(chan struct{})
+	responses := make(chan *httptest.ResponseRecorder, 2)
+	var wg sync.WaitGroup
+	for range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			responses <- failTaskForIssueReconcileTest(t, taskID, "agent_error")
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(responses)
+	for w := range responses {
+		if w.Code != http.StatusOK {
+			t.Fatalf("concurrent FailTask: expected 200, got %d: %s", w.Code, w.Body.String())
+		}
+	}
+
+	var issueStatus string
+	if err := testPool.QueryRow(ctx, `SELECT status FROM issue WHERE id = $1`, issueID).Scan(&issueStatus); err != nil {
+		t.Fatalf("read issue status: %v", err)
+	}
+	var comments, retries int
+	if err := testPool.QueryRow(ctx, `SELECT count(*) FROM comment WHERE source_task_id = $1`, taskID).Scan(&comments); err != nil {
+		t.Fatalf("count failure comments: %v", err)
+	}
+	if err := testPool.QueryRow(ctx, `SELECT count(*) FROM agent_task_queue WHERE parent_task_id = $1`, taskID).Scan(&retries); err != nil {
+		t.Fatalf("count retry tasks: %v", err)
+	}
+	if issueStatus != "todo" || comments != 1 || retries != 0 || taskFailed.Load() != 1 || issueUpdated.Load() != 1 {
+		t.Fatalf("status=%q comments=%d retries=%d task_failed=%d issue_updated=%d; want todo,1,0,1,1",
+			issueStatus, comments, retries, taskFailed.Load(), issueUpdated.Load())
+	}
+}
 
 func TestLogClaimEndpointSlowIncludesPayloadFields(t *testing.T) {
 	var logs bytes.Buffer
