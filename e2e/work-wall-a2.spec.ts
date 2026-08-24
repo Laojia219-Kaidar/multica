@@ -2,69 +2,35 @@ import { test, expect } from "@playwright/test";
 import { loginAsDefault } from "./helpers";
 
 /**
- * A2 工作现场 E2E 测试（HIV-1029 验收用例）。
+ * A2 工作现场 E2E 测试（HIV-1030 返修验收）。
  *
  * 验收清单：
  * - 1440px 视口 → 4 列网格（xl:grid-cols-4）
- * - 卡片互不重叠（HIV-984 展开卡片 bug 不再出现）
- * - 34 人分页：5 页，每页 8 张，末页 2 张
- * - terminal / event_console 互斥
+ * - 8 张卡片，4 个 x 位置，2 个 y 位置，无重叠
+ * - 分页（2 页，末页 2 张 = 10 人）
+ * - terminal 与事件台互斥：terminal 仅在
+ *   surface_kind=terminal + session_id 非空 + TerminalPane.session_name 精确匹配时显示
+ * - tail_text 只来自 TerminalPane
  * - 未匹配 pane 计数但不渲染为员工
  * - 语义化 surface/status token（无硬编码 green/zinc/black）
+ * - loginAsDefault 返回 workspace slug
  */
 test.describe("A2 工作现场 (Work Wall)", () => {
+  let workspaceSlug: string;
+
   test.beforeEach(async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
-    await loginAsDefault(page);
+    workspaceSlug = await loginAsDefault(page);
   });
 
-  test("1440px 视口呈现 4×2 几何布局，卡片无重叠", async ({ page }) => {
-    await page.goto("/work-wall");
-    await page.waitForSelector('[data-testid="work-wall-grid"]');
-
-    const grid = page.locator('[data-testid="work-wall-grid"]');
-    await expect(grid).toBeVisible();
-
-    // 获取所有卡片位置
-    const cards = page.locator('[data-testid="work-site-card"]');
-    const count = await cards.count();
-    expect(count).toBeGreaterThan(0);
-
-    // 收集每张卡片的 bounding box
-    const boxes = [];
-    for (let i = 0; i < count; i++) {
-      const box = await cards.nth(i).boundingBox();
-      if (box) boxes.push(box);
-    }
-
-    // 断言没有重叠（HIV-984 回归测试）
-    for (let i = 0; i < boxes.length; i++) {
-      for (let j = i + 1; j < boxes.length; j++) {
-        const a = boxes[i]!;
-        const b = boxes[j]!;
-        const overlapX = a.x < b.x + b.width && a.x + a.width > b.x;
-        const overlapY = a.y < b.y + b.height && a.y + a.height > b.y;
-        expect(overlapX && overlapY).toBe(false);
-      }
-    }
-
-    // 1440px 视口下，4 列布局意味着首行至少有 4 张卡片（若总数足够）
-    if (count >= 4) {
-      const firstRowY = boxes[0]?.y ?? 0;
-      const firstRowCards = boxes.filter(
-        (b) => Math.abs(b.y - firstRowY) < 10,
-      );
-      expect(firstRowCards.length).toBe(4);
-    }
-  });
-
-  test("分页：34 人产生 5 页，每页 8 张，末页 2 张", async ({ page }) => {
+  test("1440px 视口 8 张卡片 4×2 几何布局，无重叠", async ({ page }) => {
+    // 10 employees → page 1 = 8 cards in 4×2 layout
     await page.route("**/api/work-wall/snapshot", (route) =>
       route.fulfill({
         status: 200,
         contentType: "application/json",
         body: JSON.stringify(
-          Array.from({ length: 34 }, (_, i) => ({
+          Array.from({ length: 10 }, (_, i) => ({
             schema_version: "hivecrew.employee-live-activity.v1",
             workspace_id: "ws-1",
             employee_id: `emp-${i + 1}`,
@@ -88,7 +54,7 @@ test.describe("A2 工作现场 (Work Wall)", () => {
         body: JSON.stringify({
           schema_version: "hivecrew.workwall.a2-snapshot.v1",
           workspace_id: "ws-1",
-          cursor: "cur-1",
+          cursor: "sha256:" + "a".repeat(64),
           observed_at: "2026-08-24T12:00:00Z",
           event_limit: 100,
           panes: [],
@@ -96,25 +62,66 @@ test.describe("A2 工作现场 (Work Wall)", () => {
       }),
     );
 
-    await page.goto("/work-wall");
-    await page.waitForSelector('[data-testid="work-wall-pagination"]');
+    await page.route("**/api/work-wall/terminal-presence", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify([]),
+      }),
+    );
 
-    // 第 1 页：8 张
-    await expect(page.locator('[data-testid="work-site-card"]')).toHaveCount(8);
-    await expect(page.getByText("显示 1–8 共 34 人")).toBeVisible();
+    await page.goto(`/${workspaceSlug}/work-wall`);
+    await page.waitForSelector('[data-testid="work-wall-grid"]');
 
-    // 翻到末页（第 5 页）
-    const nextBtn = page.getByTestId("work-wall-next-page");
-    for (let i = 0; i < 4; i++) {
-      await nextBtn.click();
+    const grid = page.locator('[data-testid="work-wall-grid"]');
+    await expect(grid).toBeVisible();
+
+    // Page 1 should have exactly 8 cards
+    const cards = page.locator('[data-testid="work-site-card"]');
+    const count = await cards.count();
+    expect(count).toBe(8);
+
+    // Collect bounding boxes
+    const boxes = [];
+    for (let i = 0; i < count; i++) {
+      const box = await cards.nth(i).boundingBox();
+      if (box) boxes.push(box);
+    }
+    expect(boxes.length).toBe(8);
+
+    // No overlap (HIV-984 regression)
+    for (let i = 0; i < boxes.length; i++) {
+      for (let j = i + 1; j < boxes.length; j++) {
+        const a = boxes[i]!;
+        const b = boxes[j]!;
+        const overlapX = a.x < b.x + b.width && a.x + a.width > b.x;
+        const overlapY = a.y < b.y + b.height && a.y + a.height > b.y;
+        expect(overlapX && overlapY).toBe(false);
+      }
     }
 
-    // 第 5 页：2 张
+    // 4 distinct x positions (4 columns)
+    const xPositions = new Set(boxes.map((b) => Math.round(b.x)));
+    expect(xPositions.size).toBe(4);
+
+    // 2 distinct y positions (2 rows)
+    const yPositions = new Set(boxes.map((b) => Math.round(b.y)));
+    expect(yPositions.size).toBe(2);
+
+    // Pagination: 10 employees = 2 pages, page 2 has 2 cards
+    await expect(page.locator('[data-testid="work-wall-pagination"]')).toBeVisible();
+    await expect(page.getByText("1 / 2")).toBeVisible();
+
+    const nextBtn = page.getByTestId("work-wall-next-page");
+    await nextBtn.click();
+
+    // Final page (page 2) has 2 cards
     await expect(page.locator('[data-testid="work-site-card"]')).toHaveCount(2);
-    await expect(page.getByText("显示 33–34 共 34 人")).toBeVisible();
+    await expect(page.getByText("显示 9–10 共 10 人")).toBeVisible();
+    await expect(page.getByText("2 / 2")).toBeVisible();
   });
 
-  test("terminal 与 event_console 互斥，terminal 优先", async ({ page }) => {
+  test("terminal 与事件台互斥，tail_text 仅来自 TerminalPane", async ({ page }) => {
     await page.route("**/api/work-wall/snapshot", (route) =>
       route.fulfill({
         status: 200,
@@ -144,48 +151,144 @@ test.describe("A2 工作现场 (Work Wall)", () => {
         body: JSON.stringify({
           schema_version: "hivecrew.workwall.a2-snapshot.v1",
           workspace_id: "ws-1",
-          cursor: "cur-1",
+          cursor: "sha256:" + "a".repeat(64),
           observed_at: "2026-08-24T12:00:00Z",
           event_limit: 100,
           panes: [
             {
               schema_version: "hivecrew.workwall.a2-pane.v1",
-              pane_id: "ev-1",
-              employee_id: "emp-1",
-              session_id: "event-console",
-              kind: "event_console",
-              display_name: "Pixel",
-              presence_state: "working",
-              work_stage: "coding",
-              tail_text: "event log line",
-              observed_at: "2026-08-24T12:00:00Z",
-              freshness_state: "fresh",
-            },
-            {
-              schema_version: "hivecrew.workwall.a2-pane.v1",
-              pane_id: "tm-1",
+              workspace_id: "ws-1",
+              work_ref: "wr-1",
+              source_event_id: "evt-1",
               employee_id: "emp-1",
               session_id: "pixel-terminal:0.1",
-              kind: "terminal",
-              display_name: "Pixel",
-              presence_state: "working",
-              work_stage: "coding",
-              tail_text: "terminal output",
-              observed_at: "2026-08-24T12:00:00Z",
+              execution_state: "active",
+              working: true,
+              surface_kind: "terminal",
               freshness_state: "fresh",
+              observed_at: "2026-08-24T12:00:00Z",
+              activity_summary: "执行中",
+              source_refs: ["work_event://evt-1"],
             },
           ],
         }),
       }),
     );
 
-    await page.goto("/work-wall");
-    await page.waitForSelector('[data-testid="pane-session-id"]');
+    await page.route("**/api/work-wall/terminal-presence", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify([
+          {
+            host: "pixel-main",
+            session_name: "pixel-terminal:0.1",
+            window_index: 0,
+            pane_index: 1,
+            current_command: "npm test",
+            agent_hint: "Pixel",
+            tail_text: "REAL_TERMINAL_OUTPUT\nPASS",
+            heartbeat_at: "2026-08-24T12:00:00Z",
+          },
+        ]),
+      }),
+    );
 
-    // 只有一个 pane 渲染（terminal 胜出）
-    const sessions = page.getByTestId("pane-session-id");
-    await expect(sessions).toHaveCount(1);
-    await expect(sessions).toContainText("pixel-terminal");
+    await page.goto(`/${workspaceSlug}/work-wall`);
+    await page.waitForSelector('[data-testid="pane-tail"]');
+
+    // Terminal tail is visible
+    const tail = page.locator('[data-testid="pane-tail"]');
+    await expect(tail).toBeVisible();
+    await expect(tail).toContainText("REAL_TERMINAL_OUTPUT");
+
+    // Session label shows the terminal session_name
+    const sessionId = page.locator('[data-testid="pane-session-id"]');
+    await expect(sessionId).toContainText("pixel-terminal:0.1");
+  });
+
+  test("surface_kind=event_console 时不显示终端（事件台替代）", async ({ page }) => {
+    await page.route("**/api/work-wall/snapshot", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify([
+          {
+            schema_version: "hivecrew.employee-live-activity.v1",
+            workspace_id: "ws-1",
+            employee_id: "emp-1",
+            agent_id: "agt-1",
+            display_name: "Pixel",
+            presence_state: "working",
+            work_stage: "coding",
+            recent_events: [],
+            source_refs: ["agent://agt-1"],
+            observed_at: "2026-08-24T12:00:00Z",
+            freshness_state: "fresh",
+          },
+        ]),
+      }),
+    );
+
+    await page.route("**/api/work-wall/a2/snapshot", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          schema_version: "hivecrew.workwall.a2-snapshot.v1",
+          workspace_id: "ws-1",
+          cursor: "sha256:" + "a".repeat(64),
+          observed_at: "2026-08-24T12:00:00Z",
+          event_limit: 100,
+          panes: [
+            {
+              schema_version: "hivecrew.workwall.a2-pane.v1",
+              workspace_id: "ws-1",
+              work_ref: "wr-1",
+              source_event_id: "evt-1",
+              employee_id: "emp-1",
+              execution_state: "active",
+              working: false,
+              surface_kind: "event_console",
+              freshness_state: "fresh",
+              observed_at: "2026-08-24T12:00:00Z",
+              activity_summary: "执行中",
+              source_refs: ["work_event://evt-1"],
+            },
+          ],
+        }),
+      }),
+    );
+
+    await page.route("**/api/work-wall/terminal-presence", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify([
+          {
+            host: "pixel-main",
+            session_name: "other-session:0.1",
+            window_index: 0,
+            pane_index: 1,
+            current_command: "ls",
+            agent_hint: "Other",
+            tail_text: "this should not appear",
+            heartbeat_at: "2026-08-24T12:00:00Z",
+          },
+        ]),
+      }),
+    );
+
+    await page.goto(`/${workspaceSlug}/work-wall`);
+    await page.waitForSelector('[data-testid="work-site-card"]');
+
+    // No terminal tail — event console shown
+    const tail = page.locator('[data-testid="pane-tail"]');
+    await expect(tail).toHaveCount(0);
+
+    // Event console visible
+    await expect(page.getByText("事件台")).toBeVisible();
+    await expect(page.getByText("执行中")).toBeVisible();
   });
 
   test("未匹配 pane 被计数但不渲染为员工卡片", async ({ page }) => {
@@ -218,55 +321,107 @@ test.describe("A2 工作现场 (Work Wall)", () => {
         body: JSON.stringify({
           schema_version: "hivecrew.workwall.a2-snapshot.v1",
           workspace_id: "ws-1",
-          cursor: "cur-1",
+          cursor: "sha256:" + "a".repeat(64),
           observed_at: "2026-08-24T12:00:00Z",
           event_limit: 100,
           panes: [
             {
               schema_version: "hivecrew.workwall.a2-pane.v1",
-              pane_id: "orphan-1",
+              workspace_id: "ws-1",
+              work_ref: "orphan-wr-1",
+              source_event_id: "evt-o1",
               employee_id: "emp-orphan-1",
-              session_id: "orphan-sess-1",
-              kind: "terminal",
-              display_name: "Orphan 1",
-              presence_state: "working",
-              work_stage: "coding",
-              tail_text: "orphan output",
-              observed_at: "2026-08-24T12:00:00Z",
+              execution_state: "active",
+              working: false,
+              surface_kind: "event_console",
               freshness_state: "fresh",
+              observed_at: "2026-08-24T12:00:00Z",
+              source_refs: ["work_event://evt-o1"],
             },
             {
               schema_version: "hivecrew.workwall.a2-pane.v1",
-              pane_id: "orphan-2",
+              workspace_id: "ws-1",
+              work_ref: "orphan-wr-2",
+              source_event_id: "evt-o2",
               employee_id: "emp-orphan-2",
-              session_id: "orphan-sess-2",
-              kind: "terminal",
-              display_name: "Orphan 2",
-              presence_state: "idle",
-              work_stage: "none",
-              tail_text: "",
-              observed_at: "2026-08-24T12:00:00Z",
+              execution_state: "replay",
+              working: false,
+              surface_kind: "event_console",
               freshness_state: "stale",
+              observed_at: "2026-08-24T12:00:00Z",
+              source_refs: ["work_event://evt-o2"],
             },
           ],
         }),
       }),
     );
 
-    await page.goto("/work-wall");
+    await page.route("**/api/work-wall/terminal-presence", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify([]),
+      }),
+    );
+
+    await page.goto(`/${workspaceSlug}/work-wall`);
     await page.waitForSelector('[data-testid="work-wall-pagination"]');
 
-    // 只有 1 张员工卡（花名册上只有 Pixel）
+    // Only 1 employee card (roster has only Pixel)
     await expect(page.locator('[data-testid="work-site-card"]')).toHaveCount(1);
-    // 未匹配数显示
+    // Unmatched count shown
     await expect(page.getByText("2 个未匹配 pane")).toBeVisible();
-    // 孤儿 pane 的名字绝不作为员工出现
-    await expect(page.getByText("Orphan 1")).not.toBeVisible();
-    await expect(page.getByText("Orphan 2")).not.toBeVisible();
+    // Orphan panes never render as employees
+    await expect(page.getByText(/orphan/i)).not.toBeVisible();
   });
 
   test("使用语义化 surface/status token（无硬编码颜色）", async ({ page }) => {
-    await page.goto("/work-wall");
+    await page.route("**/api/work-wall/snapshot", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify([
+          {
+            schema_version: "hivecrew.employee-live-activity.v1",
+            workspace_id: "ws-1",
+            employee_id: "emp-1",
+            agent_id: "agt-1",
+            display_name: "Pixel",
+            presence_state: "working",
+            work_stage: "coding",
+            recent_events: [],
+            source_refs: ["agent://agt-1"],
+            observed_at: "2026-08-24T12:00:00Z",
+            freshness_state: "fresh",
+          },
+        ]),
+      }),
+    );
+
+    await page.route("**/api/work-wall/a2/snapshot", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          schema_version: "hivecrew.workwall.a2-snapshot.v1",
+          workspace_id: "ws-1",
+          cursor: "sha256:" + "a".repeat(64),
+          observed_at: "2026-08-24T12:00:00Z",
+          event_limit: 100,
+          panes: [],
+        }),
+      }),
+    );
+
+    await page.route("**/api/work-wall/terminal-presence", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify([]),
+      }),
+    );
+
+    await page.goto(`/${workspaceSlug}/work-wall`);
     await page.waitForSelector('[data-testid="work-wall"]');
 
     const wall = page.locator('[data-testid="work-wall"]');

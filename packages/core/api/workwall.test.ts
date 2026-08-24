@@ -76,25 +76,37 @@ describe("EmployeeLiveActivityV1Schema", () => {
   });
 });
 
-describe("A2 work wall snapshot schema", () => {
+describe("A2 work wall snapshot schema (A2PaneV1 exact)", () => {
   const validPane = {
     schema_version: "hivecrew.workwall.a2-pane.v1",
-    pane_id: "pane-1",
+    workspace_id: "ws-1",
+    work_ref: "work_ref_1",
+    source_event_id: "evt-1",
+    session_id: "pixel:0.1",
+    run_id: "run-1",
     employee_id: "emp-1",
-    session_id: "sess-1",
-    kind: "terminal",
-    display_name: "Pixel",
-    presence_state: "working",
-    work_stage: "coding",
-    tail_text: "npm test\nPASS",
-    observed_at: "2026-08-24T12:00:00Z",
+    employee_name: "Pixel",
+    dispatch_command_id: "cmd-1",
+    project_id: "prj-1",
+    issue_id: "iss-1",
+    issue_state: "in_progress",
+    task_id: "task-1",
+    execution_state: "active",
+    working: true,
+    surface_kind: "terminal",
     freshness_state: "fresh",
+    last_heartbeat_at: "2026-08-24T12:00:00Z",
+    last_event_at: "2026-08-24T11:59:55Z",
+    observed_at: "2026-08-24T12:00:00Z",
+    activity_kind: "workevent.progress",
+    activity_summary: "执行中",
+    source_refs: ["work_event://evt-1"],
   };
 
   const validSnapshot = {
     schema_version: "hivecrew.workwall.a2-snapshot.v1",
     workspace_id: "ws-1",
-    cursor: "cur-1",
+    cursor: "sha256:" + "a".repeat(64),
     observed_at: "2026-08-24T12:00:00Z",
     event_limit: 100,
     panes: [validPane],
@@ -104,7 +116,31 @@ describe("A2 work wall snapshot schema", () => {
     const snap = parseA2WorkWallSnapshot(validSnapshot);
     expect(snap.schema_version).toBe("hivecrew.workwall.a2-snapshot.v1");
     expect(snap.panes).toHaveLength(1);
-    expect(snap.panes[0]?.kind).toBe("terminal");
+    expect(snap.panes[0]?.surface_kind).toBe("terminal");
+    expect(snap.panes[0]?.execution_state).toBe("active");
+    expect(snap.panes[0]?.working).toBe(true);
+  });
+
+  it("accepts a minimal pane (optional fields omitted)", () => {
+    const minimalPane = {
+      schema_version: "hivecrew.workwall.a2-pane.v1",
+      workspace_id: "ws-1",
+      work_ref: "work_ref_min",
+      source_event_id: "evt-min",
+      execution_state: "completed",
+      working: false,
+      surface_kind: "event_console",
+      freshness_state: "fresh",
+      observed_at: "2026-08-24T12:00:00Z",
+      source_refs: ["work_event://evt-min"],
+    };
+    const snap = parseA2WorkWallSnapshot({
+      ...validSnapshot,
+      cursor: "sha256:" + "b".repeat(64),
+      panes: [minimalPane],
+    });
+    expect(snap.panes[0]?.surface_kind).toBe("event_console");
+    expect(snap.panes[0]?.session_id).toBeUndefined();
   });
 
   it("rejects unknown keys on the envelope (strict wire)", () => {
@@ -120,13 +156,18 @@ describe("A2 work wall snapshot schema", () => {
     expect(() => parseA2WorkWallSnapshot({ ...validSnapshot, schema_version: "hivecrew.workwall.a2.v2" })).toThrow();
   });
 
-  it("rejects invalid pane kind", () => {
-    const badPane = { ...validPane, kind: "browser" };
+  it("rejects invalid surface_kind", () => {
+    const badPane = { ...validPane, surface_kind: "browser" };
     expect(() => parseA2WorkWallSnapshot({ ...validSnapshot, panes: [badPane] })).toThrow();
   });
 
-  it("rejects invalid presence_state", () => {
-    const badPane = { ...validPane, presence_state: "napping" };
+  it("rejects invalid execution_state", () => {
+    const badPane = { ...validPane, execution_state: "napping" };
+    expect(() => parseA2WorkWallSnapshot({ ...validSnapshot, panes: [badPane] })).toThrow();
+  });
+
+  it("rejects invalid freshness_state", () => {
+    const badPane = { ...validPane, freshness_state: "sparkling" };
     expect(() => parseA2WorkWallSnapshot({ ...validSnapshot, panes: [badPane] })).toThrow();
   });
 
@@ -134,18 +175,148 @@ describe("A2 work wall snapshot schema", () => {
     expect(() => parseA2WorkWallSnapshot({ ...validSnapshot, event_limit: 1.5 })).toThrow();
   });
 
+  it("rejects zero event_limit (must be 1..1000)", () => {
+    expect(() => parseA2WorkWallSnapshot({ ...validSnapshot, event_limit: 0 })).toThrow();
+  });
+
   it("rejects negative event_limit", () => {
     expect(() => parseA2WorkWallSnapshot({ ...validSnapshot, event_limit: -1 })).toThrow();
   });
 
-  it("accepts both terminal and event_console pane kinds", () => {
-    const consolePane = { ...validPane, pane_id: "pane-2", kind: "event_console" };
-    const snap = parseA2WorkWallSnapshot({ ...validSnapshot, panes: [validPane, consolePane] });
+  it("rejects event_limit above 1000", () => {
+    expect(() => parseA2WorkWallSnapshot({ ...validSnapshot, event_limit: 1001 })).toThrow();
+  });
+
+  it("accepts event_limit = 1 (lower bound)", () => {
+    const snap = parseA2WorkWallSnapshot({ ...validSnapshot, event_limit: 1 });
+    expect(snap.event_limit).toBe(1);
+  });
+
+  it("accepts event_limit = 1000 (upper bound)", () => {
+    const snap = parseA2WorkWallSnapshot({ ...validSnapshot, event_limit: 1000 });
+    expect(snap.event_limit).toBe(1000);
+  });
+
+  it("rejects uppercase cursor sha256 (must be lowercase)", () => {
+    expect(() => parseA2WorkWallSnapshot({
+      ...validSnapshot,
+      cursor: "SHA256:" + "A".repeat(64),
+    })).toThrow();
+  });
+
+  it("rejects cursor with mixed-case hex", () => {
+    expect(() => parseA2WorkWallSnapshot({
+      ...validSnapshot,
+      cursor: "sha256:" + "Ab".repeat(32),
+    })).toThrow();
+  });
+
+  it("rejects cursor with wrong length", () => {
+    expect(() => parseA2WorkWallSnapshot({
+      ...validSnapshot,
+      cursor: "sha256:" + "a".repeat(60),
+    })).toThrow();
+  });
+
+  it("rejects cursor missing sha256: prefix", () => {
+    expect(() => parseA2WorkWallSnapshot({
+      ...validSnapshot,
+      cursor: "a".repeat(64),
+    })).toThrow();
+  });
+
+  it("rejects invented A2 fields: pane_id", () => {
+    const badPane = { ...validPane, pane_id: "pane-1" };
+    expect(() => parseA2WorkWallSnapshot({ ...validSnapshot, panes: [badPane] })).toThrow();
+  });
+
+  it("rejects invented A2 fields: kind", () => {
+    const badPane = { ...validPane, kind: "terminal" };
+    expect(() => parseA2WorkWallSnapshot({ ...validSnapshot, panes: [badPane] })).toThrow();
+  });
+
+  it("rejects invented A2 fields: display_name", () => {
+    const badPane = { ...validPane, display_name: "Pixel" };
+    expect(() => parseA2WorkWallSnapshot({ ...validSnapshot, panes: [badPane] })).toThrow();
+  });
+
+  it("rejects invented A2 fields: position_name", () => {
+    const badPane = { ...validPane, position_name: "Engineer" };
+    expect(() => parseA2WorkWallSnapshot({ ...validSnapshot, panes: [badPane] })).toThrow();
+  });
+
+  it("rejects invented A2 fields: department_name", () => {
+    const badPane = { ...validPane, department_name: "Eng" };
+    expect(() => parseA2WorkWallSnapshot({ ...validSnapshot, panes: [badPane] })).toThrow();
+  });
+
+  it("rejects invented A2 fields: avatar_url", () => {
+    const badPane = { ...validPane, avatar_url: "https://x" };
+    expect(() => parseA2WorkWallSnapshot({ ...validSnapshot, panes: [badPane] })).toThrow();
+  });
+
+  it("rejects invented A2 fields: presence_state", () => {
+    const badPane = { ...validPane, presence_state: "working" };
+    expect(() => parseA2WorkWallSnapshot({ ...validSnapshot, panes: [badPane] })).toThrow();
+  });
+
+  it("rejects invented A2 fields: work_stage", () => {
+    const badPane = { ...validPane, work_stage: "coding" };
+    expect(() => parseA2WorkWallSnapshot({ ...validSnapshot, panes: [badPane] })).toThrow();
+  });
+
+  it("rejects invented A2 fields: issue_identifier", () => {
+    const badPane = { ...validPane, issue_identifier: "HIV-1" };
+    expect(() => parseA2WorkWallSnapshot({ ...validSnapshot, panes: [badPane] })).toThrow();
+  });
+
+  it("rejects invented A2 fields: issue_title", () => {
+    const badPane = { ...validPane, issue_title: "fix bug" };
+    expect(() => parseA2WorkWallSnapshot({ ...validSnapshot, panes: [badPane] })).toThrow();
+  });
+
+  it("rejects invented A2 fields: model_name", () => {
+    const badPane = { ...validPane, model_name: "gpt-5" };
+    expect(() => parseA2WorkWallSnapshot({ ...validSnapshot, panes: [badPane] })).toThrow();
+  });
+
+  it("rejects invented A2 fields: runtime_provider", () => {
+    const badPane = { ...validPane, runtime_provider: "prime" };
+    expect(() => parseA2WorkWallSnapshot({ ...validSnapshot, panes: [badPane] })).toThrow();
+  });
+
+  it("rejects invented A2 fields: tail_text", () => {
+    const badPane = { ...validPane, tail_text: "output" };
+    expect(() => parseA2WorkWallSnapshot({ ...validSnapshot, panes: [badPane] })).toThrow();
+  });
+
+  it("accepts both terminal and event_console surface kinds", () => {
+    const consolePane = { ...validPane, work_ref: "wr-2", source_event_id: "evt-2", surface_kind: "event_console", session_id: undefined };
+    const snap = parseA2WorkWallSnapshot({
+      ...validSnapshot,
+      cursor: "sha256:" + "c".repeat(64),
+      panes: [validPane, consolePane],
+    });
     expect(snap.panes).toHaveLength(2);
+  });
+
+  it("rejects panes without required work_ref", () => {
+    const { work_ref: _, ...badPane } = validPane;
+    expect(() => parseA2WorkWallSnapshot({ ...validSnapshot, panes: [badPane as typeof validPane] })).toThrow();
+  });
+
+  it("rejects panes without required source_event_id", () => {
+    const { source_event_id: _, ...badPane } = validPane;
+    expect(() => parseA2WorkWallSnapshot({ ...validSnapshot, panes: [badPane as typeof validPane] })).toThrow();
+  });
+
+  it("rejects panes without required working boolean", () => {
+    const { working: _, ...badPane } = validPane;
+    expect(() => parseA2WorkWallSnapshot({ ...validSnapshot, panes: [badPane as typeof validPane] })).toThrow();
   });
 });
 
-describe("joinA2PanesByEmployee", () => {
+describe("joinA2PanesByEmployee (roster-primary, first server-ordered pane)", () => {
   const employees = [
     { employee_id: "emp-1" },
     { employee_id: "emp-2" },
@@ -155,63 +326,59 @@ describe("joinA2PanesByEmployee", () => {
   function pane(over: Partial<import("./workwall").A2Pane> = {}): import("./workwall").A2Pane {
     return {
       schema_version: "hivecrew.workwall.a2-pane.v1",
-      pane_id: "p-1",
+      workspace_id: "ws-1",
+      work_ref: "wr-1",
+      source_event_id: "evt-1",
       employee_id: "emp-1",
-      session_id: "s-1",
-      kind: "terminal",
-      display_name: "Pixel",
-      presence_state: "working",
-      work_stage: "coding",
-      tail_text: "",
-      observed_at: "2026-08-24T12:00:00Z",
+      execution_state: "active",
+      working: true,
+      surface_kind: "terminal",
       freshness_state: "fresh",
+      observed_at: "2026-08-24T12:00:00Z",
+      source_refs: ["work_event://evt-1"],
       ...over,
     };
   }
 
   it("matches panes to employees by employee_id", () => {
-    const panes = [pane({ employee_id: "emp-1" }), pane({ pane_id: "p-2", employee_id: "emp-2" })];
+    const panes = [pane({ employee_id: "emp-1" }), pane({ work_ref: "wr-2", source_event_id: "evt-2", employee_id: "emp-2" })];
     const result = joinA2PanesByEmployee(employees, panes);
     expect(result.matched.size).toBe(2);
-    expect(result.matched.get("emp-1")?.pane_id).toBe("p-1");
-    expect(result.matched.get("emp-2")?.pane_id).toBe("p-2");
+    expect(result.matched.get("emp-1")?.employee_id).toBe("emp-1");
+    expect(result.matched.get("emp-2")?.employee_id).toBe("emp-2");
     expect(result.unmatchedCount).toBe(0);
   });
 
   it("counts unmatched panes (not in the employee roster)", () => {
-    const panes = [pane({ employee_id: "emp-orphan", pane_id: "orphan-1" })];
+    const panes = [pane({ employee_id: "emp-orphan" })];
     const result = joinA2PanesByEmployee(employees, panes);
     expect(result.matched.size).toBe(0);
     expect(result.unmatchedCount).toBe(1);
   });
 
-  it("terminal wins over event_console for the same employee", () => {
-    const panes = [
-      pane({ employee_id: "emp-1", kind: "event_console", pane_id: "ev-1", observed_at: "2026-08-24T12:00:00Z" }),
-      pane({ employee_id: "emp-1", kind: "terminal", pane_id: "tm-1", observed_at: "2026-08-24T11:00:00Z" }),
-    ];
+  it("panes without employee_id count as unmatched (never invent an employee)", () => {
+    const panes = [pane({ employee_id: undefined })];
     const result = joinA2PanesByEmployee(employees, panes);
-    expect(result.matched.get("emp-1")?.kind).toBe("terminal");
-    expect(result.matched.get("emp-1")?.pane_id).toBe("tm-1");
+    expect(result.matched.size).toBe(0);
+    expect(result.unmatchedCount).toBe(1);
   });
 
-  it("picks the newest pane within the same kind", () => {
+  it("first server-ordered pane per employee wins (terminal not special)", () => {
     const panes = [
-      pane({ employee_id: "emp-1", kind: "terminal", pane_id: "old", observed_at: "2026-08-24T10:00:00Z" }),
-      pane({ employee_id: "emp-1", kind: "terminal", pane_id: "new", observed_at: "2026-08-24T14:00:00Z" }),
+      pane({ employee_id: "emp-1", surface_kind: "event_console", work_ref: "wr-first", source_event_id: "evt-first" }),
+      pane({ employee_id: "emp-1", surface_kind: "terminal", work_ref: "wr-second", source_event_id: "evt-second" }),
     ];
     const result = joinA2PanesByEmployee(employees, panes);
-    expect(result.matched.get("emp-1")?.pane_id).toBe("new");
+    // First (event_console) wins — no terminal preference in join itself.
+    expect(result.matched.get("emp-1")?.surface_kind).toBe("event_console");
+    expect(result.matched.get("emp-1")?.work_ref).toBe("wr-first");
   });
 
-  it("mutually exclusive: never creates a fake employee or fake terminal", () => {
+  it("never creates a fake employee or fake terminal", () => {
     const result = joinA2PanesByEmployee(employees, []);
     expect(result.matched.size).toBe(0);
-    // Every employee in the roster is present in the result as a key only if they have a pane.
     for (const emp of employees) {
-      const has = result.matched.has(emp.employee_id);
-      // No fake panes: only those with real matching panes are in the map.
-      expect(has).toBe(false);
+      expect(result.matched.has(emp.employee_id)).toBe(false);
     }
   });
 });

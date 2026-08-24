@@ -4,6 +4,7 @@ import { useMemo, useState } from "react";
 import type {
   A2Pane,
   PresenceState,
+  TerminalPane,
   WorkStage,
 } from "@multica/core/api/workwall";
 import { joinA2PanesByEmployee } from "@multica/core/api/workwall";
@@ -18,7 +19,6 @@ import { Input } from "@multica/ui/components/ui/input";
 import { ScrollArea } from "@multica/ui/components/ui/scroll-area";
 
 // PAGE_SIZE fixed at 8 for the 4×2 CEO worksite.
-// 34 employees => 8/8/8/8/2 = 5 pages.
 const PAGE_SIZE = 8;
 
 const PRESENCE_LABEL: Record<PresenceState, string> = {
@@ -60,23 +60,35 @@ const STAGE_LABEL: Record<WorkStage, string> = {
   unknown: "未知",
 };
 
+const EXECUTION_LABEL: Record<string, string> = {
+  active: "执行中",
+  replay: "重放",
+  failed: "失败",
+  cancelled: "已取消",
+  issue_state_mismatch: "状态不一致",
+  completed: "已完成",
+};
+
 export interface WorkWallProps {
   employees: EmployeeLiveActivityV1[];
   panes: A2Pane[];
+  terminalPresence: TerminalPane[];
 }
 
 /**
  * A2 工作现场 — 4×2 CEO worksite.
  *
- * Employee roster remains primary. Panes are joined onto the roster by
- * employee_id; the newest pane per employee is shown (terminal wins over
- * event_console when both exist). Unmatched panes are counted but never
- * rendered as employees — we never fabricate a roster entry.
+ * Employee roster remains primary. A2 panes attach per employee
+ * (first server-ordered pane wins). Terminal and event_console are
+ * mutually exclusive: Terminal is shown ONLY when surface_kind=terminal
+ * AND session_id is nonempty AND a matching TerminalPane.session_name
+ * exists in terminalPresence. Otherwise the event console shows safe
+ * A2 activity/execution/freshness/work fields.
  *
  * Geometry: xl breakpoint → 4 columns × 2 rows = 8 cards per page.
  * Pagination resets when filters change.
  */
-export function WorkWall({ employees, panes }: WorkWallProps) {
+export function WorkWall({ employees, panes, terminalPresence }: WorkWallProps) {
   const [presenceFilter, setPresenceFilter] = useState<PresenceState | "all">(
     "all",
   );
@@ -98,6 +110,15 @@ export function WorkWall({ employees, panes }: WorkWallProps) {
     () => joinA2PanesByEmployee(employees, panes),
     [employees, panes],
   );
+
+  // Index terminal presence by session_name for fast lookup.
+  const terminalBySession = useMemo(() => {
+    const m = new Map<string, TerminalPane>();
+    for (const tp of terminalPresence) {
+      if (!m.has(tp.session_name)) m.set(tp.session_name, tp);
+    }
+    return m;
+  }, [terminalPresence]);
 
   const q = query.trim().toLowerCase();
   const filtered = useMemo(() => {
@@ -212,12 +233,17 @@ export function WorkWall({ employees, panes }: WorkWallProps) {
         data-testid="work-wall-grid"
       >
         {pageItems.map((emp) => {
-          const pane = join.matched.get(emp.employee_id);
+          const pane = join.matched.get(emp.employee_id) ?? null;
+          const terminalPane =
+            pane?.surface_kind === "terminal" && pane.session_id
+              ? terminalBySession.get(pane.session_id) ?? null
+              : null;
           return (
             <WorkSiteCard
               key={emp.employee_id}
               employee={emp}
-              pane={pane ?? null}
+              pane={pane}
+              terminalPane={terminalPane}
             />
           );
         })}
@@ -267,11 +293,20 @@ export function WorkWall({ employees, panes }: WorkWallProps) {
 function WorkSiteCard({
   employee,
   pane,
+  terminalPane,
 }: {
   employee: EmployeeLiveActivityV1;
   pane: A2Pane | null;
+  terminalPane: TerminalPane | null;
 }) {
   const variant = PRESENCE_VARIANT[employee.presence_state];
+  // Terminal shown only when: surface_kind=terminal + session_id nonempty + matching TerminalPane
+  const showTerminal =
+    pane?.surface_kind === "terminal" &&
+    !!pane.session_id &&
+    terminalPane !== null;
+  // Event console shown only when a pane exists but no terminal shown
+  const showEventConsole = pane !== null && !showTerminal;
 
   return (
     <Card
@@ -315,16 +350,17 @@ function WorkSiteCard({
         ) : null}
 
         {/* Pane region: terminal or event_console — mutually exclusive.
+            Terminal shown only with real terminal presence (session match).
             When no pane is joined, we never fabricate one. */}
-        {pane ? (
+        {showTerminal ? (
           <div className="mt-auto">
             <div className="mb-1 flex items-center justify-between text-[10px] uppercase tracking-wide text-muted-foreground">
-              <span>{pane.kind === "terminal" ? "Terminal" : "事件台"}</span>
+              <span>Terminal</span>
               <span
                 className="font-mono tabular-nums"
                 data-testid="pane-session-id"
               >
-                {pane.session_id}
+                {terminalPane.session_name}
               </span>
             </div>
             <ScrollArea
@@ -332,9 +368,42 @@ function WorkSiteCard({
               data-testid="pane-tail"
             >
               <pre className="whitespace-pre-wrap break-words font-mono text-surface-foreground/80">
-                {pane.tail_text || "（无输出）"}
+                {terminalPane.tail_text || "（无输出）"}
               </pre>
             </ScrollArea>
+          </div>
+        ) : showEventConsole ? (
+          <div className="mt-auto">
+            <div className="mb-1 flex items-center justify-between text-[10px] uppercase tracking-wide text-muted-foreground">
+              <span>事件台</span>
+              <span
+                className="font-mono tabular-nums"
+                data-testid="pane-work-ref"
+              >
+                {pane.work_ref.slice(0, 24)}…
+              </span>
+            </div>
+            <div className="rounded-md border border-border bg-muted/30 p-2 text-[11px]">
+              <div className="flex items-center gap-2">
+                <span className="text-muted-foreground">执行：</span>
+                <span className="font-medium">
+                  {EXECUTION_LABEL[pane.execution_state] ?? pane.execution_state}
+                </span>
+                {pane.working ? (
+                  <Badge variant="default" className="h-3.5 text-[9px]">
+                    活跃
+                  </Badge>
+                ) : null}
+              </div>
+              {pane.activity_summary ? (
+                <div className="mt-1 truncate text-muted-foreground">
+                  {pane.activity_summary}
+                </div>
+              ) : null}
+              <div className="mt-1 text-[10px] text-muted-foreground">
+                新鲜度：{pane.freshness_state}
+              </div>
+            </div>
           </div>
         ) : (
           <div className="mt-auto rounded-md border border-dashed border-border px-2 py-3 text-center text-[11px] text-muted-foreground">

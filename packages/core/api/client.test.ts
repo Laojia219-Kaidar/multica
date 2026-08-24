@@ -3430,7 +3430,7 @@ describe("ApiClient model discovery response schema", () => {
   });
 });
 
-describe("ApiClient A2 work wall snapshot", () => {
+describe("ApiClient A2 work wall snapshot (strict parse inside client)", () => {
   function stubJSON(body: unknown) {
     vi.stubGlobal(
       "fetch",
@@ -3443,39 +3443,44 @@ describe("ApiClient A2 work wall snapshot", () => {
     );
   }
 
-  it("getA2WorkWallSnapshot returns raw JSON for caller-side strict parsing", async () => {
-    const payload = {
-      schema_version: "hivecrew.workwall.a2-snapshot.v1",
-      workspace_id: "ws-1",
-      cursor: "cur-42",
-      observed_at: "2026-08-24T12:00:00Z",
-      event_limit: 100,
-      panes: [
-        {
-          schema_version: "hivecrew.workwall.a2-pane.v1",
-          pane_id: "pane-1",
-          employee_id: "emp-1",
-          session_id: "sess-1",
-          kind: "terminal",
-          display_name: "Pixel",
-          presence_state: "working",
-          work_stage: "coding",
-          tail_text: "hello",
-          observed_at: "2026-08-24T12:00:00Z",
-          freshness_state: "fresh",
-        },
-      ],
-    };
-    stubJSON(payload);
+  const validPane = {
+    schema_version: "hivecrew.workwall.a2-pane.v1",
+    workspace_id: "ws-1",
+    work_ref: "wr-1",
+    source_event_id: "evt-1",
+    employee_id: "emp-1",
+    session_id: "sess-1",
+    execution_state: "active",
+    working: true,
+    surface_kind: "terminal",
+    freshness_state: "fresh",
+    observed_at: "2026-08-24T12:00:00Z",
+    activity_summary: "执行中",
+    source_refs: ["work_event://evt-1"],
+  };
 
-    const raw = await new ApiClient("https://api.example.test")
+  const validSnapshot = {
+    schema_version: "hivecrew.workwall.a2-snapshot.v1",
+    workspace_id: "ws-1",
+    cursor: "sha256:" + "a".repeat(64),
+    observed_at: "2026-08-24T12:00:00Z",
+    event_limit: 100,
+    panes: [validPane],
+  };
+
+  it("parses a valid A2 snapshot strictly inside ApiClient", async () => {
+    stubJSON(validSnapshot);
+
+    const result = await new ApiClient("https://api.example.test")
       .getA2WorkWallSnapshot();
 
-    // Returns unknown — caller must run parseA2WorkWallSnapshot
-    expect(raw).toEqual(payload);
+    expect(result.schema_version).toBe("hivecrew.workwall.a2-snapshot.v1");
+    expect(result.panes).toHaveLength(1);
+    expect(result.panes[0]?.surface_kind).toBe("terminal");
+    expect(result.panes[0]?.execution_state).toBe("active");
   });
 
-  it("getA2WorkWallSnapshot throws on non-2xx (fail-closed, no silent fallback)", async () => {
+  it("throws on non-2xx (fail-closed, no silent fallback)", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn().mockResolvedValue(
@@ -3489,5 +3494,141 @@ describe("ApiClient A2 work wall snapshot", () => {
 
     const client = new ApiClient("https://api.example.test");
     await expect(client.getA2WorkWallSnapshot()).rejects.toThrow("not found");
+  });
+
+  it("fails closed on unknown envelope field (strict wire inside client)", async () => {
+    stubJSON({ ...validSnapshot, secret_field: "x" });
+    await expect(
+      new ApiClient("https://api.example.test").getA2WorkWallSnapshot(),
+    ).rejects.toThrow();
+  });
+
+  it("fails closed on unknown pane field (invented A2 fields rejected)", async () => {
+    stubJSON({
+      ...validSnapshot,
+      panes: [{ ...validPane, pane_id: "invented" }],
+    });
+    await expect(
+      new ApiClient("https://api.example.test").getA2WorkWallSnapshot(),
+    ).rejects.toThrow();
+  });
+
+  it("fails closed on invalid cursor (uppercase sha256)", async () => {
+    stubJSON({
+      ...validSnapshot,
+      cursor: "SHA256:" + "A".repeat(64),
+    });
+    await expect(
+      new ApiClient("https://api.example.test").getA2WorkWallSnapshot(),
+    ).rejects.toThrow();
+  });
+
+  it("fails closed on invalid cursor (wrong length)", async () => {
+    stubJSON({
+      ...validSnapshot,
+      cursor: "sha256:" + "a".repeat(40),
+    });
+    await expect(
+      new ApiClient("https://api.example.test").getA2WorkWallSnapshot(),
+    ).rejects.toThrow();
+  });
+
+  it("fails closed on zero event_limit", async () => {
+    stubJSON({ ...validSnapshot, event_limit: 0 });
+    await expect(
+      new ApiClient("https://api.example.test").getA2WorkWallSnapshot(),
+    ).rejects.toThrow();
+  });
+
+  it("fails closed on event_limit > 1000", async () => {
+    stubJSON({ ...validSnapshot, event_limit: 1001 });
+    await expect(
+      new ApiClient("https://api.example.test").getA2WorkWallSnapshot(),
+    ).rejects.toThrow();
+  });
+
+  it("fails closed on invalid execution_state", async () => {
+    stubJSON({
+      ...validSnapshot,
+      panes: [{ ...validPane, execution_state: "invented_state" }],
+    });
+    await expect(
+      new ApiClient("https://api.example.test").getA2WorkWallSnapshot(),
+    ).rejects.toThrow();
+  });
+
+  it("fails closed on invalid surface_kind", async () => {
+    stubJSON({
+      ...validSnapshot,
+      panes: [{ ...validPane, surface_kind: "browser" }],
+    });
+    await expect(
+      new ApiClient("https://api.example.test").getA2WorkWallSnapshot(),
+    ).rejects.toThrow();
+  });
+
+  it("listTerminalPresence parses strictly inside ApiClient", async () => {
+    stubJSON([
+      {
+        host: "pixel-main",
+        session_name: "pixel:0.1",
+        window_index: 0,
+        pane_index: 1,
+        current_command: "npm test",
+        agent_hint: "Pixel",
+        tail_text: "PASS",
+        heartbeat_at: "2026-08-24T12:00:00Z",
+      },
+    ]);
+
+    const result = await new ApiClient("https://api.example.test")
+      .listTerminalPresence();
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.session_name).toBe("pixel:0.1");
+    expect(result[0]?.tail_text).toBe("PASS");
+  });
+
+  it("listTerminalPresence rejects unknown fields (strict wire)", async () => {
+    stubJSON([
+      {
+        host: "pixel-main",
+        session_name: "pixel:0.1",
+        window_index: 0,
+        pane_index: 1,
+        current_command: "npm test",
+        agent_hint: "Pixel",
+        tail_text: "PASS",
+        heartbeat_at: "2026-08-24T12:00:00Z",
+        fake_employee: "Pixel",
+      },
+    ]);
+    await expect(
+      new ApiClient("https://api.example.test").listTerminalPresence(),
+    ).rejects.toThrow();
+  });
+
+  it("no fake employee from terminal presence (roster is sole employee source)", async () => {
+    stubJSON([
+      {
+        host: "host-1",
+        session_name: "orphan-sess",
+        window_index: 0,
+        pane_index: 0,
+        current_command: "ls",
+        agent_hint: "FakeEmployee",
+        tail_text: "output",
+        heartbeat_at: "2026-08-24T12:00:00Z",
+      },
+    ]);
+    // Terminal presence just returns TerminalPane[] — it never creates employees.
+    // The work-wall component joins on roster only.
+    const result = await new ApiClient("https://api.example.test")
+      .listTerminalPresence();
+    expect(result).toHaveLength(1);
+    // The agent_hint is just a hint — not an employee_id. No employee fabrication.
+    expect(result[0]?.agent_hint).toBe("FakeEmployee");
+    // No employee_id field on TerminalPane
+    expect((result[0] as Record<string, unknown>).employee_id).toBeUndefined();
   });
 });

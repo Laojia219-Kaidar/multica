@@ -219,7 +219,15 @@ import { type Logger, noopLogger } from "../logger";
 import { createRequestId } from "../utils";
 import { getCurrentSlug } from "../platform/workspace-storage";
 import { parseWithFallback } from "./schema";
-import type { EmployeeLiveActivityV1, TerminalPane } from "./workwall";
+import {
+  parseA2WorkWallSnapshot,
+  TerminalPaneSchema,
+} from "./workwall";
+import type {
+  A2Snapshot,
+  EmployeeLiveActivityV1,
+  TerminalPane,
+} from "./workwall";
 import type { MemoryCandidate, MemoryPromotion } from "./memory";
 import type {
   PublishedWorkflowDefinitionVersion,
@@ -3670,16 +3678,25 @@ export class ApiClient {
     return this.fetch("/api/work-wall/snapshot");
   }
 
-  /** Terminal 现场: fresh host terminal panes (read-only projection). */
-  async listTerminalPresence(): Promise<TerminalPane[]> {
-    return this.fetch("/api/work-wall/terminal-presence");
-  }
 
   /** A2 CEO 工作现场快照: strict hivecrew.workwall.a2-snapshot.v1 envelope.
-   *  Fail-closed: the caller must parse with parseA2WorkWallSnapshot() which
-   *  rejects unknown keys and invalid enums. */
-  async getA2WorkWallSnapshot(): Promise<unknown> {
-    return this.fetch("/api/work-wall/a2/snapshot");
+   *  Strict parse inside ApiClient: unknown keys, invalid enums, wrong
+   *  cursor format, and out-of-range event_limit all throw. Callers get a
+   *  typed A2Snapshot — roster, terminal presence, and A2 snapshot are all
+   *  parsed strictly inside the client layer. */
+  async getA2WorkWallSnapshot(): Promise<A2Snapshot> {
+    const raw = await this.fetch<unknown>("/api/work-wall/a2/snapshot");
+    return parseA2WorkWallSnapshot(raw);
+  }
+
+  /** Terminal presence: parsed strictly inside ApiClient.
+   *  Roster and terminal presence are both authoritative sources — roster
+   *  supplies employee identity, terminal presence supplies live terminal
+   *  pane text (tail_text, session_name) when a pane's surface_kind is
+   *  terminal AND session_id matches a TerminalPane.session_name exactly. */
+  async listTerminalPresence(): Promise<TerminalPane[]> {
+    const raw = await this.fetch<unknown>("/api/work-wall/terminal-presence");
+    return z.array(TerminalPaneSchema).parse(raw);
   }
 
   // Employee memory candidate layer (Slice-M1). Promotion is proposal-only.
