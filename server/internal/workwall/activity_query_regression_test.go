@@ -267,6 +267,11 @@ func TestValidateHIV981TestDatabaseURL(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name:    "zero port",
+			rawURL:  "postgres://postgres@127.0.0.1:0/hivecrew_test",
+			wantErr: true,
+		},
+		{
 			name:    "port out of range",
 			rawURL:  "postgres://postgres@127.0.0.1:65536/hivecrew_test",
 			wantErr: true,
