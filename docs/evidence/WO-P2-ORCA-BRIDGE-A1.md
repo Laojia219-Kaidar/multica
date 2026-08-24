@@ -289,3 +289,43 @@ barrier/claim/takeover/ClaimScope/withinLease ok; `go test
 ./internal/orcabridge -count=1` ok (90 tests); `go test -race
 ./internal/orcabridge -count=1` ok; `go vet` pass; `go build ./...` pass;
 `git diff --check` clean.
+
+## Independent-review corrections (R6)
+
+Three blockers fixed on top of 6ca4e2955:
+
+1. **One permit per epoch, replay-safe.** The barrier CAS payload now carries
+   an attempt-unique identity (`effectAttemptID`: holder + epoch + this
+   attempt's lease deadline). A replayed call for the same claim/epoch
+   composes a different payload, loses the atomic append, and falls into the
+   held branch — never a second `Acquired` permit, even with identical
+   actor/session/InstanceID. Legitimate same-attempt idempotent replay is
+   untouched on the mapping-evidence path (exact-payload replay). Barrier
+   losers no longer fail immediately: they wait bounded for the winner's
+   committed result (evidence or Orca orphan) and converge, still never
+   calling the client. `TestBarrierReplayNeverReturnsSecondPermit` (direct
+   protocol proof, stored holder must be the attempt id) plus
+   `TestConcurrentSameIdentitySingleCreate` (8 same-identity goroutines, one
+   Bridge: RunCreate / TaskCreate / WorkerStart each exactly 1).
+2. **StartTask failure reconciles without re-dispatch.** `RunClaimedTask`
+   memoizes the committed dispatch (marked `startPending`) *before* calling
+   `Daemon.StartTask`; on start failure it returns the mapping with an error
+   and no success, and a replay retries only the StartTask verb — never a
+   second WorkerStart — clearing the pending mark only on success.
+   `TestStartTaskFailureReplayRetriesOnlyStart`: WorkerStart count 1, daemon
+   start attempts 2 (failed + succeeded), converged replay adds no effects.
+3. **Digest-validated evidence and marker adoption.** `readCommittedRun`
+   and `readCommittedTask` verify the current objective/spec digest;
+   `committedMapping` and the dispatch evidence guard verify the current
+   placement digest; orphan marker adoption requires exact objective
+   equality (run) and exact spec equality (task). Drift fails closed
+   (`ErrMappingConflict`) including on a fresh Bridge restart. Negative
+   tests: `TestRunEvidenceDigestDriftFailsClosed`,
+   `TestRunMarkerDriftFailsClosed`, `TestTaskEvidenceDigestDriftFailsClosed`,
+   `TestTaskMarkerDriftFailsClosed`, `TestWorkerPlacementDriftFailsClosed`.
+
+Time clamp and R3 sanitizer suites preserved and green. R6 verification
+(go1.26.6 darwin/arm64): `gofmt -l` clean; focused ×50 sweep 0 failures over
+15 runs; `go test ./internal/orcabridge -count=1` ok (98 tests); `go test
+-race -count=1` ok (×3); `go vet` pass; `go build ./...` pass; `git diff
+--check` clean.

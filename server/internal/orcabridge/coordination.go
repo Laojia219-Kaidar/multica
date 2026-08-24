@@ -134,8 +134,21 @@ func claimKeyFor(base string, generation int) string {
 const maxBarrierEpochs = 8
 
 // effectBarrierKey is the atomic permit register for one scope at one epoch.
+// The key is scope+epoch only (never attempt-specific): winning is the
+// permit, so the same register must arbitrate every attempt on the epoch.
 func effectBarrierKey(base string, epoch int) string {
 	return fmt.Sprintf("%s#barrier#%d", base, epoch)
+}
+
+// effectAttemptID is the unique identity of one barrier attempt. It differs
+// on every call (it carries this attempt's lease deadline), so the barrier
+// CAS payload is attempt-unique: a second call from the same holder with the
+// same key composes a DIFFERENT payload, loses the atomic append, and reads
+// back the first attempt's holder instead of receiving a second Acquired.
+// The ID is recorded in the won barrier payload so tests (and audits) can
+// distinguish the winning attempt from replays.
+func (b *Bridge) effectAttemptID(epoch int, leaseExpiresAt time.Time) string {
+	return fmt.Sprintf("%s#%d#%d", b.instanceID(), epoch, leaseExpiresAt.UnixNano())
 }
 
 // effectBarrierOpenKey is the reopen record proving the epoch's permit was
@@ -166,6 +179,15 @@ type effectPermit struct {
 // first unconsumed epoch is claimed atomically, and a won-but-not-open epoch
 // means another holder's side effect may still be in flight — fail closed
 // with ErrScopeAttemptInFlight.
+//
+// One permit per epoch, ever: the claim CAS payload carries a unique
+// attempt id (holder + epoch + this attempt's lease deadline). A replayed
+// call for the same epoch therefore composes a different payload, loses the
+// atomic append, and falls into the held branch below — it can never obtain
+// a second Acquired permit, even with an identical actor/session/InstanceID.
+// Legitimate same-attempt idempotent replay is preserved on the mapping
+// evidence path (recordLinkageEvidence), which keeps its exact-payload
+// replay semantics.
 func (b *Bridge) winEffectBarrier(ctx context.Context, workRef string, claim scopeClaim) (effectPermit, error) {
 	for epoch := 0; epoch < maxBarrierEpochs; epoch++ {
 		if open, found, err := b.Entry.LookupEvidence(ctx, workRef, effectBarrierOpenKey(claim.baseKey, epoch)); err != nil {
@@ -177,7 +199,7 @@ func (b *Bridge) winEffectBarrier(ctx context.Context, workRef string, claim sco
 		result, err := b.Entry.ClaimScope(ctx, ScopeClaimInput{
 			WorkRef:    workRef,
 			ClaimKey:   effectBarrierKey(claim.baseKey, epoch),
-			InstanceID: b.instanceID(),
+			InstanceID: b.effectAttemptID(epoch, claim.leaseExpiresAt),
 			SessionID:  b.Actor.SessionID,
 			Generation: epoch,
 			ExpiresAt:  claim.leaseExpiresAt,

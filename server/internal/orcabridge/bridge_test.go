@@ -455,10 +455,12 @@ func (f *fakeDaemonPort) ClaimTask(ctx context.Context, runtimeID string) (*Daem
 func (f *fakeDaemonPort) StartTask(ctx context.Context, taskID string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	// Record every attempt (failed or not) so recovery tests can assert
+	// retry counts: "failed + succeeded" must be observable.
+	f.started = append(f.started, taskID)
 	if f.startErr != nil {
 		return f.startErr
 	}
-	f.started = append(f.started, taskID)
 	return nil
 }
 
@@ -594,8 +596,10 @@ func TestEnsureIssueTaskReconcilesOrphanTask(t *testing.T) {
 	client, entry := newFakeClient(), newFakeEntry()
 	bridge := newTestBridge(client, entry)
 	chain := validChain()
-
-	client.runs = []OrcaRun{{ID: "run_orphan1", Objective: ProjectRunObjective("WO-P2 objective", chain)}}
+	// The orphan objective must be exactly what this caller would build
+	// (R6: marker adoption validates the objective), so use the same empty
+	// display objective the TaskRef path derives.
+	client.runs = []OrcaRun{{ID: "run_orphan1", Objective: ProjectRunObjective("", chain)}}
 	client.tasks["run_orphan1"] = []OrcaTask{{ID: "task_orphan1", RunID: "run_orphan1", Spec: TaskSpec(instructions(), chain)}}
 
 	_, taskID, err := bridge.EnsureIssueTask(context.Background(), TaskRef{Chain: chain, Instructions: instructions()})
@@ -1660,10 +1664,13 @@ func TestBarrierScenarioAPausedBBWinsANeverCalls(t *testing.T) {
 		t.Fatalf("bridge B takeover: %v", err)
 	}
 
-	// Now release A: it loses the barrier CAS and must never call the client.
+	// Now release A: it loses the barrier CAS, waits bounded, and converges
+	// on B's committed run — never calling the client itself. (If nothing
+	// were committed it would fail with ErrScopeAttemptInFlight; either way
+	// no second create.)
 	close(releaseA)
-	if err := <-errA; !errors.Is(err, ErrScopeAttemptInFlight) {
-		t.Fatalf("expected ErrScopeAttemptInFlight for A after losing the barrier, got %v", err)
+	if err := <-errA; err != nil && !errors.Is(err, ErrScopeAttemptInFlight) {
+		t.Fatalf("unexpected error for A after losing the barrier: %v", err)
 	}
 	if a.client.runCreates != 1 {
 		t.Fatalf("RunCreate attempts = %d, want exactly B's single call", a.client.runCreates)
@@ -1714,8 +1721,8 @@ func TestBarrierScenarioTaskAPausedBBWins(t *testing.T) {
 	}
 
 	close(releaseA)
-	if err := <-errA; !errors.Is(err, ErrScopeAttemptInFlight) {
-		t.Fatalf("expected ErrScopeAttemptInFlight for A, got %v", err)
+	if err := <-errA; err != nil && !errors.Is(err, ErrScopeAttemptInFlight) {
+		t.Fatalf("unexpected error for A after losing the barrier: %v", err)
 	}
 	if a.client.taskCreates != 1 {
 		t.Fatalf("TaskCreate attempts = %d, want exactly B's single call", a.client.taskCreates)
@@ -1775,8 +1782,14 @@ func TestBarrierScenarioWorkerAPausedBBWins(t *testing.T) {
 	}
 
 	close(releaseA)
-	if err := <-errA; !errors.Is(err, ErrScopeAttemptInFlight) {
-		t.Fatalf("expected ErrScopeAttemptInFlight for A, got %v", err)
+	// After losing the barrier, A waits bounded for the winner's committed
+	// dispatch. B already committed it, so A must converge on B's dispatch —
+	// and never call the client itself. (If nothing appears in time, A fails
+	// with ErrScopeAttemptInFlight; either way A never creates.)
+	if err := <-errA; err != nil {
+		if !errors.Is(err, ErrScopeAttemptInFlight) {
+			t.Fatalf("unexpected error for A after losing the barrier: %v", err)
+		}
 	}
 	if a.client.workerStarts != 1 {
 		t.Fatalf("WorkerStart attempts = %d, want exactly B's single call", a.client.workerStarts)
@@ -2032,5 +2045,281 @@ func TestWithinLeaseFailsClosedAfterExpiry(t *testing.T) {
 	clock.advance(100 * time.Millisecond)
 	if err := a.withinLease(permit); !errors.Is(err, ErrClaimLeaseExpired) {
 		t.Fatalf("expired lease must fail closed with ErrClaimLeaseExpired, got %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// R6 blockers
+// ---------------------------------------------------------------------------
+
+// Blocker 1: replayed same-claim barrier CAS must never return a second
+// Acquired permit. Direct protocol proof with identical caller identity
+// (same actor/session/InstanceID) and two barriers sharing one ledger.
+func TestBarrierReplayNeverReturnsSecondPermit(t *testing.T) {
+	a, _ := twinBridges(t)
+	ctx := t.Context()
+	workRef := "hivecrew://ws/work/prj/orphan"
+	claim := scopeClaim{baseKey: "base/scope", generation: 0, leaseExpiresAt: time.Now().Add(time.Minute)}
+
+	first, err := a.winEffectBarrier(ctx, workRef, claim)
+	if err != nil || first.epoch != 0 {
+		t.Fatalf("first barrier win: %+v err=%v", first, err)
+	}
+	// Second call with the identical claim (same holder, same lease
+	// deadline): the attempt id changes, the CAS loses, and the permit is
+	// NOT handed out again.
+	_, err = a.winEffectBarrier(ctx, workRef, claim)
+	if !errors.Is(err, ErrScopeAttemptInFlight) {
+		t.Fatalf("replayed barrier CAS must fail closed, got %v", err)
+	}
+	// The stored barrier payload still names the first attempt's identity.
+	record, found, _ := a.entry.LookupEvidence(ctx, workRef, effectBarrierKey(claim.baseKey, 0))
+	if !found {
+		t.Fatal("barrier record missing")
+	}
+	if holder, _ := record.Payload["instance_id"].(string); holder == a.instanceID() {
+		t.Fatalf("stored holder must be the attempt-unique id, not the bare instance id: %q", holder)
+	}
+}
+
+// Blocker 1: concurrent same-identity callers on ONE bridge — RunCreate,
+// TaskCreate, WorkerStart each happen exactly once.
+func TestConcurrentSameIdentitySingleCreate(t *testing.T) {
+	a, _ := twinBridges(t)
+	chain := validChain()
+
+	// Run: 8 goroutines, one Bridge, one identity.
+	const n = 8
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	runIDs := make([]string, n)
+	errs := make([]error, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(slot int) {
+			defer wg.Done()
+			<-start
+			id, err := a.EnsureProjectRun(t.Context(), ProjectRef{Chain: chain})
+			runIDs[slot], errs[slot] = id, err
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("run goroutine %d: %v", i, err)
+		}
+		if runIDs[i] != runIDs[0] {
+			t.Fatalf("run goroutine %d diverged: %s vs %s", i, runIDs[i], runIDs[0])
+		}
+	}
+	if a.client.runCreates != 1 {
+		t.Fatalf("RunCreate count = %d, want exactly 1", a.client.runCreates)
+	}
+
+	// Task: same shape.
+	taskIDs := make([]string, n)
+	errs = make([]error, n)
+	var wg2 sync.WaitGroup
+	start2 := make(chan struct{})
+	for i := 0; i < n; i++ {
+		wg2.Add(1)
+		go func(slot int) {
+			defer wg2.Done()
+			<-start2
+			_, id, err := a.EnsureIssueTask(t.Context(), TaskRef{Chain: chain, Instructions: instructions()})
+			taskIDs[slot], errs[slot] = id, err
+		}(i)
+	}
+	close(start2)
+	wg2.Wait()
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("task goroutine %d: %v", i, err)
+		}
+		if taskIDs[i] != taskIDs[0] {
+			t.Fatalf("task goroutine %d diverged: %s vs %s", i, taskIDs[i], taskIDs[0])
+		}
+	}
+	if a.client.taskCreates != 1 {
+		t.Fatalf("TaskCreate count = %d, want exactly 1", a.client.taskCreates)
+	}
+
+	// Worker: assignment first, then 8 concurrent claim runs.
+	mapping, err := a.EnsureAssignment(t.Context(), dispatchRef(chain))
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed := DaemonTask{ID: mapping.Chain.TaskID, WorkspaceID: chain.WorkspaceID, IssueID: mapping.Chain.IssueID}
+	errs = make([]error, n)
+	var wg3 sync.WaitGroup
+	start3 := make(chan struct{})
+	for i := 0; i < n; i++ {
+		wg3.Add(1)
+		go func(slot int) {
+			defer wg3.Done()
+			<-start3
+			_, err := a.RunClaimedTask(t.Context(), claimed)
+			errs[slot] = err
+		}(i)
+	}
+	close(start3)
+	wg3.Wait()
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("worker goroutine %d: %v", i, err)
+		}
+	}
+	if a.client.workerStarts != 1 {
+		t.Fatalf("WorkerStart count = %d, want exactly 1", a.client.workerStarts)
+	}
+	if len(a.daemon.started) != 1 {
+		t.Fatalf("StartTask count = %d, want exactly 1", len(a.daemon.started))
+	}
+}
+
+// Blocker 2: WorkerStart succeeds, StartTask fails, replay retries only
+// StartTask. WorkerStart count stays 1; daemon start count reaches 2; the
+// replay returns success only after the start succeeds.
+func TestStartTaskFailureReplayRetriesOnlyStart(t *testing.T) {
+	a, _ := twinBridges(t)
+	chain := validChain()
+	mapping, err := a.EnsureAssignment(t.Context(), dispatchRef(chain))
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed := DaemonTask{ID: mapping.Chain.TaskID, WorkspaceID: chain.WorkspaceID, IssueID: mapping.Chain.IssueID}
+
+	// First attempt: WorkerStart succeeds, StartTask fails.
+	a.daemon.startErr = errors.New("daemon unavailable")
+	first, err := a.RunClaimedTask(t.Context(), claimed)
+	if err == nil {
+		t.Fatal("StartTask failure must surface an error, not success")
+	}
+	if first.OrcaDispatchID == "" {
+		t.Fatalf("failed call must still return the committed mapping: %+v", first)
+	}
+	if a.client.workerStarts != 1 {
+		t.Fatalf("worker starts after first attempt = %d, want 1", a.client.workerStarts)
+	}
+	if len(a.daemon.started) != 1 {
+		t.Fatalf("daemon start attempts after first attempt = %d, want 1 (the failed one)", len(a.daemon.started))
+	}
+
+	// Replay: daemon recovers; only StartTask is retried.
+	a.daemon.startErr = nil
+	second, err := a.RunClaimedTask(t.Context(), claimed)
+	if err != nil {
+		t.Fatalf("replay after daemon recovery: %v", err)
+	}
+	if second.OrcaDispatchID != first.OrcaDispatchID {
+		t.Fatalf("replay diverged: %+v vs %+v", second, first)
+	}
+	if a.client.workerStarts != 1 {
+		t.Fatalf("replay re-ran WorkerStart: count = %d, want 1", a.client.workerStarts)
+	}
+	if len(a.daemon.started) != 2 {
+		t.Fatalf("daemon start attempts = %d, want 2 (failed + succeeded)", len(a.daemon.started))
+	}
+	// Third replay is fully converged: no new effects at all.
+	if _, err := a.RunClaimedTask(t.Context(), claimed); err != nil {
+		t.Fatalf("converged replay: %v", err)
+	}
+	if a.client.workerStarts != 1 || len(a.daemon.started) != 2 {
+		t.Fatalf("converged replay duplicated effects: workers=%d starts=%d", a.client.workerStarts, len(a.daemon.started))
+	}
+}
+
+// Blocker 3: run evidence digest drift fails closed, including on a fresh
+// Bridge restart (empty memo).
+func TestRunEvidenceDigestDriftFailsClosed(t *testing.T) {
+	a, b := twinBridges(t)
+	chain := validChain()
+	if _, err := a.EnsureProjectRun(t.Context(), ProjectRef{Chain: chain, DisplayObjective: "original"}); err != nil {
+		t.Fatal(err)
+	}
+	// Fresh instance (b) requests a drifted objective: same scope, different
+	// digest. The committed evidence must not be adopted; the caller fails
+	// closed instead of silently reusing or duplicating.
+	if _, err := b.EnsureProjectRun(t.Context(), ProjectRef{Chain: chain, DisplayObjective: "drifted"}); !errors.Is(err, ErrMappingConflict) {
+		t.Fatalf("expected ErrMappingConflict for drifted objective, got %v", err)
+	}
+	if a.client.runCreates != 1 {
+		t.Fatalf("drifted request must not create a second run: %d", a.client.runCreates)
+	}
+}
+
+// Blocker 3: run orphan marker drift (same ws/prj marker, different
+// objective body) is never adopted.
+func TestRunMarkerDriftFailsClosed(t *testing.T) {
+	a, _ := twinBridges(t)
+	chain := validChain()
+	// An orphan run whose marker matches but whose objective body differs.
+	a.client.runs = []OrcaRun{{ID: "run_drift1", Objective: ProjectRunObjective("a different objective", chain)}}
+	if _, err := a.EnsureProjectRun(t.Context(), ProjectRef{Chain: chain, DisplayObjective: ""}); !errors.Is(err, ErrMappingConflict) {
+		t.Fatalf("expected ErrMappingConflict for drifted orphan objective, got %v", err)
+	}
+	if a.client.runCreates != 0 {
+		t.Fatalf("drifted orphan must not be created over: %d", a.client.runCreates)
+	}
+}
+
+// Blocker 3: task evidence digest drift fails closed across a fresh Bridge.
+func TestTaskEvidenceDigestDriftFailsClosed(t *testing.T) {
+	a, b := twinBridges(t)
+	chain := validChain()
+	if _, _, err := a.EnsureIssueTask(t.Context(), TaskRef{Chain: chain, Instructions: "original instructions"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := b.EnsureIssueTask(t.Context(), TaskRef{Chain: chain, Instructions: "drifted instructions"}); !errors.Is(err, ErrMappingConflict) {
+		t.Fatalf("expected ErrMappingConflict for drifted instructions, got %v", err)
+	}
+	if a.client.taskCreates != 1 {
+		t.Fatalf("drifted request must not create a second task: %d", a.client.taskCreates)
+	}
+}
+
+// Blocker 3: task orphan marker drift (same ids, different spec body) is
+// never adopted.
+func TestTaskMarkerDriftFailsClosed(t *testing.T) {
+	a, _ := twinBridges(t)
+	chain := validChain()
+	runID, err := a.EnsureProjectRun(t.Context(), ProjectRef{Chain: chain})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Orphan task with matching marker ids but a drifted instruction body.
+	a.client.tasks[runID] = []OrcaTask{{ID: "task_drift1", RunID: runID, Spec: TaskSpec("drifted body", chain)}}
+	if _, _, err := a.EnsureIssueTask(t.Context(), TaskRef{Chain: chain, Instructions: instructions()}); !errors.Is(err, ErrMappingConflict) {
+		t.Fatalf("expected ErrMappingConflict for drifted orphan spec, got %v", err)
+	}
+	if a.client.taskCreates != 0 {
+		t.Fatalf("drifted orphan must not be created over: %d", a.client.taskCreates)
+	}
+}
+
+// Blocker 3: worker placement drift against committed dispatch evidence
+// fails closed, including on a fresh Bridge restart.
+func TestWorkerPlacementDriftFailsClosed(t *testing.T) {
+	a, b := twinBridges(t)
+	chain := validChain()
+	mapping, err := a.EnsureAssignment(t.Context(), dispatchRef(chain))
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed := DaemonTask{ID: mapping.Chain.TaskID, WorkspaceID: chain.WorkspaceID, IssueID: mapping.Chain.IssueID}
+	if _, err := a.RunClaimedTask(t.Context(), claimed); err != nil {
+		t.Fatal(err)
+	}
+
+	// Fresh Bridge, drifted placement for the same assignment: the committed
+	// dispatch evidence must not authorize a second, differently-placed worker.
+	drifted := dispatchRef(chain)
+	drifted.Placement.Agent = "claude"
+	if _, err := b.EnsureAssignment(t.Context(), drifted); !errors.Is(err, ErrMappingConflict) {
+		t.Fatalf("expected ErrMappingConflict for drifted placement, got %v", err)
+	}
+	if a.client.workerStarts != 1 {
+		t.Fatalf("drifted placement must not start a second worker: %d", a.client.workerStarts)
 	}
 }

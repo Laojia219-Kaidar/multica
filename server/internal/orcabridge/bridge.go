@@ -89,6 +89,7 @@ type bridgeMemo struct {
 	dispatch        map[string]DispatchMap    // ws:assignment -> mapping
 	taskAssignment  map[string]map[string]any // hivecrew task id -> assignment payload
 	evidencePending map[string]bool           // ws:assignment -> dispatch evidence append still failing
+	startPending    map[string]bool           // ws:assignment -> StartTask not yet succeeded
 }
 
 func newBridgeMemo() bridgeMemo {
@@ -99,6 +100,7 @@ func newBridgeMemo() bridgeMemo {
 		dispatch:        map[string]DispatchMap{},
 		taskAssignment:  map[string]map[string]any{},
 		evidencePending: map[string]bool{},
+		startPending:    map[string]bool{},
 	}
 }
 
@@ -227,8 +229,9 @@ func (b *Bridge) ensureProjectRunLocked(ctx context.Context, ref ProjectRef) (st
 	}
 
 	// Evidence-first: another Bridge instance may already have committed
-	// this scope's mapping (crash-free cross-instance replay).
-	if committed := b.readCommittedRun(ctx, linkage.WorkRef, ref.Chain); committed != "" {
+	// this scope's mapping (crash-free cross-instance replay). The digest is
+	// verified, so drifted objectives never adopt the old run.
+	if committed := b.readCommittedRun(ctx, linkage.WorkRef, ref.Chain, digest); committed != "" {
 		b.rememberRun(ref.Chain, committed, digest)
 		return committed, nil
 	}
@@ -242,6 +245,13 @@ func (b *Bridge) ensureProjectRunLocked(ctx context.Context, ref ProjectRef) (st
 	for _, run := range runs {
 		ws, prj, ok := RunMarkerScan(run.Objective)
 		if ok && ws == ref.Chain.WorkspaceID && prj == ref.Chain.ProjectID {
+			// Marker drift check: the objective must end with exactly this
+			// caller's marker (drifted workspace/project inside the marker is
+			// impossible here, but a stale display objective with a forged
+			// marker is rejected).
+			if run.Objective != objective {
+				return "", fmt.Errorf("%w: orphan run %s carries a drifted objective", ErrMappingConflict, run.ID)
+			}
 			return adopt(run.ID)
 		}
 	}
@@ -249,11 +259,11 @@ func (b *Bridge) ensureProjectRunLocked(ctx context.Context, ref ProjectRef) (st
 	// Creation claim: exactly one Bridge instance (across independent
 	// objects, connections, and restarts) may call RunCreate for this scope.
 	claim, claimErr := b.acquireCreateClaim(ctx, linkage.WorkRef, runCreateClaimBase(ref.Chain), func(ctx context.Context) bool {
-		return b.readCommittedRun(ctx, linkage.WorkRef, ref.Chain) != ""
+		return b.readCommittedRun(ctx, linkage.WorkRef, ref.Chain, digest) != ""
 	})
 	if claimErr != nil {
 		if errors.Is(claimErr, ErrScopeAlreadyCommitted) {
-			if committed := b.readCommittedRun(ctx, linkage.WorkRef, ref.Chain); committed != "" {
+			if committed := b.readCommittedRun(ctx, linkage.WorkRef, ref.Chain, digest); committed != "" {
 				b.rememberRun(ref.Chain, committed, digest)
 				return committed, nil
 			}
@@ -284,6 +294,13 @@ func (b *Bridge) ensureProjectRunLocked(ctx context.Context, ref ProjectRef) (st
 	for _, run := range runs {
 		ws, prj, ok := RunMarkerScan(run.Objective)
 		if ok && ws == ref.Chain.WorkspaceID && prj == ref.Chain.ProjectID {
+			// Marker drift check: the objective must end with exactly this
+			// caller's marker (drifted workspace/project inside the marker is
+			// impossible here, but a stale display objective with a forged
+			// marker is rejected).
+			if run.Objective != objective {
+				return "", fmt.Errorf("%w: orphan run %s carries a drifted objective", ErrMappingConflict, run.ID)
+			}
 			return adopt(run.ID)
 		}
 	}
@@ -294,6 +311,12 @@ func (b *Bridge) ensureProjectRunLocked(ctx context.Context, ref ProjectRef) (st
 	// with ErrScopeAttemptInFlight and must reconcile instead of creating.
 	permit, err := b.winEffectBarrier(ctx, linkage.WorkRef, claim)
 	if err != nil {
+		// Barrier lost: the winner's create may be in flight or committed.
+		// Wait bounded for its committed result; if nothing appears, fail
+		// closed. Either way, never a second create.
+		if errors.Is(err, ErrScopeAttemptInFlight) {
+			return b.waitForCommittedRun(ctx, linkage.WorkRef, ref.Chain, digest, objective)
+		}
 		return "", err
 	}
 	// Lease gate: strictly pre-call, so its failure may reopen the barrier.
@@ -318,10 +341,14 @@ func (b *Bridge) ensureProjectRunLocked(ctx context.Context, ref ProjectRef) (st
 }
 
 // readCommittedRun reads the Orca run id this scope committed on the work
-// chain, verifying it against the handle grammar before use.
-func (b *Bridge) readCommittedRun(ctx context.Context, workRef string, chain Chain) string {
+// chain, verifying the handle grammar and the current objective digest
+// before use. Digest drift fails closed (empty), never adopts.
+func (b *Bridge) readCommittedRun(ctx context.Context, workRef string, chain Chain, wantDigest string) string {
 	record, found, err := b.Entry.LookupEvidence(ctx, workRef, RunLinkageKey(chain))
 	if err != nil || !found {
+		return ""
+	}
+	if committed, _ := record.Payload["digest"].(string); committed == "" || committed != wantDigest {
 		return ""
 	}
 	orcaRunID, _ := record.Payload["orca_run_id"].(string)
@@ -411,6 +438,12 @@ func (b *Bridge) ensureIssueTaskLocked(ctx context.Context, ref TaskRef) (string
 			ws, prj, issue, taskID, ok := TaskMarkerScan(task.Spec)
 			if ok && ws == ref.Chain.WorkspaceID && prj == ref.Chain.ProjectID &&
 				issue == ref.Chain.IssueID && taskID == ref.Chain.TaskID {
+				// Marker drift check: the marker must be followed by exactly
+				// the spec body this caller would write, so a task marker
+				// with drifted instructions is never adopted.
+				if task.Spec != spec {
+					return "", fmt.Errorf("%w: orphan task %s marker carries a drifted spec body", ErrMappingConflict, task.ID)
+				}
 				return task.ID, nil
 			}
 		}
@@ -419,7 +452,7 @@ func (b *Bridge) ensureIssueTaskLocked(ctx context.Context, ref TaskRef) (string
 
 	// Evidence-first: another Bridge instance may already have committed
 	// this task mapping.
-	if committed := b.readCommittedTask(ctx, linkage.WorkRef, ref.Chain); committed != "" {
+	if committed := b.readCommittedTask(ctx, linkage.WorkRef, ref.Chain, digest); committed != "" {
 		b.rememberTask(ref.Chain, runID, committed, digest)
 		return runID, committed, nil
 	}
@@ -431,11 +464,11 @@ func (b *Bridge) ensureIssueTaskLocked(ctx context.Context, ref TaskRef) (string
 
 	// Creation claim: exactly one Bridge instance may call TaskCreate.
 	claim, claimErr := b.acquireCreateClaim(ctx, linkage.WorkRef, taskCreateClaimBase(ref.Chain), func(ctx context.Context) bool {
-		return b.readCommittedTask(ctx, linkage.WorkRef, ref.Chain) != ""
+		return b.readCommittedTask(ctx, linkage.WorkRef, ref.Chain, digest) != ""
 	})
 	if claimErr != nil {
 		if errors.Is(claimErr, ErrScopeAlreadyCommitted) {
-			if committed := b.readCommittedTask(ctx, linkage.WorkRef, ref.Chain); committed != "" {
+			if committed := b.readCommittedTask(ctx, linkage.WorkRef, ref.Chain, digest); committed != "" {
 				b.rememberTask(ref.Chain, runID, committed, digest)
 				return runID, committed, nil
 			}
@@ -463,6 +496,9 @@ func (b *Bridge) ensureIssueTaskLocked(ctx context.Context, ref TaskRef) (string
 	// Effect barrier (claim -> barrier -> gate -> client -> marker).
 	permit, err := b.winEffectBarrier(ctx, linkage.WorkRef, claim)
 	if err != nil {
+		if errors.Is(err, ErrScopeAttemptInFlight) {
+			return b.waitForCommittedTask(ctx, linkage.WorkRef, ref.Chain, digest, runID, scanOrcaTask)
+		}
 		return "", "", err
 	}
 	if err := b.withinLease(permit); err != nil {
@@ -484,10 +520,14 @@ func (b *Bridge) ensureIssueTaskLocked(ctx context.Context, ref TaskRef) (string
 }
 
 // readCommittedTask reads the Orca task id this scope committed on the work
-// chain, verifying the handle grammar before use.
-func (b *Bridge) readCommittedTask(ctx context.Context, workRef string, chain Chain) string {
+// chain, verifying the handle grammar and the current spec digest before
+// use. Digest drift fails closed (empty), never adopts.
+func (b *Bridge) readCommittedTask(ctx context.Context, workRef string, chain Chain, wantDigest string) string {
 	record, found, err := b.Entry.LookupEvidence(ctx, workRef, TaskLinkageKey(chain))
 	if err != nil || !found {
+		return ""
+	}
+	if committed, _ := record.Payload["digest"].(string); committed == "" || committed != wantDigest {
 		return ""
 	}
 	orcaTaskID, _ := record.Payload["orca_task_id"].(string)
@@ -655,9 +695,19 @@ func (b *Bridge) runClaimedTaskLocked(ctx context.Context, claimed DaemonTask, c
 			return committed, fmt.Errorf("%w: dispatch mapping assignment=%s committed %s, replay carried %s",
 				ErrMappingConflict, chain.AssignmentID, committed.PlacementDigest, resolved.placementDigest)
 		}
-		// Recovery path: the dispatch committed earlier (worker started,
-		// HiveCrew task started) but its evidence append failed. Re-attempt
-		// only the evidence; never re-dispatch a worker.
+		// Recovery path A: the worker started but StartTask failed. Re-attempt
+		// only the HiveCrew task start — never a second WorkerStart — and do
+		// not return success until it succeeds.
+		if b.startPendingFor(chain) {
+			if err := b.Daemon.StartTask(ctx, chain.TaskID); err != nil {
+				return committed, fmt.Errorf("orcabridge: hivecrew task %s start retry failed (dispatch %s committed; no re-dispatch): %w",
+					chain.TaskID, committed.OrcaDispatchID, err)
+			}
+			b.markStartPending(chain, false)
+		}
+		// Recovery path B: the dispatch committed and the task started, but
+		// its evidence append failed. Re-attempt only the evidence; never
+		// re-dispatch a worker.
 		if b.evidencePendingFor(chain) {
 			if err := b.retryDispatchEvidence(ctx, chain, committed); err != nil {
 				return committed, err
@@ -674,9 +724,14 @@ func (b *Bridge) runClaimedTaskLocked(ctx context.Context, claimed DaemonTask, c
 		return DispatchMap{}, err
 	}
 
-	// Idempotency guard: committed dispatch evidence wins.
+	// Idempotency guard: committed dispatch evidence wins — but only when it
+	// matches the current placement digest; drifted placement fails closed.
 	if record, found, err := b.Entry.LookupEvidence(ctx, linkage.WorkRef, DispatchLinkageKey(chain)); err == nil && found {
 		if mapping, err := dispatchMapFromPayload(record.Payload); err == nil && mapping.OrcaDispatchID != "" {
+			if mapping.PlacementDigest != resolved.placementDigest {
+				return mapping, fmt.Errorf("%w: committed dispatch evidence placement %s does not match current placement %s",
+					ErrMappingConflict, mapping.PlacementDigest, resolved.placementDigest)
+			}
 			b.rememberDispatch(chain, mapping)
 			return mapping, nil
 		}
@@ -689,7 +744,9 @@ func (b *Bridge) runClaimedTaskLocked(ctx context.Context, claimed DaemonTask, c
 		return DispatchMap{}, err
 	}
 
-	// Commit read helpers shared by the claim probe and the waiter path.
+	// Commit read helpers shared by the claim probe and the waiter path. The
+	// mapping only counts as committed when its placement digest matches the
+	// current placement; drift is not adoption.
 	committedMapping := func() DispatchMap {
 		record, found, err := b.Entry.LookupEvidence(ctx, linkage.WorkRef, DispatchLinkageKey(chain))
 		if err != nil || !found {
@@ -697,6 +754,9 @@ func (b *Bridge) runClaimedTaskLocked(ctx context.Context, claimed DaemonTask, c
 		}
 		mapping, err := dispatchMapFromPayload(record.Payload)
 		if err != nil || mapping.OrcaDispatchID == "" {
+			return DispatchMap{}
+		}
+		if mapping.PlacementDigest != resolved.placementDigest {
 			return DispatchMap{}
 		}
 		return mapping
@@ -780,6 +840,13 @@ func (b *Bridge) runClaimedTaskLocked(ctx context.Context, claimed DaemonTask, c
 		// Effect barrier (claim -> barrier -> gate -> client -> marker).
 		permit, err := b.winEffectBarrier(ctx, linkage.WorkRef, claim)
 		if err != nil {
+			// Barrier lost: the winner's start may be in flight or already
+			// committed. Wait bounded for the committed result (evidence or
+			// Orca orphan) instead of failing immediately; if nothing
+			// appears in time, surface ErrScopeAttemptInFlight.
+			if errors.Is(err, ErrScopeAttemptInFlight) {
+				return b.waitForCommittedDispatch(ctx, chain, linkage.WorkRef, orcaRunID, orcaTaskID, committedMapping)
+			}
 			return DispatchMap{}, err
 		}
 		if err := b.withinLease(permit); err != nil {
@@ -842,11 +909,18 @@ func (b *Bridge) runClaimedTaskLocked(ctx context.Context, claimed DaemonTask, c
 	}
 
 	// Advance the HiveCrew task through the existing lifecycle: the Orca
-	// worker is live, so the claimed task becomes running.
+	// worker is live, so the claimed task becomes running. Memoize the
+	// mapping FIRST (marked pending-start) so a retry that observes this
+	// committed dispatch reconciles by retrying only StartTask — never a
+	// second WorkerStart — and RunClaimedTask never returns success until the
+	// HiveCrew task start has actually succeeded.
+	b.rememberDispatch(chain, mapping)
 	if err := b.Daemon.StartTask(ctx, chain.TaskID); err != nil {
-		return mapping, fmt.Errorf("orcabridge: hivecrew task %s not started after orca worker dispatch (dispatch %s committed): %w",
+		b.markStartPending(chain, true)
+		return mapping, fmt.Errorf("orcabridge: hivecrew task %s not started after orca worker dispatch (dispatch %s committed; retry retries only StartTask): %w",
 			chain.TaskID, mapping.OrcaDispatchID, err)
 	}
+	b.markStartPending(chain, false)
 
 	// Commit the mapping to the memo before appending evidence: if the
 	// evidence append fails, a retry must converge on the memo mapping and
@@ -1061,6 +1135,124 @@ func (b *Bridge) AcceptWorkerResult(ctx context.Context, chain Chain, message Or
 		}
 		return b.resultReceiptFromMapping(mapping, message, result, digest), nil
 	}
+}
+
+// waitForCommittedRun waits bounded for the run committed by the barrier
+// winner: digest-verified mapping evidence or the Orca orphan marker (with
+// objective equality). Never creates.
+func (b *Bridge) waitForCommittedRun(ctx context.Context, workRef string, chain Chain, digest, objective string) (string, error) {
+	deadline := b.now().Add(b.claimMaxWait())
+	for attempt := 0; attempt < maxClaimAttempts; attempt++ {
+		if committed := b.readCommittedRun(ctx, workRef, chain, digest); committed != "" {
+			b.rememberRun(chain, committed, digest)
+			return committed, nil
+		}
+		runs, err := b.Client.RunList(ctx)
+		if err == nil {
+			for _, run := range runs {
+				ws, prj, ok := RunMarkerScan(run.Objective)
+				if ok && ws == chain.WorkspaceID && prj == chain.ProjectID {
+					if run.Objective != objective {
+						return "", fmt.Errorf("%w: orphan run %s carries a drifted objective", ErrMappingConflict, run.ID)
+					}
+					if err := b.recordLinkageEvidence(ctx, workRef, RunLinkageKey(chain), map[string]any{
+						"mapping":      "run",
+						"workspace_id": chain.WorkspaceID,
+						"project_id":   chain.ProjectID,
+						"orca_run_id":  run.ID,
+						"digest":       digest,
+					}); err != nil {
+						return "", err
+					}
+					b.rememberRun(chain, run.ID, digest)
+					return run.ID, nil
+				}
+			}
+		}
+		if b.now().After(deadline) {
+			return "", fmt.Errorf("%w: run for %s/%s never committed", ErrScopeAttemptInFlight, chain.WorkspaceID, chain.ProjectID)
+		}
+		if err := sleepContext(ctx, b.claimPoll()); err != nil {
+			return "", err
+		}
+	}
+	return "", fmt.Errorf("%w: run for %s/%s never committed", ErrScopeAttemptInFlight, chain.WorkspaceID, chain.ProjectID)
+}
+
+// waitForCommittedTask waits bounded for the task committed by the barrier
+// winner: digest-verified mapping evidence or the Orca orphan marker (with
+// spec equality). Never creates.
+func (b *Bridge) waitForCommittedTask(ctx context.Context, workRef string, chain Chain, digest, runID string, scanOrcaTask func() (string, error)) (string, string, error) {
+	deadline := b.now().Add(b.claimMaxWait())
+	for attempt := 0; attempt < maxClaimAttempts; attempt++ {
+		if committed := b.readCommittedTask(ctx, workRef, chain, digest); committed != "" {
+			b.rememberTask(chain, runID, committed, digest)
+			return runID, committed, nil
+		}
+		if orphan, err := scanOrcaTask(); err == nil && orphan != "" {
+			if err := b.recordLinkageEvidence(ctx, workRef, TaskLinkageKey(chain), map[string]any{
+				"mapping":      "task",
+				"workspace_id": chain.WorkspaceID,
+				"project_id":   chain.ProjectID,
+				"issue_id":     chain.IssueID,
+				"task_id":      chain.TaskID,
+				"orca_run_id":  runID,
+				"orca_task_id": orphan,
+				"digest":       digest,
+			}); err != nil {
+				return "", "", err
+			}
+			b.rememberTask(chain, runID, orphan, digest)
+			return runID, orphan, nil
+		}
+		if b.now().After(deadline) {
+			return "", "", fmt.Errorf("%w: task for %s/%s never committed", ErrScopeAttemptInFlight, chain.WorkspaceID, chain.TaskID)
+		}
+		if err := sleepContext(ctx, b.claimPoll()); err != nil {
+			return "", "", err
+		}
+	}
+	return "", "", fmt.Errorf("%w: task for %s/%s never committed", ErrScopeAttemptInFlight, chain.WorkspaceID, chain.TaskID)
+}
+
+// waitForCommittedDispatch waits bounded for the dispatch mapping committed
+// by the barrier winner: matching evidence (placement verified by the
+// committedMapping closure) or the Orca-side orphan. Returns the mapping or
+// ErrScopeAttemptInFlight if nothing appears in time.
+func (b *Bridge) waitForCommittedDispatch(ctx context.Context, chain Chain, workRef, orcaRunID, orcaTaskID string, committedMapping func() DispatchMap) (DispatchMap, error) {
+	deadline := b.now().Add(b.claimMaxWait())
+	for attempt := 0; attempt < maxClaimAttempts; attempt++ {
+		if mapping := committedMapping(); mapping.OrcaDispatchID != "" {
+			b.rememberDispatch(chain, mapping)
+			return mapping, nil
+		}
+		if dispatch, err := b.Client.DispatchShow(ctx, orcaTaskID); err == nil &&
+			dispatch != nil && dispatch.ID != "" && dispatch.RunID == orcaRunID {
+			mapping := DispatchMap{
+				WorkspaceID:     chain.WorkspaceID,
+				ProjectID:       chain.ProjectID,
+				IssueID:         chain.IssueID,
+				TaskID:          chain.TaskID,
+				AssignmentID:    chain.AssignmentID,
+				ContractVersion: ContractVersion,
+				OrcaRunID:       dispatch.RunID,
+				OrcaTaskID:      dispatch.TaskID,
+				OrcaDispatchID:  dispatch.ID,
+				WorkerTerminal:  dispatch.AssigneeHandle,
+				WorkerState:     "unknown",
+				Status:          "active",
+			}
+			b.rememberDispatch(chain, mapping)
+			return mapping, nil
+		}
+		if b.now().After(deadline) {
+			return DispatchMap{}, fmt.Errorf("%w: dispatch for task %s never committed", ErrScopeAttemptInFlight, chain.TaskID)
+		}
+		if err := sleepContext(ctx, b.claimPoll()); err != nil {
+			return DispatchMap{}, err
+		}
+	}
+	return DispatchMap{}, fmt.Errorf("%w: dispatch for task %s never committed", ErrScopeAttemptInFlight, chain.TaskID)
 }
 
 // settleHiveCrewTask settles the HiveCrew task row through the existing
@@ -1464,6 +1656,26 @@ func (b *Bridge) rememberDispatch(chain Chain, mapping DispatchMap) {
 	b.memoMu.Lock()
 	defer b.memoMu.Unlock()
 	b.memo.dispatch[chain.WorkspaceID+":"+chain.AssignmentID] = mapping
+}
+
+// markStartPending records that WorkerStart committed but the HiveCrew task
+// start has not succeeded yet, so retries reconcile by retrying only the
+// StartTask verb — never a second WorkerStart.
+func (b *Bridge) markStartPending(chain Chain, pending bool) {
+	b.memoMu.Lock()
+	defer b.memoMu.Unlock()
+	key := chain.WorkspaceID + ":" + chain.AssignmentID
+	if pending {
+		b.memo.startPending[key] = true
+		return
+	}
+	delete(b.memo.startPending, key)
+}
+
+func (b *Bridge) startPendingFor(chain Chain) bool {
+	b.memoMu.Lock()
+	defer b.memoMu.Unlock()
+	return b.memo.startPending[chain.WorkspaceID+":"+chain.AssignmentID]
 }
 
 // markEvidencePending records that a dispatch mapping committed (worker
