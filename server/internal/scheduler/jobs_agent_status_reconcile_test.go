@@ -2,6 +2,8 @@ package scheduler
 
 import (
 	"context"
+	"net/url"
+	"os"
 	"testing"
 	"time"
 
@@ -15,8 +17,12 @@ import (
 // job without a database:
 //
 //   - a single global scope (one lease per tick, whole deployment);
-//   - cadence 30s, so cadence + the manager's default 30s TickInterval
-//     bounds worst-case status drift to <=60s (audit R4 contract);
+//   - cadence <=30s: with a healthy, unblocked scheduler the cadence plus
+//     the manager's default 30s TickInterval keeps the NOMINAL drift
+//     window near 60s. It is not a hard bound — the manager runs the
+//     registered jobs serially within each tick, so a long-running
+//     handler ahead of this job can delay a reconcile past that window
+//     until the scheduler is healthy again;
 //   - latest_only catch-up: convergence is a fixed point, not a per-bucket
 //     replay, so only the most recent due plan is ever claimed;
 //   - handler fails closed without queries instead of reporting a no-op.
@@ -27,7 +33,7 @@ func TestAgentStatusReconcileJobSpec(t *testing.T) {
 		t.Fatalf("job name = %q, want %q", job.Name, JobNameAgentStatusReconcile)
 	}
 	if job.Cadence > 30*time.Second {
-		t.Fatalf("cadence = %s; must be <=30s so cadence + default 30s tick keeps convergence <=60s", job.Cadence)
+		t.Fatalf("cadence = %s; must be <=30s so a healthy, unblocked scheduler keeps the nominal convergence window near cadence + one 30s tick", job.Cadence)
 	}
 	if job.CatchUpMode != CatchUpLatestOnly {
 		t.Fatalf("catch-up mode = %s, want latest_only (convergence is a fixed point)", job.CatchUpMode)
@@ -47,6 +53,45 @@ func TestAgentStatusReconcileJobSpec(t *testing.T) {
 	if _, err := job.Handler(context.Background(), HandlerInput{}); err == nil {
 		t.Fatal("handler must fail closed when queries is nil")
 	}
+}
+
+// dedicatedIsolatedPool connects ONLY to TEST_DATABASE_URL, and only when
+// that URL names an explicit loopback host and an explicit non-5432 port —
+// the dedicated ephemeral test-instance convention. The scheduler
+// package's fallback DSN is the SHARED live dev database on
+// localhost:5432; a test whose handler issues a global UPDATE and whose
+// cleanup deletes sys_cron_executions rows must never run there, so
+// without a qualifying TEST_DATABASE_URL the test skips instead of
+// guessing.
+func dedicatedIsolatedPool(t *testing.T) *pgxpool.Pool {
+	t.Helper()
+	raw := os.Getenv("TEST_DATABASE_URL")
+	if raw == "" {
+		t.Skip("requires TEST_DATABASE_URL pointing at a dedicated ephemeral Postgres (loopback host, explicit non-5432 port); refusing to fall back to the shared dev DB")
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		t.Skipf("TEST_DATABASE_URL is not a valid URL: %v", err)
+	}
+	switch host := u.Hostname(); host {
+	case "localhost", "127.0.0.1", "::1":
+	default:
+		t.Skipf("TEST_DATABASE_URL host %q is not loopback; refusing to run a global-statement test against it", host)
+	}
+	if port := u.Port(); port == "" || port == "5432" {
+		t.Skipf("TEST_DATABASE_URL port %q must be an explicit non-5432 port (dedicated ephemeral instance), not the shared dev DB", port)
+	}
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, raw)
+	if err != nil {
+		t.Skipf("dedicated pool: %v", err)
+	}
+	if err := pool.Ping(ctx); err != nil {
+		pool.Close()
+		t.Skipf("dedicated pool ping: %v", err)
+	}
+	t.Cleanup(pool.Close)
+	return pool
 }
 
 type agentStatusReconcileFixture struct {
@@ -87,6 +132,19 @@ func seedAgentStatusReconcileFixture(t *testing.T, pool *pgxpool.Pool) agentStat
 		t.Fatalf("seed user: %v", err)
 	}
 	fix.userID = userID
+
+	// Register cleanup IMMEDIATELY after the first durable row, so a
+	// failure in any later seed step cannot leak this user or the
+	// workspaces created so far. The closure reads the up-to-date fix
+	// fields at cleanup time; workspace deletes cascade to the members,
+	// issues, runtimes, agents and queued tasks seeded below.
+	t.Cleanup(func() {
+		ctx := context.Background()
+		for _, wsID := range fix.workspaceIDs {
+			pool.Exec(ctx, `DELETE FROM workspace WHERE id = $1`, wsID)
+		}
+		pool.Exec(ctx, `DELETE FROM "user" WHERE id = $1`, fix.userID)
+	})
 
 	newWorkspace := func(slug string) string {
 		var wsID string
@@ -174,13 +232,6 @@ func seedAgentStatusReconcileFixture(t *testing.T, pool *pgxpool.Pool) agentStat
 	fix.cleanIdle = seedAgent(ws1, "Clean Idle", "idle", false)
 	seedTask(ws1, fix.cleanIdle, "completed")
 
-	t.Cleanup(func() {
-		ctx := context.Background()
-		for _, wsID := range fix.workspaceIDs {
-			pool.Exec(ctx, `DELETE FROM workspace WHERE id = $1`, wsID)
-		}
-		pool.Exec(ctx, `DELETE FROM "user" WHERE id = $1`, fix.userID)
-	})
 	return fix
 }
 
@@ -197,33 +248,64 @@ func agentStatusByID(t *testing.T, pool *pgxpool.Pool, agentID, want string) {
 }
 
 // TestAgentStatusReconcileJobTickConvergesBothDirections runs the real
-// Manager tick path (lease claim in sys_cron_executions -> handler) against
-// seeded dirty rows and asserts the audit R4 contract:
+// Manager tick path (lease claim in sys_cron_executions -> handler)
+// against seeded dirty rows and asserts:
 //
 //  1. ONE tick corrects BOTH directions — stale-working->idle (B1 crash
 //     window) and stale-idle->working (B5 missed recompute);
 //  2. archived agents are out of scope;
 //  3. already-correct rows are not rewritten (no updated_at churn) — the
 //     steady-state tick is a zero-row no-op;
-//  4. a repeated tick is idempotent (rows_affected=0, statuses stable).
+//  4. a repeated tick is idempotent (statuses stable, no further rows).
+//
+// Isolation contract (HIV-982 review repair): the test runs ONLY against
+// a dedicated ephemeral database selected by TEST_DATABASE_URL with an
+// explicit loopback host and an explicit non-5432 port; the job spec is
+// cloned under a uniqueJobName so every sys_cron_executions query and
+// cleanup is partitioned to that name and can never delete a formal
+// agent_status_reconcile receipt; no global pre-converge UPDATE is issued
+// against data this test does not own, and the global rows_affected
+// assertions run only when a read-only population check establishes that
+// the agent table holds exactly this test's fixtures.
 func TestAgentStatusReconcileJobTickConvergesBothDirections(t *testing.T) {
-	pool := integrationPool(t)
-	t.Cleanup(func() { cleanupExecutions(t, pool, JobNameAgentStatusReconcile) })
+	pool := dedicatedIsolatedPool(t)
 	ctx := context.Background()
 
 	queries := db.New(pool)
-	// Pre-converge the whole population so the only dirty rows in the
-	// database are the ones this test seeds. Without this, a leftover
-	// dirty agent from an unrelated run (or concurrent test) would make
-	// the exact rows_affected assertions below non-hermetic.
-	if _, err := queries.ReconcileAllAgentStatuses(ctx); err != nil {
-		t.Fatalf("pre-converge: %v", err)
-	}
+
+	// Clone the production spec under a unique job name: this run's
+	// audit rows live in their own (job_name, ...) partition, and every
+	// sys_cron_executions query and cleanup below uses exactly this
+	// name — a formal agent_status_reconcile receipt can never be
+	// selected or deleted by this test.
+	spec := AgentStatusReconcileJob(queries)
+	spec.Name = uniqueJobName(t, JobNameAgentStatusReconcile)
+	t.Cleanup(func() { cleanupExecutions(t, pool, spec.Name) })
 
 	fix := seedAgentStatusReconcileFixture(t, pool)
 
+	// Read-only hermeticity check: the dedicated-instance guard plus a
+	// fixture-only agent population is what licenses the exact global
+	// rows_affected assertions below. Nothing outside the fixture is
+	// mutated to force this — if the dedicated DB already holds other
+	// agents, the global-count assertions are simply relaxed while the
+	// per-fixture status/no-churn/idempotency checks stay exact.
+	var liveAgents, archivedAgents int
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*) FILTER (WHERE archived_at IS NULL),
+		       count(*) FILTER (WHERE archived_at IS NOT NULL)
+		  FROM agent
+	`).Scan(&liveAgents, &archivedAgents); err != nil {
+		t.Fatalf("hermeticity check: %v", err)
+	}
+	fixtureOnly := liveAgents == 3 && archivedAgents == 1
+	if !fixtureOnly {
+		t.Logf("agent population = %d live / %d archived (fixtures are 3/1); relaxing global rows_affected assertions to fixture-scoped checks",
+			liveAgents, archivedAgents)
+	}
+
 	mgr := NewManager(pool, Options{RunnerID: "agent-status-reconcile-test"})
-	if err := mgr.Register(AgentStatusReconcileJob(queries)); err != nil {
+	if err := mgr.Register(spec); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 
@@ -233,7 +315,8 @@ func TestAgentStatusReconcileJobTickConvergesBothDirections(t *testing.T) {
 		t.Fatalf("read clean agent updated_at: %v", err)
 	}
 
-	// Tick 1: one claim of the current plan bucket must fix both rows.
+	// Tick 1: one claim of the current plan bucket must fix both dirty
+	// fixture rows.
 	if err := mgr.RunOnce(ctx); err != nil {
 		t.Fatalf("runOnce: %v", err)
 	}
@@ -249,11 +332,11 @@ func TestAgentStatusReconcileJobTickConvergesBothDirections(t *testing.T) {
 		  FROM sys_cron_executions
 		 WHERE job_name = $1 AND scope_kind = 'global' AND scope_id = 'global'
 		   AND status = 'SUCCESS'
-	`, JobNameAgentStatusReconcile).Scan(&rows1); err != nil {
+	`, spec.Name).Scan(&rows1); err != nil {
 		t.Fatalf("read audit row: %v", err)
 	}
-	if rows1 != 2 {
-		t.Fatalf("tick 1 rows_affected = %d, want exactly 2 (both dirty rows, nothing else in scope)", rows1)
+	if fixtureOnly && rows1 != 2 {
+		t.Fatalf("tick 1 rows_affected = %d, want exactly 2 (both dirty fixtures, nothing else in scope)", rows1)
 	}
 
 	var cleanUpdatedAtAfter time.Time
@@ -266,10 +349,10 @@ func TestAgentStatusReconcileJobTickConvergesBothDirections(t *testing.T) {
 			cleanUpdatedAtBefore, cleanUpdatedAtAfter)
 	}
 
-	// Tick 2 on the same bucket (drop the audit row so the lease is
-	// claimable again): idempotent — zero rows across the ENTIRE
-	// population, statuses stable.
-	cleanupExecutions(t, pool, JobNameAgentStatusReconcile)
+	// Tick 2 on the same bucket (drop this test's own audit rows so the
+	// lease is claimable again): idempotent — statuses stable, and zero
+	// further rows once the population has converged.
+	cleanupExecutions(t, pool, spec.Name)
 	if err := mgr.RunOnce(ctx); err != nil {
 		t.Fatalf("runOnce 2: %v", err)
 	}
@@ -282,10 +365,10 @@ func TestAgentStatusReconcileJobTickConvergesBothDirections(t *testing.T) {
 		  FROM sys_cron_executions
 		 WHERE job_name = $1 AND scope_kind = 'global' AND scope_id = 'global'
 		   AND status = 'SUCCESS'
-	`, JobNameAgentStatusReconcile).Scan(&rows2); err != nil {
+	`, spec.Name).Scan(&rows2); err != nil {
 		t.Fatalf("read audit row 2: %v", err)
 	}
-	if rows2 != 0 {
+	if fixtureOnly && rows2 != 0 {
 		t.Fatalf("tick 2 rows_affected = %d, want 0 (converged state is a no-op)", rows2)
 	}
 }

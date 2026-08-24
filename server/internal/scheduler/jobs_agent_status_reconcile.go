@@ -23,20 +23,33 @@ const JobNameAgentStatusReconcile = "agent_status_reconcile"
 // rows on every tick, bounding the drift window instead of relying on the
 // next transition to self-heal.
 //
-// Bounded convergence: Cadence 30s + the manager's default 30s
-// TickInterval means a dirty row is corrected within <=60s of appearing,
-// which is the audit contract. Steady state costs one indexed set-based
-// UPDATE that reports 0 rows affected and writes nothing (the query skips
-// already-correct rows), so the job is cheap to run continuously.
+// Nominal convergence window: with a healthy, unblocked scheduler, the
+// 30s cadence plus the manager's default 30s TickInterval corrects a
+// dirty row within about 60s of it appearing. That figure is NOMINAL,
+// not a hard guarantee: the manager runs the registered jobs serially
+// within each tick, so a long-running handler ahead of this job (or a
+// stalled scheduler) can delay a reconcile past the nominal window
+// until the scheduler is healthy again. What is guaranteed is that
+// every healthy tick re-derives the full population, so drift cannot
+// outlive the scheduler's own recovery. Steady state costs one indexed
+// set-based UPDATE that reports 0 rows affected and writes nothing
+// (the query skips already-correct rows), so the job is cheap to run
+// continuously.
 //
 // Concurrency safety: the handler is a single UPDATE over rows the
-// in-transaction per-agent refresh also writes, using the same predicate.
-// Both writers are single statements writing the same value for the same
-// committed task state, so interleaving them is last-writer-wins with an
-// identical result — no lock-order hazard, no torn state. The job never
-// touches business transition points and publishes no bus events; readers
-// (employee lists, Work Wall snapshot) re-read the column on their next
-// poll, which is already <=5s.
+// per-agent RefreshAgentStatusFromTasks also writes, using the same
+// predicate. The two statements take their snapshots at different
+// times, so an interleave CAN race transiently: if a task transition
+// commits between this job's snapshot and its UPDATE (or between the
+// per-agent refresh's snapshot and its write), the last writer may
+// briefly persist a value derived from an older task snapshot. That is
+// benign and bounded — no lock-order hazard, no torn state — because
+// both writers derive from the same predicate over committed task
+// rows, and any transiently stale value is healed by the next healthy
+// tick (or the agent's next transition). The job never touches
+// business transition points and publishes no bus events; readers
+// (employee lists, Work Wall snapshot) re-read the column on their
+// next poll, which is already <=5s.
 func AgentStatusReconcileJob(queries *db.Queries) JobSpec {
 	return JobSpec{
 		Name:              JobNameAgentStatusReconcile,

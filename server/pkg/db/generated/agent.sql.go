@@ -6490,10 +6490,12 @@ WHERE a.id = derived.id
 // Idempotent + churn-free: the WHERE guard skips rows whose status already
 // matches the derived value, so a steady-state tick affects 0 rows and never
 // bumps updated_at. One statement corrects BOTH directions atomically
-// (stale working→idle and stale idle→working), taking the same row locks as
-// the per-agent refresh, with which it shares the predicate — last writer
-// wins with the same value, so there is no lock-order or interleaving
-// hazard.
+// (stale working→idle and stale idle→working). It takes the same row locks
+// as the per-agent refresh and shares its predicate, but the two statements
+// snapshot at different times, so an interleave can transiently race: the
+// last writer may briefly persist a value derived from an older task
+// snapshot. That is benign — no lock-order hazard, no torn state — and the
+// next healthy tick heals it.
 func (q *Queries) ReconcileAllAgentStatuses(ctx context.Context) (int64, error) {
 	result, err := q.db.Exec(ctx, reconcileAllAgentStatuses)
 	if err != nil {
