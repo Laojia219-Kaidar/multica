@@ -3940,14 +3940,13 @@ func (s *TaskService) FailTask(ctx context.Context, taskID pgtype.UUID, errMsg, 
 // etc.) are intentionally excluded — those are real problems that the user
 // should see, not infrastructure flakiness.
 //
-// The one agent_error.* exception is provider_network: a mid-stream provider
-// disconnect (e.g. Claude Code's "API Error: Connection closed mid-response")
-// is transient infrastructure flakiness, not an agent decision. Unattended
-// issue runs otherwise terminate on it, while interactive chat only survives
-// because the CLI's own in-process retry happens to recover first — so we make
-// the platform retry it directly (MUL-4910). It is resume-safe (not in
-// resumeUnsafeFailureReason), so the retry child inherits the session and
-// continues the truncated conversation rather than restarting from scratch.
+// Two agent_error.* classes are retryable. provider_network is a mid-stream
+// provider disconnect (e.g. Claude Code's "API Error: Connection closed
+// mid-response") rather than an agent decision (MUL-4910). Empty or
+// unparseable output likewise produces no usable delivery; OpenCode can retain
+// completed tool messages as evidence while failing the run when final text is
+// absent (HIV-967). The latter keeps the task's ordinary max_attempts ceiling,
+// so the default budget permits one recovery and never widens into a loop.
 // skill_bundle_unavailable is retryable for the same reason: the agent process
 // never started, so there is nothing to be idempotent about, and every bundle
 // that did download is already cached on disk — a retry resumes from there
@@ -3957,8 +3956,9 @@ var retryableReasons = map[string]bool{
 	"runtime_recovery":          true,
 	"timeout":                   true,
 	"codex_semantic_inactivity": true,
-	string(taskfailure.ReasonAgentProviderNetwork):   true,
-	string(taskfailure.ReasonSkillBundleUnavailable): true,
+	string(taskfailure.ReasonAgentProviderNetwork):          true,
+	string(taskfailure.ReasonAgentEmptyOrUnparseableOutput): true,
+	string(taskfailure.ReasonSkillBundleUnavailable):        true,
 }
 
 // Transient provider stream cuts (provider_network) get a bespoke three-tier

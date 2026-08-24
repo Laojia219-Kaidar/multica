@@ -792,8 +792,8 @@ func TestOpencodeProcessEventsEmptyZeroUsageCompletionFailsClosed(t *testing.T) 
 	if result.status != "failed" {
 		t.Errorf("status: got %q, want %q", result.status, "failed")
 	}
-	if !strings.Contains(result.errMsg, "empty zero-usage completion") {
-		t.Errorf("errMsg: got %q, want it to identify the empty zero-usage completion", result.errMsg)
+	if !strings.Contains(result.errMsg, "returned empty output") || !strings.Contains(result.errMsg, "zero-usage completion") {
+		t.Errorf("errMsg: got %q, want a typed empty-output zero-usage failure", result.errMsg)
 	}
 	if result.output != "" {
 		t.Errorf("output: got %q, want empty", result.output)
@@ -832,30 +832,55 @@ func TestOpencodeProcessEventsTextOnlyZeroUsageCompletionPasses(t *testing.T) {
 	close(ch)
 }
 
-func TestOpencodeProcessEventsToolOnlyZeroUsageCompletionPasses(t *testing.T) {
+func TestOpencodeProcessEventsToolsAndUsageWithoutFinalOutputFailsClosed(t *testing.T) {
 	t.Parallel()
 
 	b := &opencodeBackend{cfg: Config{Logger: slog.Default()}}
 	ch := make(chan Message, 256)
 
-	// A provider-executed tool is observable output and requires no local
-	// continuation, so a terminal zero-usage step must remain successful.
+	// Regression for HIV-967: OpenCode executed two local tools and reported
+	// positive usage, then ended a final step without publishing any text. Tool
+	// messages remain valuable execution evidence, but they are not the final
+	// task output and must not make the run successful by themselves.
 	lines := strings.Join([]string{
 		`{"type":"step_start","timestamp":1000,"sessionID":"ses_tool_only","part":{"type":"step-start"}}`,
-		`{"type":"tool_use","timestamp":1001,"sessionID":"ses_tool_only","part":{"type":"tool","tool":"web_search","callID":"call_1","metadata":{"providerExecuted":true},"state":{"status":"completed","input":{"query":"weather"},"output":"sunny"}}}`,
-		`{"type":"step_finish","timestamp":1002,"sessionID":"ses_tool_only","part":{"type":"step-finish","reason":"stop","tokens":{"input":0,"output":0,"cache":{"read":0,"write":0}}}}`,
+		`{"type":"tool_use","timestamp":1001,"sessionID":"ses_tool_only","part":{"type":"tool","tool":"bash","callID":"call_1","state":{"status":"completed","input":{"command":"multica issue get HIV-967"},"output":"{\"identifier\":\"HIV-967\"}"}}}`,
+		`{"type":"step_finish","timestamp":1002,"sessionID":"ses_tool_only","part":{"type":"step-finish","reason":"tool-calls","tokens":{"input":28000,"output":100,"cache":{"read":0,"write":0}}}}`,
+		`{"type":"step_start","timestamp":1003,"sessionID":"ses_tool_only","part":{"type":"step-start"}}`,
+		`{"type":"tool_use","timestamp":1004,"sessionID":"ses_tool_only","part":{"type":"tool","tool":"bash","callID":"call_2","state":{"status":"completed","input":{"command":"multica issue comment list HIV-967"},"output":"[]"}}}`,
+		`{"type":"step_finish","timestamp":1005,"sessionID":"ses_tool_only","part":{"type":"step-finish","reason":"tool-calls","tokens":{"input":28089,"output":107,"cache":{"read":0,"write":0}}}}`,
+		`{"type":"step_start","timestamp":1006,"sessionID":"ses_tool_only","part":{"type":"step-start"}}`,
+		`{"type":"step_finish","timestamp":1007,"sessionID":"ses_tool_only","part":{"type":"step-finish","reason":"stop","tokens":{"input":0,"output":0,"cache":{"read":0,"write":0}}}}`,
 	}, "\n")
 
 	result := b.processEvents(strings.NewReader(lines), ch)
 
-	if result.status != "completed" {
-		t.Errorf("status: got %q, want %q", result.status, "completed")
+	if result.status != "failed" {
+		t.Errorf("status: got %q, want %q", result.status, "failed")
 	}
-	if result.errMsg != "" {
-		t.Errorf("errMsg: got %q, want empty", result.errMsg)
+	if !strings.Contains(result.errMsg, "returned empty output") || !strings.Contains(result.errMsg, "after tool execution") {
+		t.Errorf("errMsg: got %q, want a typed empty-output failure with tool context", result.errMsg)
+	}
+	if result.output != "" {
+		t.Errorf("output: got %q, want empty", result.output)
+	}
+	if result.usage.InputTokens != 56089 || result.usage.OutputTokens != 207 {
+		t.Errorf("usage: got input=%d output=%d, want input=56089 output=207", result.usage.InputTokens, result.usage.OutputTokens)
 	}
 
 	close(ch)
+	var toolUses, toolResults int
+	for msg := range ch {
+		switch msg.Type {
+		case MessageToolUse:
+			toolUses++
+		case MessageToolResult:
+			toolResults++
+		}
+	}
+	if toolUses != 2 || toolResults != 2 {
+		t.Fatalf("preserved tool evidence: got %d uses/%d results, want 2/2", toolUses, toolResults)
+	}
 }
 
 func TestOpencodeProcessEventsMultiStepHappyPath(t *testing.T) {
@@ -984,14 +1009,15 @@ func TestOpencodeProcessEventsToolWithStopFinishThenContinuation(t *testing.T) {
 	close(ch)
 }
 
-func TestOpencodeProcessEventsProviderExecutedToolWithStopFinish(t *testing.T) {
+func TestOpencodeProcessEventsProviderExecutedToolWithoutOutputFailsClosed(t *testing.T) {
 	t.Parallel()
 
 	b := &opencodeBackend{cfg: Config{Logger: slog.Default()}}
 	ch := make(chan Message, 256)
 
-	// Provider-executed tools do not require OpenCode to feed a local tool
-	// result back to the model, so a "stop" finish remains terminal.
+	// Provider-executed tools do not require a continuation step, so "stop" is
+	// structurally terminal. It is still not a completed task delivery without
+	// non-empty final text.
 	lines := strings.Join([]string{
 		`{"type":"step_start","timestamp":1000,"sessionID":"ses_provider_tool","part":{"type":"step-start"}}`,
 		`{"type":"tool_use","timestamp":1001,"sessionID":"ses_provider_tool","part":{"type":"tool","tool":"web_search","callID":"call_1","metadata":{"providerExecuted":true},"state":{"status":"completed","input":{"query":"weather"},"output":"sunny"}}}`,
@@ -1000,11 +1026,11 @@ func TestOpencodeProcessEventsProviderExecutedToolWithStopFinish(t *testing.T) {
 
 	result := b.processEvents(strings.NewReader(lines), ch)
 
-	if result.status != "completed" {
-		t.Errorf("status: got %q, want %q", result.status, "completed")
+	if result.status != "failed" {
+		t.Errorf("status: got %q, want %q", result.status, "failed")
 	}
-	if result.errMsg != "" {
-		t.Errorf("errMsg: got %q, want empty", result.errMsg)
+	if !strings.Contains(result.errMsg, "returned empty output after tool execution") {
+		t.Errorf("errMsg: got %q, want typed empty-output failure", result.errMsg)
 	}
 
 	close(ch)
@@ -1047,14 +1073,16 @@ func TestOpencodeProcessEventsToolErrorThenCleanFinish(t *testing.T) {
 	// A recovered tool error is normal in a healthy run: opencode emits tool_use
 	// only on terminal states, and a failed tool arrives with state.status=="error"
 	// (real wire shape from `opencode run --format json`). The run continues and
-	// closes every step with step_finish, so status must stay "completed". The
+	// publishes a final answer, and closes every step with step_finish, so status
+	// must stay "completed". The
 	// earlier pending-tool heuristic recorded the error tool's callID, never
 	// drained it, and wrongly reported this healthy run as failed.
 	lines := strings.Join([]string{
 		`{"type":"step_start","timestamp":1000,"sessionID":"ses_toolerr","part":{"type":"step-start"}}`,
 		`{"type":"tool_use","timestamp":1001,"sessionID":"ses_toolerr","part":{"type":"tool","tool":"read","callID":"functions.read:1","state":{"status":"error","input":{"filePath":"/nonexistent-path-xyz/also-missing.md"},"error":"File not found: /nonexistent-path-xyz/also-missing.md"}}}`,
 		`{"type":"tool_use","timestamp":1002,"sessionID":"ses_toolerr","part":{"type":"tool","tool":"bash","callID":"functions.bash:0","state":{"status":"completed","input":{"command":"echo hi"},"output":"hi\n"}}}`,
-		`{"type":"step_finish","timestamp":1003,"sessionID":"ses_toolerr","part":{"type":"step-finish"}}`,
+		`{"type":"text","timestamp":1003,"sessionID":"ses_toolerr","part":{"type":"text","text":"Recovered and completed."}}`,
+		`{"type":"step_finish","timestamp":1004,"sessionID":"ses_toolerr","part":{"type":"step-finish"}}`,
 	}, "\n")
 
 	result := b.processEvents(strings.NewReader(lines), ch)
@@ -1064,6 +1092,9 @@ func TestOpencodeProcessEventsToolErrorThenCleanFinish(t *testing.T) {
 	}
 	if result.errMsg != "" {
 		t.Errorf("errMsg: got %q, want empty", result.errMsg)
+	}
+	if result.output != "Recovered and completed." {
+		t.Errorf("output: got %q, want final recovery text", result.output)
 	}
 
 	close(ch)

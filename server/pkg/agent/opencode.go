@@ -387,16 +387,24 @@ func (b *opencodeBackend) processEvents(r io.Reader, ch chan<- Message) eventRes
 		noTerminalSignal = true
 	}
 
-	// A structurally closed stream is still not a successful model response
-	// when it contains no observable output at all. This is the exact wire shape
-	// produced by a silent provider/carrier failure: step_finish(reason="stop")
-	// with zero usage, but no non-empty text or tool invocation. Fail closed so
-	// callers cannot persist that response as a false-green completion.
-	if finalStatus == "completed" && !sawNonEmptyText && !sawToolUse &&
-		usage.InputTokens == 0 && usage.OutputTokens == 0 &&
-		usage.CacheReadTokens == 0 && usage.CacheWriteTokens == 0 {
+	// A structurally closed stream is still not a successful task response when
+	// it publishes no non-empty final text. Tool calls and their results remain
+	// observable execution evidence in ch, but they do not satisfy the task's
+	// output contract by themselves: HIV-967 executed two read tools, returned
+	// positive usage, skipped its requested artifact, and was otherwise recorded
+	// as completed. Emit a typed empty-output error so the task layer can apply
+	// its existing bounded max_attempts policy without hiding or looping the run.
+	if finalStatus == "completed" && !sawNonEmptyText {
 		finalStatus = "failed"
-		finalError = "opencode returned an empty zero-usage completion"
+		switch {
+		case sawToolUse:
+			finalError = "opencode returned empty output after tool execution"
+		case usage.InputTokens == 0 && usage.OutputTokens == 0 &&
+			usage.CacheReadTokens == 0 && usage.CacheWriteTokens == 0:
+			finalError = "opencode returned empty output: zero-usage completion"
+		default:
+			finalError = "opencode returned empty output after a completed run"
+		}
 	}
 
 	return eventResult{
