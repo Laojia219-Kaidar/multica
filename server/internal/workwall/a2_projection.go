@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/multica-ai/multica/server/internal/liveactivity"
+	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -144,32 +145,46 @@ func a2ForeignWorkRef(in A2PaneInput) bool {
 	return in.RefWorkspaceID == "" || !strings.EqualFold(in.RefWorkspaceID, in.RequestWorkspaceID)
 }
 
-// a2ProjectDrift reports whether the work_ref's embedded project id disagrees
-// with the Issue authority's project. Empty/non-UUID claims are not compared
-// (nothing provable to check); a provable disagreement is drift.
+// a2ProjectDrift reports whether the work_ref's project claim disagrees with
+// the Issue authority. When the Issue HAS a project, the claim must be
+// present, a valid UUID, and exactly equal — a missing or malformed claim is
+// drift, not a pass. Only an Issue without project authority (no project
+// assigned) permits an inbox-style or missing claim.
 func a2ProjectDrift(in A2PaneInput) bool {
-	if in.Issue == nil || !in.Issue.ProjectID.Valid || in.RefProjectID == "" {
-		return false
+	if in.Issue == nil || !in.Issue.ProjectID.Valid {
+		return false // no project authority on the issue: nothing to compare
 	}
-	return !strings.EqualFold(in.RefProjectID, uuidStr(in.Issue.ProjectID))
+	claim := strings.TrimSpace(in.RefProjectID)
+	if claim == "" {
+		return true // issue has a project but the ref claims none
+	}
+	claimed, err := util.ParseUUID(claim)
+	if err != nil || !claimed.Valid {
+		return true // malformed claim against a project-bearing issue
+	}
+	return !strings.EqualFold(uuidStr(claimed), uuidStr(in.Issue.ProjectID))
 }
 
-// a2CanonicalReceipt returns the receipt only when it is provably about this
-// tenant, task, and issue. Foreign rows are dropped, never trusted.
+// a2CanonicalReceipt returns the receipt only when the pane has BOTH a
+// verified task and a known issue, and the receipt matches that task, issue,
+// and workspace exactly (B4-2). With no task or no issue the receipt is
+// dropped and can establish neither completion nor working.
 func a2CanonicalReceipt(in A2PaneInput) *db.ExecutionReceipt {
 	r := in.Receipt
 	if r == nil {
 		return nil
 	}
+	task := a2TaskForRef(in)
+	if task == nil || !task.ID.Valid || in.Issue == nil || !in.Issue.ID.Valid {
+		return nil
+	}
 	if in.RequestWorkspaceID != "" && !strings.EqualFold(uuidStr(r.WorkspaceID), in.RequestWorkspaceID) {
 		return nil
 	}
-	if r.TaskID.Valid && in.Task != nil && in.Task.ID.Valid &&
-		uuidStr(r.TaskID) != uuidStr(in.Task.ID) {
+	if !r.TaskID.Valid || !strings.EqualFold(uuidStr(r.TaskID), uuidStr(task.ID)) {
 		return nil
 	}
-	if r.IssueID.Valid && in.Issue != nil && in.Issue.ID.Valid &&
-		uuidStr(r.IssueID) != uuidStr(in.Issue.ID) {
+	if !r.IssueID.Valid || !strings.EqualFold(uuidStr(r.IssueID), uuidStr(in.Issue.ID)) {
 		return nil
 	}
 	return r
@@ -183,28 +198,41 @@ func a2BoundDispatch(in A2PaneInput) *db.AssignmentDispatchReceipt {
 	if d == nil {
 		return nil
 	}
+	// B4-1: the full chain must hold — Task -> Receipt.task_id ->
+	// Receipt.assignment_command_id -> Dispatch.command_id ->
+	// Dispatch.initial_task_id -> Task — plus exact workspace and Issue
+	// binding at every hop.
 	task := a2TaskForRef(in)
 	if task == nil || !task.ID.Valid {
 		return nil
 	}
-	if !d.InitialTaskID.Valid || uuidStr(d.InitialTaskID) != uuidStr(task.ID) {
+	if !d.InitialTaskID.Valid || !strings.EqualFold(uuidStr(d.InitialTaskID), uuidStr(task.ID)) {
 		return nil
 	}
-	if in.Issue != nil && in.Issue.ID.Valid && d.IssueID.Valid &&
-		uuidStr(d.IssueID) != uuidStr(in.Issue.ID) {
+	// B4-4: with a known Issue the dispatch's issue must be present and
+	// exactly equal; a missing value is a mismatch, not a pass.
+	if in.Issue == nil || !in.Issue.ID.Valid {
+		return nil
+	}
+	if !d.IssueID.Valid || !strings.EqualFold(uuidStr(d.IssueID), uuidStr(in.Issue.ID)) {
 		return nil
 	}
 	if in.RequestWorkspaceID != "" && !strings.EqualFold(uuidStr(d.WorkspaceID), in.RequestWorkspaceID) {
 		return nil
 	}
-	// B3-4: the dispatch must be the exact command this task's canonical
-	// receipt names. A dispatch without that receipt — or naming a different
-	// command — can neither own the pane's employee nor establish evidence.
+	// B3-4/B4-1: the dispatch must be the exact command this task's
+	// canonical receipt names, and that receipt must itself be verified for
+	// this task/issue/workspace. A dispatch without that receipt — or naming
+	// a different command — can neither own the pane's employee nor
+	// establish evidence, and the pane is non-active and non-working.
 	r := a2CanonicalReceipt(in)
 	if r == nil || !r.AssignmentCommandID.Valid {
 		return nil
 	}
 	if !strings.EqualFold(uuidStr(d.CommandID), uuidStr(r.AssignmentCommandID)) {
+		return nil
+	}
+	if !strings.EqualFold(uuidStr(r.TaskID), uuidStr(task.ID)) {
 		return nil
 	}
 	return d
@@ -240,13 +268,16 @@ func a2TaskNonTerminal(t *db.AgentTaskQueue) bool {
 	}
 }
 
-// a2HasExactEvidence reports whether this pane carries exact execution
-// evidence: a tenant/task/issue-verified execution receipt for this
-// work_ref's task. Since B3-4 a dispatch alone is never evidence — it only
-// carries ownership on top of the receipt it must match. Ledger events and
-// heartbeats alone are never evidence.
+// a2HasExactEvidence reports whether this pane carries the FULL exact
+// execution chain: verified Task -> Receipt(task_id) ->
+// Receipt(assignment_command_id) -> Dispatch(command_id) ->
+// Dispatch(initial_task_id) -> back to the same Task, with workspace and
+// Issue binding exact at every hop (B4-1). A receipt without its matching
+// dispatch — or a dispatch whose command mismatches — is NOT evidence: the
+// pane is non-active and non-working. Ledger events and heartbeats alone
+// are never evidence.
 func a2HasExactEvidence(in A2PaneInput) bool {
-	return a2CanonicalReceipt(in) != nil
+	return a2BoundDispatch(in) != nil
 }
 
 // a2IssueTerminal reports whether the Issue state authority confirms the work
@@ -603,7 +634,11 @@ func ProjectA2Pane(in A2PaneInput) (A2PaneV1, bool) {
 		employeeID = uuidStr(task.AgentID)
 	}
 	pane.EmployeeID = employeeID
-	if in.Agent != nil {
+	// B4-6: the display agent may only label the pane when it is exactly the
+	// resolved employee. A cross-employee agent row (stale lookup, foreign
+	// id) must never pollute the name: it stays empty.
+	if in.Agent != nil && in.Agent.ID.Valid && employeeID != "" &&
+		strings.EqualFold(uuidStr(in.Agent.ID), employeeID) {
 		pane.EmployeeName = in.Agent.Name
 	}
 	if in.Issue != nil {
