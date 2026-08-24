@@ -88,10 +88,10 @@ func (h *Handler) GetWorkWallA2Snapshot(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	env, err := h.buildA2SnapshotEnvelope(r.Context(), r, workspaceID, wsUUID, eventLimit, member)
+	poll, err := h.buildA2SnapshotPoll(r.Context(), r, workspaceID, wsUUID, eventLimit, member)
 	switch {
 	case err == nil:
-		writeJSON(w, http.StatusOK, env)
+		writeJSON(w, http.StatusOK, poll.env)
 	case errors.Is(err, errA2Access):
 		writeError(w, http.StatusInternalServerError, "failed to resolve agent access")
 	default:
@@ -99,11 +99,24 @@ func (h *Handler) GetWorkWallA2Snapshot(w http.ResponseWriter, r *http.Request) 
 	}
 }
 
-// buildA2SnapshotEnvelope assembles the visibility-filtered envelope for one
+// a2SnapshotPoll is one full snapshot assembly: the RAW projection pane set
+// (before the visibility filter), the caller-resolved allowed agent set, and
+// the visibility-filtered envelope stamped with the stable cursor. The stream
+// needs the raw set alongside the filtered one to tell an access revocation
+// (pane still projects, but its employee became invisible to this caller)
+// from a content change (the pane left the projection); the plain snapshot
+// endpoint only consumes env.
+type a2SnapshotPoll struct {
+	env      *A2SnapshotEnvelopeV1
+	rawPanes []workwall.A2PaneV1
+	allowed  map[string]struct{}
+}
+
+// buildA2SnapshotPoll assembles the visibility-filtered envelope for one
 // caller: A2 projection pane set -> agent-access filter -> envelope with the
-// stable cursor. A failure returns one of the sentinel errors above, never
-// the raw cause.
-func (h *Handler) buildA2SnapshotEnvelope(ctx context.Context, r *http.Request, workspaceID string, wsUUID pgtype.UUID, eventLimit int32, member db.Member) (*A2SnapshotEnvelopeV1, error) {
+// stable cursor, carrying the raw pane set and allowed set alongside. A
+// failure returns one of the sentinel errors above, never the raw cause.
+func (h *Handler) buildA2SnapshotPoll(ctx context.Context, r *http.Request, workspaceID string, wsUUID pgtype.UUID, eventLimit int32, member db.Member) (*a2SnapshotPoll, error) {
 	panes, err := workwall.NewService(h.Queries).A2Snapshot(ctx, wsUUID, eventLimit)
 	if err != nil {
 		return nil, errA2Assemble
@@ -117,7 +130,8 @@ func (h *Handler) buildA2SnapshotEnvelope(ctx context.Context, r *http.Request, 
 		return nil, errA2Access
 	}
 
-	return newA2SnapshotEnvelope(workspaceID, eventLimit, filterA2VisiblePanes(panes, allowed), time.Now().UTC()), nil
+	env := newA2SnapshotEnvelope(workspaceID, eventLimit, filterA2VisiblePanes(panes, allowed), time.Now().UTC())
+	return &a2SnapshotPoll{env: env, rawPanes: panes, allowed: allowed}, nil
 }
 
 // newA2SnapshotEnvelope stamps the envelope around an already
@@ -150,6 +164,53 @@ func filterA2VisiblePanes(panes []workwall.A2PaneV1, allowed map[string]struct{}
 		out = append(out, p)
 	}
 	return out
+}
+
+// a2VisibleWorkRefs indexes the work_refs of an already-filtered pane set —
+// the panes this connection actually showed to the client. Pure.
+func a2VisibleWorkRefs(panes []workwall.A2PaneV1) map[string]struct{} {
+	refs := make(map[string]struct{}, len(panes))
+	for _, p := range panes {
+		refs[p.WorkRef] = struct{}{}
+	}
+	return refs
+}
+
+// a2VisibilityRevocation reports whether any pane that was visible on the
+// previous poll has become INACCESSIBLE on this one: the pane still exists in
+// the raw projection (rawPanes carries its work_ref) but the visibility
+// filter now drops it (it is absent from the filtered visiblePanes). That is
+// an access revocation — its employee became invisible to this caller (or the
+// pane lost its employee attribution, which equally makes it unattributable
+// to any visible employee) — and the stream must close with the redacted
+// access-revoked code rather than silently streaming a shrunken wall.
+//
+// A pane that vanished from the raw projection entirely (the ledger window
+// moved on, the pane no longer projects) is NOT a revocation: the wall
+// content legitimately changed and the next snapshot frame carries it. A nil
+// or empty prevVisible (first poll on a connection) can never revoke.
+// Pure: no I/O.
+func a2VisibilityRevocation(prevVisible map[string]struct{}, rawPanes, visiblePanes []workwall.A2PaneV1) bool {
+	if len(prevVisible) == 0 {
+		return false
+	}
+	present := make(map[string]struct{}, len(rawPanes))
+	for _, p := range rawPanes {
+		present[p.WorkRef] = struct{}{}
+	}
+	visible := make(map[string]struct{}, len(visiblePanes))
+	for _, p := range visiblePanes {
+		visible[p.WorkRef] = struct{}{}
+	}
+	for ref := range prevVisible {
+		if _, stillProjects := present[ref]; !stillProjects {
+			continue // pane left the projection: content change, not access
+		}
+		if _, ok := visible[ref]; !ok {
+			return true // pane still exists but this caller can no longer see it
+		}
+	}
+	return false
 }
 
 // a2SnapshotCursor derives the stable cursor of one filtered pane set: the

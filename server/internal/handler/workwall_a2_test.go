@@ -305,25 +305,38 @@ func TestWorkWallA2SSEFrames(t *testing.T) {
 	}
 }
 
+// newA2TestPoll builds a poll result the way buildA2SnapshotPoll does:
+// filtered envelope plus the raw pane set and allowed set it filtered with.
+func newA2TestPoll(panes []workwall.A2PaneV1, allowed map[string]struct{}) *a2SnapshotPoll {
+	return &a2SnapshotPoll{
+		env:      newA2SnapshotEnvelope(a2TestWorkspaceID, 200, filterA2VisiblePanes(panes, allowed), time.Now().UTC()),
+		rawPanes: panes,
+		allowed:  allowed,
+	}
+}
+
 // TestWorkWallA2StreamPoll pins the per-poll decision table of the stream:
 // changed cursor -> full snapshot frame carrying the new id; unchanged
-// cursor -> keepalive comment; visibility revocation -> error frame and
-// close; transient assembly failure -> error frame, stream stays open.
+// cursor -> keepalive comment; a previously visible pane that still projects
+// but is now filtered out -> access-revoked error frame and close (never the
+// shrunken snapshot); unresolvable visibility (errA2Access) -> same terminal
+// close, fail closed; transient assembly failure -> error frame, stream
+// stays open.
 func TestWorkWallA2StreamPoll(t *testing.T) {
-	panes := []workwall.A2PaneV1{a2TestPane(a2TestEmployeeID)}
-	env := newA2SnapshotEnvelope(a2TestWorkspaceID, 200, panes, time.Now().UTC())
+	employee := a2TestPane(a2TestEmployeeID)
+	poll := newA2TestPoll([]workwall.A2PaneV1{employee}, map[string]struct{}{a2TestEmployeeID: {}})
 	var buf bytes.Buffer
 
 	// Changed (or first) snapshot: full frame with the cursor id.
 	buf.Reset()
-	next, open := emitA2StreamPoll(&buf, env, nil, "")
+	next, _, open := emitA2StreamPoll(&buf, poll, nil, "", nil)
 	if !open {
 		t.Fatal("a successful poll must keep the stream open")
 	}
-	if next != env.Cursor {
-		t.Fatalf("next cursor = %q, want %q", next, env.Cursor)
+	if next != poll.env.Cursor {
+		t.Fatalf("next cursor = %q, want %q", next, poll.env.Cursor)
 	}
-	if !strings.Contains(buf.String(), "id: "+env.Cursor+"\n") ||
+	if !strings.Contains(buf.String(), "id: "+poll.env.Cursor+"\n") ||
 		!strings.Contains(buf.String(), "event: snapshot\n") ||
 		!strings.Contains(buf.String(), A2SnapshotSchemaV1) {
 		t.Fatalf("snapshot frame missing id/event/envelope: %q", buf.String())
@@ -331,21 +344,42 @@ func TestWorkWallA2StreamPoll(t *testing.T) {
 
 	// Unchanged content: keepalive, cursor carried forward.
 	buf.Reset()
-	next, open = emitA2StreamPoll(&buf, env, nil, env.Cursor)
-	if !open || next != env.Cursor {
+	next, _, open = emitA2StreamPoll(&buf, poll, nil, poll.env.Cursor, nil)
+	if !open || next != poll.env.Cursor {
 		t.Fatalf("keepalive poll: open=%v next=%q", open, next)
 	}
 	if got := buf.String(); got != ": keepalive\n\n" {
 		t.Fatalf("unchanged poll must emit only the keepalive comment, got %q", got)
 	}
 
-	// Visibility revocation: terminal error frame, stream closes.
-	buf.Reset()
-	next, open = emitA2StreamPoll(&buf, nil, errA2Access, env.Cursor)
-	if open {
-		t.Fatal("visibility revocation must close the stream")
+	// Previously visible pane still projecting but now filtered out: the
+	// access-revoked terminal frame is written INSTEAD of the shrunken
+	// snapshot, and the stream closes with the cursor unchanged.
+	revokeAllowed := map[string]struct{}{}
+	revoked := newA2TestPoll([]workwall.A2PaneV1{employee}, revokeAllowed)
+	if len(revoked.env.Panes) != 0 {
+		t.Fatalf("fixture: revoked poll must filter the pane out, got %d", len(revoked.env.Panes))
 	}
-	if next != env.Cursor {
+	buf.Reset()
+	next, _, open = emitA2StreamPoll(&buf, revoked, nil, poll.env.Cursor, map[string]struct{}{employee.WorkRef: {}})
+	if open {
+		t.Fatal("an access revocation must close the stream")
+	}
+	if next != poll.env.Cursor {
+		t.Fatalf("closed poll must not advance the cursor, got %q", next)
+	}
+	if got := buf.String(); got != "event: error\ndata: {\"error\":\""+a2SSECodeAccessRevoked+"\"}\n\n" {
+		t.Fatalf("revocation frame = %q", got)
+	}
+
+	// Visibility could not be resolved at all: fail closed, same terminal
+	// frame, stream closes.
+	buf.Reset()
+	next, _, open = emitA2StreamPoll(&buf, nil, errA2Access, poll.env.Cursor, nil)
+	if open {
+		t.Fatal("unresolvable visibility must close the stream")
+	}
+	if next != poll.env.Cursor {
 		t.Fatalf("closed poll must not advance the cursor, got %q", next)
 	}
 	if got := buf.String(); got != "event: error\ndata: {\"error\":\""+a2SSECodeAccessRevoked+"\"}\n\n" {
@@ -354,12 +388,103 @@ func TestWorkWallA2StreamPoll(t *testing.T) {
 
 	// Transient assembly failure: reported, stream stays open.
 	buf.Reset()
-	next, open = emitA2StreamPoll(&buf, nil, errA2Assemble, env.Cursor)
-	if !open || next != env.Cursor {
+	next, _, open = emitA2StreamPoll(&buf, nil, errA2Assemble, poll.env.Cursor, nil)
+	if !open || next != poll.env.Cursor {
 		t.Fatalf("transient failure must keep the stream open and cursor: open=%v next=%q", open, next)
 	}
 	if got := buf.String(); got != "event: error\ndata: {\"error\":\""+a2SSECodeSnapshotFailed+"\"}\n\n" {
 		t.Fatalf("transient failure frame = %q", got)
+	}
+}
+
+// TestWorkWallA2VisibilityRevocation pins the pure revocation detector —
+// the transition logic that separates an access revocation from a content
+// change. A previously visible work_ref that still projects but is now
+// filtered out revokes; a pane that left the projection does not; nothing
+// revokes on the first poll; gaining visibility never revokes.
+func TestWorkWallA2VisibilityRevocation(t *testing.T) {
+	emp := a2TestPane(a2TestEmployeeID)
+	other := a2TestPane("55555555-5555-5555-5555-555555555555")
+
+	both := []workwall.A2PaneV1{emp, other}
+	empOnly := []workwall.A2PaneV1{emp}
+	none := []workwall.A2PaneV1{}
+
+	cases := []struct {
+		name        string
+		prevVisible map[string]struct{}
+		raw         []workwall.A2PaneV1
+		visible     []workwall.A2PaneV1
+		want        bool
+	}{
+		{
+			name:        "first poll never revokes",
+			prevVisible: nil,
+			raw:         both,
+			visible:     empOnly,
+			want:        false,
+		},
+		{
+			name:        "unchanged visibility does not revoke",
+			prevVisible: a2VisibleWorkRefs(empOnly),
+			raw:         both,
+			visible:     empOnly,
+			want:        false,
+		},
+		{
+			name:        "employee revoked while pane still projects",
+			prevVisible: a2VisibleWorkRefs(both),
+			raw:         both,
+			visible:     empOnly,
+			want:        true,
+		},
+		{
+			name:        "all panes revoked",
+			prevVisible: a2VisibleWorkRefs(both),
+			raw:         both,
+			visible:     none,
+			want:        true,
+		},
+		{
+			name:        "pane left the projection entirely is a content change",
+			prevVisible: a2VisibleWorkRefs(both),
+			raw:         empOnly,
+			visible:     empOnly,
+			want:        false,
+		},
+		{
+			name:        "every pane gone is a content change",
+			prevVisible: a2VisibleWorkRefs(both),
+			raw:         none,
+			visible:     none,
+			want:        false,
+		},
+		{
+			name:        "gaining visibility never revokes",
+			prevVisible: a2VisibleWorkRefs(empOnly),
+			raw:         both,
+			visible:     both,
+			want:        false,
+		},
+	}
+	for _, tc := range cases {
+		if got := a2VisibilityRevocation(tc.prevVisible, tc.raw, tc.visible); got != tc.want {
+			t.Errorf("%s: a2VisibilityRevocation = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+
+	// A previously visible pane that loses employee attribution (it now
+	// projects unattributed) can no longer be attributed to any visible
+	// employee: the filter drops it while the pane still exists, so the
+	// stream must treat it as revoked, not as a silently vanished pane.
+	unattributed := emp
+	unattributed.EmployeeID = ""
+	if !a2VisibilityRevocation(
+		map[string]struct{}{emp.WorkRef: {}},
+		[]workwall.A2PaneV1{unattributed},
+		none,
+	) {
+		t.Fatal("a pane that still projects but lost attribution must revoke")
 	}
 }
 

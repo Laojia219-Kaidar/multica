@@ -89,6 +89,12 @@ func (h *Handler) GetWorkWallA2Stream(w http.ResponseWriter, r *http.Request) {
 	// deliberately starts empty even when the client presented a
 	// Last-Event-ID: a reconnect always gets the full snapshot first.
 	lastCursor := ""
+	// lastVisible tracks the work_refs of the panes actually shown on this
+	// connection (empty before the first poll). It is the baseline for the
+	// per-poll access-revocation check: a pane that was visible before and
+	// still projects but is now filtered out means the caller lost sight of
+	// an employee it was watching — the stream must close, not shrink.
+	var lastVisible map[string]struct{}
 
 	// emit runs one poll: DB membership recheck, snapshot assembly with
 	// visibility recheck, then the frame decision. It returns false only
@@ -104,9 +110,12 @@ func (h *Handler) GetWorkWallA2Stream(w http.ResponseWriter, r *http.Request) {
 			return false
 		}
 
-		env, err := h.buildA2SnapshotEnvelope(r.Context(), r, workspaceID, wsUUID, eventLimit, member)
-		next, keepOpen := emitA2StreamPoll(w, env, err, lastCursor)
+		poll, err := h.buildA2SnapshotPoll(r.Context(), r, workspaceID, wsUUID, eventLimit, member)
+		next, visible, keepOpen := emitA2StreamPoll(w, poll, err, lastCursor, lastVisible)
 		lastCursor = next
+		if keepOpen {
+			lastVisible = visible
+		}
 		return keepOpen
 	}
 
@@ -133,35 +142,51 @@ func (h *Handler) GetWorkWallA2Stream(w http.ResponseWriter, r *http.Request) {
 }
 
 // emitA2StreamPoll writes one poll's frames and reports the connection's
-// next state. env/err is the poll result from buildA2SnapshotEnvelope and
-// lastCursor is the cursor last written to this connection. It returns the
-// cursor to carry forward (unchanged on keepalive and on error) and whether
-// the stream stays open: a visibility revocation (errA2Access) is terminal
-// and closes the connection, a transient assembly failure is reported but
-// keeps the stream open, and an unchanged cursor yields a keepalive comment
-// instead of re-sending the pane set.
-func emitA2StreamPoll(w io.Writer, env *A2SnapshotEnvelopeV1, err error, lastCursor string) (string, bool) {
+// next state. poll/err is the result from buildA2SnapshotPoll, lastCursor is
+// the cursor last written to this connection and prevVisible the work_refs
+// of the panes the connection showed on the previous poll (nil on connect).
+// It returns the cursor to carry forward, the visible-work_ref baseline to
+// carry forward (both unchanged on keepalive and on error) and whether the
+// stream stays open. Decision table, in order:
+//
+//   - A previously visible pane still projecting but now filtered out is an
+//     ACCESS REVOCATION (a2VisibilityRevocation): the terminal redacted
+//     workwall_a2_access_revoked frame is written — never the shrunken
+//     snapshot — and the stream closes.
+//   - errA2Access (visibility could not even be resolved from the DB) is
+//     treated identically: fail closed. The stream must not keep streaming
+//     to a caller whose access cannot be proven.
+//   - A transient assembly failure (errA2Assemble) is reported with the
+//     redacted snapshot-failed code but keeps the stream open; nothing about
+//     access changed.
+//   - An unchanged cursor yields a keepalive comment instead of re-sending
+//     the pane set; a changed cursor emits the full snapshot with its id.
+func emitA2StreamPoll(w io.Writer, poll *a2SnapshotPoll, err error, lastCursor string, prevVisible map[string]struct{}) (string, map[string]struct{}, bool) {
 	switch {
 	case err == nil:
-		if env.Cursor == lastCursor {
-			writeA2SSEComment(w, "keepalive")
-			return lastCursor, true
+		if a2VisibilityRevocation(prevVisible, poll.rawPanes, poll.env.Panes) {
+			writeA2SSEError(w, a2SSECodeAccessRevoked)
+			return lastCursor, prevVisible, false
 		}
-		data, merr := json.Marshal(env)
+		if poll.env.Cursor == lastCursor {
+			writeA2SSEComment(w, "keepalive")
+			return lastCursor, a2VisibleWorkRefs(poll.env.Panes), true
+		}
+		data, merr := json.Marshal(poll.env)
 		if merr != nil {
 			// The envelope holds no unmarshalable values; this branch is
 			// defensive only. Report, do not close.
 			writeA2SSEError(w, a2SSECodeSnapshotFailed)
-			return lastCursor, true
+			return lastCursor, prevVisible, true
 		}
-		writeA2SSEEvent(w, "snapshot", env.Cursor, data)
-		return env.Cursor, true
+		writeA2SSEEvent(w, "snapshot", poll.env.Cursor, data)
+		return poll.env.Cursor, a2VisibleWorkRefs(poll.env.Panes), true
 	case errors.Is(err, errA2Access):
 		writeA2SSEError(w, a2SSECodeAccessRevoked)
-		return lastCursor, false
+		return lastCursor, prevVisible, false
 	default:
 		writeA2SSEError(w, a2SSECodeSnapshotFailed)
-		return lastCursor, true
+		return lastCursor, prevVisible, true
 	}
 }
 
