@@ -3462,7 +3462,7 @@ describe("ApiClient A2 work wall snapshot (strict parse inside client)", () => {
   const validSnapshot = {
     schema_version: "hivecrew.workwall.a2-snapshot.v1",
     workspace_id: "ws-1",
-    cursor: "sha256:" + "a".repeat(64),
+    cursor: "a".repeat(64),
     observed_at: "2026-08-24T12:00:00Z",
     event_limit: 100,
     panes: [validPane],
@@ -3513,10 +3513,10 @@ describe("ApiClient A2 work wall snapshot (strict parse inside client)", () => {
     ).rejects.toThrow();
   });
 
-  it("fails closed on invalid cursor (uppercase sha256)", async () => {
+  it("fails closed on invalid cursor (uppercase hex)", async () => {
     stubJSON({
       ...validSnapshot,
-      cursor: "SHA256:" + "A".repeat(64),
+      cursor: "A".repeat(64),
     });
     await expect(
       new ApiClient("https://api.example.test").getA2WorkWallSnapshot(),
@@ -3526,7 +3526,17 @@ describe("ApiClient A2 work wall snapshot (strict parse inside client)", () => {
   it("fails closed on invalid cursor (wrong length)", async () => {
     stubJSON({
       ...validSnapshot,
-      cursor: "sha256:" + "a".repeat(40),
+      cursor: "a".repeat(40),
+    });
+    await expect(
+      new ApiClient("https://api.example.test").getA2WorkWallSnapshot(),
+    ).rejects.toThrow();
+  });
+
+  it("fails closed on a sha256: cursor prefix", async () => {
+    stubJSON({
+      ...validSnapshot,
+      cursor: "sha256:" + "a".repeat(64),
     });
     await expect(
       new ApiClient("https://api.example.test").getA2WorkWallSnapshot(),
@@ -3564,6 +3574,116 @@ describe("ApiClient A2 work wall snapshot (strict parse inside client)", () => {
     });
     await expect(
       new ApiClient("https://api.example.test").getA2WorkWallSnapshot(),
+    ).rejects.toThrow();
+  });
+
+  it("workWallSnapshot parses strictly inside ApiClient (roster unknown fail-closed)", async () => {
+    stubJSON([
+      {
+        schema_version: "hivecrew.employee-live-activity.v1",
+        workspace_id: "ws-1",
+        employee_id: "emp-1",
+        agent_id: "agt-1",
+        display_name: "Pixel",
+        presence_state: "working",
+        work_stage: "coding",
+        recent_events: [],
+        source_refs: [],
+        observed_at: "2026-08-24T12:00:00Z",
+        freshness_state: "fresh",
+      },
+    ]);
+
+    const result = await new ApiClient("https://api.example.test")
+      .workWallSnapshot();
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.employee_id).toBe("emp-1");
+    expect(result[0]?.display_name).toBe("Pixel");
+  });
+
+  it("workWallSnapshot rejects unknown fields (strict wire, fail-closed)", async () => {
+    stubJSON([
+      {
+        schema_version: "hivecrew.employee-live-activity.v1",
+        workspace_id: "ws-1",
+        employee_id: "emp-1",
+        agent_id: "agt-1",
+        display_name: "Pixel",
+        presence_state: "working",
+        work_stage: "coding",
+        recent_events: [],
+        source_refs: [],
+        observed_at: "2026-08-24T12:00:00Z",
+        freshness_state: "fresh",
+        secret_field: "oops",
+      },
+    ]);
+    await expect(
+      new ApiClient("https://api.example.test").workWallSnapshot(),
+    ).rejects.toThrow();
+  });
+
+  it("workWallSnapshot rejects unknown presence_state (enum fail-closed)", async () => {
+    stubJSON([
+      {
+        schema_version: "hivecrew.employee-live-activity.v1",
+        workspace_id: "ws-1",
+        employee_id: "emp-1",
+        agent_id: "agt-1",
+        display_name: "Pixel",
+        presence_state: "napping",
+        work_stage: "coding",
+        recent_events: [],
+        source_refs: [],
+        observed_at: "2026-08-24T12:00:00Z",
+        freshness_state: "fresh",
+      },
+    ]);
+    await expect(
+      new ApiClient("https://api.example.test").workWallSnapshot(),
+    ).rejects.toThrow();
+  });
+
+  it("workWallSnapshot rejects unknown work_stage (enum fail-closed)", async () => {
+    stubJSON([
+      {
+        schema_version: "hivecrew.employee-live-activity.v1",
+        workspace_id: "ws-1",
+        employee_id: "emp-1",
+        agent_id: "agt-1",
+        display_name: "Pixel",
+        presence_state: "working",
+        work_stage: "reviewing_hard",
+        recent_events: [],
+        source_refs: [],
+        observed_at: "2026-08-24T12:00:00Z",
+        freshness_state: "fresh",
+      },
+    ]);
+    await expect(
+      new ApiClient("https://api.example.test").workWallSnapshot(),
+    ).rejects.toThrow();
+  });
+
+  it("workWallSnapshot rejects unknown freshness_state (enum fail-closed)", async () => {
+    stubJSON([
+      {
+        schema_version: "hivecrew.employee-live-activity.v1",
+        workspace_id: "ws-1",
+        employee_id: "emp-1",
+        agent_id: "agt-1",
+        display_name: "Pixel",
+        presence_state: "working",
+        work_stage: "coding",
+        recent_events: [],
+        source_refs: [],
+        observed_at: "2026-08-24T12:00:00Z",
+        freshness_state: "sparkling",
+      },
+    ]);
+    await expect(
+      new ApiClient("https://api.example.test").workWallSnapshot(),
     ).rejects.toThrow();
   });
 

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { render, screen } from "@testing-library/react";
+import type { HTMLAttributes } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { WorkWallPage } from "./work-wall-page";
 import type {
@@ -24,6 +25,12 @@ vi.mock("@multica/core/api", () => ({
 
 vi.mock("@multica/core/hooks", () => ({
   useWorkspaceId: () => mockUseWorkspaceId(),
+}));
+
+vi.mock("@multica/ui/components/ui/scroll-area", () => ({
+  ScrollArea: ({ children, ...props }: HTMLAttributes<HTMLDivElement>) => (
+    <div {...props}>{children}</div>
+  ),
 }));
 
 function makeTestQueryClient() {
@@ -94,7 +101,7 @@ describe("WorkWallPage", () => {
     mockGetA2WorkWallSnapshot.mockResolvedValue({
       schema_version: "hivecrew.workwall.a2-snapshot.v1",
       workspace_id: "ws-1",
-      cursor: "sha256:" + "a".repeat(64),
+      cursor: "a".repeat(64),
       observed_at: "2026-08-24T12:00:00Z",
       event_limit: 100,
       panes: [samplePane],
@@ -132,7 +139,7 @@ describe("WorkWallPage", () => {
     mockGetA2WorkWallSnapshot.mockResolvedValue({
       schema_version: "hivecrew.workwall.a2-snapshot.v1",
       workspace_id: "ws-1",
-      cursor: "sha256:" + "a".repeat(64),
+      cursor: "a".repeat(64),
       observed_at: "2026-08-24T12:00:00Z",
       event_limit: 100,
       panes: [samplePane],
@@ -153,7 +160,7 @@ describe("WorkWallPage", () => {
     mockGetA2WorkWallSnapshot.mockResolvedValue({
       schema_version: "hivecrew.workwall.a2-snapshot.v1",
       workspace_id: "ws-1",
-      cursor: "sha256:" + "a".repeat(64),
+      cursor: "a".repeat(64),
       observed_at: "2026-08-24T12:00:00Z",
       event_limit: 100,
       panes: [],

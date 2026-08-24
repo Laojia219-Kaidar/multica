@@ -73,7 +73,7 @@ export function TerminalLiveSection({ panes }: { panes: TerminalPane[] }) {
       <div className="mb-2 flex items-center gap-2">
         <h2 className="text-sm font-medium">Terminal 现场</h2>
         <span className="text-xs text-muted-foreground">
-          {panes.length} 个活跃 pane · {hosts.length} 台主机 · 采集心跳 5s
+          {panes.length} 个活跃 pane · {hosts.length} 台主机 · 采集心跳 10s
         </span>
       </div>
       {panes.length === 0 ? (

@@ -54,7 +54,7 @@ test.describe("A2 工作现场 (Work Wall)", () => {
         body: JSON.stringify({
           schema_version: "hivecrew.workwall.a2-snapshot.v1",
           workspace_id: "ws-1",
-          cursor: "sha256:" + "a".repeat(64),
+          cursor: "a".repeat(64),
           observed_at: "2026-08-24T12:00:00Z",
           event_limit: 100,
           panes: [],
@@ -151,7 +151,7 @@ test.describe("A2 工作现场 (Work Wall)", () => {
         body: JSON.stringify({
           schema_version: "hivecrew.workwall.a2-snapshot.v1",
           workspace_id: "ws-1",
-          cursor: "sha256:" + "a".repeat(64),
+          cursor: "a".repeat(64),
           observed_at: "2026-08-24T12:00:00Z",
           event_limit: 100,
           panes: [
@@ -237,7 +237,7 @@ test.describe("A2 工作现场 (Work Wall)", () => {
         body: JSON.stringify({
           schema_version: "hivecrew.workwall.a2-snapshot.v1",
           workspace_id: "ws-1",
-          cursor: "sha256:" + "a".repeat(64),
+          cursor: "a".repeat(64),
           observed_at: "2026-08-24T12:00:00Z",
           event_limit: 100,
           panes: [
@@ -321,7 +321,7 @@ test.describe("A2 工作现场 (Work Wall)", () => {
         body: JSON.stringify({
           schema_version: "hivecrew.workwall.a2-snapshot.v1",
           workspace_id: "ws-1",
-          cursor: "sha256:" + "a".repeat(64),
+          cursor: "a".repeat(64),
           observed_at: "2026-08-24T12:00:00Z",
           event_limit: 100,
           panes: [
@@ -405,7 +405,7 @@ test.describe("A2 工作现场 (Work Wall)", () => {
         body: JSON.stringify({
           schema_version: "hivecrew.workwall.a2-snapshot.v1",
           workspace_id: "ws-1",
-          cursor: "sha256:" + "a".repeat(64),
+          cursor: "a".repeat(64),
           observed_at: "2026-08-24T12:00:00Z",
           event_limit: 100,
           panes: [],

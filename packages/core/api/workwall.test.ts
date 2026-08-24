@@ -106,7 +106,7 @@ describe("A2 work wall snapshot schema (A2PaneV1 exact)", () => {
   const validSnapshot = {
     schema_version: "hivecrew.workwall.a2-snapshot.v1",
     workspace_id: "ws-1",
-    cursor: "sha256:" + "a".repeat(64),
+    cursor: "a".repeat(64),
     observed_at: "2026-08-24T12:00:00Z",
     event_limit: 100,
     panes: [validPane],
@@ -136,7 +136,7 @@ describe("A2 work wall snapshot schema (A2PaneV1 exact)", () => {
     };
     const snap = parseA2WorkWallSnapshot({
       ...validSnapshot,
-      cursor: "sha256:" + "b".repeat(64),
+      cursor: "b".repeat(64),
       panes: [minimalPane],
     });
     expect(snap.panes[0]?.surface_kind).toBe("event_console");
@@ -197,31 +197,31 @@ describe("A2 work wall snapshot schema (A2PaneV1 exact)", () => {
     expect(snap.event_limit).toBe(1000);
   });
 
-  it("rejects uppercase cursor sha256 (must be lowercase)", () => {
+  it("rejects uppercase cursor hex (must be lowercase)", () => {
     expect(() => parseA2WorkWallSnapshot({
       ...validSnapshot,
-      cursor: "SHA256:" + "A".repeat(64),
+      cursor: "A".repeat(64),
     })).toThrow();
   });
 
   it("rejects cursor with mixed-case hex", () => {
     expect(() => parseA2WorkWallSnapshot({
       ...validSnapshot,
-      cursor: "sha256:" + "Ab".repeat(32),
+      cursor: "Ab".repeat(32),
     })).toThrow();
   });
 
   it("rejects cursor with wrong length", () => {
     expect(() => parseA2WorkWallSnapshot({
       ...validSnapshot,
-      cursor: "sha256:" + "a".repeat(60),
+      cursor: "a".repeat(60),
     })).toThrow();
   });
 
-  it("rejects cursor missing sha256: prefix", () => {
+  it("rejects cursor with sha256: prefix (raw hex only)", () => {
     expect(() => parseA2WorkWallSnapshot({
       ...validSnapshot,
-      cursor: "a".repeat(64),
+      cursor: "sha256:" + "a".repeat(64),
     })).toThrow();
   });
 
@@ -294,7 +294,7 @@ describe("A2 work wall snapshot schema (A2PaneV1 exact)", () => {
     const consolePane = { ...validPane, work_ref: "wr-2", source_event_id: "evt-2", surface_kind: "event_console", session_id: undefined };
     const snap = parseA2WorkWallSnapshot({
       ...validSnapshot,
-      cursor: "sha256:" + "c".repeat(64),
+      cursor: "c".repeat(64),
       panes: [validPane, consolePane],
     });
     expect(snap.panes).toHaveLength(2);

@@ -221,6 +221,7 @@ import { getCurrentSlug } from "../platform/workspace-storage";
 import { parseWithFallback } from "./schema";
 import {
   parseA2WorkWallSnapshot,
+  parseWorkWallSnapshot,
   TerminalPaneSchema,
 } from "./workwall";
 import type {
@@ -3675,7 +3676,8 @@ export class ApiClient {
 
   /** Workspace "工作现场" (work wall) snapshot: one row per accessible agent. */
   async workWallSnapshot(): Promise<EmployeeLiveActivityV1[]> {
-    return this.fetch("/api/work-wall/snapshot");
+    const raw = await this.fetch<unknown>("/api/work-wall/snapshot");
+    return parseWorkWallSnapshot(raw);
   }
 
 

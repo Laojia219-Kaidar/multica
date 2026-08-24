@@ -1,11 +1,18 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
+import type { HTMLAttributes } from "react";
 import { WorkWall } from "./work-wall";
 import type {
   A2Pane,
   EmployeeLiveActivityV1,
   TerminalPane,
 } from "@multica/core/api/workwall";
+
+vi.mock("@multica/ui/components/ui/scroll-area", () => ({
+  ScrollArea: ({ children, ...props }: HTMLAttributes<HTMLDivElement>) => (
+    <div {...props}>{children}</div>
+  ),
+}));
 
 function emp(over: Partial<EmployeeLiveActivityV1> = {}): EmployeeLiveActivityV1 {
   return {
@@ -236,6 +243,56 @@ describe("WorkWall (A2 4×2)", () => {
     expect(screen.getByText("1 / 1")).toBeDefined();
     // Only idle employees (5) fit on one page
     expect(screen.getAllByTestId("work-site-card").length).toBe(5);
+  });
+
+  it("filters by runtime and resets pagination", () => {
+    const employees: EmployeeLiveActivityV1[] = Array.from(
+      { length: 20 },
+      (_, i) =>
+        emp({
+          employee_id: `emp-${i + 1}`,
+          agent_id: `agt-${i + 1}`,
+          display_name: `员工${i + 1}`,
+          runtime_provider: i < 4 ? "prime-qwen-token" : "prime-glm",
+          model_name: i < 4 ? "qwen3.8-max" : "glm-5.3",
+        }),
+    );
+    render(<WorkWall employees={employees} panes={[]} terminalPresence={[]} />);
+
+    fireEvent.click(screen.getByTestId("work-wall-next-page"));
+    expect(screen.getByText("2 / 3")).toBeDefined();
+    fireEvent.change(screen.getByTestId("work-wall-filter-runtime"), {
+      target: { value: "prime-qwen-token" },
+    });
+
+    expect(screen.getByText("1 / 1")).toBeDefined();
+    expect(screen.getAllByTestId("work-site-card")).toHaveLength(4);
+    expect(screen.queryByText("员工5")).toBeNull();
+  });
+
+  it("filters by model and resets pagination", () => {
+    const employees: EmployeeLiveActivityV1[] = Array.from(
+      { length: 20 },
+      (_, i) =>
+        emp({
+          employee_id: `emp-${i + 1}`,
+          agent_id: `agt-${i + 1}`,
+          display_name: `员工${i + 1}`,
+          runtime_provider: i < 3 ? "prime-kimi" : "prime-glm",
+          model_name: i < 3 ? "k3" : "glm-5.3",
+        }),
+    );
+    render(<WorkWall employees={employees} panes={[]} terminalPresence={[]} />);
+
+    fireEvent.click(screen.getByTestId("work-wall-next-page"));
+    expect(screen.getByText("2 / 3")).toBeDefined();
+    fireEvent.change(screen.getByTestId("work-wall-filter-model"), {
+      target: { value: "k3" },
+    });
+
+    expect(screen.getByText("1 / 1")).toBeDefined();
+    expect(screen.getAllByTestId("work-site-card")).toHaveLength(3);
+    expect(screen.queryByText("员工4")).toBeNull();
   });
 
   it("grid has 4 columns at xl breakpoint (4×2 geometry)", () => {

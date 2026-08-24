@@ -210,13 +210,13 @@ export const A2PaneSchema = z
 
 export type A2Pane = z.infer<typeof A2PaneSchema>;
 
-const SHA256_LOWER_PATTERN = /^sha256:[0-9a-f]{64}$/;
+const HEX64_LOWER_PATTERN = /^[0-9a-f]{64}$/;
 
 export const A2SnapshotSchema = z
   .object({
     schema_version: z.literal("hivecrew.workwall.a2-snapshot.v1"),
     workspace_id: z.string(),
-    cursor: z.string().regex(SHA256_LOWER_PATTERN, "cursor must be lowercase sha256 hex digest"),
+    cursor: z.string().regex(HEX64_LOWER_PATTERN, "cursor must be 64 lowercase hex characters"),
     observed_at: z.string(),
     event_limit: z.number().int().min(1).max(1000),
     panes: z.array(A2PaneSchema),

@@ -94,6 +94,8 @@ export function WorkWall({ employees, panes, terminalPresence }: WorkWallProps) 
   );
   const [query, setQuery] = useState("");
   const [projectFilter, setProjectFilter] = useState<string>("all");
+  const [runtimeFilter, setRuntimeFilter] = useState<string>("all");
+  const [modelFilter, setModelFilter] = useState<string>("all");
   const [page, setPage] = useState(0);
 
   const projects = useMemo(
@@ -101,6 +103,26 @@ export function WorkWall({ employees, panes, terminalPresence }: WorkWallProps) 
       Array.from(
         new Set(
           employees.map((e) => e.project_title).filter((v): v is string => !!v),
+        ),
+      ).sort(),
+    [employees],
+  );
+
+  const runtimes = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          employees.map((e) => e.runtime_provider).filter((v): v is string => !!v),
+        ),
+      ).sort(),
+    [employees],
+  );
+
+  const models = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          employees.map((e) => e.model_name).filter((v): v is string => !!v),
         ),
       ).sort(),
     [employees],
@@ -129,12 +151,19 @@ export function WorkWall({ employees, panes, terminalPresence }: WorkWallProps) 
       if (projectFilter !== "all" && e.project_title !== projectFilter) {
         return false;
       }
+      if (runtimeFilter !== "all" && e.runtime_provider !== runtimeFilter) {
+        return false;
+      }
+      if (modelFilter !== "all" && e.model_name !== modelFilter) {
+        return false;
+      }
       if (q !== "") {
         const hay = [
           e.display_name,
           e.project_title,
           e.issue_title,
           e.model_name,
+          e.runtime_provider,
         ]
           .filter((v): v is string => !!v)
           .join(" ")
@@ -143,7 +172,7 @@ export function WorkWall({ employees, panes, terminalPresence }: WorkWallProps) 
       }
       return true;
     });
-  }, [employees, presenceFilter, projectFilter, q]);
+  }, [employees, presenceFilter, projectFilter, runtimeFilter, modelFilter, q]);
 
   // Reset page to 0 whenever any filter changes.
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
@@ -159,6 +188,22 @@ export function WorkWall({ employees, panes, terminalPresence }: WorkWallProps) 
   };
   const handleProjectChange = (v: string) => {
     setProjectFilter(v);
+    setPage(0);
+  };
+  const handleRuntimeChange = (v: string) => {
+    setRuntimeFilter(v);
+    setPage(0);
+  };
+  const handleModelChange = (v: string) => {
+    setModelFilter(v);
+    setPage(0);
+  };
+  const handleResetFilters = () => {
+    setPresenceFilter("all");
+    setProjectFilter("all");
+    setRuntimeFilter("all");
+    setModelFilter("all");
+    setQuery("");
     setPage(0);
   };
   const handleQueryChange = (v: string) => {
@@ -225,6 +270,50 @@ export function WorkWall({ employees, panes, terminalPresence }: WorkWallProps) 
               ))}
             </select>
           ) : null}
+          {runtimes.length > 0 ? (
+            <select
+              value={runtimeFilter}
+              onChange={(e) => handleRuntimeChange(e.target.value)}
+              className="h-8 w-36 rounded-md border border-border bg-background px-2 text-xs text-foreground"
+              data-testid="work-wall-filter-runtime"
+            >
+              <option value="all">全部运行时</option>
+              {runtimes.map((r) => (
+                <option key={r} value={r}>
+                  {r}
+                </option>
+              ))}
+            </select>
+          ) : null}
+          {models.length > 0 ? (
+            <select
+              value={modelFilter}
+              onChange={(e) => handleModelChange(e.target.value)}
+              className="h-8 w-36 rounded-md border border-border bg-background px-2 text-xs text-foreground"
+              data-testid="work-wall-filter-model"
+            >
+              <option value="all">全部模型</option>
+              {models.map((m) => (
+                <option key={m} value={m}>
+                  {m}
+                </option>
+              ))}
+            </select>
+          ) : null}
+          {(presenceFilter !== "all" ||
+            projectFilter !== "all" ||
+            runtimeFilter !== "all" ||
+            modelFilter !== "all" ||
+            query !== "") && (
+            <button
+              type="button"
+              onClick={handleResetFilters}
+              className="h-8 rounded-md border border-border px-2 text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
+              data-testid="work-wall-filter-reset"
+            >
+              重置筛选
+            </button>
+          )}
         </div>
       </div>
 
