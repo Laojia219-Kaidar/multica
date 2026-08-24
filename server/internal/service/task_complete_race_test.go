@@ -293,45 +293,6 @@ func TestProviderNetworkRetrySchedule(t *testing.T) {
 	}
 }
 
-func TestOpencodeEmptyOutputRetryIsTypedAndBounded(t *testing.T) {
-	const errText = "opencode returned empty output after tool execution"
-	reason := taskfailure.Classify(errText).String()
-	if want := taskfailure.ReasonAgentEmptyOrUnparseableOutput.String(); reason != want {
-		t.Fatalf("Classify(%q) = %q, want %q", errText, reason, want)
-	}
-	if !retryableReasons[reason] {
-		t.Fatalf("retryableReasons[%q] = false, want true", reason)
-	}
-	if got := retryAttemptCeiling(reason, 2); got != 2 {
-		t.Fatalf("retryAttemptCeiling(%q, 2) = %d, want 2 (no budget widening)", reason, got)
-	}
-
-	mkTask := func(attempt, max int32) db.AgentTaskQueue {
-		return db.AgentTaskQueue{
-			Attempt:     attempt,
-			MaxAttempts: max,
-			IssueID:     pgtype.UUID{Bytes: [16]byte{1}, Valid: true},
-		}
-	}
-	cases := []struct {
-		name    string
-		attempt int32
-		max     int32
-		want    bool
-	}{
-		{name: "default budget allows one recovery", attempt: 1, max: 2, want: true},
-		{name: "default budget stops after recovery", attempt: 2, max: 2, want: false},
-		{name: "explicitly disabled retry stays disabled", attempt: 1, max: 1, want: false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := retryEligible(reason, mkTask(tc.attempt, tc.max)); got != tc.want {
-				t.Fatalf("retryEligible(attempt=%d/max=%d) = %v, want %v", tc.attempt, tc.max, got, tc.want)
-			}
-		})
-	}
-}
-
 func TestZaraStrictCanaryNeverAutoRetries(t *testing.T) {
 	task := db.AgentTaskQueue{
 		Attempt:     1,
@@ -370,7 +331,6 @@ func TestTaskFailureClassifiers(t *testing.T) {
 		// Transient mid-stream provider disconnect (MUL-4910): retryable, and
 		// resume-safe so the retry continues the truncated conversation.
 		{reason: "agent_error.provider_network", wantType: "agent_error", wantResumeOK: true, wantRetry: true},
-		{reason: "agent_error.empty_or_unparseable_output", wantType: "agent_error", wantResumeOK: true, wantRetry: true},
 		{reason: "runtime_recovery", wantType: "runtime", wantResumeOK: true, wantRetry: true},
 		{reason: "iteration_limit", wantType: "agent_output", wantResumeOK: false, wantRetry: false},
 		{reason: "api_invalid_request", wantType: "agent_error", wantResumeOK: false, wantRetry: false},

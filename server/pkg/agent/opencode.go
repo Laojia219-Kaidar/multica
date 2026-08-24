@@ -392,8 +392,9 @@ func (b *opencodeBackend) processEvents(r io.Reader, ch chan<- Message) eventRes
 	// observable execution evidence in ch, but they do not satisfy the task's
 	// output contract by themselves: HIV-967 executed two read tools, returned
 	// positive usage, skipped its requested artifact, and was otherwise recorded
-	// as completed. Emit a typed empty-output error so the task layer can apply
-	// its existing bounded max_attempts policy without hiding or looping the run.
+	// as completed. Emit a typed empty-output error so callers record a visible
+	// terminal failure rather than a false-green completion. Any follow-up is an
+	// explicit lifecycle decision; this carrier adapter does not request one.
 	if finalStatus == "completed" && !sawNonEmptyText {
 		finalStatus = "failed"
 		switch {
