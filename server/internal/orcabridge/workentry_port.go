@@ -280,6 +280,15 @@ func (a *WorkEntryServiceAdapter) ClaimScope(ctx context.Context, in ScopeClaimI
 		strings.TrimSpace(in.InstanceID) == "" || strings.TrimSpace(in.SessionID) == "" {
 		return ScopeClaimResult{}, fmt.Errorf("%w: scope claim input is incomplete", ErrInvalidChain)
 	}
+	// The claim event's own OccurredAt/ObservedAt are the real attempt and
+	// observation times of this ClaimScope call; the lease expiry is only a
+	// payload field (it is protocol state, not when the event happened).
+	// A bridge with an injected clock passes AttemptAt; zero means now.
+	attemptAt := in.AttemptAt
+	if attemptAt.IsZero() {
+		attemptAt = time.Now()
+	}
+	attemptStamp := attemptAt.UTC().Format(time.RFC3339Nano)
 	payload := map[string]any{
 		"claim":       true,
 		"instance_id": in.InstanceID,
@@ -292,8 +301,8 @@ func (a *WorkEntryServiceAdapter) ClaimScope(ctx context.Context, in ScopeClaimI
 		EventType:      workentry.EventCheckpoint,
 		EventPayload:   payload,
 		IdempotencyKey: in.ClaimKey,
-		OccurredAt:     in.ExpiresAt.UTC().Format(time.RFC3339Nano),
-		ObservedAt:     in.ExpiresAt.UTC().Format(time.RFC3339Nano),
+		OccurredAt:     attemptStamp,
+		ObservedAt:     attemptStamp,
 	}); err != nil {
 		if !errors.Is(err, workentry.ErrConflict) {
 			return ScopeClaimResult{}, fmt.Errorf("orcabridge: append scope claim: %w", err)

@@ -202,3 +202,40 @@ R3 verification (go1.26.6 darwin/arm64): `gofmt -l internal/orcabridge/`
 clean; `go test ./internal/orcabridge -count=1` ok (79 tests);
 `go test -race ./internal/orcabridge -count=1` ok; `go vet
 ./internal/orcabridge` pass; `go build ./...` pass; `git diff --check` clean.
+
+## Independent-review corrections (R4)
+
+Two revision findings fixed on top of 5d3e074c9:
+
+1. **Slow side effect vs lease TTL.** The R3 lease did not fence the Orca
+   creates: if a RunCreate/TaskCreate/WorkerStart ran slower than LeaseTTL, a
+   generation+1 takeover could issue a duplicate side effect while the
+   original was still in flight. Chosen remedy (smallest, honest):
+   fail-closed takeover. `acquireCreateClaim` now returns the acquired lease
+   expiry and a new `withinLease` gate refuses to start the unfenced side
+   effect once the clock is past it (`ErrClaimLeaseExpired`) — no takeover
+   into a create without committed evidence, because the Orca create calls
+   are not fenced or idempotent-keyed. Reconciliation (evidence read plus
+   Orca marker scan) adopts whatever the expired holder eventually created.
+   New tests block the Orca fake inside the create call on bridge A, expire
+   A's lease deterministically via an injected clock, run bridge B
+   concurrently, then release A — proving exactly one Run
+   (`TestSlowRunCreateBeyondLeaseFailsClosedNoDuplicate`), one Task
+   (`...TaskCreate...`), and one Dispatch/Worker (`...WorkerStart...`) across
+   both bridges, plus a direct `TestWithinLeaseFailsClosedAfterExpiry` unit
+   proof. (Renewal/downstream fencing deliberately not added: it would
+   require new Orca-side idempotency contract; recorded as an A2 option.)
+2. **Claim event timestamps.** `WorkEntryServiceAdapter.ClaimScope` now uses
+   the real attempt/observation time for the event's OccurredAt/ObservedAt
+   (injectable `ScopeClaimInput.AttemptAt`, defaulting to `time.Now`); the
+   lease expiry lives only in the payload as `expires_at`. The bridge passes
+   its (test-injectable) clock so claim stamps stay coherent.
+   `TestClaimScopeUsesRealAttemptTime` reads the stored event through the
+   kernel replay and asserts the stamps and payload separation.
+
+R4 verification (go1.26.6 darwin/arm64): `gofmt -l` clean; `go test
+./internal/orcabridge -count=1` ok (84 tests); `go test -race
+./internal/orcabridge -count=1` ok; `go vet ./internal/orcabridge` pass;
+`go build ./...` pass; `git diff --check` clean. Files touched stay within
+the established allowlist (bridge/coordination/workentry ports + tests +
+this evidence file).

@@ -33,6 +33,14 @@ var (
 	// ErrScopeHeld means the scope claim is held by a live peer and the
 	// bounded wait expired; the caller fails closed without creating.
 	ErrScopeHeld = errors.New("orcabridge: creation scope claim is held by another bridge instance")
+	// ErrClaimLeaseExpired means the claim lease expired before the side
+	// effect could run. Takeover is deliberately forbidden here: the Orca
+	// create calls are not fenced or idempotent against a previous holder,
+	// so a second holder whose effect lands after an expired one would
+	// duplicate the Run/Task/Worker. The caller fails closed and relies on
+	// the next reconcile pass (evidence read plus Orca marker scan) to adopt
+	// whatever the previous holder actually created.
+	ErrClaimLeaseExpired = errors.New("orcabridge: claim lease expired before the create side effect; takeover is forbidden without a downstream fence")
 )
 
 // Coordination timing defaults.
@@ -59,6 +67,9 @@ type ScopeClaimInput struct {
 	Generation int
 	// ExpiresAt is the lease expiry recorded in the claim payload.
 	ExpiresAt time.Time
+	// AttemptAt is when this claim attempt is being made; the claim event's
+	// OccurredAt/ObservedAt use it. Zero means time.Now at the port.
+	AttemptAt time.Time
 }
 
 // ScopeClaimHolder is the parsed holder of an existing claim.
@@ -102,7 +113,9 @@ func claimKeyFor(base string, generation int) string {
 // and waits for the committed result instead of re-entering the create
 // section.
 
-// acquireCreateClaim runs the claim protocol for one creation scope:
+// acquireCreateClaim runs the claim protocol for one creation scope. The
+// returned lease expiry gates the create call: side effects must not start
+// after it (see ErrClaimLeaseExpired).
 //
 //   - attempt the claim at the current generation (generation 0 first);
 //   - if held and the holder's mapping evidence has appeared, return
@@ -119,11 +132,12 @@ func (b *Bridge) acquireCreateClaim(
 	ctx context.Context,
 	workRef, baseKey string,
 	probeCommitted func(context.Context) bool,
-) error {
+) (time.Time, error) {
 	generation := 0
 	deadline := b.now().Add(b.claimMaxWait())
 	for attempt := 0; attempt < maxClaimAttempts; attempt++ {
-		expiresAt := b.now().Add(b.scopeLeaseTTL())
+		attemptAt := b.now()
+		expiresAt := attemptAt.Add(b.scopeLeaseTTL())
 		result, err := b.Entry.ClaimScope(ctx, ScopeClaimInput{
 			WorkRef:    workRef,
 			ClaimKey:   claimKeyFor(baseKey, generation),
@@ -131,16 +145,17 @@ func (b *Bridge) acquireCreateClaim(
 			SessionID:  b.Actor.SessionID,
 			Generation: generation,
 			ExpiresAt:  expiresAt,
+			AttemptAt:  attemptAt,
 		})
 		if err != nil {
-			return fmt.Errorf("orcabridge: claim creation scope %s: %w", baseKey, err)
+			return time.Time{}, fmt.Errorf("orcabridge: claim creation scope %s: %w", baseKey, err)
 		}
 		if result.Acquired {
-			return nil
+			return expiresAt, nil
 		}
 		// Held: has the holder committed the result?
 		if probeCommitted(ctx) {
-			return fmt.Errorf("%w: %s", ErrScopeAlreadyCommitted, baseKey)
+			return time.Time{}, fmt.Errorf("%w: %s", ErrScopeAlreadyCommitted, baseKey)
 		}
 		// Expired holder: take over at the next generation.
 		if !result.Holder.Parsed || result.Holder.ExpiresAt.Before(b.now()) {
@@ -148,14 +163,27 @@ func (b *Bridge) acquireCreateClaim(
 			continue
 		}
 		if b.now().After(deadline) {
-			return fmt.Errorf("%w: %s held by %s (lease expires %s)",
+			return time.Time{}, fmt.Errorf("%w: %s held by %s (lease expires %s)",
 				ErrScopeHeld, baseKey, result.Holder.InstanceID, result.Holder.ExpiresAt.Format(time.RFC3339))
 		}
 		if err := sleepContext(ctx, b.claimPoll()); err != nil {
-			return err
+			return time.Time{}, err
 		}
 	}
-	return fmt.Errorf("%w: %s after %d attempts", ErrScopeHeld, baseKey, maxClaimAttempts)
+	return time.Time{}, fmt.Errorf("%w: %s after %d attempts", ErrScopeHeld, baseKey, maxClaimAttempts)
+}
+
+// withinLease runs fn only while the acquired claim lease is still live. If
+// the lease has expired (for example after a slow Orca CLI call that
+// consumed the TTL, or a process pause), it fails closed with
+// ErrClaimLeaseExpired instead of running the side effect: without a
+// downstream fence or idempotent create, a second holder could otherwise
+// duplicate the Run/Task/Worker the previous holder may still create.
+func (b *Bridge) withinLease(leaseExpiresAt time.Time) error {
+	if b.now().After(leaseExpiresAt) {
+		return fmt.Errorf("%w (lease ended %s)", ErrClaimLeaseExpired, leaseExpiresAt.Format(time.RFC3339))
+	}
+	return nil
 }
 
 func sleepContext(ctx context.Context, d time.Duration) error {

@@ -248,7 +248,7 @@ func (b *Bridge) ensureProjectRunLocked(ctx context.Context, ref ProjectRef) (st
 
 	// Creation claim: exactly one Bridge instance (across independent
 	// objects, connections, and restarts) may call RunCreate for this scope.
-	claimErr := b.acquireCreateClaim(ctx, linkage.WorkRef, runCreateClaimBase(ref.Chain), func(ctx context.Context) bool {
+	leaseExpiresAt, claimErr := b.acquireCreateClaim(ctx, linkage.WorkRef, runCreateClaimBase(ref.Chain), func(ctx context.Context) bool {
 		return b.readCommittedRun(ctx, linkage.WorkRef, ref.Chain) != ""
 	})
 	if claimErr != nil {
@@ -288,6 +288,13 @@ func (b *Bridge) ensureProjectRunLocked(ctx context.Context, ref ProjectRef) (st
 		}
 	}
 
+	// Lease gate: never start the side effect after the claim expired. The
+	// Orca create is not fenced, so a takeover here could duplicate a Run
+	// the expired holder may still be creating; fail closed instead and let
+	// reconciliation adopt whatever eventually landed.
+	if err := b.withinLease(leaseExpiresAt); err != nil {
+		return "", err
+	}
 	runID, err := b.Client.RunCreate(ctx, objective)
 	if err != nil {
 		return "", fmt.Errorf("orcabridge: create orca run: %w", err)
@@ -412,7 +419,7 @@ func (b *Bridge) ensureIssueTaskLocked(ctx context.Context, ref TaskRef) (string
 	}
 
 	// Creation claim: exactly one Bridge instance may call TaskCreate.
-	claimErr := b.acquireCreateClaim(ctx, linkage.WorkRef, taskCreateClaimBase(ref.Chain), func(ctx context.Context) bool {
+	leaseExpiresAt, claimErr := b.acquireCreateClaim(ctx, linkage.WorkRef, taskCreateClaimBase(ref.Chain), func(ctx context.Context) bool {
 		return b.readCommittedTask(ctx, linkage.WorkRef, ref.Chain) != ""
 	})
 	if claimErr != nil {
@@ -442,6 +449,10 @@ func (b *Bridge) ensureIssueTaskLocked(ctx context.Context, ref TaskRef) (string
 		return adopt(orphan)
 	}
 
+	// Lease gate before the unfenced side effect (see ErrClaimLeaseExpired).
+	if err := b.withinLease(leaseExpiresAt); err != nil {
+		return "", "", err
+	}
 	createdTaskID, err := b.Client.TaskCreate(ctx, TaskCreateInput{RunID: runID, Spec: spec, Title: title})
 	if err != nil {
 		return "", "", fmt.Errorf("orcabridge: create orca task: %w", err)
@@ -675,7 +686,7 @@ func (b *Bridge) runClaimedTaskLocked(ctx context.Context, claimed DaemonTask, c
 	// for this assignment scope. The probe also treats an Orca-side orphan
 	// dispatch (crashed between start and evidence) as committed so waiters
 	// adopt instead of racing a second start.
-	claimErr := b.acquireCreateClaim(ctx, linkage.WorkRef, workerStartClaimBase(chain), func(ctx context.Context) bool {
+	leaseExpiresAt, claimErr := b.acquireCreateClaim(ctx, linkage.WorkRef, workerStartClaimBase(chain), func(ctx context.Context) bool {
 		if committedMapping() != (DispatchMap{}) {
 			return true
 		}
@@ -747,6 +758,10 @@ func (b *Bridge) runClaimedTaskLocked(ctx context.Context, claimed DaemonTask, c
 			Status:          "active",
 		}
 	} else {
+		// Lease gate before the unfenced side effect (see ErrClaimLeaseExpired).
+		if err := b.withinLease(leaseExpiresAt); err != nil {
+			return DispatchMap{}, err
+		}
 		receipt, err := b.Client.WorkerStart(ctx, WorkerStartInput{
 			TaskID:       orcaTaskID,
 			RunID:        orcaRunID,

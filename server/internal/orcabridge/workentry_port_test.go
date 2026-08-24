@@ -324,3 +324,50 @@ func TestAppendEvidenceRedactsDottedKeysAndNestedArrays(t *testing.T) {
 		t.Fatalf("dotted key leaked from string slice: %+v", tokens)
 	}
 }
+
+// R4: the claim event's OccurredAt/ObservedAt must be the real attempt time,
+// never the lease expiry.
+func TestClaimScopeUsesRealAttemptTime(t *testing.T) {
+	adapter := newKernel(t)
+	ctx := context.Background()
+	chain := validChain()
+	linkage, err := adapter.RegisterLinkage(ctx, LinkageInput{Chain: chain, Actor: bridgeActor(), MappingKind: "dispatch"})
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	attempt := time.Date(2026, 8, 24, 15, 30, 0, 0, time.UTC)
+	expires := attempt.Add(30 * time.Second)
+	result, err := adapter.ClaimScope(ctx, ScopeClaimInput{
+		WorkRef:    linkage.WorkRef,
+		ClaimKey:   "claim-attempt-time-1",
+		InstanceID: "bridge-x",
+		SessionID:  bridgeActor().SessionID,
+		Generation: 0,
+		ExpiresAt:  expires,
+		AttemptAt:  attempt,
+	})
+	if err != nil || !result.Acquired {
+		t.Fatalf("ClaimScope: %+v err=%v", result, err)
+	}
+	// Read the stored event through the kernel replay and check the stamps.
+	service := adapter.Service
+	replay, err := service.Replay(ctx, workentry.ReplayRequest{
+		WorkspaceID:    adapter.WorkspaceID,
+		IdempotencyKey: "claim-attempt-time-1",
+		Kind:           "event",
+		WorkRef:        linkage.WorkRef,
+	})
+	if err != nil || replay.Event == nil {
+		t.Fatalf("replay: %+v err=%v", replay, err)
+	}
+	if replay.Event.OccurredAt != attempt.Format(time.RFC3339Nano) {
+		t.Fatalf("OccurredAt = %q, want the real attempt time %q", replay.Event.OccurredAt, attempt.Format(time.RFC3339Nano))
+	}
+	if replay.Event.ObservedAt != attempt.Format(time.RFC3339Nano) {
+		t.Fatalf("ObservedAt = %q, want the real observation time %q", replay.Event.ObservedAt, attempt.Format(time.RFC3339Nano))
+	}
+	expiresPayload, _ := replay.Event.EventPayload["expires_at"].(string)
+	if expiresPayload != expires.Format(time.RFC3339Nano) {
+		t.Fatalf("expires_at payload = %q, want %q", expiresPayload, expires.Format(time.RFC3339Nano))
+	}
+}

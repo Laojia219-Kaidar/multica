@@ -20,11 +20,14 @@ type fakeClient struct {
 	dispatch *OrcaDispatch
 	inbox    []OrcaMessage
 
-	runCreateErr    error
-	runListErr      error
-	taskCreateErr   error
-	taskListErr     error
-	dispatchShowErr error
+	runCreateErr     error
+	runCreateBlock   chan struct{} // when set, RunCreate blocks until closed
+	runListErr       error
+	taskCreateErr    error
+	taskCreateBlock  chan struct{} // when set, TaskCreate blocks until closed
+	taskListErr      error
+	dispatchShowErr  error
+	workerStartBlock chan struct{} // when set, WorkerStart blocks until closed
 
 	workerStartFunc func(input WorkerStartInput) (*WorkerReceipt, error)
 
@@ -38,8 +41,22 @@ func newFakeClient() *fakeClient {
 
 func (f *fakeClient) RunCreate(ctx context.Context, objective string) (string, error) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.runCreates++
+	// Slow side effect support: block until released (or the context ends),
+	// simulating an Orca CLI call slower than the claim lease TTL.
+	if f.runCreateBlock != nil {
+		block := f.runCreateBlock
+		f.mu.Unlock()
+		select {
+		case <-block:
+		case <-ctx.Done():
+			return "", ctx.Err()
+		}
+		f.mu.Lock()
+		defer f.mu.Unlock()
+	} else {
+		defer f.mu.Unlock()
+	}
 	if f.runCreateErr != nil {
 		return "", f.runCreateErr
 	}
@@ -56,8 +73,20 @@ func (f *fakeClient) RunList(ctx context.Context) ([]OrcaRun, error) {
 
 func (f *fakeClient) TaskCreate(ctx context.Context, input TaskCreateInput) (string, error) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.taskCreates++
+	if f.taskCreateBlock != nil {
+		block := f.taskCreateBlock
+		f.mu.Unlock()
+		select {
+		case <-block:
+		case <-ctx.Done():
+			return "", ctx.Err()
+		}
+		f.mu.Lock()
+		defer f.mu.Unlock()
+	} else {
+		defer f.mu.Unlock()
+	}
 	if f.taskCreateErr != nil {
 		return "", f.taskCreateErr
 	}
@@ -74,8 +103,20 @@ func (f *fakeClient) TaskList(ctx context.Context, runID string) ([]OrcaTask, er
 
 func (f *fakeClient) WorkerStart(ctx context.Context, input WorkerStartInput) (*WorkerReceipt, error) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.workerStarts++
+	if f.workerStartBlock != nil {
+		block := f.workerStartBlock
+		f.mu.Unlock()
+		select {
+		case <-block:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		f.mu.Lock()
+		defer f.mu.Unlock()
+	} else {
+		defer f.mu.Unlock()
+	}
 	f.lastWorkerInput = input
 	if f.workerStartFunc != nil {
 		return f.workerStartFunc(input)
@@ -226,11 +267,17 @@ func (f *fakeEntry) ClaimScope(ctx context.Context, in ScopeClaimInput) (ScopeCl
 	if in.WorkRef == "" || in.ClaimKey == "" || in.InstanceID == "" || in.SessionID == "" {
 		return ScopeClaimResult{}, ErrInvalidChain
 	}
+	attemptAt := in.AttemptAt
+	if attemptAt.IsZero() {
+		attemptAt = time.Now()
+	}
+	attemptStamp := attemptAt.UTC().Format(time.RFC3339Nano)
 	payload := map[string]any{
 		"claim":       true,
 		"instance_id": in.InstanceID,
 		"generation":  in.Generation,
 		"expires_at":  in.ExpiresAt.UTC().Format(time.RFC3339Nano),
+		"attempt_at":  attemptStamp,
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -1401,5 +1448,227 @@ func TestLiveLeaseFailsClosed(t *testing.T) {
 	}
 	if len(a.client.runs) != 0 {
 		t.Fatalf("fail-closed path still produced %d run objects", len(a.client.runs))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// R4: slow side effect > lease TTL must not duplicate creates
+// ---------------------------------------------------------------------------
+
+// slowClock is a Bridge clock whose time only advances when advanced
+// explicitly, so a test can make the lease expire deterministically while a
+// create call is logically "in flight".
+type slowClock struct {
+	mu  sync.Mutex
+	now time.Time
+}
+
+func (c *slowClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
+}
+
+func (c *slowClock) advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.now = c.now.Add(d)
+}
+
+func TestSlowRunCreateBeyondLeaseFailsClosedNoDuplicate(t *testing.T) {
+	a, b := twinBridges(t)
+	chain := validChain()
+	ref := ProjectRef{Chain: chain, DisplayObjective: "slow create objective"}
+
+	// Bridge A holds the claim; its RunCreate "takes" longer than the lease.
+	clock := &slowClock{now: time.Date(2026, 8, 24, 15, 0, 0, 0, time.UTC)}
+	a.Now = clock.Now
+	lease := 100 * time.Millisecond
+	a.LeaseTTL = lease
+	releaseA := make(chan struct{})
+	a.client.runCreateBlock = releaseA
+
+	errA := make(chan error, 1)
+	go func() {
+		_, err := a.EnsureProjectRun(context.Background(), ref)
+		errA <- err
+	}()
+	// Deterministic barrier: A has started its create (the RunCreate attempt
+	// counter increments before blocking), then the lease expires while the
+	// slow create is still in flight.
+	barrierDeadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(barrierDeadline) {
+		if a.client.currentRunCreates() > 0 {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	clock.advance(lease * 2)
+
+	// Bridge B must NOT take over into a duplicate create: takeover is
+	// forbidden, and with no committed evidence and no Orca marker, B fails
+	// closed with ErrClaimLeaseExpired (or observes A's result only after A
+	// actually commits).
+	b.ClaimPoll = time.Millisecond
+	b.ClaimMaxWait = 200 * time.Millisecond
+	b.LeaseTTL = 100 * time.Millisecond
+	bErrCh := make(chan error, 1)
+	go func() {
+		_, err := b.EnsureProjectRun(context.Background(), ref)
+		bErrCh <- err
+	}()
+
+	// Let A's slow create finish; A commits exactly one Run.
+	close(releaseA)
+	if err := <-errA; err != nil {
+		t.Fatalf("bridge A failed after slow create: %v", err)
+	}
+	if bErr := <-bErrCh; bErr != nil {
+		t.Fatalf("bridge B should converge on A's committed result, got: %v", bErr)
+	}
+	// Exactly one Run object exists across both bridges.
+	if len(a.client.runs) != 1 {
+		t.Fatalf("slow-create path produced %d runs, want exactly 1: %+v", len(a.client.runs), a.client.runs)
+	}
+}
+
+func TestSlowTaskCreateBeyondLeaseFailsClosedNoDuplicate(t *testing.T) {
+	a, b := twinBridges(t)
+	chain := validChain()
+	ref := TaskRef{Chain: chain, Instructions: instructions()}
+
+	clock := &slowClock{now: time.Date(2026, 8, 24, 15, 0, 0, 0, time.UTC)}
+	a.Now = clock.Now
+	lease := 100 * time.Millisecond
+	a.LeaseTTL = lease
+	releaseA := make(chan struct{})
+	a.client.taskCreateBlock = releaseA
+
+	errA := make(chan error, 1)
+	go func() {
+		_, _, err := a.EnsureIssueTask(context.Background(), ref)
+		errA <- err
+	}()
+	// Deterministic barrier: A has entered TaskCreate, then the lease
+	// expires mid-create.
+	barrierDeadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(barrierDeadline) {
+		if a.client.currentTaskCreates() > 0 {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	clock.advance(lease * 2)
+
+	bErrCh := make(chan error, 1)
+	go func() {
+		_, _, err := b.EnsureIssueTask(context.Background(), ref)
+		bErrCh <- err
+	}()
+
+	close(releaseA)
+	if err := <-errA; err != nil {
+		t.Fatalf("bridge A failed after slow task create: %v", err)
+	}
+	if bErr := <-bErrCh; bErr != nil {
+		t.Fatalf("bridge B should converge on A's committed mapping, got: %v", bErr)
+	}
+	// Exactly one Orca Task and one Run across both bridges.
+	totalTasks := 0
+	for _, tasks := range a.client.tasks {
+		totalTasks += len(tasks)
+	}
+	if totalTasks != 1 || len(a.client.runs) != 1 {
+		t.Fatalf("slow task-create path produced %d runs / %d tasks, want 1/1", len(a.client.runs), totalTasks)
+	}
+}
+
+func TestSlowWorkerStartBeyondLeaseFailsClosedNoDuplicate(t *testing.T) {
+	a, b := twinBridges(t)
+	chain := validChain()
+	mapping, err := a.EnsureAssignment(t.Context(), dispatchRef(chain))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.EnsureAssignment(t.Context(), dispatchRef(chain)); err != nil {
+		t.Fatal(err)
+	}
+	claimed := DaemonTask{ID: mapping.Chain.TaskID, WorkspaceID: chain.WorkspaceID, IssueID: mapping.Chain.IssueID}
+
+	clock := &slowClock{now: time.Date(2026, 8, 24, 15, 0, 0, 0, time.UTC)}
+	a.Now = clock.Now
+	lease := 100 * time.Millisecond
+	a.LeaseTTL = lease
+	releaseA := make(chan struct{})
+	a.client.workerStartBlock = releaseA
+
+	errA := make(chan error, 1)
+	go func() {
+		_, err := a.RunClaimedTask(context.Background(), claimed)
+		errA <- err
+	}()
+	barrierDeadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(barrierDeadline) {
+		if a.client.currentWorkerStarts() > 0 {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	clock.advance(lease * 2)
+
+	bErrCh := make(chan error, 1)
+	go func() {
+		_, err := b.RunClaimedTask(context.Background(), claimed)
+		bErrCh <- err
+	}()
+
+	close(releaseA)
+	if err := <-errA; err != nil {
+		t.Fatalf("bridge A failed after slow worker start: %v", err)
+	}
+	if bErr := <-bErrCh; bErr != nil {
+		t.Fatalf("bridge B should converge on A's committed dispatch, got: %v", bErr)
+	}
+	if a.client.workerStarts != 1 {
+		t.Fatalf("slow worker-start path started %d workers, want exactly 1", a.client.workerStarts)
+	}
+	if len(a.daemon.started) != 1 {
+		t.Fatalf("hivecrew task started %d times, want 1", len(a.daemon.started))
+	}
+}
+
+// currentRunCreates and currentTaskCreates report live attempt counters for
+// barriers.
+func (f *fakeClient) currentRunCreates() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.runCreates
+}
+
+func (f *fakeClient) currentTaskCreates() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.taskCreates
+}
+
+// currentWorkerStarts reports the live attempt counter for barriers.
+func (f *fakeClient) currentWorkerStarts() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.workerStarts
+}
+
+// Direct unit proof: withinLease fails closed once the clock passes expiry.
+func TestWithinLeaseFailsClosedAfterExpiry(t *testing.T) {
+	a, _ := twinBridges(t)
+	clock := &slowClock{now: time.Date(2026, 8, 24, 15, 0, 0, 0, time.UTC)}
+	a.Now = clock.Now
+	expires := clock.Now().Add(50 * time.Millisecond)
+	if err := a.withinLease(expires); err != nil {
+		t.Fatalf("live lease must pass: %v", err)
+	}
+	clock.advance(100 * time.Millisecond)
+	if err := a.withinLease(expires); !errors.Is(err, ErrClaimLeaseExpired) {
+		t.Fatalf("expired lease must fail closed with ErrClaimLeaseExpired, got %v", err)
 	}
 }
