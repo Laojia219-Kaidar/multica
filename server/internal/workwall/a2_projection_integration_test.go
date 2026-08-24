@@ -88,6 +88,8 @@ func TestA2SnapshotActiveFailClosedOnMissingHeartbeat(t *testing.T) {
 	now := time.Now().UTC()
 	eventID := a2InsertEvent(ctx, t, pool, wsID, ref, "sess-a2", "progress",
 		`{"stage":"build","status":"completed","note":"task completed"}`, now.Add(-time.Minute), now.Add(-time.Minute))
+	// Full evidence chain so the ONLY missing piece is the heartbeat.
+	a2SeedEvidence(ctx, t, pool, wsID, issueID, taskID, agentID)
 
 	svc := NewService(db.New(pool))
 	// Pin the clock: a snapshot of unchanged input must be byte-identical.
@@ -659,13 +661,140 @@ func TestA2SnapshotEventPlusHeartbeatAloneNeverWorking(t *testing.T) {
 	if p.Working {
 		t.Fatalf("event + heartbeat + bare task without exact dispatch/receipt evidence must never count as working")
 	}
-	if p.ExecutionState != A2ExecutionActive {
-		t.Fatalf("execution_state = %q, want active", p.ExecutionState)
+	// B3-1: with no receipt evidence the in-flight claim is unconfirmed —
+	// non-active AND non-working despite the live event and heartbeat.
+	if p.ExecutionState != A2ExecutionIssueMismatch {
+		t.Fatalf("execution_state = %q, want issue_state_mismatch", p.ExecutionState)
 	}
 	if p.EmployeeID != agentID {
 		t.Fatalf("employee fallback = %q, want task agent %q", p.EmployeeID, agentID)
 	}
 	if p.DispatchCommandID != "" {
 		t.Fatalf("no dispatch evidence: dispatch_command_id must stay empty")
+	}
+}
+
+// B3-2 (service half): a work_ref whose task id does not resolve inside the
+// requesting workspace (foreign tenant task) must produce a pane WITHOUT any
+// receipt evidence — proving the unscoped GetExecutionReceipt read is gated
+// behind the workspace-scoped task read — and must never be active/working.
+func TestA2SnapshotForeignTaskGatesReceiptRead(t *testing.T) {
+	url := os.Getenv("DATABASE_URL")
+	if url == "" {
+		t.Skip("DATABASE_URL not set")
+	}
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, url)
+	if err != nil {
+		t.Fatalf("pool: %v", err)
+	}
+	defer pool.Close()
+
+	// Tenant B owns the task; tenant A's ledger carries a work_ref naming it.
+	wsA, agentA, _, _ := a2SeedWorkspace(ctx, t, pool)
+	wsB, agentB, issueB, taskB := a2SeedSecondWorkspace(ctx, t, pool)
+	now := time.Now().UTC()
+	// Give tenant B's task a receipt so a leaky read WOULD find evidence.
+	a2SeedEvidence(ctx, t, pool, wsB, issueB, taskB, agentB)
+
+	ref := fmt.Sprintf("hivecrew://%s/work/prj/%s/%s", wsA, issueB, taskB)
+	session := fmt.Sprintf("sess-b3-%d", time.Now().UnixNano())
+	a2InsertEvent(ctx, t, pool, wsA, ref, session, "progress", `{"stage":"build"}`,
+		now.Add(-time.Minute), now.Add(-time.Minute))
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO terminal_presence (workspace_id, host, session_name, current_command, agent_hint)
+		 VALUES ($1, 'mac-b3', $2, 'go test', $3)`, wsA, session, agentA); err != nil {
+		t.Fatalf("seed presence: %v", err)
+	}
+
+	panes, err := NewService(db.New(pool)).A2Snapshot(ctx, a2WsUUID(t, wsA), 0)
+	if err != nil {
+		t.Fatalf("A2Snapshot: %v", err)
+	}
+	if len(panes) != 1 {
+		t.Fatalf("expected 1 pane, got %d", len(panes))
+	}
+	p := panes[0]
+	if p.TaskID != "" {
+		t.Fatalf("foreign task leaked into pane: %q", p.TaskID)
+	}
+	if p.EmployeeID != "" && p.EmployeeID == agentB {
+		t.Fatalf("foreign tenant employee leaked: %q", p.EmployeeID)
+	}
+	if p.ExecutionState == A2ExecutionActive || p.Working {
+		t.Fatalf("foreign task must fail closed (state %q, working %v)", p.ExecutionState, p.Working)
+	}
+	if p.DispatchCommandID != "" {
+		t.Fatalf("no receipt evidence: dispatch must stay empty")
+	}
+}
+
+// B3-3 (service half): a work_ref whose embedded issue and task disagree
+// (task belongs to another issue) must fail closed end-to-end: no task
+// fields, no employee, no evidence, never active/working — even though both
+// rows live in the SAME workspace.
+func TestA2SnapshotCrossIssueTaskFailsClosed(t *testing.T) {
+	url := os.Getenv("DATABASE_URL")
+	if url == "" {
+		t.Skip("DATABASE_URL not set")
+	}
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, url)
+	if err != nil {
+		t.Fatalf("pool: %v", err)
+	}
+	defer pool.Close()
+
+	wsID, agentID, issueID, _ := a2SeedWorkspace(ctx, t, pool)
+	rtID := a2RuntimeID(ctx, t, pool, wsID)
+	now := time.Now().UTC()
+
+	// Second issue in the same workspace, with its own task.
+	issue2 := ""
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO issue (workspace_id, title, status, number, creator_type, creator_id) VALUES ($1, 'A2 other', 'in_progress', 2, 'agent', $2) RETURNING id::text`,
+		wsID, agentID).Scan(&issue2); err != nil {
+		t.Fatalf("seed issue2: %v", err)
+	}
+	task2 := a2InsertTask(ctx, t, pool, agentID, issue2, rtID, "running")
+	// Evidence exists for task2 (receipt + bound dispatch).
+	a2SeedEvidence(ctx, t, pool, wsID, issue2, task2, agentID)
+
+	// The work_ref names issue1 + task2: a cross-issue mismatch.
+	ref := fmt.Sprintf("hivecrew://%s/work/prj/%s/%s", wsID, issueID, task2)
+	session := fmt.Sprintf("sess-b3x-%d", time.Now().UnixNano())
+	a2InsertEvent(ctx, t, pool, wsID, ref, session, "progress", `{"stage":"build"}`,
+		now.Add(-time.Minute), now.Add(-time.Minute))
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO terminal_presence (workspace_id, host, session_name, current_command, agent_hint)
+		 VALUES ($1, 'mac-b3x', $2, 'go test', $3)`, wsID, session, agentID); err != nil {
+		t.Fatalf("seed presence: %v", err)
+	}
+
+	panes, err := NewService(db.New(pool)).A2Snapshot(ctx, a2WsUUID(t, wsID), 0)
+	if err != nil {
+		t.Fatalf("A2Snapshot: %v", err)
+	}
+	var found bool
+	for _, p := range panes {
+		if p.WorkRef != ref {
+			continue
+		}
+		found = true
+		if p.TaskID != "" {
+			t.Fatalf("cross-issue task leaked: %q", p.TaskID)
+		}
+		if p.EmployeeID != "" {
+			t.Fatalf("cross-issue task must not set employee, got %q", p.EmployeeID)
+		}
+		if p.ExecutionState == A2ExecutionActive || p.Working {
+			t.Fatalf("cross-issue task must fail closed (state %q, working %v)", p.ExecutionState, p.Working)
+		}
+		if p.DispatchCommandID != "" {
+			t.Fatalf("cross-issue dispatch leaked: %q", p.DispatchCommandID)
+		}
+	}
+	if !found {
+		t.Fatalf("expected the cross-issue pane to render (visible mismatch), got %d panes", len(panes))
 	}
 }

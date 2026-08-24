@@ -75,6 +75,26 @@ func a2ClaimReceipt() *db.ExecutionReceipt {
 	}
 }
 
+// a2ClaimReceiptForCommand is a receipt claim naming a specific assignment
+// command: the B3-4 chain anchor a bound dispatch must match.
+func a2ClaimReceiptForCommand(cmd pgtype.UUID) *db.ExecutionReceipt {
+	r := a2ClaimReceipt()
+	r.AssignmentCommandID = cmd
+	return r
+}
+
+// a2DispatchForCommand builds a dispatch receipt naming a command, bound to
+// the current task/issue/workspace fixtures.
+func a2DispatchForCommand(cmd, agent pgtype.UUID) *db.AssignmentDispatchReceipt {
+	return &db.AssignmentDispatchReceipt{
+		CommandID:     cmd,
+		WorkspaceID:   a2UUID(1),
+		IssueID:       a2UUID(2),
+		LocalAgentID:  agent,
+		InitialTaskID: a2UUID(3),
+	}
+}
+
 func a2Receipt(terminal string) *db.ExecutionReceipt {
 	return &db.ExecutionReceipt{
 		TaskID:         a2UUID(3),
@@ -494,6 +514,7 @@ func TestProjectA2Pane_OwnershipAndStableSourceEventID(t *testing.T) {
 		},
 		Issue:    a2OpenIssue(),
 		Task:     a2Task("running"),
+		Receipt:  a2ClaimReceiptForCommand(a2UUID(9)),
 		Dispatch: dispatch,
 		Agent:    agentRow,
 		Presence: a2Presence("sess-1", now.Add(-5*time.Second)),
@@ -665,6 +686,9 @@ func TestProjectA2Pane_ProjectDriftIsMismatch(t *testing.T) {
 			in := newInput()
 			in.WorkRef = ref
 			in.RefProjectID = ""
+			// Exact evidence so a mismatch state could only come from drift,
+			// which must not trigger without a project claim.
+			in.Receipt = a2ClaimReceipt()
 			pane, ok := ProjectA2Pane(in)
 			if !ok || pane.ExecutionState == A2ExecutionIssueMismatch {
 				t.Fatalf("ref %q without a project claim must not be flagged as drift (%+v)", ref, pane)
@@ -726,6 +750,7 @@ func TestProjectA2Pane_MatchedDispatchBindsOwnership(t *testing.T) {
 		Events:   []db.WorkEvent{a2Event(10, "progress", now.Add(-1*time.Minute), now.Add(-1*time.Minute), `{}`)},
 		Issue:    a2OpenIssue(),
 		Task:     a2Task("running"),
+		Receipt:  a2ClaimReceiptForCommand(a2UUID(51)), // names the same command
 		Dispatch: matched,
 		Presence: a2Presence("sess-1", now.Add(-5*time.Second)),
 		Now:      now,
@@ -796,8 +821,13 @@ func TestProjectA2Pane_NoTaskOrNoEvidenceNeverWorking(t *testing.T) {
 		if pane.Working {
 			t.Fatalf("event + heartbeat without a task must never count as working")
 		}
-		if pane.ExecutionState != A2ExecutionActive {
-			t.Fatalf("execution_state = %q, want active", pane.ExecutionState)
+		// B3-1: no task means the in-flight claim is unconfirmed — never
+		// active, even with a fresh heartbeat.
+		if pane.ExecutionState != A2ExecutionIssueMismatch {
+			t.Fatalf("execution_state = %q, want issue_state_mismatch", pane.ExecutionState)
+		}
+		if pane.TaskID != "" {
+			t.Fatalf("no task: task_id must stay empty, got %q", pane.TaskID)
 		}
 	})
 
@@ -935,4 +965,198 @@ func TestProjectA2Pane_BlockerReasonSanitization(t *testing.T) {
 			t.Fatalf("token-shaped blocker_reason leaked: %q", pane.ActivitySummary)
 		}
 	})
+}
+
+// --- B3 blockers: strict active gate, read boundary, cross-issue, dispatch/receipt command ---
+
+// B3-1: an in-flight event plus a fresh heartbeat, with a nonterminal task
+// but NO exact evidence, must be non-active AND non-working.
+func TestProjectA2Pane_ActiveRequiresTaskAndEvidence(t *testing.T) {
+	now := a2Now()
+	base := func() A2PaneInput {
+		return A2PaneInput{
+			WorkRef:  "hivecrew://ws/work/prj/issue-1/task-1",
+			Events:   []db.WorkEvent{a2Event(10, "progress", now.Add(-time.Minute), now.Add(-time.Minute), `{}`)},
+			Issue:    a2OpenIssue(),
+			Presence: a2Presence("sess-1", now.Add(-5*time.Second)),
+			Now:      now,
+		}
+	}
+
+	t.Run("task without receipt: never active", func(t *testing.T) {
+		in := base()
+		in.Task = a2Task("running")
+		pane, ok := ProjectA2Pane(in)
+		if !ok {
+			t.Fatalf("expected pane")
+		}
+		if pane.ExecutionState == A2ExecutionActive {
+			t.Fatalf("in-flight claim without receipt evidence must never be active")
+		}
+		if pane.Working {
+			t.Fatalf("never working without evidence")
+		}
+	})
+
+	t.Run("receipt claim + nonterminal task + fresh heartbeat: active", func(t *testing.T) {
+		in := base()
+		in.Task = a2Task("running")
+		in.Receipt = a2ClaimReceipt()
+		pane, _ := ProjectA2Pane(in)
+		if pane.ExecutionState != A2ExecutionActive {
+			t.Fatalf("execution_state = %q, want active", pane.ExecutionState)
+		}
+		if !pane.Working {
+			t.Fatalf("full chain should count as working")
+		}
+	})
+
+	t.Run("receipt claim + TERMINAL task: never active, never working", func(t *testing.T) {
+		in := base()
+		in.Task = a2Task("completed")
+		in.Receipt = a2ClaimReceipt()
+		pane, _ := ProjectA2Pane(in)
+		if pane.ExecutionState == A2ExecutionActive || pane.Working {
+			t.Fatalf("terminal task must end active/working, got %q/%v", pane.ExecutionState, pane.Working)
+		}
+	})
+}
+
+// B3-3: a task row pointing at a DIFFERENT issue than the work_ref's issue
+// must fail closed: no task fields, no employee from it, no evidence from it.
+func TestProjectA2Pane_CrossIssueTaskFailsClosed(t *testing.T) {
+	now := a2Now()
+	cmd := a2UUID(51)
+	crossTask := a2Task("running")
+	crossTask.IssueID = a2UUID(77) // belongs to another issue
+
+	in := A2PaneInput{
+		WorkRef:  "hivecrew://ws/work/prj/issue-1/task-1",
+		Events:   []db.WorkEvent{a2Event(10, "progress", now.Add(-time.Minute), now.Add(-time.Minute), `{}`)},
+		Issue:    a2OpenIssue(), // issue-1 (a2UUID(2))
+		Task:     crossTask,
+		Receipt:  a2ClaimReceiptForCommand(cmd),
+		Dispatch: a2DispatchForCommand(cmd, a2UUID(4)),
+		Presence: a2Presence("sess-1", now.Add(-5*time.Second)),
+		Now:      now,
+	}
+	pane, ok := ProjectA2Pane(in)
+	if !ok {
+		t.Fatalf("expected pane")
+	}
+	if pane.TaskID != "" {
+		t.Fatalf("cross-issue task id leaked into pane: %q", pane.TaskID)
+	}
+	for _, ref := range pane.SourceRefs {
+		if strings.HasPrefix(ref, "task://") {
+			t.Fatalf("cross-issue task must not appear in source_refs: %v", pane.SourceRefs)
+		}
+	}
+	if pane.EmployeeID != "" {
+		t.Fatalf("cross-issue task must not set the employee, got %q", pane.EmployeeID)
+	}
+	if pane.ExecutionState == A2ExecutionActive || pane.Working {
+		t.Fatalf("cross-issue task must fail closed (state %q, working %v)", pane.ExecutionState, pane.Working)
+	}
+
+	t.Run("issue missing entirely also fails closed", func(t *testing.T) {
+		in := in
+		in.Issue = nil
+		pane, ok := ProjectA2Pane(in)
+		if !ok {
+			t.Fatalf("expected pane")
+		}
+		if pane.TaskID != "" || pane.Working {
+			t.Fatalf("unverifiable issue must drop the task: %+v", pane)
+		}
+	})
+}
+
+// B3-4: a dispatch that is task/issue/workspace-correct but whose command is
+// NOT the canonical receipt's command can own neither the employee nor
+// establish evidence.
+func TestProjectA2Pane_DispatchMustMatchReceiptCommand(t *testing.T) {
+	now := a2Now()
+	in := A2PaneInput{
+		WorkRef:  "hivecrew://ws/work/prj/issue-1/task-1",
+		Events:   []db.WorkEvent{a2Event(10, "progress", now.Add(-1*time.Minute), now.Add(-1*time.Minute), `{}`)},
+		Issue:    a2OpenIssue(),
+		Task:     a2Task("running"),
+		Receipt:  a2ClaimReceiptForCommand(a2UUID(51)),         // canonical command C1
+		Dispatch: a2DispatchForCommand(a2UUID(52), a2UUID(41)), // C2: different command/agent
+		Presence: a2Presence("sess-1", now.Add(-5*time.Second)),
+		Now:      now,
+	}
+	pane, ok := ProjectA2Pane(in)
+	if !ok {
+		t.Fatalf("expected pane")
+	}
+	if pane.DispatchCommandID != "" {
+		t.Fatalf("dispatch naming a different command must not be exposed, got %q", pane.DispatchCommandID)
+	}
+	if pane.EmployeeID == a2UUID(41).String() {
+		t.Fatalf("mismatched dispatch must not own the employee")
+	}
+	// The receipt itself is still exact evidence, so the pane may be active
+	// with the TASK's agent (fallback), but never via the rogue dispatch.
+	if pane.EmployeeID != a2UUID(4).String() {
+		t.Fatalf("employee = %q, want task fallback %q", pane.EmployeeID, a2UUID(4).String())
+	}
+
+	t.Run("dispatch without any receipt cannot own or evidence", func(t *testing.T) {
+		in := in
+		in.Receipt = nil
+		pane, ok := ProjectA2Pane(in)
+		if !ok {
+			t.Fatalf("expected pane")
+		}
+		if pane.DispatchCommandID != "" {
+			t.Fatalf("dispatch without receipt command must not be exposed")
+		}
+		if pane.EmployeeID == a2UUID(41).String() {
+			t.Fatalf("dispatch without receipt must not own the employee")
+		}
+		if pane.ExecutionState == A2ExecutionActive || pane.Working {
+			t.Fatalf("dispatch without receipt is not evidence (state %q, working %v)", pane.ExecutionState, pane.Working)
+		}
+	})
+
+	t.Run("matching command still binds", func(t *testing.T) {
+		in := in
+		in.Dispatch = a2DispatchForCommand(a2UUID(51), a2UUID(4))
+		pane, _ := ProjectA2Pane(in)
+		if pane.DispatchCommandID != a2UUID(51).String() {
+			t.Fatalf("matching dispatch should bind, got %q", pane.DispatchCommandID)
+		}
+		if !pane.Working {
+			t.Fatalf("full matched chain should be working")
+		}
+	})
+}
+
+// B3-2 (pure half): a receipt whose task id belongs to a foreign/missing
+// tenant task is never canonical — no terminal state, no completion, no
+// evidence — even when its workspace string matches the request.
+func TestProjectA2Pane_UnscopedReceiptNeverCanonical(t *testing.T) {
+	now := a2Now()
+	terminal := a2Receipt("completed")
+	terminal.WorkspaceID = a2UUID(1) // workspace string matches...
+	terminal.TaskID = a2UUID(88)     // ...but the task is not this pane's task
+
+	in := A2PaneInput{
+		WorkRef:  "hivecrew://ws/work/prj/issue-1/task-1",
+		Events:   []db.WorkEvent{a2Event(10, "progress", now.Add(-1*time.Minute), now.Add(-1*time.Minute), `{}`)},
+		Issue:    a2OpenIssue(),
+		Task:     a2Task("running"),
+		Receipt:  terminal,
+		Presence: a2Presence("sess-1", now.Add(-5*time.Second)),
+		Now:      now,
+	}
+	pane, ok := ProjectA2Pane(in)
+	if !ok {
+		t.Fatalf("expected pane")
+	}
+	if pane.ExecutionState == A2ExecutionCompleted || pane.CompletedAt != nil {
+		t.Fatalf("receipt for a different task must never complete this pane (%q/%v)", pane.ExecutionState, pane.CompletedAt)
+	}
 }

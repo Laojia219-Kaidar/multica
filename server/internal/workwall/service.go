@@ -354,21 +354,32 @@ func (s *Service) attachA2Inputs(ctx context.Context, workspaceID pgtype.UUID, a
 		}
 	}
 
+	// B3-2/B3-3: the unscoped GetExecutionReceipt read (keyed by task_id
+	// only) is gated behind BOTH a successful workspace-scoped task read AND
+	// proof that the task belongs to this work_ref's issue. A foreign or
+	// cross-issue task id therefore never triggers a receipt read at all.
+	var task *db.AgentTaskQueue
 	if taskID.Valid {
 		// B2: tenant-scoped task read. GetAgentTaskInWorkspace only returns
 		// the task when its owning agent lives in this workspace, so a task
 		// id from another tenant can never cross-read here.
-		task, err := s.Q.GetAgentTaskInWorkspace(ctx, db.GetAgentTaskInWorkspaceParams{
+		t, err := s.Q.GetAgentTaskInWorkspace(ctx, db.GetAgentTaskInWorkspaceParams{
 			ID:          taskID,
 			WorkspaceID: workspaceID,
 		})
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return err
 		}
-		if err == nil {
-			in.Task = &task
+		// B3-3: the task must reference exactly the work_ref's issue; a
+		// cross-issue task is dropped before it can influence anything.
+		if err == nil && issueID.Valid && t.IssueID.Valid &&
+			uuidStr(t.IssueID) == uuidStr(issueID) {
+			task = &t
+			in.Task = task
 		}
+	}
 
+	if task != nil {
 		receipt, err := s.Q.GetExecutionReceipt(ctx, taskID)
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return err
@@ -384,12 +395,14 @@ func (s *Service) attachA2Inputs(ctx context.Context, workspaceID pgtype.UUID, a
 			}
 		}
 
-		// B2: assignment ownership is recovered ONLY through the receipt's
-		// assignment_command_id with a workspace-scoped lookup, and only
-		// when the recovered dispatch is precisely bound to THIS task (and
-		// issue). GetLatestAssignmentDispatchReceiptByIssue is deliberately
-		// never used: a later re-dispatch of the issue must not re-attribute
-		// this pane's work to a different employee.
+		// B2/B3-4: assignment ownership is recovered ONLY through this
+		// task's receipt assignment_command_id with a workspace-scoped
+		// lookup, and only when the recovered dispatch is precisely bound to
+		// THIS task (and issue); the pure projection additionally requires
+		// the dispatch command to equal the canonical receipt's command.
+		// GetLatestAssignmentDispatchReceiptByIssue is deliberately never
+		// used: a later re-dispatch of the issue must not re-attribute this
+		// pane's work to a different employee.
 		if in.Receipt != nil && in.Receipt.AssignmentCommandID.Valid {
 			dispatch, err := s.Q.GetAssignmentDispatchReceipt(ctx, db.GetAssignmentDispatchReceiptParams{
 				WorkspaceID: workspaceID,

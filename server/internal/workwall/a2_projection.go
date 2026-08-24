@@ -180,17 +180,50 @@ func a2CanonicalReceipt(in A2PaneInput) *db.ExecutionReceipt {
 // issue for a different task must never hijack this pane's ownership.
 func a2BoundDispatch(in A2PaneInput) *db.AssignmentDispatchReceipt {
 	d := in.Dispatch
-	if d == nil || in.Task == nil || !in.Task.ID.Valid {
+	if d == nil {
 		return nil
 	}
-	if !d.InitialTaskID.Valid || uuidStr(d.InitialTaskID) != uuidStr(in.Task.ID) {
+	task := a2TaskForRef(in)
+	if task == nil || !task.ID.Valid {
+		return nil
+	}
+	if !d.InitialTaskID.Valid || uuidStr(d.InitialTaskID) != uuidStr(task.ID) {
 		return nil
 	}
 	if in.Issue != nil && in.Issue.ID.Valid && d.IssueID.Valid &&
 		uuidStr(d.IssueID) != uuidStr(in.Issue.ID) {
 		return nil
 	}
+	if in.RequestWorkspaceID != "" && !strings.EqualFold(uuidStr(d.WorkspaceID), in.RequestWorkspaceID) {
+		return nil
+	}
+	// B3-4: the dispatch must be the exact command this task's canonical
+	// receipt names. A dispatch without that receipt — or naming a different
+	// command — can neither own the pane's employee nor establish evidence.
+	r := a2CanonicalReceipt(in)
+	if r == nil || !r.AssignmentCommandID.Valid {
+		return nil
+	}
+	if !strings.EqualFold(uuidStr(d.CommandID), uuidStr(r.AssignmentCommandID)) {
+		return nil
+	}
 	return d
+}
+
+// a2TaskForRef returns the attached task only when it provably belongs to
+// this work_ref: the Issue authority must be present and the task row must
+// reference exactly that issue. A cross-issue (or unverifiable) task is
+// dropped and can never affect the pane — not its id, its assignee, its
+// terminal state, or its evidence.
+func a2TaskForRef(in A2PaneInput) *db.AgentTaskQueue {
+	t := in.Task
+	if t == nil || in.Issue == nil || !in.Issue.ID.Valid || !t.IssueID.Valid {
+		return nil
+	}
+	if uuidStr(t.IssueID) != uuidStr(in.Issue.ID) {
+		return nil
+	}
+	return t
 }
 
 // a2TaskNonTerminal reports whether the tenant-bound task is currently in
@@ -207,12 +240,13 @@ func a2TaskNonTerminal(t *db.AgentTaskQueue) bool {
 	}
 }
 
-// a2HasExactEvidence reports whether this pane carries an exact assignment
-// chain for its task: either a dispatch receipt precisely bound to the task
-// (initial_task_id), or a tenant/task/issue-verified execution receipt for
-// it. Ledger events and heartbeats alone are never evidence.
+// a2HasExactEvidence reports whether this pane carries exact execution
+// evidence: a tenant/task/issue-verified execution receipt for this
+// work_ref's task. Since B3-4 a dispatch alone is never evidence — it only
+// carries ownership on top of the receipt it must match. Ledger events and
+// heartbeats alone are never evidence.
 func a2HasExactEvidence(in A2PaneInput) bool {
-	return a2BoundDispatch(in) != nil || a2CanonicalReceipt(in) != nil
+	return a2CanonicalReceipt(in) != nil
 }
 
 // a2IssueTerminal reports whether the Issue state authority confirms the work
@@ -482,6 +516,7 @@ func a2SafePayloadStage(payload []byte) string {
 // tenant/task/issue-verified one (or none). Unverified receipts must never
 // feed the terminal-state decision.
 func a2VerifiedTerminalInput(in A2PaneInput) A2PaneInput {
+	in.Task = a2TaskForRef(in)
 	in.Receipt = a2CanonicalReceipt(in)
 	return in
 }
@@ -492,18 +527,24 @@ func a2VerifiedTerminalInput(in A2PaneInput) A2PaneInput {
 //
 // State precedence:
 //  1. project drift — the work_ref and the Issue authority disagree about
-//     the project; the pane renders only as issue_state_mismatch (never
-//     working, never completion) so drift is visible but never trusted;
+//     the project; renders only as issue_state_mismatch (never working,
+//     never completion) so drift is visible but never trusted;
 //  2. canonical terminal evidence from receipt / task / issue-cancelled —
 //     the authorities describe the WORK, so they outrank delivery noise;
-//     a receipt is only canonical after tenant/task/issue verification
+//     a receipt is only canonical after tenant/task/issue verification,
+//     and only an issue-verified task may speak for the pane
 //     (terminal text anywhere is never evidence);
 //  3. replay — terminal history replayed late or duplicated (never working);
-//  4. issue_state_mismatch — a finished claim the Issue authority does not
-//     confirm (never working, never completion);
-//  5. active — in-flight work; Working additionally requires an actively
-//     executing event kind AND a fresh session-matched heartbeat, so a
-//     missing heartbeat fails closed.
+//  4. unconfirmed claim — an in-flight claim without a current nonterminal
+//     tenant-bound task or without exact execution evidence renders as
+//     issue_state_mismatch: the ledger says work, the authorities do not;
+//     never active, never working;
+//  5. a finished claim the Issue authority does not confirm is likewise
+//     issue_state_mismatch (never working, never completion);
+//  6. active — in-flight work; Working additionally requires an actively
+//     executing event kind, a current nonterminal tenant-bound task, exact
+//     dispatch/receipt evidence, and a fresh session-matched heartbeat, so
+//     an event plus a heartbeat alone never counts as working.
 //
 // The returned bool is false when the stream carries no event: panes are
 // always anchored on a canonical event row.
@@ -541,20 +582,25 @@ func ProjectA2Pane(in A2PaneInput) (A2PaneV1, bool) {
 		pane.LastEventAt = &t
 	}
 
+	// B3-3: the task only speaks for this pane when it provably belongs to
+	// this work_ref's issue; a cross-issue task influences nothing below.
+	task := a2TaskForRef(in)
+
 	// Dispatch-to-employee ownership: ONLY a dispatch receipt precisely
-	// bound to this task (initial_task_id) may carry ownership — the latest
-	// issue dispatch must never win, because a later re-dispatch would
-	// silently re-attribute finished work to a different employee. Without a
-	// task-bound dispatch the pane falls back to the task assignee (tenant-
-	// verified via GetAgentTaskInWorkspace) and exposes no dispatch command.
+	// bound to this task (initial_task_id) AND matching the canonical
+	// receipt's command may carry ownership — the latest issue dispatch must
+	// never win, because a later re-dispatch would silently re-attribute
+	// finished work to a different employee. Without a task-bound dispatch
+	// the pane falls back to the task assignee (tenant-verified via
+	// GetAgentTaskInWorkspace) and exposes no dispatch command.
 	employeeID := ""
 	if bound := a2BoundDispatch(in); bound != nil && bound.LocalAgentID.Valid {
 		employeeID = uuidStr(bound.LocalAgentID)
 		pane.DispatchCommandID = uuidStr(bound.CommandID)
 		pane.SourceRefs = append(pane.SourceRefs, "dispatch://"+pane.DispatchCommandID)
 	}
-	if employeeID == "" && in.Task != nil && in.Task.AgentID.Valid {
-		employeeID = uuidStr(in.Task.AgentID)
+	if employeeID == "" && task != nil && task.AgentID.Valid {
+		employeeID = uuidStr(task.AgentID)
 	}
 	pane.EmployeeID = employeeID
 	if in.Agent != nil {
@@ -566,8 +612,8 @@ func ProjectA2Pane(in A2PaneInput) (A2PaneV1, bool) {
 		pane.ProjectID = uuidStr(in.Issue.ProjectID)
 		pane.SourceRefs = append(pane.SourceRefs, "issue://"+pane.IssueID)
 	}
-	if in.Task != nil {
-		pane.TaskID = uuidStr(in.Task.ID)
+	if task != nil {
+		pane.TaskID = uuidStr(task.ID)
 		pane.SourceRefs = append(pane.SourceRefs, "task://"+pane.TaskID)
 	}
 
@@ -587,6 +633,12 @@ func ProjectA2Pane(in A2PaneInput) (A2PaneV1, bool) {
 		state = canonical
 	} else if a2IsReplay(anchor, terminal, a2HasDuplicateEventID(in.Events)) {
 		state = A2ExecutionReplay
+	} else if !a2TaskNonTerminal(task) || !a2HasExactEvidence(in) {
+		// B3-1: an in-flight ledger claim with no current nonterminal
+		// tenant-bound task, or with no exact execution evidence, is
+		// unconfirmed by the authorities. It is never active — an event
+		// plus a fresh heartbeat alone must not look like live work.
+		state = A2ExecutionIssueMismatch
 	} else if anchor.EventType == a2TerminalEvent {
 		// A terminal claim is only honored when the Issue authority confirms
 		// it; otherwise it is surfaced as an unconfirmed mismatch.
@@ -605,7 +657,7 @@ func ProjectA2Pane(in A2PaneInput) (A2PaneV1, bool) {
 	// a heartbeat alone must NEVER count as working.
 	pane.Working = state == A2ExecutionActive &&
 		a2WorkingKind(anchor.EventType) &&
-		a2TaskNonTerminal(in.Task) &&
+		a2TaskNonTerminal(task) &&
 		a2HasExactEvidence(in) &&
 		heartbeatFresh
 
@@ -614,8 +666,8 @@ func ProjectA2Pane(in A2PaneInput) (A2PaneV1, bool) {
 		if r := a2CanonicalReceipt(in); r != nil && r.CompletedAt.Valid {
 			t := r.CompletedAt.Time
 			pane.CompletedAt = &t
-		} else if in.Task != nil && in.Task.CompletedAt.Valid {
-			t := in.Task.CompletedAt.Time
+		} else if task != nil && task.CompletedAt.Valid {
+			t := task.CompletedAt.Time
 			pane.CompletedAt = &t
 		}
 	}
