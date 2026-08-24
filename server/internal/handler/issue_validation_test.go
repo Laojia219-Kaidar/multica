@@ -102,8 +102,23 @@ func TestReviewCellTaskCannotMutateIssueStatus(t *testing.T) {
 			t.Cleanup(func() { deleteTestIssue(t, issueID) })
 			agentID := createHandlerTestAgent(t, taskKind+" Status Guard Agent", nil)
 			taskID := createHandlerTestTaskForAgentOnIssue(t, agentID, issueID)
-			if _, err := testPool.Exec(context.Background(), `UPDATE agent_task_queue SET task_kind = $1 WHERE id = $2`, taskKind, taskID); err != nil {
-				t.Fatalf("mark task as %s: %v", taskKind, err)
+			if taskKind == "review" {
+				// Review rows must never exist with kind='review' and a NULL
+				// target: create the candidate task first, then flip the row
+				// with one atomic UPDATE that sets task_kind and
+				// review_target_task_id together, satisfying migration 282's
+				// CHECK (task_kind <> 'review' OR review_target_task_id IS
+				// NOT NULL) in a single statement.
+				candidateTaskID := createHandlerTestTaskForAgentOnIssue(t, agentID, issueID)
+				if _, err := testPool.Exec(context.Background(),
+					`UPDATE agent_task_queue SET task_kind = $1, review_target_task_id = $2 WHERE id = $3`,
+					taskKind, candidateTaskID, taskID); err != nil {
+					t.Fatalf("mark task as %s: %v", taskKind, err)
+				}
+			} else {
+				if _, err := testPool.Exec(context.Background(), `UPDATE agent_task_queue SET task_kind = $1 WHERE id = $2`, taskKind, taskID); err != nil {
+					t.Fatalf("mark task as %s: %v", taskKind, err)
+				}
 			}
 
 			request := func(path string, body any, batch bool) *httptest.ResponseRecorder {

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
@@ -37,23 +38,50 @@ const (
 )
 
 func TestMain(m *testing.M) {
+	// Entry safety runs before ANY mode selection, including the DB-free
+	// frontier mode: required mode and DATABASE_URL are computed first, and a
+	// loopback DSN on the shared development port 5432 is rejected
+	// unconditionally with exit 1 before a pgxpool is constructed, so no
+	// socket is ever dialed on the reject path.
+	dbURL := os.Getenv("DATABASE_URL")
+	requireDB := os.Getenv("HANDLER_TEST_REQUIRE_DB") == "1"
+	if err := rejectSharedPostgresDSN(dbURL); err != nil {
+		fmt.Printf("handler tests refuse to run: %v\n", err)
+		os.Exit(1)
+	}
+	if requireDB && dbURL == "" {
+		fmt.Println("handler tests refuse to run: HANDLER_TEST_REQUIRE_DB=1 requires DATABASE_URL to be set")
+		os.Exit(1)
+	}
+
 	// HIVECREW_DB_FREE_FRONTIER=1 selects a named, process-scoped hermetic
-	// mode: no DATABASE_URL read, no pgxpool, no Ping, no socket, no migration,
-	// no env/credential enumeration, no running service. Only the ready-frontier
-	// handler-response fixtures opt into this mode — their evidence arrives via
-	// an in-context snapshot, so GetIssueFrontier touches no Handler DB field
-	// and a zero-value receiver is sufficient and provably DB-free. Every
-	// DB-dependent test still skips itself on a nil testPool, and a focused
-	// -run regex selects only the fixtures, so the canonical DB path is unused.
+	// mode: no pgxpool, no Ping, no socket, no migration, no env/credential
+	// enumeration, no running service. It serves only the existing pure
+	// fixtures that a focused -run regex selects explicitly; without such a
+	// selector this mode refuses to run rather than masquerading as a
+	// whole-package result. The ready-frontier handler-response fixtures get
+	// their evidence from an in-context snapshot, so GetIssueFrontier touches
+	// no Handler DB field and a zero-value receiver is sufficient and
+	// provably DB-free. Every DB-dependent test still skips itself on a nil
+	// testPool. This mode proves entry safety and the selected fixtures only;
+	// it is not a PASS for the DB-dependent suite.
 	if os.Getenv("HIVECREW_DB_FREE_FRONTIER") == "1" {
+		if !testRunFlagPresent() {
+			fmt.Println("handler tests refuse to run: HIVECREW_DB_FREE_FRONTIER=1 requires an explicit -run selection of pure fixture tests")
+			os.Exit(1)
+		}
 		testHandler = newDBFreeFrontierHandler()
 		os.Exit(m.Run())
 	}
 
 	ctx := context.Background()
-	dbURL := os.Getenv("DATABASE_URL")
 	if dbURL == "" {
-		dbURL = "postgres://multica:multica@localhost:5432/multica?sslmode=disable"
+		// Honest SKIP: no dedicated database was configured for this run.
+		// There is deliberately no fallback to the shared loopback 5432
+		// development instance, so an unset DATABASE_URL can never silently
+		// bind this suite to a database it does not own.
+		fmt.Println("SKIP: DATABASE_URL is not set; handler tests require a dedicated database (no shared localhost:5432 fallback)")
+		os.Exit(0)
 	}
 
 	pool, err := pgxpool.New(ctx, dbURL)
@@ -101,6 +129,76 @@ func TestMain(m *testing.M) {
 	}
 	pool.Close()
 	os.Exit(code)
+}
+
+// rejectSharedPostgresDSN refuses any DSN that targets the shared loopback
+// development Postgres on port 5432 (localhost or 127.0.0.1). It is a pure
+// string check — it never parses credentials into a pool and never dials —
+// and TestMain applies it unconditionally, in every mode, before m.Run().
+// An empty DSN is not rejected here; missing-URL handling belongs to the
+// required-mode and honest-SKIP branches.
+func rejectSharedPostgresDSN(dbURL string) error {
+	if dbURL == "" {
+		return nil
+	}
+	parsed, err := url.Parse(dbURL)
+	if err != nil {
+		return fmt.Errorf("DATABASE_URL is not a parseable URL: %v", err)
+	}
+	host := parsed.Hostname()
+	if host != "localhost" && host != "127.0.0.1" {
+		return nil
+	}
+	port := parsed.Port()
+	if port == "" {
+		port = "5432"
+	}
+	if port == "5432" {
+		return fmt.Errorf("DATABASE_URL targets the shared loopback Postgres on port 5432 (host %s); handler tests require a dedicated database", host)
+	}
+	return nil
+}
+
+// testRunFlagPresent reports whether the test binary was invoked with an
+// explicit -run/-test.run selector. DB-free hermetic mode only serves
+// explicitly selected pure fixture tests, never the whole package.
+func testRunFlagPresent() bool {
+	for _, arg := range os.Args[1:] {
+		if arg == "-test.run" || strings.HasPrefix(arg, "-test.run=") {
+			return true
+		}
+	}
+	return false
+}
+
+// TestDSNRejectsSharedPort5432 pins the entry-safety contract of the shared
+// loopback port guard. It exercises rejectSharedPostgresDSN purely in-process
+// — no pool, no socket, no DATABASE_URL dependency — so it runs under
+// HIVECREW_DB_FREE_FRONTIER=1 with a focused -run regex.
+func TestDSNRejectsSharedPort5432(t *testing.T) {
+	rejected := []string{
+		"postgres://synthetic:synthetic@127.0.0.1:5432/synthetic",
+		"postgres://synthetic:synthetic@localhost:5432/synthetic",
+		"postgres://synthetic:synthetic@localhost/synthetic",
+		"postgres://synthetic:synthetic@127.0.0.1/synthetic?sslmode=disable",
+	}
+	for _, dsn := range rejected {
+		if err := rejectSharedPostgresDSN(dsn); err == nil {
+			t.Fatalf("shared loopback 5432 DSN accepted: %q", dsn)
+		}
+	}
+
+	accepted := []string{
+		"",
+		"postgres://synthetic:synthetic@127.0.0.1:5433/synthetic",
+		"postgres://synthetic:synthetic@localhost:15432/synthetic",
+		"postgres://synthetic:synthetic@db.internal.example:5432/synthetic",
+	}
+	for _, dsn := range accepted {
+		if err := rejectSharedPostgresDSN(dsn); err != nil {
+			t.Fatalf("dedicated DSN rejected: %q: %v", dsn, err)
+		}
+	}
 }
 
 // newDBFreeFrontierHandler returns a Handler for the HIVECREW_DB_FREE_FRONTIER
