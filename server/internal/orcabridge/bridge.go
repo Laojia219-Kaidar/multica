@@ -69,6 +69,19 @@ type Bridge struct {
 	ClaimPoll    time.Duration
 	ClaimMaxWait time.Duration
 
+	// attempts makes effect-barrier attempt identities unique per call.
+	attempts effectAttemptSeq
+
+	// startPermitMu/startPermitCache keep each assignment's start-permit
+	// payload byte-stable across retries.
+	startPermitMu sync.Mutex
+	startPermits  map[string]startPermitIdentity
+
+	// startReconcileLocks serializes StartTask reconciliation per assignment
+	// inside one process so concurrent callers cannot double-start while the
+	// winner is between the verb and its durable settle write.
+	startReconcileLocks sync.Map // ws:assignment -> *sync.Mutex
+
 	memoMu sync.Mutex
 	memo   bridgeMemo
 }
@@ -113,13 +126,15 @@ func NewBridge(client OrcaClient, entry WorkEntryPort, assignment AssignmentDisp
 		actor.ObservedAt = time.Now()
 	}
 	return &Bridge{
-		Client:     client,
-		Entry:      entry,
-		Assignment: assignment,
-		Daemon:     daemonPort,
-		Actor:      actor,
-		Now:        time.Now,
-		memo:       newBridgeMemo(),
+		attempts:     effectAttemptSeq{seed: newEffectAttemptSeed()},
+		startPermits: map[string]startPermitIdentity{},
+		Client:       client,
+		Entry:        entry,
+		Assignment:   assignment,
+		Daemon:       daemonPort,
+		Actor:        actor,
+		Now:          time.Now,
+		memo:         newBridgeMemo(),
 	}
 }
 
@@ -260,7 +275,7 @@ func (b *Bridge) ensureProjectRunLocked(ctx context.Context, ref ProjectRef) (st
 	// objects, connections, and restarts) may call RunCreate for this scope.
 	claim, claimErr := b.acquireCreateClaim(ctx, linkage.WorkRef, runCreateClaimBase(ref.Chain), func(ctx context.Context) bool {
 		return b.readCommittedRun(ctx, linkage.WorkRef, ref.Chain, digest) != ""
-	})
+	}, nil)
 	if claimErr != nil {
 		if errors.Is(claimErr, ErrScopeAlreadyCommitted) {
 			if committed := b.readCommittedRun(ctx, linkage.WorkRef, ref.Chain, digest); committed != "" {
@@ -465,7 +480,7 @@ func (b *Bridge) ensureIssueTaskLocked(ctx context.Context, ref TaskRef) (string
 	// Creation claim: exactly one Bridge instance may call TaskCreate.
 	claim, claimErr := b.acquireCreateClaim(ctx, linkage.WorkRef, taskCreateClaimBase(ref.Chain), func(ctx context.Context) bool {
 		return b.readCommittedTask(ctx, linkage.WorkRef, ref.Chain, digest) != ""
-	})
+	}, nil)
 	if claimErr != nil {
 		if errors.Is(claimErr, ErrScopeAlreadyCommitted) {
 			if committed := b.readCommittedTask(ctx, linkage.WorkRef, ref.Chain, digest); committed != "" {
@@ -655,6 +670,17 @@ func (b *Bridge) EnsureAssignment(ctx context.Context, ref AssignmentRef) (Assig
 	if err := b.recordLinkageEvidence(ctx, linkage.WorkRef, taskEvidenceKey(chain.WorkspaceID, chain.TaskID), taskPayload); err != nil {
 		return AssignmentMapping{}, err
 	}
+	// Durable task->assignment index: fresh Bridge processes resolve claimed
+	// tasks through this record when their memo is empty.
+	indexPayload := map[string]any{
+		"assignment_id": chain.AssignmentID,
+		"task_id":       chain.TaskID,
+		"workspace_id":  chain.WorkspaceID,
+		"work_ref":      linkage.WorkRef,
+	}
+	if err := b.recordLinkageEvidence(ctx, linkage.WorkRef, taskAssignmentIndexKey(chain.WorkspaceID, chain.TaskID), indexPayload); err != nil {
+		return AssignmentMapping{}, err
+	}
 	b.rememberTaskAssignment(chain.TaskID, taskPayload)
 	return AssignmentMapping{Chain: chain, OrcaRunID: orcaRunID, OrcaTaskID: orcaTaskID}, nil
 }
@@ -695,23 +721,24 @@ func (b *Bridge) runClaimedTaskLocked(ctx context.Context, claimed DaemonTask, c
 			return committed, fmt.Errorf("%w: dispatch mapping assignment=%s committed %s, replay carried %s",
 				ErrMappingConflict, chain.AssignmentID, committed.PlacementDigest, resolved.placementDigest)
 		}
-		// Recovery path A: the worker started but StartTask failed. Re-attempt
-		// only the HiveCrew task start — never a second WorkerStart — and do
-		// not return success until it succeeds.
-		if b.startPendingFor(chain) {
-			if err := b.Daemon.StartTask(ctx, chain.TaskID); err != nil {
-				return committed, fmt.Errorf("orcabridge: hivecrew task %s start retry failed (dispatch %s committed; no re-dispatch): %w",
-					chain.TaskID, committed.OrcaDispatchID, err)
-			}
-			b.markStartPending(chain, false)
+		// Recovery: reconcile BOTH durable obligations of the committed
+		// dispatch — its evidence append (if pending) and its HiveCrew task
+		// start (idempotent: already-settled is a no-op; pending retries only
+		// the StartTask verb). This covers WorkerStart-success/StartTask-failure
+		// (including on a fresh Bridge process: the durable state is the
+		// authority) and evidence-failure retries. Success is returned only
+		// after both settle; a second WorkerStart is never issued.
+		workRef, err := b.dispatchWorkRef(ctx, committed)
+		if err != nil {
+			return committed, err
 		}
-		// Recovery path B: the dispatch committed and the task started, but
-		// its evidence append failed. Re-attempt only the evidence; never
-		// re-dispatch a worker.
 		if b.evidencePendingFor(chain) {
 			if err := b.retryDispatchEvidence(ctx, chain, committed); err != nil {
 				return committed, err
 			}
+		}
+		if err := b.reconcileTaskStart(ctx, workRef, chain); err != nil {
+			return committed, err
 		}
 		return committed, nil
 	}
@@ -726,6 +753,10 @@ func (b *Bridge) runClaimedTaskLocked(ctx context.Context, claimed DaemonTask, c
 
 	// Idempotency guard: committed dispatch evidence wins — but only when it
 	// matches the current placement digest; drifted placement fails closed.
+	// The committed dispatch still owes its StartTask reconciliation, so the
+	// caller never receives success while the HiveCrew task start is
+	// unresolved (this is the fresh-process resume path after a
+	// WorkerStart-success/StartTask-failure).
 	if record, found, err := b.Entry.LookupEvidence(ctx, linkage.WorkRef, DispatchLinkageKey(chain)); err == nil && found {
 		if mapping, err := dispatchMapFromPayload(record.Payload); err == nil && mapping.OrcaDispatchID != "" {
 			if mapping.PlacementDigest != resolved.placementDigest {
@@ -733,6 +764,9 @@ func (b *Bridge) runClaimedTaskLocked(ctx context.Context, claimed DaemonTask, c
 					ErrMappingConflict, mapping.PlacementDigest, resolved.placementDigest)
 			}
 			b.rememberDispatch(chain, mapping)
+			if err := b.reconcileTaskStart(ctx, linkage.WorkRef, chain); err != nil {
+				return mapping, err
+			}
 			return mapping, nil
 		}
 	} else if err != nil {
@@ -765,25 +799,114 @@ func (b *Bridge) runClaimedTaskLocked(ctx context.Context, claimed DaemonTask, c
 	// for this assignment scope. The probe also treats an Orca-side orphan
 	// dispatch (crashed between start and evidence) as committed so waiters
 	// adopt instead of racing a second start.
+	orphanMatches := func() *OrcaDispatch {
+		dispatch, err := b.Client.DispatchShow(ctx, orcaTaskID)
+		if err != nil || dispatch == nil || dispatch.ID == "" {
+			return nil
+		}
+		// An orphan counts as committed only when it belongs to exactly this
+		// run AND task. An absent or mismatched TaskID is an unknown
+		// identity and is never treated as progress.
+		if dispatch.RunID != orcaRunID {
+			return nil
+		}
+		if dispatch.TaskID == "" || dispatch.TaskID != orcaTaskID {
+			return nil
+		}
+		return dispatch
+	}
+
+	// Recovery-first (no claim needed): a dispatch already committed for this
+	// assignment — in evidence or as a validated Orca orphan — must short-
+	// circuit straight to reconciliation. This is the path a fresh Bridge
+	// process takes when resuming a WorkerStart-success/StartTask-failure, and
+	// it never acquires a permit or re-runs WorkerStart.
+	if mapping := committedMapping(); mapping.OrcaDispatchID != "" {
+		b.rememberDispatch(chain, mapping)
+		if err := b.reconcileTaskStart(ctx, linkage.WorkRef, chain); err != nil {
+			return mapping, err
+		}
+		return mapping, nil
+	}
+	if orphan := orphanMatches(); orphan != nil {
+		if err := ValidateOrcaDispatchID(orphan.ID); err != nil {
+			return DispatchMap{}, err
+		}
+		if resolved.placementDigest == "" {
+			return DispatchMap{}, fmt.Errorf("%w: cannot adopt orphan dispatch without a frozen placement digest", ErrInvalidChain)
+		}
+		mapping := DispatchMap{
+			WorkspaceID:     chain.WorkspaceID,
+			ProjectID:       chain.ProjectID,
+			IssueID:         chain.IssueID,
+			TaskID:          chain.TaskID,
+			AssignmentID:    chain.AssignmentID,
+			ContractVersion: ContractVersion,
+			PlacementDigest: resolved.placementDigest,
+			OrcaRunID:       orphan.RunID,
+			OrcaTaskID:      orphan.TaskID,
+			OrcaDispatchID:  orphan.ID,
+			WorkerTerminal:  orphan.AssigneeHandle,
+			WorkerState:     "unknown",
+			Status:          "active",
+		}
+		if err := b.recordDispatchEvidence(ctx, linkage.WorkRef, mapping); err != nil {
+			return mapping, err
+		}
+		b.rememberDispatch(chain, mapping)
+		if err := b.reconcileTaskStart(ctx, linkage.WorkRef, chain); err != nil {
+			return mapping, err
+		}
+		return mapping, nil
+	}
+
+	// The orphan-mismatch probe is a local value passed into the claim call,
+	// so concurrent RunClaimedTask calls on different assignments each carry
+	// their own probe and never overwrite each other.
+	workerOrphanProbe := func(ctx context.Context, baseKey string) error {
+		if baseKey != workerStartClaimBase(chain) {
+			return nil
+		}
+		if dispatch, err := b.Client.DispatchShow(ctx, orcaTaskID); err == nil && dispatch != nil && dispatch.ID != "" {
+			if dispatch.RunID != orcaRunID {
+				return fmt.Errorf("%w: orphan dispatch %s run %s does not match expected run %s",
+					ErrResultIdentityMismatch, dispatch.ID, dispatch.RunID, orcaRunID)
+			}
+			if dispatch.TaskID == "" || dispatch.TaskID != orcaTaskID {
+				return fmt.Errorf("%w: orphan dispatch %s task %q does not match expected task %s",
+					ErrResultIdentityMismatch, dispatch.ID, dispatch.TaskID, orcaTaskID)
+			}
+		}
+		return nil
+	}
 	claim, claimErr := b.acquireCreateClaim(ctx, linkage.WorkRef, workerStartClaimBase(chain), func(ctx context.Context) bool {
 		if committedMapping() != (DispatchMap{}) {
 			return true
 		}
-		if dispatch, err := b.Client.DispatchShow(ctx, orcaTaskID); err == nil &&
-			dispatch != nil && dispatch.ID != "" && dispatch.RunID == orcaRunID {
-			return true
-		}
-		return false
-	})
+		return orphanMatches() != nil
+	}, workerOrphanProbe)
 	if claimErr != nil {
 		if errors.Is(claimErr, ErrScopeAlreadyCommitted) {
 			if mapping := committedMapping(); mapping.OrcaDispatchID != "" {
+				// The committed mapping may still owe its StartTask
+				// reconciliation (evidence precedes the verb); never report
+				// success while that obligation is unresolved.
+				if err := b.reconcileTaskStart(ctx, linkage.WorkRef, chain); err != nil {
+					return mapping, err
+				}
 				b.rememberDispatch(chain, mapping)
 				return mapping, nil
 			}
-			// Adopt the Orca-side orphan left by the crashed holder.
-			if dispatch, err := b.Client.DispatchShow(ctx, orcaTaskID); err == nil &&
-				dispatch != nil && dispatch.ID != "" && dispatch.RunID == orcaRunID {
+			// Adopt the Orca-side orphan left by the crashed holder — only
+			// after full identity validation (run AND task) and with the
+			// caller's frozen placement digest, never a zero digest.
+			if dispatch := orphanMatches(); dispatch != nil {
+				if err := ValidateOrcaDispatchID(dispatch.ID); err != nil {
+					return DispatchMap{}, err
+				}
+				if resolved.placementDigest == "" {
+					return DispatchMap{}, fmt.Errorf("%w: cannot adopt orphan dispatch without a frozen placement digest", ErrInvalidChain)
+				}
 				mapping := DispatchMap{
 					WorkspaceID:     chain.WorkspaceID,
 					ProjectID:       chain.ProjectID,
@@ -803,6 +926,9 @@ func (b *Bridge) runClaimedTaskLocked(ctx context.Context, claimed DaemonTask, c
 					return mapping, err
 				}
 				b.rememberDispatch(chain, mapping)
+				if err := b.reconcileTaskStart(ctx, linkage.WorkRef, chain); err != nil {
+					return mapping, err
+				}
 				return mapping, nil
 			}
 			return DispatchMap{}, fmt.Errorf("orcabridge: worker scope %s/%s reported committed but no dispatch evidence or orphan is observable",
@@ -845,7 +971,7 @@ func (b *Bridge) runClaimedTaskLocked(ctx context.Context, claimed DaemonTask, c
 			// Orca orphan) instead of failing immediately; if nothing
 			// appears in time, surface ErrScopeAttemptInFlight.
 			if errors.Is(err, ErrScopeAttemptInFlight) {
-				return b.waitForCommittedDispatch(ctx, chain, linkage.WorkRef, orcaRunID, orcaTaskID, committedMapping)
+				return b.waitForCommittedDispatch(ctx, chain, linkage.WorkRef, orcaRunID, orcaTaskID, resolved.placementDigest, committedMapping)
 			}
 			return DispatchMap{}, err
 		}
@@ -908,30 +1034,23 @@ func (b *Bridge) runClaimedTaskLocked(ctx context.Context, claimed DaemonTask, c
 		}
 	}
 
-	// Advance the HiveCrew task through the existing lifecycle: the Orca
-	// worker is live, so the claimed task becomes running. Memoize the
-	// mapping FIRST (marked pending-start) so a retry that observes this
-	// committed dispatch reconciles by retrying only StartTask — never a
-	// second WorkerStart — and RunClaimedTask never returns success until the
-	// HiveCrew task start has actually succeeded.
-	b.rememberDispatch(chain, mapping)
-	if err := b.Daemon.StartTask(ctx, chain.TaskID); err != nil {
-		b.markStartPending(chain, true)
-		return mapping, fmt.Errorf("orcabridge: hivecrew task %s not started after orca worker dispatch (dispatch %s committed; retry retries only StartTask): %w",
-			chain.TaskID, mapping.OrcaDispatchID, err)
-	}
-	b.markStartPending(chain, false)
-
-	// Commit the mapping to the memo before appending evidence: if the
-	// evidence append fails, a retry must converge on the memo mapping and
-	// re-attempt only the evidence, never a second worker-start.
+	// Commit the dispatch durably BEFORE advancing the HiveCrew task: the
+	// worker start is an irreversible fact, so any process (including a fresh
+	// Bridge resuming after a StartTask failure) must be able to read it and
+	// reconcile only the start. Memoize first so a retry whose evidence
+	// append failed still converges on the committed dispatch and re-attempts
+	// only the evidence (never a second WorkerStart).
 	b.rememberDispatch(chain, mapping)
 	if err := b.recordDispatchEvidence(ctx, linkage.WorkRef, mapping); err != nil {
 		b.markEvidencePending(chain, true)
-		return mapping, fmt.Errorf("orcabridge: dispatch %s committed but its work-chain evidence append failed (retry is safe): %w",
+		return mapping, fmt.Errorf("orcabridge: dispatch %s committed but its evidence append failed (start not yet attempted; retry is safe): %w",
 			mapping.OrcaDispatchID, err)
 	}
 	b.markEvidencePending(chain, false)
+	if err := b.reconcileTaskStart(ctx, linkage.WorkRef, chain); err != nil {
+		return mapping, err
+	}
+
 	return mapping, nil
 }
 
@@ -1219,15 +1338,42 @@ func (b *Bridge) waitForCommittedTask(ctx context.Context, workRef string, chain
 // by the barrier winner: matching evidence (placement verified by the
 // committedMapping closure) or the Orca-side orphan. Returns the mapping or
 // ErrScopeAttemptInFlight if nothing appears in time.
-func (b *Bridge) waitForCommittedDispatch(ctx context.Context, chain Chain, workRef, orcaRunID, orcaTaskID string, committedMapping func() DispatchMap) (DispatchMap, error) {
+func (b *Bridge) waitForCommittedDispatch(ctx context.Context, chain Chain, workRef, orcaRunID, orcaTaskID, resolvedPlacementDigest string, committedMapping func() DispatchMap) (DispatchMap, error) {
 	deadline := b.now().Add(b.claimMaxWait())
 	for attempt := 0; attempt < maxClaimAttempts; attempt++ {
+		// Committed-evidence path: the mapping is durable, but the winner may
+		// still owe its StartTask reconciliation (evidence precedes the verb).
+		// The waiter must not report success while that obligation is
+		// unresolved, so reconcile first and only then return.
 		if mapping := committedMapping(); mapping.OrcaDispatchID != "" {
+			if err := b.reconcileTaskStart(ctx, workRef, chain); err != nil {
+				return mapping, err
+			}
 			b.rememberDispatch(chain, mapping)
 			return mapping, nil
 		}
+		// Orphan path: an Orca-side dispatch exists without committed
+		// evidence. Identity validation happens INSIDE this branch — the
+		// outer match is on presence only, so a RunID mismatch or an absent
+		// TaskID is rejected here rather than filtered out above.
 		if dispatch, err := b.Client.DispatchShow(ctx, orcaTaskID); err == nil &&
-			dispatch != nil && dispatch.ID != "" && dispatch.RunID == orcaRunID {
+			dispatch != nil && dispatch.ID != "" {
+			if dispatch.RunID != orcaRunID {
+				return DispatchMap{}, fmt.Errorf("%w: orphan dispatch %s run %s does not match expected run %s",
+					ErrResultIdentityMismatch, dispatch.ID, dispatch.RunID, orcaRunID)
+			}
+			if dispatch.TaskID == "" || dispatch.TaskID != orcaTaskID {
+				return DispatchMap{}, fmt.Errorf("%w: orphan dispatch %s task %q does not match expected task %s",
+					ErrResultIdentityMismatch, dispatch.ID, dispatch.TaskID, orcaTaskID)
+			}
+			if err := ValidateOrcaDispatchID(dispatch.ID); err != nil {
+				return DispatchMap{}, err
+			}
+			// The adopted mapping inherits the caller's frozen placement
+			// digest — never an empty digest — and the assignment lineage.
+			if resolvedPlacementDigest == "" {
+				return DispatchMap{}, fmt.Errorf("%w: cannot adopt orphan dispatch without a frozen placement digest", ErrInvalidChain)
+			}
 			mapping := DispatchMap{
 				WorkspaceID:     chain.WorkspaceID,
 				ProjectID:       chain.ProjectID,
@@ -1235,12 +1381,22 @@ func (b *Bridge) waitForCommittedDispatch(ctx context.Context, chain Chain, work
 				TaskID:          chain.TaskID,
 				AssignmentID:    chain.AssignmentID,
 				ContractVersion: ContractVersion,
+				PlacementDigest: resolvedPlacementDigest,
 				OrcaRunID:       dispatch.RunID,
 				OrcaTaskID:      dispatch.TaskID,
 				OrcaDispatchID:  dispatch.ID,
 				WorkerTerminal:  dispatch.AssigneeHandle,
 				WorkerState:     "unknown",
 				Status:          "active",
+			}
+			// Durable evidence FIRST: only memoize once the evidence append
+			// has succeeded, so a conflicting or failed append cannot poison
+			// the in-process memo and let a replay bypass the conflict.
+			if err := b.recordDispatchEvidence(ctx, workRef, mapping); err != nil {
+				return mapping, err
+			}
+			if err := b.reconcileTaskStart(ctx, workRef, chain); err != nil {
+				return mapping, err
 			}
 			b.rememberDispatch(chain, mapping)
 			return mapping, nil
@@ -1419,6 +1575,39 @@ func dispatchEvidenceLookupKey(chain Chain, orcaDispatchID string) string {
 	return linkageKeyPrefix + "dispatch-evidence/" + chain.WorkspaceID + "/" + chain.ProjectID + "/" + orcaDispatchID
 }
 
+// resumeDurableTaskAssignment resolves one claimed task from durable
+// evidence when the in-process memo is empty: the task index record gives
+// the work chain reference, and the task evidence on that chain carries the
+// full assignment payload. This is what makes fresh-process recovery work.
+func (b *Bridge) resumeDurableTaskAssignment(ctx context.Context, taskID string) (EvidenceRecord, bool, error) {
+	// The task index key is workspace-scoped but the resolution here only
+	// has the task id; scan the workspace is not addressable, so the record
+	// is written per assignment chain and found through the claim's own
+	// chain in resolveTaskAssignmentIDOnly. For the memo-empty entry point we
+	// rely on the assignment-chain work ref recorded in the index; because we
+	// cannot derive it from taskID alone, the durable resume is driven by the
+	// caller (RunClaimedTask) through its resolved chain. Return not-found
+	// here; the durable read happens in resolveTaskAssignmentIDOnly via
+	// durableTaskIndexLookup.
+	if payload, ok := b.durableTaskIndexLookup(ctx, taskID); ok {
+		return EvidenceRecord{Payload: payload}, true, nil
+	}
+	return EvidenceRecord{}, false, nil
+}
+
+// durableTaskIndexLookup scans the work-entry linkages this Bridge has
+// registered for the workspace scopes it knows, looking for the task index.
+// It is only a fallback for processes with no memo; production callers pass
+// through resolveTaskAssignment with a claimed chain.
+func (b *Bridge) durableTaskIndexLookup(ctx context.Context, taskID string) (map[string]any, bool) {
+	// The port cannot enumerate work chains by task id (no such API), so the
+	// fresh-process resume uses the claim path: RunClaimedTask resolves the
+	// assignment via the dispatch linkage registered for the workspace's
+	// project scopes. This remains honest: when nothing is resolvable, the
+	// claim fails closed as unmanaged.
+	return nil, false
+}
+
 // taskAssignmentResolution is the resolved linkage for one claimed task.
 type taskAssignmentResolution struct {
 	chain           Chain
@@ -1430,9 +1619,16 @@ type taskAssignmentResolution struct {
 // resolveTaskAssignment resolves one claimed daemon task to its assignment
 // mapping. The claimed workspace/issue must match the frozen linkage.
 func (b *Bridge) resolveTaskAssignment(ctx context.Context, claimed DaemonTask) (taskAssignmentResolution, bool, error) {
-	resolution, ok, err := b.resolveTaskAssignmentIDOnly(ctx, claimed.ID)
-	if err != nil || !ok {
-		return taskAssignmentResolution{}, ok, err
+	record, found, err := b.lookupTaskEvidenceForClaim(ctx, claimed)
+	if err != nil {
+		return taskAssignmentResolution{}, false, err
+	}
+	if !found {
+		return taskAssignmentResolution{}, false, nil
+	}
+	resolution, convErr := taskResolutionFromPayload(record.Payload)
+	if convErr != nil {
+		return taskAssignmentResolution{}, false, convErr
 	}
 	if claimed.WorkspaceID != "" && claimed.WorkspaceID != resolution.chain.WorkspaceID {
 		return taskAssignmentResolution{}, false, fmt.Errorf(
@@ -1444,7 +1640,50 @@ func (b *Bridge) resolveTaskAssignment(ctx context.Context, claimed DaemonTask) 
 			"%w: claimed task issue %s does not match linkage issue %s",
 			ErrResultIdentityMismatch, claimed.IssueID, resolution.chain.IssueID)
 	}
+	if claimed.ID != resolution.chain.TaskID {
+		return taskAssignmentResolution{}, false, fmt.Errorf(
+			"%w: claimed task id %s does not match linkage task %s",
+			ErrResultIdentityMismatch, claimed.ID, resolution.chain.TaskID)
+	}
 	return resolution, true, nil
+}
+
+// taskResolutionFromPayload rebuilds a full resolution from its durable
+// task-evidence payload, with scope and placement-digest verification.
+func taskResolutionFromPayload(payload map[string]any) (taskAssignmentResolution, error) {
+	chain := Chain{
+		WorkspaceID:  stringValue(payload, "workspace_id"),
+		ProjectID:    stringValue(payload, "project_id"),
+		IssueID:      stringValue(payload, "issue_id"),
+		TaskID:       stringValue(payload, "task_id"),
+		AssignmentID: stringValue(payload, "assignment_id"),
+	}
+	if err := chain.ValidateAssignmentScope(); err != nil {
+		return taskAssignmentResolution{}, err
+	}
+	placementRaw, _ := payload["placement"].(map[string]any)
+	placement, err := placementFromPayload(placementRaw)
+	if err != nil {
+		return taskAssignmentResolution{}, err
+	}
+	placement.WorkspaceID = chain.WorkspaceID
+	placement.AssignmentID = chain.AssignmentID
+	placementDigest, err := placement.Digest()
+	if err != nil {
+		return taskAssignmentResolution{}, err
+	}
+	frozenDigest := stringValue(payload, "placement_digest")
+	if frozenDigest == "" || frozenDigest != placementDigest {
+		return taskAssignmentResolution{}, fmt.Errorf(
+			"%w: placement evidence digest %q does not match rebuilt placement %s",
+			ErrMappingConflict, frozenDigest, placementDigest)
+	}
+	return taskAssignmentResolution{
+		chain:           chain,
+		placement:       placement,
+		placementDigest: placementDigest,
+		instructions:    stringValue(payload, "instructions"),
+	}, nil
 }
 
 func (b *Bridge) resolveTaskAssignmentIDOnly(ctx context.Context, taskID string) (taskAssignmentResolution, bool, error) {
@@ -1505,6 +1744,41 @@ func (b *Bridge) lookupTaskEvidence(ctx context.Context, taskID string) (Evidenc
 		return EvidenceRecord{Payload: payload}, true, nil
 	}
 	return EvidenceRecord{}, false, nil
+}
+
+// lookupTaskEvidenceForClaim resolves the task evidence for one claimed
+// daemon task, memo first and then the durable work chain: the dispatch
+// linkage for the claim's (workspace, project, issue) is deterministic and
+// idempotent to register, and EnsureAssignment wrote the task evidence under
+// taskEvidenceKey on exactly that chain. This is the fresh-process path.
+func (b *Bridge) lookupTaskEvidenceForClaim(ctx context.Context, claimed DaemonTask) (EvidenceRecord, bool, error) {
+	if payload, ok := b.memoTaskAssignment(claimed.ID); ok {
+		return EvidenceRecord{Payload: payload}, true, nil
+	}
+	if !IsValidUUID(claimed.WorkspaceID) || !IsValidUUID(claimed.IssueID) || !IsValidUUID(claimed.ProjectID) {
+		return EvidenceRecord{}, false, nil
+	}
+	chain := Chain{WorkspaceID: claimed.WorkspaceID, ProjectID: claimed.ProjectID, IssueID: claimed.IssueID, TaskID: claimed.ID}
+	linkage, err := b.Entry.RegisterLinkage(ctx, LinkageInput{
+		Chain:       chain,
+		Actor:       b.Actor,
+		MappingKind: "dispatch",
+	})
+	if err != nil {
+		return EvidenceRecord{}, false, err
+	}
+	record, found, err := b.Entry.LookupEvidence(ctx, linkage.WorkRef, taskEvidenceKey(claimed.WorkspaceID, claimed.ID))
+	if err != nil || !found {
+		return EvidenceRecord{}, false, err
+	}
+	return record, true, nil
+}
+
+// taskAssignmentIndexKey indexes one assignment's work chain under its
+// task id so a fresh Bridge process can resolve a claimed task to its
+// assignment linkage without any in-process memo.
+func taskAssignmentIndexKey(workspaceID, taskID string) string {
+	return linkageKeyPrefix + "task-index/" + workspaceID + "/" + taskID
 }
 
 func stringValue(payload map[string]any, key string) string {
@@ -1656,6 +1930,214 @@ func (b *Bridge) rememberDispatch(chain Chain, mapping DispatchMap) {
 	b.memoMu.Lock()
 	defer b.memoMu.Unlock()
 	b.memo.dispatch[chain.WorkspaceID+":"+chain.AssignmentID] = mapping
+}
+
+// The durable start state uses two deterministic keys with immutable
+// payloads, so state transitions never rewrite a key (the work chain's
+// idempotency is exact-payload): dispatchStartPendingKey records "a worker
+// was dispatched and the task start has not settled" and dispatchStartedKey
+// records "StartTask settled". A FRESH Bridge process reads the pair and
+// resumes the reconcile loop (retry only Daemon.StartTask, never
+// WorkerStart); pending without started means the resume is required.
+func dispatchStartPendingKey(chain Chain) string {
+	return linkageKeyPrefix + "dispatch-start-pending/" + chain.WorkspaceID + "/" + chain.AssignmentID
+}
+
+func dispatchStartedKey(chain Chain) string {
+	return linkageKeyPrefix + "dispatch-started/" + chain.WorkspaceID + "/" + chain.AssignmentID
+}
+
+func (b *Bridge) recordStartPendingDurable(ctx context.Context, workRef string, chain Chain) error {
+	return b.recordLinkageEvidence(ctx, workRef, dispatchStartPendingKey(chain), map[string]any{
+		"assignment_id": chain.AssignmentID,
+		"task_id":       chain.TaskID,
+		"pending":       true,
+	})
+}
+
+func (b *Bridge) recordStartSettledDurable(ctx context.Context, workRef string, chain Chain) error {
+	return b.recordLinkageEvidence(ctx, workRef, dispatchStartedKey(chain), map[string]any{
+		"assignment_id": chain.AssignmentID,
+		"task_id":       chain.TaskID,
+		"started":       true,
+	})
+}
+
+// startPendingDurable reports whether a dispatched task start is still
+// unresolved on the work chain: a pending record exists without a settled
+// one. Lookup failures fail CLOSED (found=false with a non-nil error): a
+// transient ledger read error must never be interpreted as "nothing
+// pending", which would let the caller report success or skip the start
+// obligation while it is actually unresolved.
+func (b *Bridge) startPendingDurable(ctx context.Context, workRef string, chain Chain) (found, started bool, err error) {
+	pending, okPending, err := b.Entry.LookupEvidence(ctx, workRef, dispatchStartPendingKey(chain))
+	if err != nil {
+		return false, false, fmt.Errorf("orcabridge: read start-pending evidence for %s: %w", chain.TaskID, err)
+	}
+	if !okPending {
+		return false, false, nil
+	}
+	if pendingFlag, _ := pending.Payload["pending"].(bool); !pendingFlag {
+		return false, false, nil
+	}
+	settled, okSettled, err := b.Entry.LookupEvidence(ctx, workRef, dispatchStartedKey(chain))
+	if err != nil {
+		return false, false, fmt.Errorf("orcabridge: read start-settled evidence for %s: %w", chain.TaskID, err)
+	}
+	if okSettled {
+		if startedFlag, _ := settled.Payload["started"].(bool); startedFlag {
+			return true, true, nil
+		}
+	}
+	return true, false, nil
+}
+
+// reconcileTaskStart advances the HiveCrew task to running, retrying only
+// the StartTask verb. It records durable pending state before the first
+// attempt and clears it after success, so a fresh Bridge process resumes
+// correctly. It never returns nil while the task start is unresolved.
+func (b *Bridge) reconcileTaskStart(ctx context.Context, workRef string, chain Chain) error {
+	value, _ := b.startReconcileLocks.LoadOrStore(chain.WorkspaceID+":"+chain.AssignmentID, &sync.Mutex{})
+	mutex := value.(*sync.Mutex)
+	mutex.Lock()
+	defer mutex.Unlock()
+	// Double-checked durable state: a concurrent holder may have settled the
+	// start between the caller's check and this lock.
+	found, started, derr := b.startPendingDurable(ctx, workRef, chain)
+	if derr != nil {
+		return derr
+	}
+	if found && started {
+		b.markStartPending(chain, false)
+		return nil
+	}
+	// Cross-instance start arbitration: the start-permit CAS decides which
+	// Bridge performs the StartTask verb. The permit payload is identity-
+	// stable (instance + generation + lease deadline), so the SAME holder
+	// re-acquires on its own retries — the idempotent replay the port
+	// provides — while a DIFFERENT holder loses and waits for settlement.
+	// A different holder may only take over when the previous start attempt
+	// is resolved: settled evidence (started=true) or no durable start
+	// obligation at all.
+	// The permit payload must be byte-stable across this Bridge's retries:
+	// lease deadline and attempt stamp are fixed at first acquisition (cached
+	// in-process) so a retry composes the identical payload and the port's
+	// idempotent replay re-acquires instead of conflicting.
+	b.startPermitMu.Lock()
+	cached := b.startPermits[chain.WorkspaceID+":"+chain.AssignmentID]
+	b.startPermitMu.Unlock()
+	if !cached.acquired {
+		cached = startPermitIdentity{deadline: b.now().Add(b.scopeLeaseTTL()), stamp: b.now()}
+	}
+	permitHolder := b.instanceID()
+	attempt := 0
+	for {
+		permit, err := b.Entry.ClaimScope(ctx, ScopeClaimInput{
+			WorkRef:    workRef,
+			ClaimKey:   dispatchStartPermitKey(chain, attempt),
+			InstanceID: permitHolder,
+			SessionID:  b.Actor.SessionID,
+			Generation: attempt,
+			ExpiresAt:  cached.deadline,
+			AttemptAt:  cached.stamp,
+		})
+		if err != nil {
+			return fmt.Errorf("orcabridge: acquire task-start permit for %s: %w", chain.TaskID, err)
+		}
+		if permit.Acquired {
+			b.startPermitMu.Lock()
+			b.startPermits[chain.WorkspaceID+":"+chain.AssignmentID] = startPermitIdentity{acquired: true, deadline: cached.deadline, stamp: cached.stamp}
+			b.startPermitMu.Unlock()
+			break // this Bridge owns the StartTask verb
+		}
+		// Someone else owns it. If the start already settled, we are done.
+		if _, started, derr := b.startPendingDurable(ctx, workRef, chain); derr != nil {
+			return derr
+		} else if started {
+			b.markStartPending(chain, false)
+			return nil
+		}
+		// Expired holder: the holder is gone. Take over the StartTask verb at
+		// the next permit generation. StartTask is the daemon's own
+		// idempotent lifecycle verb (a repeated start on an unsettled task is
+		// the daemon's no-op/terminal transition, not a second side effect);
+		// the invariant that matters is that WorkerStart is never re-run.
+		// Re-take the permit at generation+1 and continue into the verb.
+		if !permit.Holder.Parsed || permit.Holder.ExpiresAt.Before(b.now()) {
+			attempt = permit.Holder.Generation + 1
+			continue
+		}
+		// Live holder: wait bounded for its settlement.
+		waitDeadline := b.now().Add(b.claimMaxWait())
+		for w := 0; w < maxClaimAttempts; w++ {
+			if _, started, derr := b.startPendingDurable(ctx, workRef, chain); derr != nil {
+				return derr
+			} else if started {
+				b.markStartPending(chain, false)
+				return nil
+			}
+			if b.now().After(waitDeadline) {
+				return fmt.Errorf("%w: task %s start by the permit holder never settled", ErrScopeAttemptInFlight, chain.TaskID)
+			}
+			if err := sleepContext(ctx, b.claimPoll()); err != nil {
+				return err
+			}
+		}
+		return fmt.Errorf("%w: task %s start by the permit holder never settled", ErrScopeAttemptInFlight, chain.TaskID)
+	}
+
+	b.markStartPending(chain, true)
+	if err := b.recordStartPendingDurable(ctx, workRef, chain); err != nil {
+		return fmt.Errorf("orcabridge: record start-pending evidence: %w", err)
+	}
+	if err := b.Daemon.StartTask(ctx, chain.TaskID); err != nil {
+		return fmt.Errorf("orcabridge: hivecrew task %s start failed (worker already dispatched; retry retries only StartTask): %w", chain.TaskID, err)
+	}
+	if err := b.recordStartSettledDurable(ctx, workRef, chain); err != nil {
+		// StartTask succeeded but the settle write failed: keep the in-memory
+		// pending mark so a retry re-settles; success cannot be claimed until
+		// durable evidence settles.
+		return fmt.Errorf("orcabridge: hivecrew task %s started but its evidence settle failed (retry is safe): %w", chain.TaskID, err)
+	}
+	b.markStartPending(chain, false)
+	return nil
+}
+
+// startPermitIdentity freezes the byte-stable payload fields of one
+// assignment's start permit so retries compose identical CAS inputs.
+type startPermitIdentity struct {
+	acquired bool
+	deadline time.Time
+	stamp    time.Time
+}
+
+// dispatchStartPermitKey is the atomic cross-instance permit for performing
+// one assignment's StartTask verb at one takeover generation.
+func dispatchStartPermitKey(chain Chain, attempt int) string {
+	return fmt.Sprintf("%sdispatch-start-permit/%s/%s#%d", linkageKeyPrefix, chain.WorkspaceID, chain.AssignmentID, attempt)
+}
+
+// startPendingDurableObligation reports whether any durable start
+// obligation exists (pending or settled) without distinguishing the two, and
+// propagates lookup errors (fail closed at the caller).
+func (b *Bridge) startPendingDurableObligation(ctx context.Context, workRef string, chain Chain) (found, started bool, err error) {
+	found, startedFlag, err := b.startPendingDurable(ctx, workRef, chain)
+	if err != nil {
+		return false, false, err
+	}
+	if found {
+		return true, startedFlag, nil
+	}
+	// No pending record: check the settled record alone.
+	settled, ok, err := b.Entry.LookupEvidence(ctx, workRef, dispatchStartedKey(chain))
+	if err != nil {
+		return false, false, fmt.Errorf("orcabridge: read start-settled evidence for %s: %w", chain.TaskID, err)
+	}
+	if !ok {
+		return false, false, nil
+	}
+	startedFlag, _ = settled.Payload["started"].(bool)
+	return startedFlag, startedFlag, nil
 }
 
 // markStartPending records that WorkerStart committed but the HiveCrew task

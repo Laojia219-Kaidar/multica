@@ -3,6 +3,7 @@ package orcabridge
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -478,5 +479,126 @@ func TestClaimScopeAbsentAttemptAtUsesPortTime(t *testing.T) {
 	}
 	if stamp.After(time.Now()) {
 		t.Fatalf("stamp lies in the future: %v", stamp)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// R7: production-equivalent adversarial barrier replay (count-100)
+// ---------------------------------------------------------------------------
+
+// productionEntry wraps the real workentry kernel (service + memory store)
+// behind the port so adversarial tests exercise production identity
+// semantics, not the fake's assumptions.
+type productionEntry struct {
+	adapter *WorkEntryServiceAdapter
+}
+
+func newProductionEntry(t *testing.T, chain Chain) *productionEntry {
+	t.Helper()
+	store := workentry.NewMemoryStore()
+	store.SeedProject(workentry.ProjectRef{ID: chain.ProjectID, WorkspaceID: chain.WorkspaceID, Title: "HiveCrew A1"})
+	store.SeedIssue(workentry.IssueRef{ID: chain.IssueID, WorkspaceID: chain.WorkspaceID, ProjectID: chain.ProjectID, Title: "Bridge anchor issue"})
+	return &productionEntry{adapter: &WorkEntryServiceAdapter{
+		Service:     workentry.NewService(store),
+		WorkspaceID: chain.WorkspaceID,
+	}}
+}
+
+func (p *productionEntry) RegisterLinkage(ctx context.Context, in LinkageInput) (LinkageReceipt, error) {
+	return p.adapter.RegisterLinkage(ctx, in)
+}
+func (p *productionEntry) AppendEvidence(ctx context.Context, in EvidenceInput) (EvidenceReceipt, error) {
+	return p.adapter.AppendEvidence(ctx, in)
+}
+func (p *productionEntry) LookupEvidence(ctx context.Context, workRef, key string) (EvidenceRecord, bool, error) {
+	return p.adapter.LookupEvidence(ctx, workRef, key)
+}
+func (p *productionEntry) ClaimScope(ctx context.Context, in ScopeClaimInput) (ScopeClaimResult, error) {
+	return p.adapter.ClaimScope(ctx, in)
+}
+
+// Compile-time check that the production wrapper satisfies the port.
+var _ WorkEntryPort = (*productionEntry)(nil)
+
+// Adversarial count-100 against the PRODUCTION kernel: the bridge's permit
+// path (winEffectBarrier) must never return a second permit for the same
+// scope/epoch, even when the caller replays a byte-identical claim (same
+// holder, same lease deadline, same everything). The production port
+// legitimately replays identical payloads (idempotent Acquired), so the
+// bridge must compose an attempt-unique identity per call; this test proves
+// it does, 100 times, with no clock artifacts.
+func TestProductionBarrierReplayCount100(t *testing.T) {
+	chain := validChain()
+	entry := newProductionEntry(t, chain)
+	ctx := context.Background()
+
+	linkage, err := entry.RegisterLinkage(ctx, LinkageInput{Chain: chain, Actor: bridgeActor(), MappingKind: "dispatch"})
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	// Wire a Bridge directly over the production-backed port.
+	bridge := &Bridge{
+		Client:     nil, // unused by winEffectBarrier
+		Entry:      entry,
+		Actor:      bridgeActor(),
+		InstanceID: "bridge-adversarial",
+		Now:        time.Now,
+	}
+
+	// Byte-identical claim replayed 100 times: same baseKey, generation, and
+	// lease deadline on every call.
+	claim := scopeClaim{
+		baseKey:        "adv/scope",
+		generation:     0,
+		leaseExpiresAt: time.Now().Add(time.Hour),
+	}
+	permits := 0
+	for i := 0; i < 100; i++ {
+		permit, err := bridge.winEffectBarrier(ctx, linkage.WorkRef, claim)
+		if err == nil {
+			permits++
+			if permits > 1 {
+				t.Fatalf("second permit issued at replay %d under production identity semantics: %+v", i, permit)
+			}
+		} else if !errors.Is(err, ErrScopeAttemptInFlight) {
+			t.Fatalf("replay %d: unexpected error %v", i, err)
+		}
+	}
+	if permits != 1 {
+		t.Fatalf("permits = %d, want exactly 1 over 100 identical-claim replays", permits)
+	}
+}
+
+// Adversarial count-100 with a DIFFERENT attempt identity per call but the
+// same claim key: still exactly one permit, the rest observe the holder.
+func TestProductionBarrierDistinctAttemptsCount100(t *testing.T) {
+	chain := validChain()
+	entry := newProductionEntry(t, chain)
+	ctx := context.Background()
+
+	linkage, err := entry.RegisterLinkage(ctx, LinkageInput{Chain: chain, Actor: bridgeActor(), MappingKind: "dispatch"})
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+
+	acquired := 0
+	for i := 0; i < 100; i++ {
+		result, err := entry.ClaimScope(ctx, ScopeClaimInput{
+			WorkRef:    linkage.WorkRef,
+			ClaimKey:   "adv2/barrier#0",
+			InstanceID: fmt.Sprintf("bridge-attempt-%d", i),
+			SessionID:  "bridge-session-1",
+			Generation: 0,
+			ExpiresAt:  time.Date(2026, 8, 24, 16, 0, 0, 0, time.UTC),
+		})
+		if err != nil {
+			t.Fatalf("attempt %d: %v", i, err)
+		}
+		if result.Acquired {
+			acquired++
+		}
+	}
+	if acquired != 1 {
+		t.Fatalf("acquired = %d, want exactly 1 across 100 distinct attempts", acquired)
 	}
 }

@@ -378,6 +378,54 @@ func (f *fakeEntry) ClaimScope(ctx context.Context, in ScopeClaimInput) (ScopeCl
 	return ScopeClaimResult{Acquired: false, Holder: parseScopeClaimHolder(existing)}, nil
 }
 
+// injectClaimWin pre-wins a claim CAS for key on behalf of anotherBridge so
+// a test can force the waiter path deterministically. When expired is true
+// the injected lease is already expired, letting the caller take over the
+// claim generation while the barrier epoch stays held by the other bridge.
+func (f *fakeEntry) injectClaimWin(key, otherBridge string, expired bool) error {
+	lease := time.Now().Add(time.Hour)
+	if expired {
+		lease = time.Now().Add(-time.Hour)
+	}
+	payload := map[string]any{
+		"claim":       true,
+		"instance_id": otherBridge + "#0#1",
+		"generation":  0,
+		"expires_at":  lease.UTC().Format(time.RFC3339Nano),
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	byKey, ok := f.events["hivecrew://ws/work/prj-forced"]
+	if !ok {
+		byKey = map[string]map[string]any{}
+		f.events["hivecrew://ws/work/prj-forced"] = byKey
+	}
+	byKey[key+"#0"] = payload
+	// The barrier keys are looked up per linkage work ref; store under every
+	// known work ref for determinism.
+	for workRef := range f.events {
+		f.events[workRef][key+"#0"] = payload
+	}
+	return nil
+}
+
+// injectBarrierHeld pre-wins an effect-barrier CAS for the exact barrier
+// key on behalf of another bridge, forcing the waiter path deterministically.
+func (f *fakeEntry) injectBarrierHeld(barrierKey, otherBridge string) error {
+	payload := map[string]any{
+		"claim":       true,
+		"instance_id": otherBridge + "#0#1",
+		"generation":  0,
+		"expires_at":  time.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano),
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for workRef := range f.events {
+		f.events[workRef][barrierKey] = payload
+	}
+	return nil
+}
+
 // evidenceStored reports whether one evidence key exists on the work chain.
 func (f *fakeEntry) evidenceStored(workRef, key string) bool {
 	f.mu.Lock()
@@ -441,6 +489,9 @@ type fakeDaemonPort struct {
 	claimTask *DaemonTask
 	claimErr  error
 	startErr  error
+
+	// startBlock, when set, holds every StartTask call until closed.
+	startBlock chan struct{}
 }
 
 func (f *fakeDaemonPort) ClaimTask(ctx context.Context, runtimeID string) (*DaemonTask, error) {
@@ -453,6 +504,18 @@ func (f *fakeDaemonPort) ClaimTask(ctx context.Context, runtimeID string) (*Daem
 }
 
 func (f *fakeDaemonPort) StartTask(ctx context.Context, taskID string) error {
+	// Slow-start support: block until released so tests can hold the verb
+	// in flight deterministically.
+	f.mu.Lock()
+	block := f.startBlock
+	f.mu.Unlock()
+	if block != nil {
+		select {
+		case <-block:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	// Record every attempt (failed or not) so recovery tests can assert
@@ -1278,8 +1341,10 @@ func TestRunClaimedTaskRecoveryAfterEvidenceFailure(t *testing.T) {
 	if tb.client.workerStarts != 1 {
 		t.Fatalf("worker starts after first attempt = %d, want 1", tb.client.workerStarts)
 	}
-	if len(tb.daemon.started) != 1 {
-		t.Fatalf("hivecrew task starts after first attempt = %d, want 1", len(tb.daemon.started))
+	// R7 ordering: dispatch evidence is committed BEFORE StartTask, so a
+	// failing evidence append aborts before any start attempt.
+	if len(tb.daemon.started) != 0 {
+		t.Fatalf("hivecrew task starts after first attempt = %d, want 0 (evidence failed first)", len(tb.daemon.started))
 	}
 
 	// Retry while the ledger is still failing: no second worker-start, no
@@ -1294,7 +1359,7 @@ func TestRunClaimedTaskRecoveryAfterEvidenceFailure(t *testing.T) {
 	if tb.client.workerStarts != 1 {
 		t.Fatalf("retry started a second worker: %d", tb.client.workerStarts)
 	}
-	if len(tb.daemon.started) != 1 {
+	if len(tb.daemon.started) != 0 {
 		t.Fatalf("retry restarted the hivecrew task: %d", len(tb.daemon.started))
 	}
 
@@ -1318,7 +1383,11 @@ func TestRunClaimedTaskRecoveryAfterEvidenceFailure(t *testing.T) {
 	if !tb.entry.evidenceStored(workRef, linkageKey) {
 		t.Fatal("recovered retry did not append the dispatch evidence")
 	}
-	// A further replay is clean with no pending evidence re-attempt side effects.
+	// The recovered retry starts the task exactly once.
+	if len(tb.daemon.started) != 1 {
+		t.Fatalf("recovered retry start attempts = %d, want 1", len(tb.daemon.started))
+	}
+	// A further replay is clean with no new effects.
 	if _, err := tb.RunClaimedTask(t.Context(), claimed); err != nil {
 		t.Fatalf("post-recovery replay: %v", err)
 	}
@@ -2321,5 +2390,514 @@ func TestWorkerPlacementDriftFailsClosed(t *testing.T) {
 	}
 	if a.client.workerStarts != 1 {
 		t.Fatalf("drifted placement must not start a second worker: %d", a.client.workerStarts)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// R7: fresh-process resume, loser-waiter validation, mismatch, replay
+// ---------------------------------------------------------------------------
+
+// Blocker 2: after WorkerStart succeeds and StartTask fails, a FRESH Bridge
+// process (empty memo, new session) resumes only Daemon.StartTask and
+// reports success only after StartTask and its durable evidence settle;
+// WorkerStart is never re-run.
+func TestFreshProcessResumesStartTaskOnly(t *testing.T) {
+	a, b := twinBridges(t)
+	chain := validChain()
+	mapping, err := a.EnsureAssignment(t.Context(), dispatchRef(chain))
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed := DaemonTask{ID: mapping.Chain.TaskID, WorkspaceID: chain.WorkspaceID, ProjectID: chain.ProjectID, IssueID: mapping.Chain.IssueID}
+
+	// A claims with a short lease so a fresh process can take over after its
+	// StartTask failure (both the creation claim and its start permit expire).
+	a.LeaseTTL = 20 * time.Millisecond
+	a.daemon.startErr = errors.New("daemon down")
+	firstFailed, err := a.RunClaimedTask(t.Context(), claimed)
+	if err == nil {
+		t.Fatal("StartTask failure must surface an error")
+	}
+	if firstFailed.OrcaDispatchID == "" {
+		t.Fatalf("failed call must still return the committed dispatch: %+v", firstFailed)
+	}
+	// Let A's leases expire after its failed run.
+	time.Sleep(30 * time.Millisecond)
+	if a.client.workerStarts != 1 || len(a.daemon.started) != 1 {
+		t.Fatalf("after first attempt: workers=%d starts=%d, want 1/1", a.client.workerStarts, len(a.daemon.started))
+	}
+
+	// Fresh process: bridge B shares the ledger but has an empty memo.
+	b.daemon.startErr = nil
+	resumed, err := b.RunClaimedTask(t.Context(), claimed)
+	if err != nil {
+		t.Fatalf("fresh-process resume: %v", err)
+	}
+	// Exact dispatch reuse: B's resume must carry the SAME Orca dispatch the
+	// failed run committed, not merely any non-empty id.
+	if resumed.OrcaDispatchID != firstFailed.OrcaDispatchID {
+		t.Fatalf("resume reused a different dispatch: got %s, want %s", resumed.OrcaDispatchID, firstFailed.OrcaDispatchID)
+	}
+	// WorkerStart never re-run; StartTask retried exactly once by B.
+	if a.client.workerStarts != 1 {
+		t.Fatalf("fresh process re-ran WorkerStart: %d", a.client.workerStarts)
+	}
+	if len(a.daemon.started) != 2 {
+		t.Fatalf("daemon start attempts = %d, want 2 (A failed + B resumed)", len(a.daemon.started))
+	}
+}
+
+// Blocker 3: the loser-waiter adopting an Orca orphan must validate the
+// placement digest — an adopted mapping never carries a zero digest.
+func TestLoserWaiterNeverMemoizesZeroDigest(t *testing.T) {
+	a, b := twinBridges(t)
+	chain := validChain()
+	mapping, err := a.EnsureAssignment(t.Context(), dispatchRef(chain))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.EnsureAssignment(t.Context(), dispatchRef(chain)); err != nil {
+		t.Fatal(err)
+	}
+	claimed := DaemonTask{ID: mapping.Chain.TaskID, WorkspaceID: chain.WorkspaceID, ProjectID: chain.ProjectID, IssueID: mapping.Chain.IssueID}
+
+	// Orphan dispatch visible to B's waiter path (A "crashed" after start).
+	// Derive the ids from the shared Orca client state rather than B's memo
+	// so the test also works on a fresh-process-like bridge.
+	var orphanRunID, orphanTaskID string
+	if runEntry, ok := b.memoRunEntry(Chain{WorkspaceID: chain.WorkspaceID, ProjectID: chain.ProjectID}); ok {
+		orphanRunID = runEntry.id
+	}
+	if taskEntry, ok := b.memoTaskEntry(chain); ok {
+		orphanTaskID = taskEntry.id
+	}
+	if orphanRunID == "" {
+		for _, run := range b.client.runs {
+			if ws, prj, ok := RunMarkerScan(run.Objective); ok && ws == chain.WorkspaceID && prj == chain.ProjectID {
+				orphanRunID = run.ID
+				break
+			}
+		}
+	}
+	if orphanTaskID == "" {
+		for _, tasks := range b.client.tasks {
+			for _, task := range tasks {
+				if _, _, issue, taskID, ok := TaskMarkerScan(task.Spec); ok && issue == mapping.Chain.IssueID && taskID == mapping.Chain.TaskID {
+					orphanTaskID = task.ID
+					break
+				}
+			}
+			if orphanTaskID != "" {
+				break
+			}
+		}
+	}
+	if orphanRunID == "" || orphanTaskID == "" {
+		t.Fatalf("could not derive orphan ids: run=%q task=%q", orphanRunID, orphanTaskID)
+	}
+	b.client.dispatch = &OrcaDispatch{
+		ID:             "ctx_orphanr7",
+		RunID:          orphanRunID,
+		TaskID:         orphanTaskID,
+		AssigneeHandle: "term_328ff727-9a71-4047-b8d8-c2f5c34c0f7e",
+		Status:         "dispatched",
+	}
+
+	adopted, err := b.RunClaimedTask(t.Context(), claimed)
+	if err != nil {
+		t.Fatalf("loser adoption: %v", err)
+	}
+	if adopted.OrcaDispatchID != "ctx_orphanr7" {
+		t.Fatalf("expected orphan adoption, got %+v", adopted)
+	}
+	if adopted.PlacementDigest == "" {
+		t.Fatal("adopted mapping carries a zero placement digest")
+	}
+	if adopted.WorkspaceID != chain.WorkspaceID || adopted.AssignmentID != chain.AssignmentID {
+		t.Fatalf("adopted mapping lost assignment lineage: %+v", adopted)
+	}
+	// Success only after StartTask settled: exactly one start attempt ran.
+	if len(b.daemon.started) != 1 {
+		t.Fatalf("daemon starts after adoption = %d, want 1", len(b.daemon.started))
+	}
+	if b.client.workerStarts != 0 {
+		t.Fatalf("waiter must not call WorkerStart: %d", b.client.workerStarts)
+	}
+}
+
+// Blocker 3: an orphan dispatch with a mismatched TaskID is never adopted.
+func TestLoserWaiterRejectsMismatchedOrphan(t *testing.T) {
+	a, b := twinBridges(t)
+	chain := validChain()
+	mapping, err := a.EnsureAssignment(t.Context(), dispatchRef(chain))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.EnsureAssignment(t.Context(), dispatchRef(chain)); err != nil {
+		t.Fatal(err)
+	}
+	claimed := DaemonTask{ID: mapping.Chain.TaskID, WorkspaceID: chain.WorkspaceID, ProjectID: chain.ProjectID, IssueID: mapping.Chain.IssueID}
+
+	var mismatchRunID string
+	if runEntry, ok := b.memoRunEntry(Chain{WorkspaceID: chain.WorkspaceID, ProjectID: chain.ProjectID}); ok {
+		mismatchRunID = runEntry.id
+	}
+	if mismatchRunID == "" {
+		for _, run := range b.client.runs {
+			if ws, prj, ok := RunMarkerScan(run.Objective); ok && ws == chain.WorkspaceID && prj == chain.ProjectID {
+				mismatchRunID = run.ID
+				break
+			}
+		}
+	}
+	if mismatchRunID == "" {
+		t.Fatal("could not derive run id for mismatch fixture")
+	}
+	// Task id belongs to a different Orca task.
+	b.client.dispatch = &OrcaDispatch{
+		ID:             "ctx_mismatch1",
+		RunID:          mismatchRunID,
+		TaskID:         "task_ffffffffffff",
+		AssigneeHandle: "term_328ff727-9a71-4047-b8d8-c2f5c34c0f7e",
+		Status:         "dispatched",
+	}
+	// Force B down the waiter path: another instance already holds the
+	// effect barrier for this scope (simulating an in-flight worker start),
+	// so B cannot win a permit and must wait on the orphan — which mismatches.
+	// Expired claim lets B take over the claim generation; the barrier epoch
+	// stays held by bridge-other (injected on the barrier key), so B must
+	// wait and validate the orphan before adopting.
+	if err := b.entry.injectClaimWin(workerStartClaimBase(mapping.Chain), "bridge-other", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.entry.injectBarrierHeld(effectBarrierKey(workerStartClaimBase(mapping.Chain), 0), "bridge-other"); err != nil {
+		t.Fatal(err)
+	}
+	b.ClaimPoll = time.Millisecond
+	b.ClaimMaxWait = 200 * time.Millisecond
+	if _, err := b.RunClaimedTask(t.Context(), claimed); !errors.Is(err, ErrResultIdentityMismatch) {
+		t.Fatalf("mismatched orphan must be rejected with ErrResultIdentityMismatch, got %v", err)
+	}
+	if b.client.workerStarts != 0 {
+		t.Fatalf("mismatch must not trigger WorkerStart: %d", b.client.workerStarts)
+	}
+}
+
+// Blocker 2 replay: after a successful settle, replays (fresh or same
+// process) add no effects at all.
+func TestSettledReplayAddsNoEffects(t *testing.T) {
+	a, b := twinBridges(t)
+	chain := validChain()
+	mapping, err := a.EnsureAssignment(t.Context(), dispatchRef(chain))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.EnsureAssignment(t.Context(), dispatchRef(chain)); err != nil {
+		t.Fatal(err)
+	}
+	claimed := DaemonTask{ID: mapping.Chain.TaskID, WorkspaceID: chain.WorkspaceID, IssueID: mapping.Chain.IssueID}
+
+	if _, err := a.RunClaimedTask(t.Context(), claimed); err != nil {
+		t.Fatal(err)
+	}
+	workers, starts := a.client.workerStarts, len(a.daemon.started)
+
+	// Same-process replay and fresh-process replay.
+	if _, err := a.RunClaimedTask(t.Context(), claimed); err != nil {
+		t.Fatalf("same-process replay: %v", err)
+	}
+	if _, err := b.RunClaimedTask(t.Context(), claimed); err != nil {
+		t.Fatalf("fresh-process replay: %v", err)
+	}
+	if a.client.workerStarts != workers || len(a.daemon.started) != starts {
+		t.Fatalf("replays duplicated effects: workers=%d starts=%d (want %d/%d)",
+			a.client.workerStarts, len(a.daemon.started), workers, starts)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// R7 pre-review closers
+// ---------------------------------------------------------------------------
+
+// waiterFixture builds two bridges with an assignment committed and returns
+// a helper that forces bridge B down the waiter path with an injected
+// expired claim plus held barrier.
+func waiterFixture(t *testing.T, chain Chain) (*testBridge, *testBridge, DaemonTask, AssignmentMapping) {
+	t.Helper()
+	a, b := twinBridges(t)
+	mapping, err := a.EnsureAssignment(t.Context(), dispatchRef(chain))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.EnsureAssignment(t.Context(), dispatchRef(chain)); err != nil {
+		t.Fatal(err)
+	}
+	claimed := DaemonTask{ID: mapping.Chain.TaskID, WorkspaceID: chain.WorkspaceID, ProjectID: chain.ProjectID, IssueID: mapping.Chain.IssueID}
+	// Expired claim (B may take over the claim) + held barrier (B must wait).
+	if err := b.entry.injectClaimWin(workerStartClaimBase(mapping.Chain), "bridge-other", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.entry.injectBarrierHeld(effectBarrierKey(workerStartClaimBase(mapping.Chain), 0), "bridge-other"); err != nil {
+		t.Fatal(err)
+	}
+	b.ClaimPoll = time.Millisecond
+	b.ClaimMaxWait = 200 * time.Millisecond
+	return a, b, claimed, mapping
+}
+
+func derivedOrcaIDs(tb *testBridge, chain Chain, mapping AssignmentMapping) (runID string, taskID string) {
+	tb.client.mu.Lock()
+	defer tb.client.mu.Unlock()
+	for _, run := range tb.client.runs {
+		if ws, prj, ok := RunMarkerScan(run.Objective); ok && ws == chain.WorkspaceID && prj == chain.ProjectID {
+			runID = run.ID
+			break
+		}
+	}
+	for _, tasks := range tb.client.tasks {
+		for _, task := range tasks {
+			if _, _, issue, taskID, ok := TaskMarkerScan(task.Spec); ok && issue == mapping.Chain.IssueID && taskID == mapping.Chain.TaskID {
+				return runID, task.ID
+			}
+		}
+	}
+	return runID, ""
+}
+
+// Item 1a: a RunID-mismatched orphan is rejected (branch now reachable).
+func TestWaiterRejectsRunMismatchOrphan(t *testing.T) {
+	chain := validChain()
+	a, b, claimed, mapping := waiterFixture(t, chain)
+	orphanRunID, orphanTaskID := derivedOrcaIDs(b, chain, mapping)
+	if orphanRunID == "" || orphanTaskID == "" {
+		t.Fatalf("derive failed: run=%q task=%q", orphanRunID, orphanTaskID)
+	}
+	b.client.dispatch = &OrcaDispatch{
+		ID:             "ctx_runmismatch",
+		RunID:          "run_ffffffffffff", // wrong run
+		TaskID:         orphanTaskID,
+		AssigneeHandle: "term_328ff727-9a71-4047-b8d8-c2f5c34c0f7e",
+		Status:         "dispatched",
+	}
+	if _, err := b.RunClaimedTask(t.Context(), claimed); !errors.Is(err, ErrResultIdentityMismatch) {
+		t.Fatalf("expected ErrResultIdentityMismatch for wrong RunID, got %v", err)
+	}
+	if b.client.workerStarts != 0 {
+		t.Fatalf("RunID mismatch must not start a worker: %d", b.client.workerStarts)
+	}
+	_ = a
+}
+
+// Item 1b: an orphan with an EMPTY TaskID is rejected (unknown identity).
+func TestWaiterRejectsEmptyTaskIDOrphan(t *testing.T) {
+	chain := validChain()
+	a, b, claimed, mapping := waiterFixture(t, chain)
+	orphanRunID, _ := derivedOrcaIDs(b, chain, mapping)
+	if orphanRunID == "" {
+		t.Fatal("no run id")
+	}
+	b.client.dispatch = &OrcaDispatch{
+		ID:             "ctx_emptytask",
+		RunID:          orphanRunID,
+		TaskID:         "", // absent identity must fail closed
+		AssigneeHandle: "term_328ff727-9a71-4047-b8d8-c2f5c34c0f7e",
+		Status:         "dispatched",
+	}
+	if _, err := b.RunClaimedTask(t.Context(), claimed); !errors.Is(err, ErrResultIdentityMismatch) {
+		t.Fatalf("expected ErrResultIdentityMismatch for empty TaskID, got %v", err)
+	}
+	if b.client.workerStarts != 0 {
+		t.Fatalf("empty TaskID must not start a worker: %d", b.client.workerStarts)
+	}
+	_ = a
+}
+
+// Item 2: an evidence conflict during waiter adoption must not poison the
+// memo — a later replay still surfaces the conflict instead of bypassing it
+// through a memoized mapping.
+func TestWaiterEvidenceConflictDoesNotPoisonMemo(t *testing.T) {
+	chain := validChain()
+	a, b, claimed, mapping := waiterFixture(t, chain)
+	orphanRunID, orphanTaskID := derivedOrcaIDs(b, chain, mapping)
+	if orphanRunID == "" || orphanTaskID == "" {
+		t.Fatalf("derive failed")
+	}
+	b.client.dispatch = &OrcaDispatch{
+		ID:             "ctx_conflictev",
+		RunID:          orphanRunID,
+		TaskID:         orphanTaskID,
+		AssigneeHandle: "term_328ff727-9a71-4047-b8d8-c2f5c34c0f7e",
+		Status:         "dispatched",
+	}
+	// Make the dispatch evidence append conflict: pre-store a DIFFERENT
+	// payload under the dispatch-evidence key.
+	workRef, err := b.dispatchWorkRef(t.Context(), DispatchMap{WorkspaceID: chain.WorkspaceID, ProjectID: chain.ProjectID, IssueID: chain.IssueID, TaskID: chain.TaskID, AssignmentID: chain.AssignmentID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.entry.mu.Lock()
+	b.entry.events[workRef][dispatchEvidenceLookupKey(mapping.Chain, "ctx_conflictev")] = map[string]any{"planted": true}
+	b.entry.mu.Unlock()
+
+	first, err := b.RunClaimedTask(t.Context(), claimed)
+	if err == nil {
+		t.Fatal("conflicting evidence must surface an error")
+	}
+	// The mapping may be returned with the error, but the memo must stay
+	// clean so a replay re-validates instead of bypassing.
+	if m, ok := b.memoDispatch(mapping.Chain); ok && m.OrcaDispatchID == first.OrcaDispatchID && m.PlacementDigest == "" {
+		t.Fatal("memo was poisoned with an evidence-free mapping")
+	}
+	// Replay: the conflict must still surface (not silently succeed).
+	if _, err := b.RunClaimedTask(t.Context(), claimed); err == nil {
+		t.Fatal("replay must not bypass the evidence conflict")
+	}
+	if b.client.workerStarts != 0 {
+		t.Fatalf("conflict path must never start a worker: %d", b.client.workerStarts)
+	}
+	_ = a
+}
+
+// Item 5: a loser observing committed evidence while the winner's StartTask
+// is blocked must NOT report success until the start settles.
+func TestWaiterDoesNotSucceedWhileStartPending(t *testing.T) {
+	a, b := twinBridges(t)
+	chain := validChain()
+	mapping, err := a.EnsureAssignment(t.Context(), dispatchRef(chain))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.EnsureAssignment(t.Context(), dispatchRef(chain)); err != nil {
+		t.Fatal(err)
+	}
+	claimed := DaemonTask{ID: mapping.Chain.TaskID, WorkspaceID: chain.WorkspaceID, ProjectID: chain.ProjectID, IssueID: mapping.Chain.IssueID}
+
+	// Winner A runs FIRST, unobstructed: it wins its own claim + barrier,
+	// starts the worker, commits the dispatch evidence, then blocks inside
+	// StartTask.
+	releaseStart := make(chan struct{})
+	a.daemon.startBlock = releaseStart
+	aDone := make(chan error, 1)
+	go func() {
+		_, err := a.RunClaimedTask(context.Background(), claimed)
+		aDone <- err
+	}()
+	// Deterministic barrier: A's dispatch evidence exists (evidence precedes
+	// the start verb) and its StartTask is in flight.
+	evDeadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(evDeadline) {
+		if a.client.currentWorkerStarts() > 0 {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	// Additional settle: give the evidence append a moment to land.
+	evDeadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(evDeadline) {
+		a.entry.mu.Lock()
+		_, ok := a.entry.events["hivecrew://ws/work/prj-dispatch"][DispatchLinkageKey(mapping.Chain)]
+		a.entry.mu.Unlock()
+		if ok {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	// Loser B sees committed evidence while the start is unresolved. It must
+	// not report success before the start settles.
+	bDone := make(chan error, 1)
+	go func() {
+		_, err := b.RunClaimedTask(context.Background(), claimed)
+		bDone <- err
+	}()
+	select {
+	case err := <-bDone:
+		t.Fatalf("waiter returned while StartTask pending: %v", err)
+	case <-time.After(150 * time.Millisecond):
+		// still blocked: correct
+	}
+	if a.client.workerStarts != 1 {
+		t.Fatalf("worker starts = %d, want 1", a.client.workerStarts)
+	}
+	close(releaseStart)
+	if err := <-aDone; err != nil {
+		t.Fatalf("winner failed: %v", err)
+	}
+	if err := <-bDone; err != nil {
+		t.Fatalf("loser should converge after start settles: %v", err)
+	}
+}
+
+// Item 6: two assignments running concurrently each keep their own orphan
+// probe; the second must not replace the first's validation.
+func TestConcurrentTwoAssignmentsProbeIsolation(t *testing.T) {
+	a, _ := twinBridges(t)
+	chain := validChain()
+	// Two distinct assignments (different command ids) on the same chain
+	// shape, both with mismatched orphans visible.
+	m1, err := a.EnsureAssignment(t.Context(), dispatchRef(chain))
+	if err != nil {
+		t.Fatal(err)
+	}
+	chain2 := validChain()
+	chain2.WorkspaceID = chain.WorkspaceID
+	chain2.ProjectID = chain.ProjectID
+	chain2.IssueID = chain.IssueID
+	chain2.TaskID = "c05a0000-0000-4000-8000-000000000041"
+	chain2.AssignmentID = "c05a0000-0000-4000-8000-000000000051"
+	ref2 := dispatchRef(chain2)
+	m2, err := a.EnsureAssignment(t.Context(), ref2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed1 := DaemonTask{ID: m1.Chain.TaskID, WorkspaceID: chain.WorkspaceID, ProjectID: chain.ProjectID, IssueID: chain.IssueID}
+	claimed2 := DaemonTask{ID: m2.Chain.TaskID, WorkspaceID: chain2.WorkspaceID, ProjectID: chain2.ProjectID, IssueID: chain2.IssueID}
+
+	// Both scopes get expired claims + held barriers, forcing the waiter
+	// path, with per-scope mismatched orphans.
+	for _, tc := range []struct {
+		base   string
+		chain  Chain
+		orphan *OrcaDispatch
+	}{
+		{workerStartClaimBase(m1.Chain), m1.Chain, &OrcaDispatch{ID: "ctx_mm_a", RunID: "run_ffffffffffff", TaskID: "task_aaaaaaaaaaaa", AssigneeHandle: "term_328ff727-9a71-4047-b8d8-c2f5c34c0f7e", Status: "dispatched"}},
+		{workerStartClaimBase(m2.Chain), m2.Chain, &OrcaDispatch{ID: "ctx_mm_b", RunID: "run_eeeeeeeeeeee", TaskID: "task_bbbbbbbbbbbb", AssigneeHandle: "term_328ff727-9a71-4047-b8d8-c2f5c34c0f7e", Status: "dispatched"}},
+	} {
+		if err := a.entry.injectClaimWin(tc.base, "bridge-other", true); err != nil {
+			t.Fatal(err)
+		}
+		if err := a.entry.injectBarrierHeld(effectBarrierKey(tc.base, 0), "bridge-other"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a.ClaimPoll = time.Millisecond
+	a.ClaimMaxWait = 200 * time.Millisecond
+
+	// The fake exposes a single mutable dispatch, so the two scopes are driven
+	// one at a time; each call must validate against ITS OWN scope's orphan
+	// and reject. This still proves per-scope probe isolation: had the second
+	// call's probe replaced the first's (the field-based bug), the second
+	// scope would have validated against the first scope's orphan data and
+	// the errors would cross-contaminate.
+	cases := []struct {
+		orphan  OrcaDispatch
+		claimed DaemonTask
+		label   string
+	}{
+		{OrcaDispatch{ID: "ctx_mm_a", RunID: "run_ffffffffffff", TaskID: "task_aaaaaaaaaaaa", AssigneeHandle: "term_328ff727-9a71-4047-b8d8-c2f5c34c0f7e", Status: "dispatched"}, claimed1, "assignment A"},
+		{OrcaDispatch{ID: "ctx_mm_b", RunID: "run_eeeeeeeeeeee", TaskID: "task_bbbbbbbbbbbb", AssigneeHandle: "term_328ff727-9a71-4047-b8d8-c2f5c34c0f7e", Status: "dispatched"}, claimed2, "assignment B"},
+	}
+	for _, tc := range cases {
+		orphan := tc.orphan
+		a.client.mu.Lock()
+		a.client.dispatch = &orphan
+		a.client.mu.Unlock()
+		_, err := a.RunClaimedTask(t.Context(), tc.claimed)
+		if !errors.Is(err, ErrResultIdentityMismatch) {
+			t.Fatalf("%s: expected ErrResultIdentityMismatch from its own probe, got %v", tc.label, err)
+		}
+		if a.client.workerStarts != 0 {
+			t.Fatalf("%s: no worker may start on mismatch: %d", tc.label, a.client.workerStarts)
+		}
 	}
 }

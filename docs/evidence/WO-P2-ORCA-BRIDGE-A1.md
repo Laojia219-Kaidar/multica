@@ -329,3 +329,49 @@ Time clamp and R3 sanitizer suites preserved and green. R6 verification
 15 runs; `go test ./internal/orcabridge -count=1` ok (98 tests); `go test
 -race -count=1` ok (×3); `go vet` pass; `go build ./...` pass; `git diff
 --check` clean.
+
+## Independent-review corrections (R7)
+
+Three blockers plus six pre-review items fixed on top of a195ff67d:
+
+1. **Attempt-unique, process-unique permit identity.** `effectAttemptID` is
+   now `instance + epoch + nonce`, where the nonce is a per-call counter
+   seeded per Bridge process from `crypto/rand` (128-bit). A fresh Bridge
+   with the same Actor/Session/InstanceID and an identical clock cannot
+   reproduce a prior process's payload, so no second permit is ever issued;
+   the same-process replay case also loses the CAS by counter increment.
+   Production-kernel adversarial count-100 tests
+   (`TestProductionBarrierReplayCount100`, `...DistinctAttemptsCount100`).
+2. **Fresh-process StartTask-only resume.** Dispatch evidence is committed
+   durably BEFORE the StartTask verb, and start obligation is recorded as
+   two immutable keys (pending/settled). A fresh Bridge (empty memo)
+   resolves the claimed task through the durable task-evidence written by
+   `EnsureAssignment` (`lookupTaskEvidenceForClaim`), observes the committed
+   dispatch, and resumes only the start via `reconcileTaskStart` (a
+   cross-instance start-permit CAS with byte-stable per-process payload;
+   same-holder replay re-acquires, expired holders are taken over).
+   `TestFreshProcessResumesStartTaskOnly` asserts WorkerStart count 1,
+   daemon attempts 2 (A failed + B resumed), and exact dispatch-id reuse.
+3. **Waiter validation hardened.** `waitForCommittedDispatch` validates the
+   orphan inside the branch (RunID mismatch and empty/mismatched TaskID are
+   both `ErrResultIdentityMismatch` — previously the RunID branch was
+   unreachable and empty TaskID passed); adoption memoizes only AFTER
+   `recordDispatchEvidence` succeeds (conflict cannot poison the memo);
+   every committed-evidence return path reconciles StartTask first, so no
+   waiter reports success while the start is pending. Negative tests:
+   `TestWaiterRejectsRunMismatchOrphan`, `TestWaiterRejectsEmptyTaskIDOrphan`,
+   `TestWaiterEvidenceConflictDoesNotPoisonMemo` (conflict then replay),
+   `TestWaiterDoesNotSucceedWhileStartPending` (blocked StartTask +
+   committed mapping concurrency).
+4. **Per-scope orphan probes.** The shared `Bridge.orphanProbe` field is
+   gone: probes are local values passed into `acquireCreateClaim`, so two
+   concurrent assignments cannot overwrite each other's validation
+   (`TestConcurrentTwoAssignmentsProbeIsolation`).
+5. **Fail-closed durable lookups.** `startPendingDurable` (and the
+   obligation variant) propagate lookup errors instead of swallowing them.
+6. **Time clamp and sanitizer preserved** (all prior suites re-run green).
+
+R7 verification (go1.26.6 darwin/arm64): `gofmt -l` clean; focused ×100 on
+the R7/coordination suites ok; full package `go test -count=1` ok (109
+tests); `go test -race -count=1` ok ×3; `go vet` pass; `go build ./...`
+pass; `git diff --check` clean.

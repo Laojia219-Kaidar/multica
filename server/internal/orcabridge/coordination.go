@@ -2,8 +2,12 @@ package orcabridge
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 )
 
@@ -140,15 +144,49 @@ func effectBarrierKey(base string, epoch int) string {
 	return fmt.Sprintf("%s#barrier#%d", base, epoch)
 }
 
-// effectAttemptID is the unique identity of one barrier attempt. It differs
-// on every call (it carries this attempt's lease deadline), so the barrier
-// CAS payload is attempt-unique: a second call from the same holder with the
-// same key composes a DIFFERENT payload, loses the atomic append, and reads
-// back the first attempt's holder instead of receiving a second Acquired.
-// The ID is recorded in the won barrier payload so tests (and audits) can
-// distinguish the winning attempt from replays.
-func (b *Bridge) effectAttemptID(epoch int, leaseExpiresAt time.Time) string {
-	return fmt.Sprintf("%s#%d#%d", b.instanceID(), epoch, leaseExpiresAt.UnixNano())
+// effectAttemptSeq makes attempt identities unique per Bridge process AND
+// per call. A process-unique 128-bit seed is drawn from the OS entropy pool
+// when the Bridge is constructed (crypto/rand), so two Bridge processes —
+// including a restart with the same Actor/Session/InstanceID and a frozen
+// clock — can never reproduce each other's payload. Within one process, a
+// monotonic counter keeps every call distinct. The value never depends on a
+// clock, lease deadline, or caller-supplied input.
+type effectAttemptSeq struct {
+	mu   sync.Mutex
+	seed [16]byte
+	n    uint64
+}
+
+// newEffectAttemptSeed draws the process-unique seed. It panics only when
+// the OS entropy pool is unavailable, which is unrecoverable for this
+// process; there is no silent fallback because a predictable seed would
+// break the permit's replay hostility.
+func newEffectAttemptSeed() [16]byte {
+	var seed [16]byte
+	if _, err := rand.Read(seed[:]); err != nil {
+		panic(fmt.Sprintf("orcabridge: draw effect attempt seed: %v", err))
+	}
+	return seed
+}
+
+func (s *effectAttemptSeq) next() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.n++
+	var out [48]byte
+	binary.BigEndian.PutUint64(out[0:8], s.n)
+	copy(out[8:], s.seed[:])
+	return hex.EncodeToString(out[:])
+}
+
+// effectAttemptID is the unique identity of one barrier attempt:
+// instance + epoch + the process-unique, per-call nonce. A replayed call for
+// the same claim and epoch composes a DIFFERENT payload, loses the atomic
+// append, and reads back the winning attempt's holder instead of receiving a
+// second Acquired — even when the caller replays byte-identical inputs across
+// a fresh Bridge process with an identical identity and clock.
+func (b *Bridge) effectAttemptID(epoch int) string {
+	return fmt.Sprintf("%s#%d#%s", b.instanceID(), epoch, b.attempts.next())
 }
 
 // effectBarrierOpenKey is the reopen record proving the epoch's permit was
@@ -199,7 +237,7 @@ func (b *Bridge) winEffectBarrier(ctx context.Context, workRef string, claim sco
 		result, err := b.Entry.ClaimScope(ctx, ScopeClaimInput{
 			WorkRef:    workRef,
 			ClaimKey:   effectBarrierKey(claim.baseKey, epoch),
-			InstanceID: b.effectAttemptID(epoch, claim.leaseExpiresAt),
+			InstanceID: b.effectAttemptID(epoch),
 			SessionID:  b.Actor.SessionID,
 			Generation: epoch,
 			ExpiresAt:  claim.leaseExpiresAt,
@@ -293,6 +331,7 @@ func (b *Bridge) acquireCreateClaim(
 	ctx context.Context,
 	workRef, baseKey string,
 	probeCommitted func(context.Context) bool,
+	orphanProbe orphanMismatchProbe,
 ) (scopeClaim, error) {
 	generation := 0
 	deadline := b.now().Add(b.claimMaxWait())
@@ -327,6 +366,15 @@ func (b *Bridge) acquireCreateClaim(
 				generation = holderGeneration + 1
 				continue
 			}
+			// Guardrail: if the caller can already observe a mismatched
+			// orphan dispatch for this scope, surface the identity mismatch
+			// instead of a generic in-flight error, so operators see the
+			// actual corruption rather than a takeover stall.
+			if orphanProbe != nil {
+				if mismatch := orphanProbe(ctx, baseKey); mismatch != nil {
+					return scopeClaim{}, mismatch
+				}
+			}
 			return scopeClaim{}, fmt.Errorf("%w: %s generation %d (holder %s) left an unresolved effect barrier",
 				ErrScopeAttemptInFlight, baseKey, holderGeneration, result.Holder.InstanceID)
 		}
@@ -340,6 +388,13 @@ func (b *Bridge) acquireCreateClaim(
 	}
 	return scopeClaim{}, fmt.Errorf("%w: %s after %d attempts", ErrScopeHeld, baseKey, maxClaimAttempts)
 }
+
+// orphanMismatchProbe inspects an Orca-side orphan for a scope and reports
+// an identity mismatch. It is passed explicitly by the worker-start call
+// site (the only scope whose orphan carries a dispatch identity) into
+// acquireCreateClaim, so concurrent RunClaimedTask calls on different
+// assignments each carry their own probe and can never overwrite each other.
+type orphanMismatchProbe func(ctx context.Context, baseKey string) error
 
 // withinLease refuses to start the create side effect once the permit's
 // lease has expired (for example after a slow reconcile scan or a process
