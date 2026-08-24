@@ -2175,6 +2175,11 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			r.Get("/api/bases/cockpit-projection", h.GetCockpitProjection)
 			r.Get("/api/work-wall/snapshot", h.GetWorkWallSnapshot)
 			r.Get("/api/work-wall/stream", h.GetWorkWallStream)
+			// A2 Work Wall — read-only snapshot + SSE over the A2 pane
+			// projection (hivecrew.workwall.a2-snapshot.v1). The two v1
+			// endpoints above stay unchanged.
+			r.Get("/api/work-wall/a2/snapshot", h.GetWorkWallA2Snapshot)
+			r.Get("/api/work-wall/a2/stream", h.GetWorkWallA2Stream)
 			// Terminal presence (read-only projection of live host panes)
 			r.Get("/api/work-wall/terminal-presence", h.ListTerminalPresence)
 			r.Post("/api/work-wall/terminal-presence", h.ReportTerminalPresence)
