@@ -114,6 +114,13 @@ func a2Receipt(terminal string) *db.ExecutionReceipt {
 
 func a2Now() time.Time { return time.Date(2026, 8, 16, 12, 0, 0, 0, time.UTC) }
 
+// a2WithRefIssue returns a copy of the input whose RefIssueID matches the
+// fixture Issue (a2UUID(2)) — mirroring what the service always populates.
+func a2WithRefIssue(in A2PaneInput) A2PaneInput {
+	in.RefIssueID = a2UUID(2).String()
+	return in
+}
+
 // --- required execution states ---------------------------------------------
 
 func TestProjectA2Pane_ExecutionStateMatrix(t *testing.T) {
@@ -224,7 +231,7 @@ func TestProjectA2Pane_ExecutionStateMatrix(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			pane, ok := ProjectA2Pane(tt.in)
+			pane, ok := ProjectA2Pane(a2WithRefIssue(tt.in))
 			if !ok {
 				t.Fatalf("expected a projected pane")
 			}
@@ -265,7 +272,7 @@ func TestProjectA2Pane_CanonicalTerminalOutranksReplay(t *testing.T) {
 		Presence: a2Presence("sess-1", now.Add(-5*time.Second)),
 		Now:      now,
 	}
-	pane, ok := ProjectA2Pane(in)
+	pane, ok := ProjectA2Pane(a2WithRefIssue(in))
 	if !ok {
 		t.Fatalf("expected pane")
 	}
@@ -308,7 +315,7 @@ func TestProjectA2Pane_MissingHeartbeatFailsClosed(t *testing.T) {
 	t.Run("stale presence row", func(t *testing.T) {
 		in := base
 		in.Presence = a2Presence("sess-1", now.Add(-10*time.Minute))
-		pane, ok := ProjectA2Pane(in)
+		pane, ok := ProjectA2Pane(a2WithRefIssue(in))
 		if !ok {
 			t.Fatalf("expected pane")
 		}
@@ -323,7 +330,7 @@ func TestProjectA2Pane_MissingHeartbeatFailsClosed(t *testing.T) {
 	t.Run("presence for a different session must not certify this pane", func(t *testing.T) {
 		in := base
 		in.Presence = a2Presence("other-session", now.Add(-1*time.Second))
-		pane, ok := ProjectA2Pane(in)
+		pane, ok := ProjectA2Pane(a2WithRefIssue(in))
 		if !ok {
 			t.Fatalf("expected pane")
 		}
@@ -357,7 +364,7 @@ func TestProjectA2Pane_TerminalTextNeverEstablishesCompletion(t *testing.T) {
 		Presence: a2Presence("sess-1", now.Add(-5*time.Second)),
 		Now:      now,
 	}
-	pane, ok := ProjectA2Pane(in)
+	pane, ok := ProjectA2Pane(a2WithRefIssue(in))
 	if !ok {
 		t.Fatalf("expected pane")
 	}
@@ -391,11 +398,11 @@ func TestProjectA2Pane_IdempotentReplay(t *testing.T) {
 		Presence: a2Presence("sess-1", now.Add(-5*time.Second)),
 		Now:      now,
 	}
-	first, ok := ProjectA2Pane(in)
+	first, ok := ProjectA2Pane(a2WithRefIssue(in))
 	if !ok {
 		t.Fatalf("expected pane")
 	}
-	second, ok := ProjectA2Pane(in)
+	second, ok := ProjectA2Pane(a2WithRefIssue(in))
 	if !ok {
 		t.Fatalf("expected pane")
 	}
@@ -407,7 +414,7 @@ func TestProjectA2Pane_IdempotentReplay(t *testing.T) {
 	// duplicate work or panic: it classifies as replay and never works.
 	dup := in
 	dup.Events = append(append([]db.WorkEvent{}, in.Events...), in.Events[len(in.Events)-1])
-	pane, ok := ProjectA2Pane(dup)
+	pane, ok := ProjectA2Pane(a2WithRefIssue(dup))
 	if !ok {
 		t.Fatalf("expected pane")
 	}
@@ -439,7 +446,7 @@ func TestProjectA2Pane_NoSecretOrRawTranscriptProjection(t *testing.T) {
 		Presence: a2Presence("sess-1", now.Add(-5*time.Second)),
 		Now:      now,
 	}
-	pane, ok := ProjectA2Pane(in)
+	pane, ok := ProjectA2Pane(a2WithRefIssue(in))
 	if !ok {
 		t.Fatalf("expected pane")
 	}
@@ -481,7 +488,7 @@ func TestProjectA2Pane_SurfaceKindRules(t *testing.T) {
 	t.Run("matched fresh presence -> terminal", func(t *testing.T) {
 		in := base()
 		in.Presence = a2Presence("sess-1", now.Add(-5*time.Second))
-		pane, _ := ProjectA2Pane(in)
+		pane, _ := ProjectA2Pane(a2WithRefIssue(in))
 		if pane.SurfaceKind != A2SurfaceTerminal {
 			t.Fatalf("surface = %q, want terminal", pane.SurfaceKind)
 		}
@@ -492,7 +499,7 @@ func TestProjectA2Pane_SurfaceKindRules(t *testing.T) {
 
 	t.Run("api-only route (no presence) -> event_console, never fake terminal", func(t *testing.T) {
 		in := base()
-		pane, _ := ProjectA2Pane(in)
+		pane, _ := ProjectA2Pane(a2WithRefIssue(in))
 		if pane.SurfaceKind != A2SurfaceEventConsole {
 			t.Fatalf("surface = %q, want event_console", pane.SurfaceKind)
 		}
@@ -501,7 +508,7 @@ func TestProjectA2Pane_SurfaceKindRules(t *testing.T) {
 	t.Run("matched but stale presence -> terminal with stale freshness, not working", func(t *testing.T) {
 		in := base()
 		in.Presence = a2Presence("sess-1", now.Add(-10*time.Minute))
-		pane, _ := ProjectA2Pane(in)
+		pane, _ := ProjectA2Pane(a2WithRefIssue(in))
 		if pane.SurfaceKind != A2SurfaceTerminal {
 			t.Fatalf("surface = %q, want terminal (route is real, heartbeat is stale)", pane.SurfaceKind)
 		}
@@ -542,7 +549,7 @@ func TestProjectA2Pane_OwnershipAndStableSourceEventID(t *testing.T) {
 		Presence: a2Presence("sess-1", now.Add(-5*time.Second)),
 		Now:      now,
 	}
-	pane, ok := ProjectA2Pane(in)
+	pane, ok := ProjectA2Pane(a2WithRefIssue(in))
 	if !ok {
 		t.Fatalf("expected pane")
 	}
@@ -562,7 +569,7 @@ func TestProjectA2Pane_OwnershipAndStableSourceEventID(t *testing.T) {
 	// Reordering the input slice must not move the anchor: stable projection.
 	shuffled := in
 	shuffled.Events = []db.WorkEvent{in.Events[2], in.Events[0], in.Events[1]}
-	pane2, _ := ProjectA2Pane(shuffled)
+	pane2, _ := ProjectA2Pane(a2WithRefIssue(shuffled))
 	if pane2.SourceEventID != pane.SourceEventID {
 		t.Fatalf("source_event_id moved under input reordering: %q vs %q", pane2.SourceEventID, pane.SourceEventID)
 	}
@@ -604,7 +611,7 @@ func TestProjectA2Pane_WorkingKinds(t *testing.T) {
 				Presence: a2Presence("sess-1", now.Add(-5*time.Second)),
 				Now:      now,
 			}
-			pane, ok := ProjectA2Pane(in)
+			pane, ok := ProjectA2Pane(a2WithRefIssue(in))
 			if !ok {
 				t.Fatalf("expected pane")
 			}
@@ -628,7 +635,7 @@ func TestProjectA2Pane_BlockedSummaryUsesCanonicalReason(t *testing.T) {
 		Presence: a2Presence("sess-1", now.Add(-5*time.Second)),
 		Now:      now,
 	}
-	pane, _ := ProjectA2Pane(in)
+	pane, _ := ProjectA2Pane(a2WithRefIssue(in))
 	if !strings.Contains(pane.ActivitySummary, "HIV-1234") {
 		t.Fatalf("activity_summary = %q, want canonical blocker reason surfaced", pane.ActivitySummary)
 	}
@@ -653,7 +660,7 @@ func TestProjectA2Pane_WorkspaceDriftFailsClosed(t *testing.T) {
 		Presence:           a2Presence("sess-1", now.Add(-5*time.Second)),
 		Now:                now,
 	}
-	if pane, ok := ProjectA2Pane(in); ok {
+	if pane, ok := ProjectA2Pane(a2WithRefIssue(in)); ok {
 		t.Fatalf("workspace drift must fail closed and skip the pane, got %+v", pane)
 	}
 }
@@ -678,7 +685,7 @@ func TestProjectA2Pane_ProjectDriftIsMismatch(t *testing.T) {
 	}
 
 	t.Run("drift with live evidence -> issue_state_mismatch, never working", func(t *testing.T) {
-		pane, ok := ProjectA2Pane(newInput())
+		pane, ok := ProjectA2Pane(a2WithRefIssue(newInput()))
 		if !ok {
 			t.Fatalf("expected pane")
 		}
@@ -693,7 +700,7 @@ func TestProjectA2Pane_ProjectDriftIsMismatch(t *testing.T) {
 	t.Run("drift outranks canonical completion", func(t *testing.T) {
 		in := newInput()
 		in.Receipt = a2Receipt("completed")
-		pane, _ := ProjectA2Pane(in)
+		pane, _ := ProjectA2Pane(a2WithRefIssue(in))
 		if pane.ExecutionState != A2ExecutionIssueMismatch {
 			t.Fatalf("execution_state = %q, want issue_state_mismatch (drift fails closed first)", pane.ExecutionState)
 		}
@@ -710,7 +717,7 @@ func TestProjectA2Pane_ProjectDriftIsMismatch(t *testing.T) {
 			in := newInput()
 			in.WorkRef = ref
 			in.RefProjectID = ""
-			pane, ok := ProjectA2Pane(in)
+			pane, ok := ProjectA2Pane(a2WithRefIssue(in))
 			if !ok || pane.ExecutionState != A2ExecutionIssueMismatch {
 				t.Fatalf("ref %q against a project-bearing issue must be issue_state_mismatch (%+v)", ref, pane)
 			}
@@ -733,7 +740,7 @@ func TestProjectA2Pane_ProjectDriftIsMismatch(t *testing.T) {
 			in.Issue = projectless
 			r, d := a2FullEvidence()
 			in.Receipt, in.Dispatch = r, d
-			pane, ok := ProjectA2Pane(in)
+			pane, ok := ProjectA2Pane(a2WithRefIssue(in))
 			if !ok || pane.ExecutionState == A2ExecutionIssueMismatch {
 				t.Fatalf("ref %q against a projectless issue must not be flagged as drift (%+v)", ref, pane)
 			}
@@ -764,7 +771,7 @@ func TestProjectA2Pane_LaterRedispatchDoesNotHijackEmployee(t *testing.T) {
 		Presence: a2Presence("sess-1", now.Add(-5*time.Second)),
 		Now:      now,
 	}
-	pane, ok := ProjectA2Pane(in)
+	pane, ok := ProjectA2Pane(a2WithRefIssue(in))
 	if !ok {
 		t.Fatalf("expected pane")
 	}
@@ -806,7 +813,7 @@ func TestProjectA2Pane_MatchedDispatchBindsOwnership(t *testing.T) {
 		Presence: a2Presence("sess-1", now.Add(-5*time.Second)),
 		Now:      now,
 	}
-	pane, ok := ProjectA2Pane(in)
+	pane, ok := ProjectA2Pane(a2WithRefIssue(in))
 	if !ok {
 		t.Fatalf("expected pane")
 	}
@@ -835,7 +842,7 @@ func TestProjectA2Pane_ForeignWorkspaceReceiptIgnored(t *testing.T) {
 		Presence:           a2Presence("sess-1", now.Add(-5*time.Second)),
 		Now:                now,
 	}
-	pane, ok := ProjectA2Pane(in)
+	pane, ok := ProjectA2Pane(a2WithRefIssue(in))
 	if !ok {
 		t.Fatalf("expected pane")
 	}
@@ -865,7 +872,7 @@ func TestProjectA2Pane_NoTaskOrNoEvidenceNeverWorking(t *testing.T) {
 	}
 
 	t.Run("no task row at all", func(t *testing.T) {
-		pane, ok := ProjectA2Pane(base())
+		pane, ok := ProjectA2Pane(a2WithRefIssue(base()))
 		if !ok {
 			t.Fatalf("expected pane")
 		}
@@ -885,7 +892,7 @@ func TestProjectA2Pane_NoTaskOrNoEvidenceNeverWorking(t *testing.T) {
 	t.Run("task present but zero dispatch/receipt evidence", func(t *testing.T) {
 		in := base()
 		in.Task = a2Task("running")
-		pane, _ := ProjectA2Pane(in)
+		pane, _ := ProjectA2Pane(a2WithRefIssue(in))
 		if pane.Working {
 			t.Fatalf("event + heartbeat + bare task without exact dispatch/receipt evidence must never count as working")
 		}
@@ -895,7 +902,7 @@ func TestProjectA2Pane_NoTaskOrNoEvidenceNeverWorking(t *testing.T) {
 		in := base()
 		in.Task = a2Task("running")
 		in.Receipt = a2ClaimReceipt()
-		pane, _ := ProjectA2Pane(in)
+		pane, _ := ProjectA2Pane(a2WithRefIssue(in))
 		if pane.Working {
 			t.Fatalf("receipt without its dispatch must never count as working")
 		}
@@ -908,7 +915,7 @@ func TestProjectA2Pane_NoTaskOrNoEvidenceNeverWorking(t *testing.T) {
 		in := base()
 		in.Task = a2Task("running")
 		in.Receipt, in.Dispatch = a2FullEvidence()
-		pane, _ := ProjectA2Pane(in)
+		pane, _ := ProjectA2Pane(a2WithRefIssue(in))
 		if !pane.Working {
 			t.Fatalf("task + full chain + fresh heartbeat should count as working")
 		}
@@ -928,7 +935,7 @@ func TestProjectA2Pane_NoTaskOrNoEvidenceNeverWorking(t *testing.T) {
 			LocalAgentID:  a2UUID(4),
 			InitialTaskID: a2UUID(3),
 		}
-		pane, _ := ProjectA2Pane(in)
+		pane, _ := ProjectA2Pane(a2WithRefIssue(in))
 		if pane.Working {
 			t.Fatalf("terminal task + terminal dispatch must never count as working")
 		}
@@ -941,7 +948,7 @@ func TestProjectA2Pane_NoTaskOrNoEvidenceNeverWorking(t *testing.T) {
 		in := base()
 		in.Task = a2Task("failed")
 		in.Receipt = a2Receipt("failed")
-		pane, _ := ProjectA2Pane(in)
+		pane, _ := ProjectA2Pane(a2WithRefIssue(in))
 		if pane.Working {
 			t.Fatalf("failed task must never count as working")
 		}
@@ -963,7 +970,7 @@ func TestProjectA2Pane_DisplayValueSanitization(t *testing.T) {
 		Presence: a2Presence("sess-1", now.Add(-5*time.Second)),
 		Now:      now,
 	}
-	pane, ok := ProjectA2Pane(in)
+	pane, ok := ProjectA2Pane(a2WithRefIssue(in))
 	if !ok {
 		t.Fatalf("expected pane")
 	}
@@ -1000,7 +1007,7 @@ func TestProjectA2Pane_BlockerReasonSanitization(t *testing.T) {
 			Presence: a2Presence("sess-1", now.Add(-5*time.Second)),
 			Now:      now,
 		}
-		pane, ok := ProjectA2Pane(in)
+		pane, ok := ProjectA2Pane(a2WithRefIssue(in))
 		if !ok {
 			t.Fatalf("expected pane")
 		}
@@ -1053,7 +1060,7 @@ func TestProjectA2Pane_ActiveRequiresTaskAndEvidence(t *testing.T) {
 	t.Run("task without receipt: never active", func(t *testing.T) {
 		in := base()
 		in.Task = a2Task("running")
-		pane, ok := ProjectA2Pane(in)
+		pane, ok := ProjectA2Pane(a2WithRefIssue(in))
 		if !ok {
 			t.Fatalf("expected pane")
 		}
@@ -1069,7 +1076,7 @@ func TestProjectA2Pane_ActiveRequiresTaskAndEvidence(t *testing.T) {
 		in := base()
 		in.Task = a2Task("running")
 		in.Receipt, in.Dispatch = a2FullEvidence()
-		pane, _ := ProjectA2Pane(in)
+		pane, _ := ProjectA2Pane(a2WithRefIssue(in))
 		if pane.ExecutionState != A2ExecutionActive {
 			t.Fatalf("execution_state = %q, want active", pane.ExecutionState)
 		}
@@ -1082,7 +1089,7 @@ func TestProjectA2Pane_ActiveRequiresTaskAndEvidence(t *testing.T) {
 		in := base()
 		in.Task = a2Task("completed")
 		in.Receipt = a2ClaimReceipt()
-		pane, _ := ProjectA2Pane(in)
+		pane, _ := ProjectA2Pane(a2WithRefIssue(in))
 		if pane.ExecutionState == A2ExecutionActive || pane.Working {
 			t.Fatalf("terminal task must end active/working, got %q/%v", pane.ExecutionState, pane.Working)
 		}
@@ -1107,7 +1114,7 @@ func TestProjectA2Pane_CrossIssueTaskFailsClosed(t *testing.T) {
 		Presence: a2Presence("sess-1", now.Add(-5*time.Second)),
 		Now:      now,
 	}
-	pane, ok := ProjectA2Pane(in)
+	pane, ok := ProjectA2Pane(a2WithRefIssue(in))
 	if !ok {
 		t.Fatalf("expected pane")
 	}
@@ -1129,7 +1136,7 @@ func TestProjectA2Pane_CrossIssueTaskFailsClosed(t *testing.T) {
 	t.Run("issue missing entirely also fails closed", func(t *testing.T) {
 		in := in
 		in.Issue = nil
-		pane, ok := ProjectA2Pane(in)
+		pane, ok := ProjectA2Pane(a2WithRefIssue(in))
 		if !ok {
 			t.Fatalf("expected pane")
 		}
@@ -1154,7 +1161,7 @@ func TestProjectA2Pane_DispatchMustMatchReceiptCommand(t *testing.T) {
 		Presence: a2Presence("sess-1", now.Add(-5*time.Second)),
 		Now:      now,
 	}
-	pane, ok := ProjectA2Pane(in)
+	pane, ok := ProjectA2Pane(a2WithRefIssue(in))
 	if !ok {
 		t.Fatalf("expected pane")
 	}
@@ -1173,7 +1180,7 @@ func TestProjectA2Pane_DispatchMustMatchReceiptCommand(t *testing.T) {
 	t.Run("dispatch without any receipt cannot own or evidence", func(t *testing.T) {
 		in := in
 		in.Receipt = nil
-		pane, ok := ProjectA2Pane(in)
+		pane, ok := ProjectA2Pane(a2WithRefIssue(in))
 		if !ok {
 			t.Fatalf("expected pane")
 		}
@@ -1191,7 +1198,7 @@ func TestProjectA2Pane_DispatchMustMatchReceiptCommand(t *testing.T) {
 	t.Run("matching command still binds", func(t *testing.T) {
 		in := in
 		in.Dispatch = a2DispatchForCommand(a2UUID(51), a2UUID(4))
-		pane, _ := ProjectA2Pane(in)
+		pane, _ := ProjectA2Pane(a2WithRefIssue(in))
 		if pane.DispatchCommandID != a2UUID(51).String() {
 			t.Fatalf("matching dispatch should bind, got %q", pane.DispatchCommandID)
 		}
@@ -1219,7 +1226,7 @@ func TestProjectA2Pane_UnscopedReceiptNeverCanonical(t *testing.T) {
 		Presence: a2Presence("sess-1", now.Add(-5*time.Second)),
 		Now:      now,
 	}
-	pane, ok := ProjectA2Pane(in)
+	pane, ok := ProjectA2Pane(a2WithRefIssue(in))
 	if !ok {
 		t.Fatalf("expected pane")
 	}
@@ -1250,7 +1257,7 @@ func TestProjectA2Pane_FullChainEvidenceRequired(t *testing.T) {
 		if mutate != nil {
 			mutate(&in)
 		}
-		pane, ok := ProjectA2Pane(in)
+		pane, ok := ProjectA2Pane(a2WithRefIssue(in))
 		if !ok {
 			t.Fatalf("expected pane")
 		}
@@ -1311,7 +1318,7 @@ func TestProjectA2Pane_ReceiptRejectedWithoutTaskOrIssue(t *testing.T) {
 			Presence: a2Presence("sess-1", now.Add(-5*time.Second)),
 			Now:      now,
 		}
-		pane, ok := ProjectA2Pane(in)
+		pane, ok := ProjectA2Pane(a2WithRefIssue(in))
 		if !ok {
 			t.Fatalf("expected pane")
 		}
@@ -1332,7 +1339,7 @@ func TestProjectA2Pane_ReceiptRejectedWithoutTaskOrIssue(t *testing.T) {
 			Presence: a2Presence("sess-1", now.Add(-5*time.Second)),
 			Now:      now,
 		}
-		pane, ok := ProjectA2Pane(in)
+		pane, ok := ProjectA2Pane(a2WithRefIssue(in))
 		if !ok {
 			t.Fatalf("expected pane")
 		}
@@ -1362,7 +1369,7 @@ func TestProjectA2Pane_DispatchIssueIDRequired(t *testing.T) {
 			Presence: a2Presence("sess-1", now.Add(-5*time.Second)),
 			Now:      now,
 		}
-		pane, ok := ProjectA2Pane(in)
+		pane, ok := ProjectA2Pane(a2WithRefIssue(in))
 		if !ok {
 			t.Fatalf("expected pane")
 		}
@@ -1422,7 +1429,7 @@ func TestProjectA2Pane_CrossEmployeeAgentCannotPolluteName(t *testing.T) {
 			Presence: a2Presence("sess-1", now.Add(-5*time.Second)),
 			Now:      now,
 		}
-		pane, ok := ProjectA2Pane(in)
+		pane, ok := ProjectA2Pane(a2WithRefIssue(in))
 		if !ok {
 			t.Fatalf("expected pane")
 		}
@@ -1449,7 +1456,7 @@ func TestProjectA2Pane_CrossEmployeeAgentCannotPolluteName(t *testing.T) {
 			Presence: a2Presence("sess-1", now.Add(-5*time.Second)),
 			Now:      now,
 		}
-		pane, _ := ProjectA2Pane(in)
+		pane, _ := ProjectA2Pane(a2WithRefIssue(in))
 		if pane.EmployeeName != "Shard" {
 			t.Fatalf("verified agent name should label the pane, got %q", pane.EmployeeName)
 		}
@@ -1467,9 +1474,150 @@ func TestProjectA2Pane_CrossEmployeeAgentCannotPolluteName(t *testing.T) {
 			Presence: a2Presence("sess-1", now.Add(-5*time.Second)),
 			Now:      now,
 		}
-		pane, _ := ProjectA2Pane(in)
+		pane, _ := ProjectA2Pane(a2WithRefIssue(in))
 		if pane.EmployeeName != "" {
 			t.Fatalf("agent without a valid id must never label, got %q", pane.EmployeeName)
+		}
+	})
+}
+
+// --- B5 blockers: dispatch/task agent equality, strict test-DB guard, inbox-only, issue claim ---
+
+// B5-1: a dispatch naming a DIFFERENT employee than the task's agent breaks
+// the chain — never active, never working, never owning the pane.
+func TestProjectA2Pane_DispatchAgentMustEqualTaskAgent(t *testing.T) {
+	now := a2Now()
+	build := func(dispatchAgent pgtype.UUID) A2PaneV1 {
+		cmd := a2UUID(91)
+		pane, _ := ProjectA2Pane(a2WithRefIssue(A2PaneInput{
+			WorkRef:  "hivecrew://ws/work/prj/issue-1/task-1",
+			Events:   []db.WorkEvent{a2Event(10, "progress", now.Add(-1*time.Minute), now.Add(-1*time.Minute), `{}`)},
+			Issue:    a2OpenIssue(),
+			Task:     a2Task("running"), // agent a2UUID(4)
+			Receipt:  a2ClaimReceiptForCommand(cmd),
+			Dispatch: a2DispatchForCommand(cmd, dispatchAgent),
+			Presence: a2Presence("sess-1", now.Add(-5*time.Second)),
+			Now:      now,
+		}))
+		return pane
+	}
+
+	t.Run("foreign employee on the dispatch: fail closed", func(t *testing.T) {
+		pane := build(a2UUID(92)) // a different employee
+		if pane.DispatchCommandID != "" {
+			t.Fatalf("foreign-employee dispatch must not bind")
+		}
+		if pane.EmployeeID == a2UUID(92).String() {
+			t.Fatalf("foreign employee must never own the pane")
+		}
+		if pane.ExecutionState == A2ExecutionActive || pane.Working {
+			t.Fatalf("foreign-employee dispatch must never be active/working (%q/%v)", pane.ExecutionState, pane.Working)
+		}
+	})
+
+	t.Run("missing dispatch agent id: fail closed", func(t *testing.T) {
+		pane := build(pgtype.UUID{})
+		if pane.Working || pane.ExecutionState == A2ExecutionActive {
+			t.Fatalf("dispatch without an agent id must never be active/working")
+		}
+	})
+
+	t.Run("exact task agent still binds", func(t *testing.T) {
+		pane := build(a2UUID(4))
+		if pane.DispatchCommandID == "" || !pane.Working {
+			t.Fatalf("matching dispatch should bind and be working")
+		}
+		if pane.EmployeeID != a2UUID(4).String() {
+			t.Fatalf("employee = %q, want task agent", pane.EmployeeID)
+		}
+	})
+}
+
+// B5-3: a projectless Issue accepts ONLY a missing or reserved-inbox project
+// claim; any other concrete claim (including another project's uuid or a
+// random word) is drift.
+func TestProjectA2Pane_ProjectlessIssueInboxOnly(t *testing.T) {
+	now := a2Now()
+	projectless := a2OpenIssue() // ProjectID unset
+
+	build := func(claim string) A2PaneV1 {
+		r, d := a2FullEvidence()
+		in := a2WithRefIssue(A2PaneInput{
+			WorkRef:  "hivecrew://ws/work/" + claim + "/issue-1/task-1",
+			Events:   []db.WorkEvent{a2Event(10, "progress", now.Add(-1*time.Minute), now.Add(-1*time.Minute), `{}`)},
+			Issue:    projectless,
+			Task:     a2Task("running"),
+			Receipt:  r,
+			Dispatch: d,
+			Presence: a2Presence("sess-1", now.Add(-5*time.Second)),
+			Now:      now,
+		})
+		in.RefProjectID = claim
+		pane, _ := ProjectA2Pane(in)
+		return pane
+	}
+
+	for _, ok := range []string{"", "inbox", "INBOX"} {
+		t.Run("allowed claim "+ok, func(t *testing.T) {
+			pane := build(ok)
+			if pane.ExecutionState == A2ExecutionIssueMismatch {
+				t.Fatalf("claim %q against a projectless issue must not be drift", ok)
+			}
+		})
+	}
+	for _, bad := range []string{"prj", a2UUID(20).String(), "personal", "contest"} {
+		t.Run("rejected claim "+bad, func(t *testing.T) {
+			pane := build(bad)
+			if pane.ExecutionState != A2ExecutionIssueMismatch {
+				t.Fatalf("claim %q against a projectless issue must be issue_state_mismatch, got %q", bad, pane.ExecutionState)
+			}
+			if pane.Working {
+				t.Fatalf("unattributable claim must never be working")
+			}
+		})
+	}
+}
+
+// B5-6: with a known Issue, the ref's embedded issue claim must be present
+// and exactly equal; missing, malformed, or unequal fails closed.
+func TestProjectA2Pane_RefIssueClaimMustMatch(t *testing.T) {
+	now := a2Now()
+	r, d := a2FullEvidence()
+	build := func(claim string) A2PaneV1 {
+		in := A2PaneInput{
+			WorkRef:  "hivecrew://ws/work/prj/" + claim + "/task-1",
+			Events:   []db.WorkEvent{a2Event(10, "progress", now.Add(-1*time.Minute), now.Add(-1*time.Minute), `{}`)},
+			Issue:    a2OpenIssue(), // a2UUID(2)
+			Task:     a2Task("running"),
+			Receipt:  r,
+			Dispatch: d,
+			Presence: a2Presence("sess-1", now.Add(-5*time.Second)),
+			Now:      now,
+		}
+		in.RefIssueID = claim
+		pane, _ := ProjectA2Pane(in)
+		return pane
+	}
+
+	for _, bad := range []string{"", "issue-1", a2UUID(93).String()} {
+		t.Run("rejected claim "+bad, func(t *testing.T) {
+			pane := build(bad)
+			if pane.ExecutionState != A2ExecutionIssueMismatch {
+				t.Fatalf("issue claim %q must be issue_state_mismatch, got %q", bad, pane.ExecutionState)
+			}
+			if pane.Working {
+				t.Fatalf("issue-claim mismatch must never be working")
+			}
+		})
+	}
+
+	t.Run("exact claim passes", func(t *testing.T) {
+		pane := build(a2UUID(2).String())
+		if pane.ExecutionState == A2ExecutionIssueMismatch {
+			t.Fatalf("exact issue claim must not be flagged")
+		}
+		if !pane.Working {
+			t.Fatalf("full chain with exact claim should be working")
 		}
 	})
 }

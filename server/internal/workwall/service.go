@@ -291,7 +291,7 @@ func (s *Service) A2Snapshot(ctx context.Context, workspaceID pgtype.UUID, event
 	for _, ref := range refs {
 		evs := byRef[ref]
 		anchor, _ := a2AnchorEvent(evs)
-		refWorkspace, refProject, _, _ := workentry.ParseWorkRef(ref)
+		refWorkspace, refProject, refIssue, _ := workentry.ParseWorkRef(ref)
 		in := A2PaneInput{
 			WorkRef:            ref,
 			Events:             evs,
@@ -300,6 +300,7 @@ func (s *Service) A2Snapshot(ctx context.Context, workspaceID pgtype.UUID, event
 			RequestWorkspaceID: uuidStr(workspaceID),
 			RefWorkspaceID:     refWorkspace,
 			RefProjectID:       refProject,
+			RefIssueID:         refIssue,
 		}
 		if err := s.attachA2Inputs(ctx, workspaceID, anchor, presenceBySession, &in); err != nil {
 			return nil, err

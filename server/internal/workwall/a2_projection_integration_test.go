@@ -8,11 +8,8 @@ import (
 	"fmt"
 	"os"
 	"reflect"
-	"strings"
 	"testing"
 	"time"
-
-	neturl "net/url"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -83,7 +80,7 @@ func TestA2SnapshotActiveFailClosedOnMissingHeartbeat(t *testing.T) {
 	defer tx.Rollback(ctx)
 
 	wsID, agentID, issueID, taskID := a2SeedWorkspace(ctx, t, tx)
-	ref := fmt.Sprintf("hivecrew://%s/work/prj/%s/%s", wsID, issueID, taskID)
+	ref := fmt.Sprintf("hivecrew://%s/work/inbox/%s/%s", wsID, issueID, taskID)
 	now := time.Now().UTC()
 	eventID := a2InsertEvent(ctx, t, tx, wsID, ref, "sess-a2", "progress",
 		`{"stage":"build","status":"completed","note":"task completed"}`, now.Add(-time.Minute), now.Add(-time.Minute))
@@ -151,7 +148,7 @@ func TestA2SnapshotMismatchReplayAndCancellation(t *testing.T) {
 	defer tx.Rollback(ctx)
 
 	wsID, _, issueID, taskID := a2SeedWorkspace(ctx, t, tx)
-	ref := fmt.Sprintf("hivecrew://%s/work/prj/%s/%s", wsID, issueID, taskID)
+	ref := fmt.Sprintf("hivecrew://%s/work/inbox/%s/%s", wsID, issueID, taskID)
 	now := time.Now().UTC()
 
 	// Phase 1: finished claim, issue still open, no receipt -> mismatch.
@@ -209,7 +206,7 @@ func TestA2SnapshotTerminalHeartbeatSurfacesTerminal(t *testing.T) {
 	defer tx.Rollback(ctx)
 
 	wsID, _, issueID, taskID := a2SeedWorkspace(ctx, t, tx)
-	ref := fmt.Sprintf("hivecrew://%s/work/prj/%s/%s", wsID, issueID, taskID)
+	ref := fmt.Sprintf("hivecrew://%s/work/inbox/%s/%s", wsID, issueID, taskID)
 	now := time.Now().UTC()
 	// Unique session per run: terminal_presence has a unique key on
 	// (host, session_name, window_index, pane_index) that survives re-runs.
@@ -321,17 +318,17 @@ func TestA2SnapshotCrossWorkspaceNeverLeaks(t *testing.T) {
 	now := time.Now().UTC()
 
 	// Foreign tenant's ledger row: invisible to a ws-A snapshot via SQL scope.
-	refB := fmt.Sprintf("hivecrew://%s/work/prj/%s/%s", wsB, "", taskB)
+	refB := fmt.Sprintf("hivecrew://%s/work/inbox/%s/%s", wsB, "", taskB)
 	a2InsertEvent(ctx, t, tx, wsB, refB, "sess-b", "progress", `{}`,
 		now.Add(-time.Minute), now.Add(-time.Minute))
 
 	// Drift row: stored under ws-A but the work_ref embeds ws-B's uuid.
-	driftRef := fmt.Sprintf("hivecrew://%s/work/prj/%s/%s", wsB, issueA, taskA)
+	driftRef := fmt.Sprintf("hivecrew://%s/work/inbox/%s/%s", wsB, issueA, taskA)
 	a2InsertEvent(ctx, t, tx, wsA, driftRef, "sess-a", "progress", `{}`,
 		now.Add(-time.Minute), now.Add(-time.Minute))
 
 	// Honest row for the same tenant: the only pane that may render.
-	goodRef := fmt.Sprintf("hivecrew://%s/work/prj/%s/%s", wsA, issueA, taskA)
+	goodRef := fmt.Sprintf("hivecrew://%s/work/inbox/%s/%s", wsA, issueA, taskA)
 	a2InsertEvent(ctx, t, tx, wsA, goodRef, "sess-a", "progress", `{}`,
 		now.Add(-2*time.Minute), now.Add(-2*time.Minute))
 
@@ -461,7 +458,7 @@ func TestA2SnapshotLaterRedispatchKeepsOriginalEmployee(t *testing.T) {
 	}
 
 	// The pane's work_ref is bound to task-1 (agent A).
-	ref1 := fmt.Sprintf("hivecrew://%s/work/prj/%s/%s", wsID, issueID, task1)
+	ref1 := fmt.Sprintf("hivecrew://%s/work/inbox/%s/%s", wsID, issueID, task1)
 	a2InsertEvent(ctx, t, tx, wsID, ref1, "sess-a", "progress", `{}`,
 		now.Add(-5*time.Minute), now.Add(-5*time.Minute))
 
@@ -508,7 +505,7 @@ func TestA2SnapshotLaterRedispatchKeepsOriginalEmployee(t *testing.T) {
 	}
 
 	// The re-dispatch's own work lands in the ledger under ref(task-2).
-	ref2 := fmt.Sprintf("hivecrew://%s/work/prj/%s/%s", wsID, issueID, task2)
+	ref2 := fmt.Sprintf("hivecrew://%s/work/inbox/%s/%s", wsID, issueID, task2)
 	a2InsertEvent(ctx, t, tx, wsID, ref2, "sess-b", "progress", `{}`,
 		now.Add(-1*time.Minute), now.Add(-1*time.Minute))
 
@@ -598,7 +595,7 @@ func TestA2SnapshotEventPlusHeartbeatAloneNeverWorking(t *testing.T) {
 	defer tx.Rollback(ctx)
 
 	wsID, agentID, issueID, taskID := a2SeedWorkspace(ctx, t, tx)
-	ref := fmt.Sprintf("hivecrew://%s/work/prj/%s/%s", wsID, issueID, taskID)
+	ref := fmt.Sprintf("hivecrew://%s/work/inbox/%s/%s", wsID, issueID, taskID)
 	now := time.Now().UTC()
 	session := fmt.Sprintf("sess-a2-noev-%d", time.Now().UnixNano())
 	a2InsertEvent(ctx, t, tx, wsID, ref, session, "progress", `{"stage":"build"}`,
@@ -654,7 +651,7 @@ func TestA2SnapshotForeignTaskGatesReceiptRead(t *testing.T) {
 	// Give tenant B's task a receipt so a leaky read WOULD find evidence.
 	a2SeedEvidence(ctx, t, tx, wsB, issueB, taskB, agentB)
 
-	ref := fmt.Sprintf("hivecrew://%s/work/prj/%s/%s", wsA, issueB, taskB)
+	ref := fmt.Sprintf("hivecrew://%s/work/inbox/%s/%s", wsA, issueB, taskB)
 	session := fmt.Sprintf("sess-b3-%d", time.Now().UnixNano())
 	a2InsertEvent(ctx, t, tx, wsA, ref, session, "progress", `{"stage":"build"}`,
 		now.Add(-time.Minute), now.Add(-time.Minute))
@@ -712,7 +709,7 @@ func TestA2SnapshotCrossIssueTaskFailsClosed(t *testing.T) {
 	a2SeedEvidence(ctx, t, tx, wsID, issue2, task2, agentID)
 
 	// The work_ref names issue1 + task2: a cross-issue mismatch.
-	ref := fmt.Sprintf("hivecrew://%s/work/prj/%s/%s", wsID, issueID, task2)
+	ref := fmt.Sprintf("hivecrew://%s/work/inbox/%s/%s", wsID, issueID, task2)
 	session := fmt.Sprintf("sess-b3x-%d", time.Now().UnixNano())
 	a2InsertEvent(ctx, t, tx, wsID, ref, session, "progress", `{"stage":"build"}`,
 		now.Add(-time.Minute), now.Add(-time.Minute))
@@ -758,20 +755,18 @@ type a2Exec interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
-// a2TestConn returns a dedicated pool plus a per-test transaction that every
-// seed and read runs inside; the caller defers tx.Rollback so no test ever
-// commits data. It refuses (explicit SKIP, honestly reported) to run against
-// a database whose name does not look like a throwaway test database.
 func a2TestConn(t *testing.T, ctx context.Context) (*pgxpool.Pool, pgx.Tx) {
 	t.Helper()
-	url := os.Getenv("DATABASE_URL")
-	if url == "" {
+	ds := os.Getenv("DATABASE_URL")
+	if ds == "" {
 		t.Skip("DATABASE_URL not set: no dedicated test DB, integration explicitly skipped")
 	}
-	if !a2LooksLikeTestDB(url) {
-		t.Skipf("DATABASE_URL %q does not name a dedicated test database (need 'test'/'itest' in the db name): integration explicitly skipped", url)
+	// B5-2/B5-4: strict dedicated-name allowlist; substring matches like
+	// "contest" or "latest" are refused. The DSN itself is never logged.
+	if !a2DedicatedTestDB(ds) {
+		t.Skip("DATABASE_URL does not name a dedicated A2 test database (exact-name allowlist): integration explicitly skipped")
 	}
-	pool, err := pgxpool.New(ctx, url)
+	pool, err := pgxpool.New(ctx, ds)
 	if err != nil {
 		t.Fatalf("pool: %v", err)
 	}
@@ -781,16 +776,4 @@ func a2TestConn(t *testing.T, ctx context.Context) (*pgxpool.Pool, pgx.Tx) {
 		t.Fatalf("begin tx: %v", err)
 	}
 	return pool, tx
-}
-
-// a2LooksLikeTestDB checks the URL's database name for an explicit test
-// marker so the suite never writes into an unknown/shared/production DB.
-func a2LooksLikeTestDB(url string) bool {
-	u, err := neturl.Parse(url)
-	if err != nil {
-		return false
-	}
-	name := strings.TrimPrefix(u.Path, "/")
-	lower := strings.ToLower(name)
-	return strings.Contains(lower, "test") || strings.Contains(lower, "itest")
 }

@@ -5,12 +5,10 @@ package workwall
 import (
 	"context"
 	"fmt"
-	"os"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/multica-ai/multica/server/internal/liveactivity"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -19,18 +17,12 @@ import (
 // used by Service.Snapshot are valid against a real migrated schema and that
 // the full snapshot flow runs end-to-end (empty result for an empty workspace).
 func TestSnapshotQueriesRunAgainstRealSchema(t *testing.T) {
-	url := os.Getenv("DATABASE_URL")
-	if url == "" {
-		t.Skip("DATABASE_URL not set")
-	}
 	ctx := context.Background()
-	pool, err := pgxpool.New(ctx, url)
-	if err != nil {
-		t.Fatalf("pool: %v", err)
-	}
+	pool, tx := a2TestConn(t, ctx)
 	defer pool.Close()
+	defer tx.Rollback(ctx)
 
-	q := db.New(pool)
+	q := db.New(tx)
 	ws := pgtype.UUID{Bytes: [16]byte{1}, Valid: true}
 
 	if _, err := q.ListAgents(ctx, ws); err != nil {
@@ -63,30 +55,24 @@ func TestSnapshotQueriesRunAgainstRealSchema(t *testing.T) {
 // workspace + one agent (no runtime, no task), then assert Snapshot returns a
 // correct offline EmployeeLiveActivityV1.
 func TestSnapshotWithSeededAgent(t *testing.T) {
-	url := os.Getenv("DATABASE_URL")
-	if url == "" {
-		t.Skip("DATABASE_URL not set")
-	}
 	ctx := context.Background()
-	pool, err := pgxpool.New(ctx, url)
-	if err != nil {
-		t.Fatalf("pool: %v", err)
-	}
+	pool, tx := a2TestConn(t, ctx)
 	defer pool.Close()
+	defer tx.Rollback(ctx)
 
 	slug := fmt.Sprintf("w4-int-%d", time.Now().UnixNano())
 	var wsID, rtID, agentID string
-	if err := pool.QueryRow(ctx,
+	if err := tx.QueryRow(ctx,
 		`INSERT INTO workspace (name, slug) VALUES ($1, $2) RETURNING id::text`,
 		slug, slug).Scan(&wsID); err != nil {
 		t.Fatalf("seed workspace: %v", err)
 	}
-	if err := pool.QueryRow(ctx,
+	if err := tx.QueryRow(ctx,
 		`INSERT INTO agent_runtime (workspace_id, name, runtime_mode, provider) VALUES ($1, 'rt1', 'local', 'prime') RETURNING id::text`,
 		wsID).Scan(&rtID); err != nil {
 		t.Fatalf("seed runtime: %v", err)
 	}
-	if err := pool.QueryRow(ctx,
+	if err := tx.QueryRow(ctx,
 		`INSERT INTO agent (workspace_id, name, runtime_mode, kind, runtime_id) VALUES ($1, 'Emory', 'local', 'user', $2) RETURNING id::text`,
 		wsID, rtID).Scan(&agentID); err != nil {
 		t.Fatalf("seed agent: %v", err)
@@ -97,7 +83,7 @@ func TestSnapshotWithSeededAgent(t *testing.T) {
 		t.Fatalf("parse ws uuid: %v", err)
 	}
 
-	svc := NewService(db.New(pool))
+	svc := NewService(db.New(tx))
 	snap, err := svc.Snapshot(ctx, wsUUID)
 	if err != nil {
 		t.Fatalf("Snapshot: %v", err)

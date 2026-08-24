@@ -109,12 +109,15 @@ type A2PaneInput struct {
 	StaleThreshold time.Duration
 
 	// RequestWorkspaceID is the workspace the snapshot was requested for.
-	// RefWorkspaceID / RefProjectID are the ids embedded in the work_ref.
-	// When RequestWorkspaceID is set, a work_ref embedding a different (or
-	// missing) workspace is foreign data and fails closed: no pane.
+	// RefWorkspaceID / RefProjectID / RefIssueID are the ids embedded in the
+	// work_ref. When RequestWorkspaceID is set, a work_ref embedding a
+	// different (or missing) workspace is foreign data and fails closed: no
+	// pane. RefIssueID lets the pure projection prove the ref's issue is the
+	// Issue it loaded: a mismatch or a missing claim fails closed.
 	RequestWorkspaceID string
 	RefWorkspaceID     string
 	RefProjectID       string
+	RefIssueID         string
 }
 
 // a2TerminalEvent is the closed event type whose arrival claims the work
@@ -145,16 +148,38 @@ func a2ForeignWorkRef(in A2PaneInput) bool {
 	return in.RefWorkspaceID == "" || !strings.EqualFold(in.RefWorkspaceID, in.RequestWorkspaceID)
 }
 
+// a2IssueClaimMismatch reports whether the work_ref's embedded issue claim
+// disagrees with the loaded Issue authority. When an Issue is known, the
+// claim must be present and exactly equal — a missing or unequal claim fails
+// closed (B5-6). With no loaded Issue there is nothing to prove here and the
+// receipt/task gates handle the rest.
+func a2IssueClaimMismatch(in A2PaneInput) bool {
+	if in.Issue == nil || !in.Issue.ID.Valid {
+		return false
+	}
+	claim := strings.TrimSpace(in.RefIssueID)
+	if claim == "" {
+		return true // issue known but the ref claims none
+	}
+	claimed, err := util.ParseUUID(claim)
+	if err != nil || !claimed.Valid {
+		return true // malformed claim
+	}
+	return !strings.EqualFold(uuidStr(claimed), uuidStr(in.Issue.ID))
+}
+
 // a2ProjectDrift reports whether the work_ref's project claim disagrees with
 // the Issue authority. When the Issue HAS a project, the claim must be
 // present, a valid UUID, and exactly equal — a missing or malformed claim is
 // drift, not a pass. Only an Issue without project authority (no project
 // assigned) permits an inbox-style or missing claim.
 func a2ProjectDrift(in A2PaneInput) bool {
-	if in.Issue == nil || !in.Issue.ProjectID.Valid {
-		return false // no project authority on the issue: nothing to compare
-	}
 	claim := strings.TrimSpace(in.RefProjectID)
+	if in.Issue == nil || !in.Issue.ProjectID.Valid {
+		// No project authority: only a missing or reserved inbox claim may
+		// pass; any other concrete claim is unattributable drift (B5-3).
+		return claim != "" && !strings.EqualFold(claim, a2ReservedInboxProject)
+	}
 	if claim == "" {
 		return true // issue has a project but the ref claims none
 	}
@@ -164,6 +189,10 @@ func a2ProjectDrift(in A2PaneInput) bool {
 	}
 	return !strings.EqualFold(uuidStr(claimed), uuidStr(in.Issue.ProjectID))
 }
+
+// a2ReservedInboxProject is the reserved project segment for inbox work in
+// the frozen work_ref format (see workentry.FormatWorkRef).
+const a2ReservedInboxProject = "inbox"
 
 // a2CanonicalReceipt returns the receipt only when the pane has BOTH a
 // verified task and a known issue, and the receipt matches that task, issue,
@@ -218,6 +247,13 @@ func a2BoundDispatch(in A2PaneInput) *db.AssignmentDispatchReceipt {
 		return nil
 	}
 	if in.RequestWorkspaceID != "" && !strings.EqualFold(uuidStr(d.WorkspaceID), in.RequestWorkspaceID) {
+		return nil
+	}
+	// B5-1: the dispatch must name exactly the task's agent. A dispatch
+	// bound to a different employee can never own this pane or establish
+	// its evidence chain, no matter how correct every other hop is.
+	if !d.LocalAgentID.Valid || !task.AgentID.Valid ||
+		!strings.EqualFold(uuidStr(d.LocalAgentID), uuidStr(task.AgentID)) {
 		return nil
 	}
 	// B3-4/B4-1: the dispatch must be the exact command this task's
@@ -557,7 +593,9 @@ func a2VerifiedTerminalInput(in A2PaneInput) A2PaneInput {
 // replay), and only the A2 rules below decide state and working.
 //
 // State precedence:
-//  1. project drift — the work_ref and the Issue authority disagree about
+//  1. issue-claim mismatch — the work_ref's embedded issue claim is missing
+//     or unequal to the loaded Issue: issue_state_mismatch, fail closed;
+//  2. project drift — the work_ref and the Issue authority disagree about
 //     the project; renders only as issue_state_mismatch (never working,
 //     never completion) so drift is visible but never trusted;
 //  2. canonical terminal evidence from receipt / task / issue-cancelled —
@@ -662,7 +700,10 @@ func ProjectA2Pane(in A2PaneInput) (A2PaneV1, bool) {
 
 	// Execution state (see function doc for precedence).
 	state := A2ExecutionActive
-	if a2ProjectDrift(in) {
+	if a2IssueClaimMismatch(in) {
+		// B5-6: the ref's issue claim does not match the loaded Issue.
+		state = A2ExecutionIssueMismatch
+	} else if a2ProjectDrift(in) {
 		state = A2ExecutionIssueMismatch
 	} else if canonical, ok := a2CanonicalTerminal(a2VerifiedTerminalInput(in)); ok {
 		state = canonical
