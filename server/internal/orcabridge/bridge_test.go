@@ -2944,11 +2944,15 @@ func TestConcurrentTwoAssignmentsProbeIsolation(t *testing.T) {
 	}
 }
 
-// R8 scripted reconcile core: the recovery-first lookup sees NO dispatch,
-// the claim is acquired, and only the post-claim DispatchShow returns the
-// invalid existing dispatch. Asserts the query sequence truly reached
-// post-claim, the exact fail-closed error, and zero side effects.
-func scriptedClaimReconcileRejection(t *testing.T, invalid *OrcaDispatch, wantErr error) (Chain, *testBridge) {
+// R10 scripted reconcile core: the first DispatchShow (recovery-first /
+// claim probe) returns NO dispatch, the claim is acquired, and only the
+// subsequent post-claim query returns the invalid existing dispatch — which
+// is built FROM the derived runID/taskID after the claim, so exactly one
+// field is invalid per case. Asserts the first answer was nil, the claim
+// succeeded, the second query reached post-claim, the exact expected error,
+// and zero side effects.
+func scriptedClaimReconcileRejection(t *testing.T, caseName string, buildInvalid func(derivedRunID, derivedTaskID string) *OrcaDispatch, wantErr error) {
+	var invalid *OrcaDispatch
 	t.Helper()
 	a, _ := twinBridges(t)
 	chain := validChain()
@@ -2959,54 +2963,91 @@ func scriptedClaimReconcileRejection(t *testing.T, invalid *OrcaDispatch, wantEr
 	claimed := DaemonTask{ID: mapping.Chain.TaskID, WorkspaceID: chain.WorkspaceID, ProjectID: chain.ProjectID, IssueID: mapping.Chain.IssueID}
 	runID, taskID := derivedOrcaIDs(a, chain, mapping)
 	if runID == "" || taskID == "" {
-		t.Fatalf("derive failed: run=%q task=%q", runID, taskID)
+		t.Fatalf("%s: derive failed: run=%q task=%q", caseName, runID, taskID)
 	}
 
-	// Script: first lookup (recovery-first/probe) -> no dispatch at all, so
-	// the claim is acquired; later lookups (post-claim reconcile) -> the
-	// invalid existing dispatch.
-	a.client.setDispatchScript(nil, invalid, invalid)
+	// Construct the invalid dispatch from the DERIVED identities after the
+	// assignment, so only the single field under test is wrong. The builder
+	// asserts it: RunID and TaskID must equal the derived values unless the
+	// case under test is exactly that field.
+	invalid = buildInvalid(runID, taskID)
+	if invalid.RunID != runID && caseName != "mismatched-run" {
+		t.Fatalf("%s: fixture must keep the derived RunID (%q), got %q", caseName, runID, invalid.RunID)
+	}
+	if invalid.TaskID != taskID && caseName != "empty-task" && caseName != "mismatched-task" {
+		t.Fatalf("%s: fixture must keep the derived TaskID (%q), got %q", caseName, taskID, invalid.TaskID)
+	}
+
+	// Script: query 1 (recovery-first/probe) -> nil; queries 2.. (post-claim
+	// reconcile) -> the invalid existing dispatch.
+	a.client.setDispatchScript(nil, invalid)
+
+	// Pre-conditions, asserted before the run: the first scripted answer is
+	// nil and the fake has a live claim path (no pre-seeded dispatch).
+	a.client.mu.Lock()
+	firstNil := a.client.dispatchScript[0] == nil
+	a.client.mu.Unlock()
+	if !firstNil {
+		t.Fatalf("%s: first scripted DispatchShow must be nil", caseName)
+	}
 
 	if _, err := a.RunClaimedTask(t.Context(), claimed); !errors.Is(err, wantErr) {
-		t.Fatalf("expected %v, got %v", wantErr, err)
+		t.Fatalf("%s: expected %v, got %v", caseName, wantErr, err)
 	}
-	// The post-claim reconcile query must actually have run: more than the
-	// single recovery-first lookup.
+
+	// The post-claim reconcile query must actually have run: at least two
+	// DispatchShow calls, i.e. the recovery-first nil did not abort the flow
+	// and the claim was acquired before the invalid answer was served.
 	if calls := a.client.currentDispatchShowCalls(); calls < 2 {
-		t.Fatalf("post-claim reconcile never reached: DispatchShow calls = %d, want >= 2", calls)
+		t.Fatalf("%s: post-claim reconcile never reached: DispatchShow calls = %d, want >= 2", caseName, calls)
+	}
+	// ClaimScope acquired: the worker-start claim generation record exists on
+	// the dispatch chain (proof the claim phase ran rather than aborting at
+	// recovery-first).
+	a.entry.mu.Lock()
+	_, claimRecorded := a.entry.events["hivecrew://ws/work/prj-dispatch"][claimKeyFor(workerStartClaimBase(mapping.Chain), 0)]
+	a.entry.mu.Unlock()
+	if !claimRecorded {
+		t.Fatalf("%s: ClaimScope never acquired the worker-start claim", caseName)
 	}
 	assertNoSideEffects(t, a, chain)
-	return chain, a
 }
 
-// R8: post-claim reconcile with a dispatch whose TaskID is EMPTY fails
-// closed before any side effect.
+// R10: derived RunID + EMPTY TaskID — only the task identity is missing.
 func TestClaimReconcileRejectsEmptyTaskIDDispatch(t *testing.T) {
-	scriptedClaimReconcileRejection(t,
-		&OrcaDispatch{ID: "ctx_emptytaskid01", RunID: "run_placeholder", TaskID: "", AssigneeHandle: "term_328ff727-9a71-4047-b8d8-c2f5c34c0f7e", Status: "dispatched"},
+	scriptedClaimReconcileRejection(t, "empty-task",
+		func(derivedRunID, derivedTaskID string) *OrcaDispatch {
+			return &OrcaDispatch{ID: "ctx_emptytaskid01", RunID: derivedRunID, TaskID: "", AssigneeHandle: "term_328ff727-9a71-4047-b8d8-c2f5c34c0f7e", Status: "dispatched"}
+		},
 		ErrResultIdentityMismatch)
 }
 
-// R8: a dispatch whose TaskID belongs to a different task fails closed.
+// R10: derived RunID + a DIFFERENT valid TaskID — only the task identity is
+// wrong.
 func TestClaimReconcileRejectsMismatchedTaskIDDispatch(t *testing.T) {
-	scriptedClaimReconcileRejection(t,
-		&OrcaDispatch{ID: "ctx_othertaskid02", RunID: "run_placeholder", TaskID: "task_ffffffffffff", AssigneeHandle: "term_328ff727-9a71-4047-b8d8-c2f5c34c0f7e", Status: "dispatched"},
+	scriptedClaimReconcileRejection(t, "mismatched-task",
+		func(derivedRunID, derivedTaskID string) *OrcaDispatch {
+			return &OrcaDispatch{ID: "ctx_othertaskid02", RunID: derivedRunID, TaskID: "task_ffffffffffff", AssigneeHandle: "term_328ff727-9a71-4047-b8d8-c2f5c34c0f7e", Status: "dispatched"}
+		},
 		ErrResultIdentityMismatch)
 }
 
-// R8: a dispatch from a different Run fails closed with NO WorkerStart.
+// R10: a DIFFERENT valid RunID + derived TaskID — only the run identity is
+// wrong.
 func TestClaimReconcileRejectsMismatchedRunIDWithoutWorkerStart(t *testing.T) {
-	scriptedClaimReconcileRejection(t,
-		&OrcaDispatch{ID: "ctx_otherrunid003", RunID: "run_ffffffffffff", TaskID: "task_placeholder", AssigneeHandle: "term_328ff727-9a71-4047-b8d8-c2f5c34c0f7e", Status: "dispatched"},
+	scriptedClaimReconcileRejection(t, "mismatched-run",
+		func(derivedRunID, derivedTaskID string) *OrcaDispatch {
+			return &OrcaDispatch{ID: "ctx_otherrunid003", RunID: "run_ffffffffffff", TaskID: derivedTaskID, AssigneeHandle: "term_328ff727-9a71-4047-b8d8-c2f5c34c0f7e", Status: "dispatched"}
+		},
 		ErrResultIdentityMismatch)
 }
 
-// R8: a dispatch whose ID violates the Orca handle grammar fails closed
-// with the distinct ErrInvalidChain classification (grammar violation is a
-// malformed-reference rejection, not an identity mismatch).
+// R10: derived RunID AND derived TaskID, only the handle grammar fails.
 func TestClaimReconcileRejectsInvalidDispatchID(t *testing.T) {
-	scriptedClaimReconcileRejection(t,
-		&OrcaDispatch{ID: "not-a-handle", RunID: "run_placeholder", TaskID: "task_placeholder", AssigneeHandle: "term_328ff727-9a71-4047-b8d8-c2f5c34c0f7e", Status: "dispatched"},
+	scriptedClaimReconcileRejection(t, "invalid-handle",
+		func(derivedRunID, derivedTaskID string) *OrcaDispatch {
+			return &OrcaDispatch{ID: "not-a-handle", RunID: derivedRunID, TaskID: derivedTaskID, AssigneeHandle: "term_328ff727-9a71-4047-b8d8-c2f5c34c0f7e", Status: "dispatched"}
+		},
 		ErrInvalidChain)
 }
 

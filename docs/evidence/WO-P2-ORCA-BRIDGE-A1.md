@@ -436,3 +436,32 @@ R9 verification (go1.26.6 darwin/arm64): `gofmt -l` clean; focused ×100 on
 the reconcile/coordination suites ok; full package `go test -count=1` ok (113
 tests); `go test -race -count=1` ok ×3; `go vet` pass; `go build ./...` pass;
 `git diff --check` clean. File touched: bridge_test.go only.
+
+## Test-fixture correction (R10)
+
+Test-only correction on top of ae27eca73 (production code untouched):
+
+The R9 scripted tests built their invalid dispatches with placeholder
+RunID/TaskID strings, so for the empty-Task and mismatched-Task cases the
+RunID was ALSO wrong and the validator could reject on the run check without
+exercising the task check under test. Each invalid dispatch is now
+constructed FROM the derived runID/taskID after the assignment via a
+per-case builder, so exactly one field is invalid per case: empty-task uses
+the derived RunID with an empty TaskID; mismatched-task uses the derived
+RunID with a different valid TaskID; mismatched-run uses a different valid
+RunID with the derived TaskID; invalid-handle uses BOTH derived identities so
+only the handle grammar fails. The shared helper additionally asserts the
+fixture contract itself (RunID/TaskID equal the derived values except the
+field under test), that the first scripted DispatchShow answer is nil, that
+ClaimScope recorded the worker-start claim generation, that at least two
+DispatchShow queries ran (post-claim reached), the exact expected error
+(`ErrResultIdentityMismatch` for the three identity cases, `ErrInvalidChain`
+for the grammar case), and zero WorkerStart/StartTask/evidence/memo effects.
+Negative controls verified both guards: serving the invalid answer on the
+first query fails the run, and a placeholder RunID in the mismatched-task
+builder now fails the fixture assertion.
+
+R10 verification (go1.26.6 darwin/arm64): `gofmt -l` clean; focused ×100 on
+the reconcile/coordination suites ok; full package `go test -count=1` ok (113
+tests); `go test -race -count=1` ok ×3; `go vet` pass; `go build ./...` pass;
+`git diff --check` clean. File touched: bridge_test.go only.
