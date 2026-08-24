@@ -283,12 +283,17 @@ func (a *WorkEntryServiceAdapter) ClaimScope(ctx context.Context, in ScopeClaimI
 	// The claim event's own OccurredAt/ObservedAt are the real attempt and
 	// observation times of this ClaimScope call; the lease expiry is only a
 	// payload field (it is protocol state, not when the event happened).
-	// A bridge with an injected clock passes AttemptAt; zero means now.
+	//
+	// The caller-provided AttemptAt is never trusted forward in time: a
+	// future value (skewed or malicious clock) is clamped to the port's real
+	// observation time, and an absent value also uses it. ObservedAt is
+	// always the port's own observation time, independent of the caller. As
+	// a result neither stamp can lie in the future.
+	observedAt := time.Now()
 	attemptAt := in.AttemptAt
-	if attemptAt.IsZero() {
-		attemptAt = time.Now()
+	if attemptAt.IsZero() || attemptAt.After(observedAt) {
+		attemptAt = observedAt
 	}
-	attemptStamp := attemptAt.UTC().Format(time.RFC3339Nano)
 	payload := map[string]any{
 		"claim":       true,
 		"instance_id": in.InstanceID,
@@ -301,8 +306,8 @@ func (a *WorkEntryServiceAdapter) ClaimScope(ctx context.Context, in ScopeClaimI
 		EventType:      workentry.EventCheckpoint,
 		EventPayload:   payload,
 		IdempotencyKey: in.ClaimKey,
-		OccurredAt:     attemptStamp,
-		ObservedAt:     attemptStamp,
+		OccurredAt:     attemptAt.UTC().Format(time.RFC3339Nano),
+		ObservedAt:     observedAt.UTC().Format(time.RFC3339Nano),
 	}); err != nil {
 		if !errors.Is(err, workentry.ErrConflict) {
 			return ScopeClaimResult{}, fmt.Errorf("orcabridge: append scope claim: %w", err)

@@ -11,9 +11,45 @@ import (
 	"time"
 )
 
+// opLog records the ordered sequence of coordination/side-effect operations
+// so tests can assert the claim -> barrier -> client -> marker order.
+type opLog struct {
+	mu      sync.Mutex
+	entries []string
+}
+
+func (l *opLog) record(op string) {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.entries = append(l.entries, op)
+}
+
+func (l *opLog) snapshot() []string {
+	if l == nil {
+		return nil
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]string(nil), l.entries...)
+}
+
+// indexOf returns the position of the first entry equal to op, or -1.
+func (l *opLog) indexOf(op string) int {
+	for i, entry := range l.snapshot() {
+		if entry == op {
+			return i
+		}
+	}
+	return -1
+}
+
 // fakeClient records every Orca call and answers from a scriptable state.
 type fakeClient struct {
-	mu sync.Mutex
+	order *opLog
+	mu    sync.Mutex
 
 	runs     []OrcaRun
 	tasks    map[string][]OrcaTask // run id -> tasks
@@ -36,10 +72,11 @@ type fakeClient struct {
 }
 
 func newFakeClient() *fakeClient {
-	return &fakeClient{tasks: map[string][]OrcaTask{}}
+	return &fakeClient{tasks: map[string][]OrcaTask{}, order: &opLog{}}
 }
 
 func (f *fakeClient) RunCreate(ctx context.Context, objective string) (string, error) {
+	f.order.record("client:RunCreate")
 	f.mu.Lock()
 	f.runCreates++
 	// Slow side effect support: block until released (or the context ends),
@@ -72,6 +109,7 @@ func (f *fakeClient) RunList(ctx context.Context) ([]OrcaRun, error) {
 }
 
 func (f *fakeClient) TaskCreate(ctx context.Context, input TaskCreateInput) (string, error) {
+	f.order.record("client:TaskCreate")
 	f.mu.Lock()
 	f.taskCreates++
 	if f.taskCreateBlock != nil {
@@ -102,6 +140,7 @@ func (f *fakeClient) TaskList(ctx context.Context, runID string) ([]OrcaTask, er
 }
 
 func (f *fakeClient) WorkerStart(ctx context.Context, input WorkerStartInput) (*WorkerReceipt, error) {
+	f.order.record("client:WorkerStart")
 	f.mu.Lock()
 	f.workerStarts++
 	if f.workerStartBlock != nil {
@@ -155,6 +194,14 @@ type fakeEntry struct {
 	linkages    map[string]LinkageReceipt
 	linkPayload map[string]string
 	events      map[string]map[string]map[string]any // workRef -> key -> payload
+	order       *opLog                               // shared with the client fake
+
+	// blockClaimKey, when set, parks the ClaimScope CAS for that exact key
+	// BEFORE the atomic section, letting a test pause a bridge between
+	// winning a claim and winning (or losing) the effect barrier.
+	blockClaimMu   sync.Mutex
+	blockClaimKey  string
+	blockClaimOnce chan struct{}
 
 	// failAppendKey, when set, makes AppendEvidence for that exact
 	// idempotency key return failAppendErr (recovery coverage).
@@ -179,8 +226,24 @@ func (f *fakeEntry) clearAppendFailure() {
 	f.failAppendErr = nil
 }
 
+func (f *fakeEntry) setClaimBlock(key string) chan struct{} {
+	release := make(chan struct{})
+	f.blockClaimMu.Lock()
+	defer f.blockClaimMu.Unlock()
+	f.blockClaimKey = key
+	f.blockClaimOnce = release
+	return release
+}
+
+func (f *fakeEntry) clearClaimBlock() {
+	f.blockClaimMu.Lock()
+	defer f.blockClaimMu.Unlock()
+	f.blockClaimKey = ""
+	f.blockClaimOnce = nil
+}
+
 func newFakeEntry() *fakeEntry {
-	return &fakeEntry{
+	return &fakeEntry{order: &opLog{},
 		linkages:    map[string]LinkageReceipt{},
 		linkPayload: map[string]string{},
 		events:      map[string]map[string]map[string]any{},
@@ -222,6 +285,7 @@ func (f *fakeEntry) RegisterLinkage(ctx context.Context, in LinkageInput) (Linka
 }
 
 func (f *fakeEntry) AppendEvidence(ctx context.Context, in EvidenceInput) (EvidenceReceipt, error) {
+	f.order.record("evidence:" + in.IdempotencyKey)
 	f.failMu.Lock()
 	failing := in.IdempotencyKey != "" && in.IdempotencyKey == f.failAppendKey && f.failAppendErr != nil
 	f.failMu.Unlock()
@@ -267,6 +331,23 @@ func (f *fakeEntry) ClaimScope(ctx context.Context, in ScopeClaimInput) (ScopeCl
 	if in.WorkRef == "" || in.ClaimKey == "" || in.InstanceID == "" || in.SessionID == "" {
 		return ScopeClaimResult{}, ErrInvalidChain
 	}
+	// Pre-atomic pause hook: park before the CAS for the configured key.
+	f.blockClaimMu.Lock()
+	block := chan struct{}(nil)
+	if in.ClaimKey == f.blockClaimKey && f.blockClaimOnce != nil {
+		block = f.blockClaimOnce
+		f.blockClaimOnce = nil // park exactly once
+		f.blockClaimKey = ""
+	}
+	f.blockClaimMu.Unlock()
+	if block != nil {
+		select {
+		case <-block:
+		case <-ctx.Done():
+			return ScopeClaimResult{}, ctx.Err()
+		}
+	}
+	f.order.record("claim:" + in.ClaimKey)
 	attemptAt := in.AttemptAt
 	if attemptAt.IsZero() {
 		attemptAt = time.Now()
@@ -431,6 +512,14 @@ type testBridge struct {
 	entry      *fakeEntry
 	assignment *fakeAssignmentPort
 	daemon     *fakeDaemonPort
+}
+
+// order exposes the shared operation log of the wired fakes.
+func (tb *testBridge) order() *opLog {
+	if tb == nil || tb.client == nil {
+		return nil
+	}
+	return tb.client.order
 }
 
 func TestEnsureProjectRunIsIdempotent(t *testing.T) {
@@ -1245,6 +1334,7 @@ func TestRunClaimedTaskRecoveryAfterEvidenceFailure(t *testing.T) {
 func twinBridges(t *testing.T) (*testBridge, *testBridge) {
 	t.Helper()
 	client, entry := newFakeClient(), newFakeEntry()
+	entry.order = client.order // one shared operation log
 	assignment, daemon := newFakeAssignmentPort(), &fakeDaemonPort{}
 	actorA := bridgeActor()
 	actorB := bridgeActor()
@@ -1395,35 +1485,91 @@ func TestSecondBridgeRestartNeverRecreates(t *testing.T) {
 // Lease takeover: a holder that crashed between claiming and creating (no
 // evidence, no Orca object) must be taken over after lease expiry so exactly
 // one RunCreate still happens across both instances.
-func TestLeaseExpiryTakeoverAfterCrashedHolder(t *testing.T) {
+// R5 contract: a post-call client error — including a structured CLIError —
+// is an unknown outcome. The effect barrier stays held, so a peer past TTL
+// gets ErrScopeAttemptInFlight and creates nothing.
+func TestTakeoverBlockedAfterPostCallCLIError(t *testing.T) {
 	a, b := twinBridges(t)
 	chain := validChain()
-	// Bridge A claims with a short lease, then dies before creating.
 	a.LeaseTTL = 5 * time.Millisecond
-	a.client.runCreateErr = errors.New("crashed after claim")
-	if _, err := a.EnsureProjectRun(t.Context(), ProjectRef{Chain: chain, DisplayObjective: "takeover objective"}); err == nil {
-		t.Fatal("crashed holder should surface its create error")
+	a.client.runCreateErr = &CLIError{Code: "conflict", Message: "objective rejected"}
+	if _, err := a.EnsureProjectRun(t.Context(), ProjectRef{Chain: chain, DisplayObjective: "post-call objective"}); err == nil {
+		t.Fatal("failed holder should surface its create error")
 	}
 	a.client.runCreateErr = nil
-	// Short lease so B's acquire observes expiry quickly.
 	b.LeaseTTL = 5 * time.Millisecond
 	b.ClaimPoll = time.Millisecond
 	b.ClaimMaxWait = 2 * time.Second
 
-	runB, err := b.EnsureProjectRun(t.Context(), ProjectRef{Chain: chain, DisplayObjective: "takeover objective"})
+	if _, err := b.EnsureProjectRun(t.Context(), ProjectRef{Chain: chain, DisplayObjective: "post-call objective"}); !errors.Is(err, ErrScopeAttemptInFlight) {
+		t.Fatalf("expected ErrScopeAttemptInFlight after post-call CLI error, got %v", err)
+	}
+	// No Run object exists and only A's single attempt was made.
+	if len(a.client.runs) != 0 || a.client.runCreates != 1 {
+		t.Fatalf("blocked takeover still touched the client: objects=%d attempts=%d", len(a.client.runs), a.client.runCreates)
+	}
+}
+
+// R5 contract: a provably pre-call failure (lease gate, which runs strictly
+// before the client call) reopens the barrier, so a peer may take over and
+// create exactly once. A is parked inside the barrier CAS; its clock is then
+// advanced past the lease, so after winning the barrier its lease gate fails
+// and it reopens without ever calling the client.
+func TestPreCallLeaseExpiryReopensBarrierForTakeover(t *testing.T) {
+	a, b := twinBridges(t)
+	chain := validChain()
+	base := runCreateClaimBase(chain)
+	lease := 100 * time.Millisecond
+
+	clock := &slowClock{now: time.Now().Add(-1 * time.Hour)}
+	a.Now = clock.Now
+	a.LeaseTTL = lease
+	releaseA := a.entry.setClaimBlock(effectBarrierKey(base, 0))
+
+	errA := make(chan error, 1)
+	go func() {
+		_, err := a.EnsureProjectRun(context.Background(), ProjectRef{Chain: chain, DisplayObjective: "pre-call objective"})
+		errA <- err
+	}()
+	// A has won the claim and is parked inside the barrier CAS (its claim is
+	// already expired in real time because of the frozen past clock).
+	barrierDeadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(barrierDeadline) {
+		if a.order().indexOf("claim:"+claimKeyFor(base, 0)) >= 0 {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	// Advance A's clock past its lease, then let it win the barrier.
+	clock.advance(lease * 2)
+	close(releaseA)
+	if err := <-errA; !errors.Is(err, ErrClaimLeaseExpired) {
+		t.Fatalf("expected ErrClaimLeaseExpired from the pre-call gate, got %v", err)
+	}
+	if a.order().indexOf("client:RunCreate") >= 0 {
+		t.Fatal("A must not have called the client after its lease expired")
+	}
+
+	// B takes over: claim g1, barrier epoch 1 (epoch 0 was reopened), create.
+	b.ClaimPoll = time.Millisecond
+	b.ClaimMaxWait = 2 * time.Second
+	runB, err := b.EnsureProjectRun(context.Background(), ProjectRef{Chain: chain, DisplayObjective: "pre-call objective"})
 	if err != nil {
-		t.Fatalf("takeover: %v", err)
+		t.Fatalf("takeover after pre-call reopen: %v", err)
 	}
-	if runB == "" {
-		t.Fatal("takeover returned no run")
-	}
-	// The fake counter counts attempts: A's failed attempt plus exactly one
-	// successful create by the takeover winner.
 	if len(a.client.runs) != 1 || a.client.runs[0].ID != runB {
-		t.Fatalf("takeover left %d runs (%v), want exactly %s", len(a.client.runs), a.client.runs, runB)
+		t.Fatalf("want exactly B's run %s, got %+v", runB, a.client.runs)
 	}
-	if a.client.runCreates != 2 {
-		t.Fatalf("takeover attempts = %d, want A(failed)+B(success)=2", a.client.runCreates)
+	if a.client.runCreates != 1 {
+		t.Fatalf("RunCreate attempts = %d, want exactly 1", a.client.runCreates)
+	}
+	// Ordering for B: claim(g1) -> barrier(epoch1) -> client -> marker.
+	claimIdx := a.order().indexOf("claim:" + claimKeyFor(base, 1))
+	barrierIdx := a.order().indexOf("claim:" + effectBarrierKey(base, 1))
+	clientIdx := a.order().indexOf("client:RunCreate")
+	markerIdx := a.order().indexOf("evidence:" + RunLinkageKey(chain))
+	if !(claimIdx >= 0 && barrierIdx > claimIdx && clientIdx > barrierIdx && markerIdx > clientIdx) {
+		t.Fatalf("order wrong (claim=%d barrier=%d client=%d marker=%d)", claimIdx, barrierIdx, clientIdx, markerIdx)
 	}
 }
 
@@ -1475,84 +1621,279 @@ func (c *slowClock) advance(d time.Duration) {
 	c.now = c.now.Add(d)
 }
 
-func TestSlowRunCreateBeyondLeaseFailsClosedNoDuplicate(t *testing.T) {
+// Scenario S1 (run): A is paused before winning the effect barrier (parked
+// inside the barrier CAS with an expired claim); B takes over and wins the
+// barrier; when A resumes it must NOT call RunCreate.
+func TestBarrierScenarioAPausedBBWinsANeverCalls(t *testing.T) {
 	a, b := twinBridges(t)
 	chain := validChain()
-	ref := ProjectRef{Chain: chain, DisplayObjective: "slow create objective"}
+	base := runCreateClaimBase(chain)
+	ref := ProjectRef{Chain: chain, DisplayObjective: "s1 run objective"}
 
-	// Bridge A holds the claim; its RunCreate "takes" longer than the lease.
-	clock := &slowClock{now: time.Date(2026, 8, 24, 15, 0, 0, 0, time.UTC)}
+	// A's frozen past clock makes its claim already expired in real time.
+	clock := &slowClock{now: time.Now().Add(-1 * time.Hour)}
 	a.Now = clock.Now
-	lease := 100 * time.Millisecond
-	a.LeaseTTL = lease
-	releaseA := make(chan struct{})
-	a.client.runCreateBlock = releaseA
+	a.LeaseTTL = 100 * time.Millisecond
+	releaseA := a.entry.setClaimBlock(effectBarrierKey(base, 0))
 
 	errA := make(chan error, 1)
 	go func() {
 		_, err := a.EnsureProjectRun(context.Background(), ref)
 		errA <- err
 	}()
-	// Deterministic barrier: A has started its create (the RunCreate attempt
-	// counter increments before blocking), then the lease expires while the
-	// slow create is still in flight.
-	barrierDeadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(barrierDeadline) {
-		if a.client.currentRunCreates() > 0 {
+	// Deterministic barrier: A has won the claim and is parked in the
+	// barrier CAS (it has NOT won the permit yet).
+	parkDeadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(parkDeadline) {
+		if a.order().indexOf("claim:"+claimKeyFor(base, 0)) >= 0 {
 			break
 		}
 		time.Sleep(time.Millisecond)
 	}
-	clock.advance(lease * 2)
 
-	// Bridge B must NOT take over into a duplicate create: takeover is
-	// forbidden, and with no committed evidence and no Orca marker, B fails
-	// closed with ErrClaimLeaseExpired (or observes A's result only after A
-	// actually commits).
+	// B takes over fully while A is parked: claim g1, barrier epoch 0,
+	// client, marker.
 	b.ClaimPoll = time.Millisecond
-	b.ClaimMaxWait = 200 * time.Millisecond
-	b.LeaseTTL = 100 * time.Millisecond
-	bErrCh := make(chan error, 1)
-	go func() {
-		_, err := b.EnsureProjectRun(context.Background(), ref)
-		bErrCh <- err
-	}()
+	b.ClaimMaxWait = 2 * time.Second
+	runB, err := b.EnsureProjectRun(context.Background(), ref)
+	if err != nil {
+		t.Fatalf("bridge B takeover: %v", err)
+	}
 
-	// Let A's slow create finish; A commits exactly one Run.
+	// Now release A: it loses the barrier CAS and must never call the client.
 	close(releaseA)
-	if err := <-errA; err != nil {
-		t.Fatalf("bridge A failed after slow create: %v", err)
+	if err := <-errA; !errors.Is(err, ErrScopeAttemptInFlight) {
+		t.Fatalf("expected ErrScopeAttemptInFlight for A after losing the barrier, got %v", err)
 	}
-	if bErr := <-bErrCh; bErr != nil {
-		t.Fatalf("bridge B should converge on A's committed result, got: %v", bErr)
+	if a.client.runCreates != 1 {
+		t.Fatalf("RunCreate attempts = %d, want exactly B's single call", a.client.runCreates)
 	}
-	// Exactly one Run object exists across both bridges.
-	if len(a.client.runs) != 1 {
-		t.Fatalf("slow-create path produced %d runs, want exactly 1: %+v", len(a.client.runs), a.client.runs)
+	if len(a.client.runs) != 1 || a.client.runs[0].ID != runB {
+		t.Fatalf("want exactly B's run %s, got %+v", runB, a.client.runs)
+	}
+	// B's order: claim(g1) -> barrier(0) -> client -> marker.
+	claimIdx := a.order().indexOf("claim:" + claimKeyFor(base, 1))
+	barrierIdx := a.order().indexOf("claim:" + effectBarrierKey(base, 0))
+	clientIdx := a.order().indexOf("client:RunCreate")
+	markerIdx := a.order().indexOf("evidence:" + RunLinkageKey(chain))
+	if !(claimIdx >= 0 && barrierIdx > claimIdx && clientIdx > barrierIdx && markerIdx > clientIdx) {
+		t.Fatalf("B order wrong (claim=%d barrier=%d client=%d marker=%d)", claimIdx, barrierIdx, clientIdx, markerIdx)
 	}
 }
 
-func TestSlowTaskCreateBeyondLeaseFailsClosedNoDuplicate(t *testing.T) {
+// Scenario S1 (task): same barrier race for TaskCreate.
+func TestBarrierScenarioTaskAPausedBBWins(t *testing.T) {
 	a, b := twinBridges(t)
 	chain := validChain()
+	base := taskCreateClaimBase(chain)
 	ref := TaskRef{Chain: chain, Instructions: instructions()}
 
-	clock := &slowClock{now: time.Date(2026, 8, 24, 15, 0, 0, 0, time.UTC)}
+	clock := &slowClock{now: time.Now().Add(-1 * time.Hour)}
 	a.Now = clock.Now
-	lease := 100 * time.Millisecond
-	a.LeaseTTL = lease
-	releaseA := make(chan struct{})
-	a.client.taskCreateBlock = releaseA
+	a.LeaseTTL = 100 * time.Millisecond
+	releaseA := a.entry.setClaimBlock(effectBarrierKey(base, 0))
 
 	errA := make(chan error, 1)
 	go func() {
 		_, _, err := a.EnsureIssueTask(context.Background(), ref)
 		errA <- err
 	}()
-	// Deterministic barrier: A has entered TaskCreate, then the lease
-	// expires mid-create.
-	barrierDeadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(barrierDeadline) {
+	parkDeadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(parkDeadline) {
+		if a.order().indexOf("claim:"+claimKeyFor(base, 0)) >= 0 {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	b.ClaimPoll = time.Millisecond
+	b.ClaimMaxWait = 2 * time.Second
+	_, taskB, err := b.EnsureIssueTask(context.Background(), ref)
+	if err != nil {
+		t.Fatalf("bridge B takeover: %v", err)
+	}
+
+	close(releaseA)
+	if err := <-errA; !errors.Is(err, ErrScopeAttemptInFlight) {
+		t.Fatalf("expected ErrScopeAttemptInFlight for A, got %v", err)
+	}
+	if a.client.taskCreates != 1 {
+		t.Fatalf("TaskCreate attempts = %d, want exactly B's single call", a.client.taskCreates)
+	}
+	totalTasks := 0
+	for _, tasks := range a.client.tasks {
+		totalTasks += len(tasks)
+	}
+	if totalTasks != 1 || taskB == "" {
+		t.Fatalf("want exactly B's task, got %d tasks", totalTasks)
+	}
+	claimIdx := a.order().indexOf("claim:" + claimKeyFor(base, 1))
+	barrierIdx := a.order().indexOf("claim:" + effectBarrierKey(base, 0))
+	clientIdx := a.order().indexOf("client:TaskCreate")
+	markerIdx := a.order().indexOf("evidence:" + TaskLinkageKey(chain))
+	if !(claimIdx >= 0 && barrierIdx > claimIdx && clientIdx > barrierIdx && markerIdx > clientIdx) {
+		t.Fatalf("B order wrong (claim=%d barrier=%d client=%d marker=%d)", claimIdx, barrierIdx, clientIdx, markerIdx)
+	}
+}
+
+// Scenario S1 (worker): same barrier race for WorkerStart.
+func TestBarrierScenarioWorkerAPausedBBWins(t *testing.T) {
+	a, b := twinBridges(t)
+	chain := validChain()
+	mapping, err := a.EnsureAssignment(t.Context(), dispatchRef(chain))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.EnsureAssignment(t.Context(), dispatchRef(chain)); err != nil {
+		t.Fatal(err)
+	}
+	claimed := DaemonTask{ID: mapping.Chain.TaskID, WorkspaceID: chain.WorkspaceID, IssueID: mapping.Chain.IssueID}
+	base := workerStartClaimBase(chain)
+
+	clock := &slowClock{now: time.Now().Add(-1 * time.Hour)}
+	a.Now = clock.Now
+	a.LeaseTTL = 100 * time.Millisecond
+	releaseA := a.entry.setClaimBlock(effectBarrierKey(base, 0))
+
+	errA := make(chan error, 1)
+	go func() {
+		_, err := a.RunClaimedTask(context.Background(), claimed)
+		errA <- err
+	}()
+	parkDeadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(parkDeadline) {
+		if a.order().indexOf("claim:"+claimKeyFor(base, 0)) >= 0 {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	b.ClaimPoll = time.Millisecond
+	b.ClaimMaxWait = 2 * time.Second
+	if _, err := b.RunClaimedTask(context.Background(), claimed); err != nil {
+		t.Fatalf("bridge B takeover: %v", err)
+	}
+
+	close(releaseA)
+	if err := <-errA; !errors.Is(err, ErrScopeAttemptInFlight) {
+		t.Fatalf("expected ErrScopeAttemptInFlight for A, got %v", err)
+	}
+	if a.client.workerStarts != 1 {
+		t.Fatalf("WorkerStart attempts = %d, want exactly B's single call", a.client.workerStarts)
+	}
+	if len(a.daemon.started) != 1 {
+		t.Fatalf("hivecrew task started %d times, want 1", len(a.daemon.started))
+	}
+	claimIdx := a.order().indexOf("claim:" + claimKeyFor(base, 1))
+	barrierIdx := a.order().indexOf("claim:" + effectBarrierKey(base, 0))
+	clientIdx := a.order().indexOf("client:WorkerStart")
+	markerIdx := a.order().indexOf("evidence:" + DispatchLinkageKey(mapping.Chain))
+	if !(claimIdx >= 0 && barrierIdx > claimIdx && clientIdx > barrierIdx && markerIdx > clientIdx) {
+		t.Fatalf("B order wrong (claim=%d barrier=%d client=%d marker=%d)", claimIdx, barrierIdx, clientIdx, markerIdx)
+	}
+}
+
+// Scenario S2 (run): A has WON the barrier and its RunCreate is blocked
+// (side effect in flight, lease expired past TTL). B must get
+// ErrScopeAttemptInFlight and never call; after A commits, B converges on
+// retry. RunCreate count stays exactly 1.
+func TestBarrierScenarioAResolvedBBlockedThenConverges(t *testing.T) {
+	a, b := twinBridges(t)
+	chain := validChain()
+	base := runCreateClaimBase(chain)
+	ref := ProjectRef{Chain: chain, DisplayObjective: "s2 run objective"}
+
+	clock := &slowClock{now: time.Now().Add(-1 * time.Hour)}
+	a.Now = clock.Now
+	lease := 100 * time.Millisecond
+	a.LeaseTTL = lease
+	releaseClient := make(chan struct{})
+	a.client.runCreateBlock = releaseClient
+
+	aCommitted := make(chan struct{})
+	errA := make(chan error, 1)
+	go func() {
+		_, err := a.EnsureProjectRun(context.Background(), ref)
+		errA <- err
+		close(aCommitted)
+	}()
+	// A has entered RunCreate with the barrier won.
+	enterDeadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(enterDeadline) {
+		if a.client.currentRunCreates() > 0 {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	// Lease expires while the unfenced create is in flight.
+	clock.advance(lease * 2)
+
+	// B past TTL: no takeover into a second create.
+	b.ClaimPoll = time.Millisecond
+	b.ClaimMaxWait = 2 * time.Second
+	if _, err := b.EnsureProjectRun(context.Background(), ref); !errors.Is(err, ErrScopeAttemptInFlight) {
+		t.Fatalf("expected ErrScopeAttemptInFlight while A's create was in flight, got %v", err)
+	}
+	// B never entered the client during the blocked window.
+	probeDeadline := time.Now().Add(100 * time.Millisecond)
+	for time.Now().Before(probeDeadline) {
+		if a.client.currentRunCreates() > 1 {
+			t.Fatal("B called RunCreate while A's unresolved create was in flight")
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+
+	// A resolves and commits exactly one Run.
+	close(releaseClient)
+	if err := <-errA; err != nil {
+		t.Fatalf("bridge A failed after slow create: %v", err)
+	}
+	<-aCommitted
+
+	// B retries and converges on the committed result without a new create.
+	runB, err := b.EnsureProjectRun(context.Background(), ref)
+	if err != nil {
+		t.Fatalf("bridge B convergence retry: %v", err)
+	}
+	if len(a.client.runs) != 1 || a.client.runs[0].ID != runB {
+		t.Fatalf("want exactly A's run %s, got %+v", runB, a.client.runs)
+	}
+	if a.client.runCreates != 1 {
+		t.Fatalf("RunCreate attempts = %d, want exactly 1 across both bridges", a.client.runCreates)
+	}
+	// A's order: claim(0) -> barrier(0) -> client -> marker.
+	claimIdx := a.order().indexOf("claim:" + claimKeyFor(base, 0))
+	barrierIdx := a.order().indexOf("claim:" + effectBarrierKey(base, 0))
+	clientIdx := a.order().indexOf("client:RunCreate")
+	markerIdx := a.order().indexOf("evidence:" + RunLinkageKey(chain))
+	if !(claimIdx >= 0 && barrierIdx > claimIdx && clientIdx > barrierIdx && markerIdx > clientIdx) {
+		t.Fatalf("A order wrong (claim=%d barrier=%d client=%d marker=%d)", claimIdx, barrierIdx, clientIdx, markerIdx)
+	}
+}
+
+// Scenario S2 (task): A won the barrier and TaskCreate blocks; B stays out;
+// after A commits, B converges. TaskCreate count exactly 1.
+func TestBarrierScenarioTaskAResolvedBBlockedThenConverges(t *testing.T) {
+	a, b := twinBridges(t)
+	chain := validChain()
+	ref := TaskRef{Chain: chain, Instructions: instructions()}
+
+	clock := &slowClock{now: time.Now().Add(-1 * time.Hour)}
+	a.Now = clock.Now
+	lease := 100 * time.Millisecond
+	a.LeaseTTL = lease
+	releaseClient := make(chan struct{})
+	a.client.taskCreateBlock = releaseClient
+
+	aCommitted := make(chan struct{})
+	errA := make(chan error, 1)
+	go func() {
+		_, _, err := a.EnsureIssueTask(context.Background(), ref)
+		errA <- err
+		close(aCommitted)
+	}()
+	enterDeadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(enterDeadline) {
 		if a.client.currentTaskCreates() > 0 {
 			break
 		}
@@ -1560,30 +1901,40 @@ func TestSlowTaskCreateBeyondLeaseFailsClosedNoDuplicate(t *testing.T) {
 	}
 	clock.advance(lease * 2)
 
-	bErrCh := make(chan error, 1)
-	go func() {
-		_, _, err := b.EnsureIssueTask(context.Background(), ref)
-		bErrCh <- err
-	}()
+	b.ClaimPoll = time.Millisecond
+	b.ClaimMaxWait = 2 * time.Second
+	if _, _, err := b.EnsureIssueTask(context.Background(), ref); !errors.Is(err, ErrScopeAttemptInFlight) {
+		t.Fatalf("expected ErrScopeAttemptInFlight, got %v", err)
+	}
+	probeDeadline := time.Now().Add(100 * time.Millisecond)
+	for time.Now().Before(probeDeadline) {
+		if a.client.currentTaskCreates() > 1 {
+			t.Fatal("B called TaskCreate while A's unresolved create was in flight")
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
 
-	close(releaseA)
+	close(releaseClient)
 	if err := <-errA; err != nil {
-		t.Fatalf("bridge A failed after slow task create: %v", err)
+		t.Fatalf("bridge A failed after slow create: %v", err)
 	}
-	if bErr := <-bErrCh; bErr != nil {
-		t.Fatalf("bridge B should converge on A's committed mapping, got: %v", bErr)
+	<-aCommitted
+
+	if _, _, err := b.EnsureIssueTask(context.Background(), ref); err != nil {
+		t.Fatalf("bridge B convergence retry: %v", err)
 	}
-	// Exactly one Orca Task and one Run across both bridges.
 	totalTasks := 0
 	for _, tasks := range a.client.tasks {
 		totalTasks += len(tasks)
 	}
-	if totalTasks != 1 || len(a.client.runs) != 1 {
-		t.Fatalf("slow task-create path produced %d runs / %d tasks, want 1/1", len(a.client.runs), totalTasks)
+	if totalTasks != 1 || a.client.taskCreates != 1 {
+		t.Fatalf("want exactly one task create, got objects=%d attempts=%d", totalTasks, a.client.taskCreates)
 	}
 }
 
-func TestSlowWorkerStartBeyondLeaseFailsClosedNoDuplicate(t *testing.T) {
+// Scenario S2 (worker): A won the barrier and WorkerStart blocks; B stays
+// out; after A commits, B converges. WorkerStart count exactly 1.
+func TestBarrierScenarioWorkerAResolvedBBlockedThenConverges(t *testing.T) {
 	a, b := twinBridges(t)
 	chain := validChain()
 	mapping, err := a.EnsureAssignment(t.Context(), dispatchRef(chain))
@@ -1595,20 +1946,22 @@ func TestSlowWorkerStartBeyondLeaseFailsClosedNoDuplicate(t *testing.T) {
 	}
 	claimed := DaemonTask{ID: mapping.Chain.TaskID, WorkspaceID: chain.WorkspaceID, IssueID: mapping.Chain.IssueID}
 
-	clock := &slowClock{now: time.Date(2026, 8, 24, 15, 0, 0, 0, time.UTC)}
+	clock := &slowClock{now: time.Now().Add(-1 * time.Hour)}
 	a.Now = clock.Now
 	lease := 100 * time.Millisecond
 	a.LeaseTTL = lease
-	releaseA := make(chan struct{})
-	a.client.workerStartBlock = releaseA
+	releaseClient := make(chan struct{})
+	a.client.workerStartBlock = releaseClient
 
+	aCommitted := make(chan struct{})
 	errA := make(chan error, 1)
 	go func() {
 		_, err := a.RunClaimedTask(context.Background(), claimed)
 		errA <- err
+		close(aCommitted)
 	}()
-	barrierDeadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(barrierDeadline) {
+	enterDeadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(enterDeadline) {
 		if a.client.currentWorkerStarts() > 0 {
 			break
 		}
@@ -1616,21 +1969,30 @@ func TestSlowWorkerStartBeyondLeaseFailsClosedNoDuplicate(t *testing.T) {
 	}
 	clock.advance(lease * 2)
 
-	bErrCh := make(chan error, 1)
-	go func() {
-		_, err := b.RunClaimedTask(context.Background(), claimed)
-		bErrCh <- err
-	}()
+	b.ClaimPoll = time.Millisecond
+	b.ClaimMaxWait = 2 * time.Second
+	if _, err := b.RunClaimedTask(context.Background(), claimed); !errors.Is(err, ErrScopeAttemptInFlight) {
+		t.Fatalf("expected ErrScopeAttemptInFlight, got %v", err)
+	}
+	probeDeadline := time.Now().Add(100 * time.Millisecond)
+	for time.Now().Before(probeDeadline) {
+		if a.client.currentWorkerStarts() > 1 {
+			t.Fatal("B called WorkerStart while A's unresolved start was in flight")
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
 
-	close(releaseA)
+	close(releaseClient)
 	if err := <-errA; err != nil {
 		t.Fatalf("bridge A failed after slow worker start: %v", err)
 	}
-	if bErr := <-bErrCh; bErr != nil {
-		t.Fatalf("bridge B should converge on A's committed dispatch, got: %v", bErr)
+	<-aCommitted
+
+	if _, err := b.RunClaimedTask(context.Background(), claimed); err != nil {
+		t.Fatalf("bridge B convergence retry: %v", err)
 	}
 	if a.client.workerStarts != 1 {
-		t.Fatalf("slow worker-start path started %d workers, want exactly 1", a.client.workerStarts)
+		t.Fatalf("WorkerStart attempts = %d, want exactly 1 across both bridges", a.client.workerStarts)
 	}
 	if len(a.daemon.started) != 1 {
 		t.Fatalf("hivecrew task started %d times, want 1", len(a.daemon.started))
@@ -1663,12 +2025,12 @@ func TestWithinLeaseFailsClosedAfterExpiry(t *testing.T) {
 	a, _ := twinBridges(t)
 	clock := &slowClock{now: time.Date(2026, 8, 24, 15, 0, 0, 0, time.UTC)}
 	a.Now = clock.Now
-	expires := clock.Now().Add(50 * time.Millisecond)
-	if err := a.withinLease(expires); err != nil {
+	permit := effectPermit{baseKey: "test/base", generation: 0, epoch: 0, leaseExpiresAt: clock.Now().Add(50 * time.Millisecond)}
+	if err := a.withinLease(permit); err != nil {
 		t.Fatalf("live lease must pass: %v", err)
 	}
 	clock.advance(100 * time.Millisecond)
-	if err := a.withinLease(expires); !errors.Is(err, ErrClaimLeaseExpired) {
+	if err := a.withinLease(permit); !errors.Is(err, ErrClaimLeaseExpired) {
 		t.Fatalf("expired lease must fail closed with ErrClaimLeaseExpired, got %v", err)
 	}
 }

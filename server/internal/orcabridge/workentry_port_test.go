@@ -325,8 +325,9 @@ func TestAppendEvidenceRedactsDottedKeysAndNestedArrays(t *testing.T) {
 	}
 }
 
-// R4: the claim event's OccurredAt/ObservedAt must be the real attempt time,
-// never the lease expiry.
+// R4/R5: the claim event's OccurredAt/ObservedAt are the real attempt and
+// port observation times; the lease expiry stays payload-only. The attempt
+// fixture is deliberately in the past so it passes through unclamped.
 func TestClaimScopeUsesRealAttemptTime(t *testing.T) {
 	adapter := newKernel(t)
 	ctx := context.Background()
@@ -335,8 +336,8 @@ func TestClaimScopeUsesRealAttemptTime(t *testing.T) {
 	if err != nil {
 		t.Fatalf("register: %v", err)
 	}
-	attempt := time.Date(2026, 8, 24, 15, 30, 0, 0, time.UTC)
-	expires := attempt.Add(30 * time.Second)
+	attempt := time.Now().Add(-1 * time.Hour).Truncate(time.Nanosecond)
+	expires := attempt.Add(90 * time.Minute)
 	result, err := adapter.ClaimScope(ctx, ScopeClaimInput{
 		WorkRef:    linkage.WorkRef,
 		ClaimKey:   "claim-attempt-time-1",
@@ -349,7 +350,6 @@ func TestClaimScopeUsesRealAttemptTime(t *testing.T) {
 	if err != nil || !result.Acquired {
 		t.Fatalf("ClaimScope: %+v err=%v", result, err)
 	}
-	// Read the stored event through the kernel replay and check the stamps.
 	service := adapter.Service
 	replay, err := service.Replay(ctx, workentry.ReplayRequest{
 		WorkspaceID:    adapter.WorkspaceID,
@@ -360,14 +360,123 @@ func TestClaimScopeUsesRealAttemptTime(t *testing.T) {
 	if err != nil || replay.Event == nil {
 		t.Fatalf("replay: %+v err=%v", replay, err)
 	}
-	if replay.Event.OccurredAt != attempt.Format(time.RFC3339Nano) {
-		t.Fatalf("OccurredAt = %q, want the real attempt time %q", replay.Event.OccurredAt, attempt.Format(time.RFC3339Nano))
+	if replay.Event.OccurredAt != attempt.UTC().Format(time.RFC3339Nano) {
+		t.Fatalf("OccurredAt = %q, want the real (past) attempt time %q", replay.Event.OccurredAt, attempt.UTC().Format(time.RFC3339Nano))
 	}
-	if replay.Event.ObservedAt != attempt.Format(time.RFC3339Nano) {
-		t.Fatalf("ObservedAt = %q, want the real observation time %q", replay.Event.ObservedAt, attempt.Format(time.RFC3339Nano))
+	observed, oerr := time.Parse(time.RFC3339Nano, replay.Event.ObservedAt)
+	if oerr != nil {
+		t.Fatalf("parse ObservedAt: %v", oerr)
+	}
+	if observed.Before(attempt) {
+		t.Fatalf("ObservedAt %v cannot precede the attempt %v", observed, attempt)
+	}
+	if time.Now().Add(time.Second).Before(observed) {
+		t.Fatalf("ObservedAt %v lies in the future", observed)
 	}
 	expiresPayload, _ := replay.Event.EventPayload["expires_at"].(string)
-	if expiresPayload != expires.Format(time.RFC3339Nano) {
-		t.Fatalf("expires_at payload = %q, want %q", expiresPayload, expires.Format(time.RFC3339Nano))
+	if expiresPayload != expires.UTC().Format(time.RFC3339Nano) {
+		t.Fatalf("expires_at payload = %q, want %q", expiresPayload, expires.UTC().Format(time.RFC3339Nano))
+	}
+}
+
+// R5: a future caller AttemptAt must never be trusted. OccurredAt is clamped
+// to the real attempt window and ObservedAt is the port observation time;
+// neither stamp may lie in the future.
+func TestClaimScopeClampsFutureAttemptAt(t *testing.T) {
+	adapter := newKernel(t)
+	ctx := context.Background()
+	chain := validChain()
+	linkage, err := adapter.RegisterLinkage(ctx, LinkageInput{Chain: chain, Actor: bridgeActor(), MappingKind: "dispatch"})
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	future := time.Now().Add(10 * time.Minute)
+	expires := future.Add(30 * time.Second)
+	before := time.Now()
+	result, err := adapter.ClaimScope(ctx, ScopeClaimInput{
+		WorkRef:    linkage.WorkRef,
+		ClaimKey:   "claim-future-attempt-1",
+		InstanceID: "bridge-x",
+		SessionID:  bridgeActor().SessionID,
+		Generation: 0,
+		ExpiresAt:  expires,
+		AttemptAt:  future,
+	})
+	if err != nil || !result.Acquired {
+		t.Fatalf("ClaimScope: %+v err=%v", result, err)
+	}
+	replay, err := adapter.Service.Replay(ctx, workentry.ReplayRequest{
+		WorkspaceID:    adapter.WorkspaceID,
+		IdempotencyKey: "claim-future-attempt-1",
+		Kind:           "event",
+		WorkRef:        linkage.WorkRef,
+	})
+	if err != nil || replay.Event == nil {
+		t.Fatalf("replay: %+v err=%v", replay, err)
+	}
+	if replay.Event.OccurredAt == future.Format(time.RFC3339Nano) {
+		t.Fatalf("OccurredAt trusted the caller's future AttemptAt %q", replay.Event.OccurredAt)
+	}
+	occurred, cerr := time.Parse(time.RFC3339Nano, replay.Event.OccurredAt)
+	if cerr != nil {
+		t.Fatalf("parse OccurredAt: %v", cerr)
+	}
+	observed, oerr := time.Parse(time.RFC3339Nano, replay.Event.ObservedAt)
+	if oerr != nil {
+		t.Fatalf("parse ObservedAt: %v", oerr)
+	}
+	// Neither stamp may be future, and both must sit inside this call's
+	// real window ([before, now]).
+	after := time.Now()
+	if occurred.After(after) || observed.After(after) {
+		t.Fatalf("stamps lie in the future: occurred=%v observed=%v now=%v", occurred, observed, after)
+	}
+	if occurred.Before(before.Add(-time.Second)) || observed.Before(before.Add(-time.Second)) {
+		t.Fatalf("stamps fall outside the call window: occurred=%v observed=%v window=[%v,%v]", occurred, observed, before, after)
+	}
+	expiresPayload, _ := replay.Event.EventPayload["expires_at"].(string)
+	if expiresPayload != expires.UTC().Format(time.RFC3339Nano) {
+		t.Fatalf("expires_at payload = %q, want %q (payload-only, untouched by clamping)", expiresPayload, expires.UTC().Format(time.RFC3339Nano))
+	}
+}
+
+// R5: an absent AttemptAt stamps OccurredAt and ObservedAt with the port's
+// own observation time (identical, never future).
+func TestClaimScopeAbsentAttemptAtUsesPortTime(t *testing.T) {
+	adapter := newKernel(t)
+	ctx := context.Background()
+	chain := validChain()
+	linkage, err := adapter.RegisterLinkage(ctx, LinkageInput{Chain: chain, Actor: bridgeActor(), MappingKind: "dispatch"})
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	if _, err := adapter.ClaimScope(ctx, ScopeClaimInput{
+		WorkRef:    linkage.WorkRef,
+		ClaimKey:   "claim-absent-attempt-1",
+		InstanceID: "bridge-x",
+		SessionID:  bridgeActor().SessionID,
+		Generation: 0,
+		ExpiresAt:  time.Now().Add(30 * time.Second),
+	}); err != nil {
+		t.Fatalf("ClaimScope: %v", err)
+	}
+	replay, err := adapter.Service.Replay(ctx, workentry.ReplayRequest{
+		WorkspaceID:    adapter.WorkspaceID,
+		IdempotencyKey: "claim-absent-attempt-1",
+		Kind:           "event",
+		WorkRef:        linkage.WorkRef,
+	})
+	if err != nil || replay.Event == nil {
+		t.Fatalf("replay: %+v err=%v", replay, err)
+	}
+	if replay.Event.OccurredAt != replay.Event.ObservedAt {
+		t.Fatalf("absent AttemptAt must stamp OccurredAt==ObservedAt at port time: %q vs %q", replay.Event.OccurredAt, replay.Event.ObservedAt)
+	}
+	stamp, perr := time.Parse(time.RFC3339Nano, replay.Event.ObservedAt)
+	if perr != nil {
+		t.Fatalf("parse stamp: %v", perr)
+	}
+	if stamp.After(time.Now()) {
+		t.Fatalf("stamp lies in the future: %v", stamp)
 	}
 }

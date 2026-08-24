@@ -239,3 +239,53 @@ R4 verification (go1.26.6 darwin/arm64): `gofmt -l` clean; `go test
 `go build ./...` pass; `git diff --check` clean. Files touched stay within
 the established allowlist (bridge/coordination/workentry ports + tests +
 this evidence file).
+
+## Independent-review corrections (R5)
+
+Two blockers fixed on top of 6eea2ee63, plus the design strengthening: a
+cross-generation effect barrier as the sole side-effect permit.
+
+1. **Effect barrier (sole permit; claim → barrier → client → marker).**
+   Because OrcaClient offers no fence or idempotency key, every create now
+   requires atomically winning a scope-fixed, cross-generation effect
+   barrier (`ClaimScope` on `…#barrier#<epoch>` — first-writer-wins, epochs
+   single-use and consumed in order) in addition to the lease claim. A later
+   holder that observes a won barrier without committed mapping or Orca
+   marker gets `ErrScopeAttemptInFlight` and must not call — the winner's
+   unfenced create may still be in flight. Claim takeover after lease expiry
+   is allowed only while no unresolved barrier exists (`barrierClear`),
+   which proves the previous holder never entered the downstream call.
+   The barrier is reopened **only** by a provably pre-call local failure:
+   the lease gate (`withinLease`) that runs strictly before the client call.
+   An ordinary client error — including a structured `*CLIError` — is always
+   treated as a post-call unknown outcome (the create may have landed after
+   the caller observed the failure), so client error paths never reopen;
+   recovery there is reconcile-only. Scenario tests (two bridges, shared
+   Orca + WorkEntry backends, deterministic barriers via an in-CAS park hook
+   and an injected clock): **S1** A paused before winning the barrier, B
+   wins it and creates, A resumes and must fail with `ErrScopeAttemptInFlight`
+   without calling the client (`TestBarrierScenario{,Task,Worker}APausedBBWins…`);
+   **S2** A has won the barrier and the downstream call blocks past TTL, B
+   must not call and fails closed, then converges on retry after A commits
+   (`TestBarrierScenario{,Task,Worker}AResolvedBBlockedThenConverges`). Each
+   of RunCreate/TaskCreate/WorkerStart is counted exactly once across both
+   bridges, and the shared operation log asserts the order claim → barrier →
+   client → marker for every creating path. Contract tests:
+   `TestTakeoverBlockedAfterPostCallCLIError` (CLIError keeps the barrier
+   held; zero creates) and `TestPreCallLeaseExpiryReopensBarrierForTakeover`
+   (gate failure reopens; the peer creates exactly once, order asserted).
+2. **Claim timestamps hardened.** `ClaimScope` never trusts a future caller
+   `AttemptAt`: OccurredAt is the validated/clamped real attempt time and
+   ObservedAt is always the port's own observation time, neither can lie in
+   the future, while `expires_at` stays payload-only. Tests:
+   `TestClaimScopeUsesRealAttemptTime` (past attempt passes through,
+   ObservedAt within the call window), `TestClaimScopeClampsFutureAttemptAt`
+   (future value clamped into the call window; payload untouched),
+   `TestClaimScopeAbsentAttemptAtUsesPortTime`.
+
+R3 sanitizer fixes preserved (redaction suite re-run green). R5 verification
+(go1.26.6 darwin/arm64): `gofmt -l` clean; focused ×50 on
+barrier/claim/takeover/ClaimScope/withinLease ok; `go test
+./internal/orcabridge -count=1` ok (90 tests); `go test -race
+./internal/orcabridge -count=1` ok; `go vet` pass; `go build ./...` pass;
+`git diff --check` clean.
