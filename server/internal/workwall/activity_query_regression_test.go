@@ -21,35 +21,17 @@ import (
 // ListActivitiesForIssue returns rows in chronological ASC order, even when
 // multiple rows share the same created_at (tie-break by id DESC / id ASC).
 //
-// Safety: uses TEST_DATABASE_URL only, refuses non-loopback hosts and port
-// 5432. All seed/query runs inside a single transaction that is always
-// rolled back so no rows persist regardless of pass/fail.
+// Safety: uses TEST_DATABASE_URL only, refuses non-loopback hosts, omitted
+// ports, and port 5432. All seed/query runs inside a single transaction that
+// is always rolled back so no rows persist regardless of pass/fail.
 func TestActivityQueryOrdering_Regression_HIV981(t *testing.T) {
 	rawURL := os.Getenv("TEST_DATABASE_URL")
 	if rawURL == "" {
 		t.Skip("TEST_DATABASE_URL not set")
 	}
 
-	u, err := url.Parse(rawURL)
-	if err != nil {
-		t.Fatalf("parse TEST_DATABASE_URL: %v", err)
-	}
-
-	host := u.Hostname()
-	if host == "" {
-		t.Fatalf("TEST_DATABASE_URL has no host")
-	}
-
-	if ip := net.ParseIP(host); ip != nil {
-		if !ip.IsLoopback() {
-			t.Fatalf("TEST_DATABASE_URL host %s is not loopback", host)
-		}
-	} else if host != "localhost" {
-		t.Fatalf("TEST_DATABASE_URL host %s is not loopback", host)
-	}
-
-	if u.Port() == "5432" {
-		t.Fatalf("TEST_DATABASE_URL must not use port 5432 (refusing production port)")
+	if _, err := validateHIV981TestDatabaseURL(rawURL); err != nil {
+		t.Fatal(err)
 	}
 
 	ctx := context.Background()
@@ -110,10 +92,10 @@ func TestActivityQueryOrdering_Regression_HIV981(t *testing.T) {
 	baseTime := time.Date(2026, 8, 24, 10, 0, 0, 0, time.UTC)
 
 	type row struct {
-		label     string
+		label      string
 		explicitID string
-		action    string
-		createdAt time.Time
+		action     string
+		createdAt  time.Time
 	}
 	rows := []row{
 		{"r1", "00000000-0000-0000-0000-000000000001", "oldest", baseTime},
@@ -217,6 +199,72 @@ func TestActivityQueryOrdering_Regression_HIV981(t *testing.T) {
 					i, prev.ID, curr.ID)
 			}
 		}
+	}
+}
+
+func validateHIV981TestDatabaseURL(rawURL string) (*url.URL, error) {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return nil, fmt.Errorf("parse TEST_DATABASE_URL: %v", err)
+	}
+
+	host := u.Hostname()
+	if host == "" {
+		return nil, fmt.Errorf("TEST_DATABASE_URL has no host")
+	}
+
+	if ip := net.ParseIP(host); ip != nil {
+		if !ip.IsLoopback() {
+			return nil, fmt.Errorf("TEST_DATABASE_URL host %s is not loopback", host)
+		}
+	} else if host != "localhost" {
+		return nil, fmt.Errorf("TEST_DATABASE_URL host %s is not loopback", host)
+	}
+
+	port := u.Port()
+	if port == "" {
+		return nil, fmt.Errorf("TEST_DATABASE_URL must specify an explicit non-5432 port")
+	}
+	if port == "5432" {
+		return nil, fmt.Errorf("TEST_DATABASE_URL must not use port 5432 (refusing production port)")
+	}
+	return u, nil
+}
+
+func TestValidateHIV981TestDatabaseURL(t *testing.T) {
+	tests := []struct {
+		name    string
+		rawURL  string
+		wantErr bool
+	}{
+		{
+			name:   "loopback with explicit ephemeral port",
+			rawURL: "postgres://postgres@127.0.0.1:15432/hivecrew_test",
+		},
+		{
+			name:    "omitted port",
+			rawURL:  "postgres://postgres@127.0.0.1/hivecrew_test",
+			wantErr: true,
+		},
+		{
+			name:    "default postgres port",
+			rawURL:  "postgres://postgres@127.0.0.1:5432/hivecrew_test",
+			wantErr: true,
+		},
+		{
+			name:    "non-loopback host",
+			rawURL:  "postgres://postgres@example.invalid:15432/hivecrew_test",
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := validateHIV981TestDatabaseURL(tt.rawURL)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("validateHIV981TestDatabaseURL() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
 	}
 }
 
