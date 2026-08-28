@@ -1305,6 +1305,17 @@ export class PreviewUnsupportedError extends Error {
  */
 export const CHAT_DRAFT_RESTORE_CAPABILITY = "chat-draft-restore-v1";
 
+/** Local execution projection of a versioned Dataset. The canonical
+ *  knowledge authority is the World Library (source_available_runtime_unavailable). */
+export type DatasetSummary = {
+  id: string;
+  name: string;
+  domain: string;
+  product_type: string;
+  version: number;
+  authorized_agent_ids: string[];
+};
+
 export class ApiClient {
   private baseUrl: string;
   private token: string | null = null;
@@ -2128,7 +2139,7 @@ export class ApiClient {
     return this.fetch(`/api/employees/${id}`, { method: "PATCH", body: JSON.stringify(data) });
   }
 
-  listDatasets(): Promise<{ id: string; name: string; domain: string; product_type: string; version: number; authorized_agent_ids: string[] }[]> {
+  listDatasets(): Promise<DatasetSummary[]> {
     return this.fetch("/api/datasets");
   }
 
@@ -2136,8 +2147,20 @@ export class ApiClient {
     return this.fetch("/api/datasets", { method: "POST", body: JSON.stringify(data) });
   }
 
+  getDataset(id: string): Promise<DatasetSummary> {
+    return this.fetch(`/api/datasets/${id}`);
+  }
+
+  updateDataset(id: string, data: { name?: string; domain?: string; product_type?: string; version?: number; authorized_agent_ids?: string[] }): Promise<DatasetSummary> {
+    return this.fetch(`/api/datasets/${id}`, { method: "PATCH", body: JSON.stringify(data) });
+  }
+
   updateDatasetAuthorization(id: string, authorized_agent_ids: string[]): Promise<{ id: string }> {
-    return this.fetch(`/api/datasets/${id}`, { method: "PATCH", body: JSON.stringify({ authorized_agent_ids: authorized_agent_ids }) });
+    return this.updateDataset(id, { authorized_agent_ids });
+  }
+
+  async deleteDataset(id: string): Promise<void> {
+    await this.fetch(`/api/datasets/${id}`, { method: "DELETE" });
   }
 
   getObjectOwnership(): Promise<{ domains: { domain: string; domain_key: string; objects: string[]; canonical_writer: string }[]; count: number }> {
