@@ -6,6 +6,7 @@ import { toast } from "sonner";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { api } from "@multica/core/api";
 import { CollectionPageHeader } from "../layout/collection-page";
+import { WorldLibraryStatusLine } from "./world-library-status";
 
 type Ds = { id: string; name: string; domain: string; product_type: string; version: number; authorized_agent_ids: string[] };
 type Employee = { id: string; name: string; agent_id?: string; status: string };
@@ -61,7 +62,10 @@ export function DatasetsPage() {
 
   return (
     <div className="flex h-full flex-col">
-      <CollectionPageHeader icon={Database} title="数据与知识" description="原始资料→版本化 Dataset→员工授权。本地执行投影；知识权威=World Library（source_available_runtime_unavailable）。" />
+      <CollectionPageHeader icon={Database} title="数据与知识" description="原始资料→版本化 Dataset→员工授权。本地执行投影。" />
+      <div className="px-4 pt-3 lg:px-4">
+        <WorldLibraryStatusLine />
+      </div>
       <div className="grid grid-cols-1 gap-4 p-4 lg:grid-cols-3">
         <div className="rounded-lg border bg-card p-4 shadow-sm">
           <h3 className="text-sm font-semibold">新数据集</h3>
