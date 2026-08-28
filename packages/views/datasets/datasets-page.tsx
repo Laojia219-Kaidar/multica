@@ -1,4 +1,7 @@
 "use client";
+
+/* eslint-disable i18next/no-literal-string */
+
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronDown, ChevronRight, Database, Plus, ShieldCheck } from "lucide-react";

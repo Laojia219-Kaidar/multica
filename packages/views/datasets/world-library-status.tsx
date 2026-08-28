@@ -1,7 +1,5 @@
 "use client";
 
-/* eslint-disable i18next/no-literal-string */
-
 import { useQuery } from "@tanstack/react-query";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { api } from "@multica/core/api";
