@@ -62,6 +62,62 @@ func (q *Queries) CreateDataset(ctx context.Context, arg CreateDatasetParams) (C
 	return i, err
 }
 
+const deleteDataset = `-- name: DeleteDataset :execrows
+DELETE FROM dataset WHERE id = $1 AND workspace_id = $2
+`
+
+type DeleteDatasetParams struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+func (q *Queries) DeleteDataset(ctx context.Context, arg DeleteDatasetParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteDataset, arg.ID, arg.WorkspaceID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const getDataset = `-- name: GetDataset :one
+SELECT id, workspace_id, name, domain, version, product_type, authorized_agent_ids, created_at, updated_at
+FROM dataset WHERE id = $1 AND workspace_id = $2
+`
+
+type GetDatasetParams struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+type GetDatasetRow struct {
+	ID                 pgtype.UUID        `json:"id"`
+	WorkspaceID        pgtype.UUID        `json:"workspace_id"`
+	Name               string             `json:"name"`
+	Domain             string             `json:"domain"`
+	Version            int32              `json:"version"`
+	ProductType        string             `json:"product_type"`
+	AuthorizedAgentIds []pgtype.UUID      `json:"authorized_agent_ids"`
+	CreatedAt          pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
+}
+
+func (q *Queries) GetDataset(ctx context.Context, arg GetDatasetParams) (GetDatasetRow, error) {
+	row := q.db.QueryRow(ctx, getDataset, arg.ID, arg.WorkspaceID)
+	var i GetDatasetRow
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.Name,
+		&i.Domain,
+		&i.Version,
+		&i.ProductType,
+		&i.AuthorizedAgentIds,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const listDatasets = `-- name: ListDatasets :many
 SELECT id, workspace_id, name, domain, version, product_type, authorized_agent_ids, created_at, updated_at
 FROM dataset WHERE workspace_id = $1 ORDER BY created_at DESC
@@ -109,18 +165,29 @@ func (q *Queries) ListDatasets(ctx context.Context, workspaceID pgtype.UUID) ([]
 	return items, nil
 }
 
-const updateDatasetAuthorization = `-- name: UpdateDatasetAuthorization :one
-UPDATE dataset SET authorized_agent_ids = $2, updated_at = now()
-WHERE id = $1
+const updateDataset = `-- name: UpdateDataset :one
+UPDATE dataset SET
+    name = COALESCE($3, name),
+    domain = COALESCE($4, domain),
+    product_type = COALESCE($5, product_type),
+    version = COALESCE($6, version),
+    authorized_agent_ids = COALESCE($7, authorized_agent_ids),
+    updated_at = now()
+WHERE id = $1 AND workspace_id = $2
 RETURNING id, workspace_id, name, domain, version, product_type, authorized_agent_ids, created_at, updated_at
 `
 
-type UpdateDatasetAuthorizationParams struct {
+type UpdateDatasetParams struct {
 	ID                 pgtype.UUID   `json:"id"`
+	WorkspaceID        pgtype.UUID   `json:"workspace_id"`
+	Name               pgtype.Text   `json:"name"`
+	Domain             pgtype.Text   `json:"domain"`
+	ProductType        pgtype.Text   `json:"product_type"`
+	Version            pgtype.Int4   `json:"version"`
 	AuthorizedAgentIds []pgtype.UUID `json:"authorized_agent_ids"`
 }
 
-type UpdateDatasetAuthorizationRow struct {
+type UpdateDatasetRow struct {
 	ID                 pgtype.UUID        `json:"id"`
 	WorkspaceID        pgtype.UUID        `json:"workspace_id"`
 	Name               string             `json:"name"`
@@ -132,9 +199,21 @@ type UpdateDatasetAuthorizationRow struct {
 	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
 }
 
-func (q *Queries) UpdateDatasetAuthorization(ctx context.Context, arg UpdateDatasetAuthorizationParams) (UpdateDatasetAuthorizationRow, error) {
-	row := q.db.QueryRow(ctx, updateDatasetAuthorization, arg.ID, arg.AuthorizedAgentIds)
-	var i UpdateDatasetAuthorizationRow
+// Partial update. NULL params preserve the stored value; a provided
+// authorized_agent_ids (including an empty slice) replaces the set. The
+// workspace_id guard is defense-in-depth for the tenant boundary, matching
+// DeleteSkill.
+func (q *Queries) UpdateDataset(ctx context.Context, arg UpdateDatasetParams) (UpdateDatasetRow, error) {
+	row := q.db.QueryRow(ctx, updateDataset,
+		arg.ID,
+		arg.WorkspaceID,
+		arg.Name,
+		arg.Domain,
+		arg.ProductType,
+		arg.Version,
+		arg.AuthorizedAgentIds,
+	)
+	var i UpdateDatasetRow
 	err := row.Scan(
 		&i.ID,
 		&i.WorkspaceID,

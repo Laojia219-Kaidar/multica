@@ -63,22 +63,92 @@ func (h *Handler) ListDatasets(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
-type updateDatasetAuthorizationRequest struct {
+// GetDataset returns one Dataset with the workspace tenant guard.
+func (h *Handler) GetDataset(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "id"), "dataset id")
+	if !ok { return }
+	d, err := h.Queries.GetDataset(r.Context(), db.GetDatasetParams{
+		ID: id, WorkspaceID: parseUUID(h.resolveWorkspaceID(r)),
+	})
+	if err != nil { writeError(w, http.StatusNotFound, "dataset not found"); return }
+	writeJSON(w, http.StatusOK, datasetToResponse(d.ID, d.Name, d.Domain, d.ProductType, d.Version, d.AuthorizedAgentIds))
+}
+
+// updateDatasetRequest is a partial update. Pointer fields distinguish an
+// absent field (value preserved) from an explicit zero value; a present
+// authorized_agent_ids slice replaces the set — including an empty slice,
+// which clears it.
+type updateDatasetRequest struct {
+	Name               *string  `json:"name"`
+	Domain             *string  `json:"domain"`
+	ProductType        *string  `json:"product_type"`
+	Version            *int32   `json:"version"`
 	AuthorizedAgentIds []string `json:"authorized_agent_ids"`
 }
 
-// UpdateDatasetAuthorization authorizes specific agents to use a Dataset.
-func (h *Handler) UpdateDatasetAuthorization(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
-	var req updateDatasetAuthorizationRequest
+// buildDatasetUpdateParams maps a partial update request onto sqlc params and
+// validates the provided fields. It is pure so the request contract stays
+// unit-testable without a database.
+func buildDatasetUpdateParams(id, workspaceID pgtype.UUID, req updateDatasetRequest) (db.UpdateDatasetParams, error) {
+	params := db.UpdateDatasetParams{ID: id, WorkspaceID: workspaceID}
+	if req.Name != nil {
+		if *req.Name == "" { return params, errDatasetInvalidField("name") }
+		params.Name = pgtype.Text{String: *req.Name, Valid: true}
+	}
+	if req.Domain != nil {
+		if *req.Domain == "" { return params, errDatasetInvalidField("domain") }
+		params.Domain = pgtype.Text{String: *req.Domain, Valid: true}
+	}
+	if req.ProductType != nil {
+		if *req.ProductType == "" { return params, errDatasetInvalidField("product_type") }
+		params.ProductType = pgtype.Text{String: *req.ProductType, Valid: true}
+	}
+	if req.Version != nil {
+		if *req.Version <= 0 { return params, errDatasetInvalidField("version") }
+		params.Version = pgtype.Int4{Int32: *req.Version, Valid: true}
+	}
+	if req.AuthorizedAgentIds != nil {
+		ids := make([]pgtype.UUID, 0, len(req.AuthorizedAgentIds))
+		for _, s := range req.AuthorizedAgentIds {
+			u, err := parseUUIDLoose(s)
+			if err != nil { return params, errDatasetInvalidField("authorized_agent_ids") }
+			ids = append(ids, u)
+		}
+		params.AuthorizedAgentIds = ids
+	}
+	return params, nil
+}
+
+type datasetFieldError struct{ field string }
+
+func (e datasetFieldError) Error() string { return "invalid " + e.field }
+
+func errDatasetInvalidField(field string) error { return datasetFieldError{field: field} }
+
+// UpdateDataset partially updates a Dataset: rename, domain, product type,
+// version bump, or employee authorization projection (authorized agent ids).
+func (h *Handler) UpdateDataset(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "id"), "dataset id")
+	if !ok { return }
+	var req updateDatasetRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body"); return
 	}
-	ids := make([]pgtype.UUID, 0, len(req.AuthorizedAgentIds))
-	for _, s := range req.AuthorizedAgentIds { ids = append(ids, parseUUID(s)) }
-	d, err := h.Queries.UpdateDatasetAuthorization(r.Context(), db.UpdateDatasetAuthorizationParams{
-		ID: parseUUID(id), AuthorizedAgentIds: ids,
-	})
-	if err != nil { writeError(w, http.StatusInternalServerError, "failed to authorize dataset"); return }
+	params, err := buildDatasetUpdateParams(id, parseUUID(h.resolveWorkspaceID(r)), req)
+	if err != nil { writeError(w, http.StatusBadRequest, err.Error()); return }
+	d, err := h.Queries.UpdateDataset(r.Context(), params)
+	if err != nil { writeError(w, http.StatusNotFound, "dataset not found"); return }
 	writeJSON(w, http.StatusOK, datasetToResponse(d.ID, d.Name, d.Domain, d.ProductType, d.Version, d.AuthorizedAgentIds))
+}
+
+// DeleteDataset removes a Dataset with the workspace tenant guard.
+func (h *Handler) DeleteDataset(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "id"), "dataset id")
+	if !ok { return }
+	rows, err := h.Queries.DeleteDataset(r.Context(), db.DeleteDatasetParams{
+		ID: id, WorkspaceID: parseUUID(h.resolveWorkspaceID(r)),
+	})
+	if err != nil { writeError(w, http.StatusInternalServerError, "failed to delete dataset"); return }
+	if rows == 0 { writeError(w, http.StatusNotFound, "dataset not found"); return }
+	w.WriteHeader(http.StatusNoContent)
 }

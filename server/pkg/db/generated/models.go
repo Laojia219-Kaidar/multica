@@ -1175,6 +1175,27 @@ type ProjectResource struct {
 	CreatedBy    pgtype.UUID        `json:"created_by"`
 }
 
+type ProviderQuotaSnapshot struct {
+	ID              pgtype.UUID        `json:"id"`
+	WorkspaceID     pgtype.UUID        `json:"workspace_id"`
+	Provider        string             `json:"provider"`
+	Plan            string             `json:"plan"`
+	AccountLabel    string             `json:"account_label"`
+	ApiKeyLabel     string             `json:"api_key_label"`
+	WindowKind      string             `json:"window_kind"`
+	LimitTokens     pgtype.Int8        `json:"limit_tokens"`
+	UsedTokens      int64              `json:"used_tokens"`
+	RemainingTokens pgtype.Int8        `json:"remaining_tokens"`
+	ResetAt         pgtype.Timestamptz `json:"reset_at"`
+	ObservedAt      pgtype.Timestamptz `json:"observed_at"`
+	Source          string             `json:"source"`
+	SourceRef       string             `json:"source_ref"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
+	Percentage      pgtype.Float8      `json:"percentage"`
+	Unit            string             `json:"unit"`
+}
+
 type ProviderUsageQuotum struct {
 	ID           pgtype.UUID        `json:"id"`
 	WorkspaceID  pgtype.UUID        `json:"workspace_id"`
