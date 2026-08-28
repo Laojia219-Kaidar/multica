@@ -2236,6 +2236,10 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			r.Patch("/api/employees/{id}", h.UpdateEmployeeBinding)
 			r.Get("/api/datasets", h.ListDatasets)
 			r.Post("/api/datasets", h.CreateDataset)
+			// Read-only World Library bridge verdict (HIV-1251). Registered
+			// before the /{id} subtree; chi resolves the static segment
+			// first, so "world-library" never collides with a dataset id.
+			r.Get("/api/datasets/world-library", h.GetWorldLibraryStatus)
 			r.Get("/api/datasets/{id}", h.GetDataset)
 			r.Patch("/api/datasets/{id}", h.UpdateDataset)
 			r.Delete("/api/datasets/{id}", h.DeleteDataset)

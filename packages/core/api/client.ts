@@ -1307,6 +1307,21 @@ export const CHAT_DRAFT_RESTORE_CAPABILITY = "chat-draft-restore-v1";
 
 /** Local execution projection of a versioned Dataset. The canonical
  *  knowledge authority is the World Library (source_available_runtime_unavailable). */
+/** Structured, honest verdict for the World Library knowledge-authority
+ *  bridge: the authority is declared, the runtime connection is owner-gated. */
+export type WorldLibraryStatus = {
+  authority: string;
+  source_ref: string;
+  local_role: string;
+  state: "source_available_runtime_unavailable" | "runtime_available";
+  bridge: {
+    configured: boolean;
+    reachable: boolean | null;
+    detail?: string;
+    checked_at?: string;
+  };
+};
+
 export type DatasetSummary = {
   id: string;
   name: string;
@@ -2161,6 +2176,13 @@ export class ApiClient {
 
   async deleteDataset(id: string): Promise<void> {
     await this.fetch(`/api/datasets/${id}`, { method: "DELETE" });
+  }
+
+  /** Read-only World Library bridge verdict (HIV-1251). The server fails
+   *  closed: any unset/unreachable owner-configured bridge reports
+   *  `source_available_runtime_unavailable`. */
+  worldLibraryStatus(): Promise<WorldLibraryStatus> {
+    return this.fetch("/api/datasets/world-library");
   }
 
   getObjectOwnership(): Promise<{ domains: { domain: string; domain_key: string; objects: string[]; canonical_writer: string }[]; count: number }> {
