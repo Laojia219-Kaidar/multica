@@ -26,7 +26,8 @@
     "clean": "turbo clean && rm -rf node_modules",
     "ui:add": "cd packages/ui && npx shadcn@latest add",
     "generate:reserved-slugs": "node scripts/generate-reserved-slugs.mjs",
-    "check:hivecrew-identity": "node scripts/check-hivecrew-active-identity.mjs"
+    "check:hivecrew-identity": "node scripts/check-hivecrew-active-identity.mjs",
+    "test:digital-employee-renames": "node --test scripts/sync-digital-employee-display-names.test.mjs"
   },
   "packageManager": "pnpm@10.28.2",
   "pnpm": {

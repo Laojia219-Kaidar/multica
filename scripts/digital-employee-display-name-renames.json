@@ -1,0 +1,74 @@
+{
+  "schema_version": "hivecrew.digital-employee-display-name-renames/v1",
+  "approved_at": "2026-09-08",
+  "notion_refs": [
+    "https://app.notion.com/p/930a3346874c492ba299a53f380d026f",
+    "https://app.notion.com/p/3d5e98b44f9a81bc8f8de7630cd82383"
+  ],
+  "notes": [
+    "employee_ref and agent UUID stay fixed; only display name (English given name + title) changes.",
+    "Grok Bot sidebar agents are out of scope.",
+    "HiveCosm employee registry display_name is authoritative for Organization UI; this file drives HiveCrew local agent.name projection.",
+    "Apply migration 260 before or together with HiveCosm registry updates; verify with scripts/sync-digital-employee-display-names.mjs verify."
+  ],
+  "apply_order": [
+    "7f1d98a5-307f-40d8-893b-82d9fe09f33e",
+    "876e2514-ee7c-4fc3-85f2-861baa464a45",
+    "c5ab7e4f-8c34-4fee-90e7-634d42c4edee",
+    "bf6f658f-b8d6-45d8-8f57-e9444ce9b4e4",
+    "708a49ba-7e7d-4363-8b9b-e6a4aeb5d980",
+    "bfea5417-eb5e-4e67-99a8-5609824c663d",
+    "3f6fb05c-cf49-4446-8906-13e1f17794a3"
+  ],
+  "renames": [
+    {
+      "workforce_agent_id": "KT-046",
+      "agent_id": "7f1d98a5-307f-40d8-893b-82d9fe09f33e",
+      "old_display_name": "Finn｜性能优化工程师",
+      "new_display_name": "Bolt｜性能优化工程师",
+      "former_name_note": "Formerly: Finn｜性能优化工程师 (KT-046)."
+    },
+    {
+      "workforce_agent_id": "KT-058",
+      "agent_id": "876e2514-ee7c-4fc3-85f2-861baa464a45",
+      "old_display_name": "Willow｜前端与交互工程师",
+      "new_display_name": "Finn｜前端与交互工程师",
+      "former_name_note": "Formerly: Willow｜前端与交互工程师 (KT-058)."
+    },
+    {
+      "workforce_agent_id": "KT-013",
+      "agent_id": "c5ab7e4f-8c34-4fee-90e7-634d42c4edee",
+      "old_display_name": "Emma｜风险评估专员",
+      "new_display_name": "Vera｜风险评估专员",
+      "former_name_note": "Formerly: Emma｜风险评估专员 (KT-013)."
+    },
+    {
+      "workforce_agent_id": "EXT-001",
+      "agent_id": "bf6f658f-b8d6-45d8-8f57-e9444ce9b4e4",
+      "old_display_name": "Emory｜外部 IDE 协作专员",
+      "new_display_name": "Harbor｜外部 IDE 协作专员",
+      "former_name_note": "Formerly: Emory｜外部 IDE 协作专员 (EXT-001)."
+    },
+    {
+      "workforce_agent_id": "KT-023",
+      "agent_id": "708a49ba-7e7d-4363-8b9b-e6a4aeb5d980",
+      "old_display_name": "Quinn｜质量守护者",
+      "new_display_name": "Gate｜质量守护者",
+      "former_name_note": "Formerly: Quinn｜质量守护者 (KT-023). Content-review Quinn remains Grok-only; engineering quality uses Gauss."
+    },
+    {
+      "workforce_agent_id": "KT-018",
+      "agent_id": "bfea5417-eb5e-4e67-99a8-5609824c663d",
+      "old_display_name": "Nova｜UI/UX 设计总监",
+      "new_display_name": "Elsa｜UI/UX 设计总监",
+      "former_name_note": "Formerly: Nova｜UI/UX 设计总监 (KT-018)."
+    },
+    {
+      "workforce_agent_id": "HC-020",
+      "agent_id": "3f6fb05c-cf49-4446-8906-13e1f17794a3",
+      "old_display_name": "Sage｜首席架构师",
+      "new_display_name": "Will｜首席架构师",
+      "former_name_note": "Formerly: Sage｜首席架构师 (HC-020)."
+    }
+  ]
+}
