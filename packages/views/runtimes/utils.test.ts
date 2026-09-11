@@ -407,6 +407,17 @@ describe("estimateCost", () => {
   // header comment. Pinning them in tests is what catches a future edit
   // that copies a price from a near-named neighbour by accident — the
   // mistake the previous attempt (PR #3170, closed) made.
+  it("prices deepseek-flash (official DeepSeek-V4.1-Flash id) at the same Flash rate", () => {
+    const cost = estimateUsageCostUsd({
+      model: "deepseek-flash",
+      inputTokens: 1_000_000,
+      outputTokens: 1_000_000,
+      cacheReadTokens: 1_000_000,
+    });
+    expect(cost).toBeCloseTo(0.14 + 0.28 + 0.0028, 5);
+    expect(isModelPriced("deepseek/deepseek-flash")).toBe(true);
+  });
+
   it("prices deepseek-v4-flash at the official $0.14/$0.28 with ~50× cache-hit discount", () => {
     // 1M input × $0.14 + 1M output × $0.28 + 1M cache read × $0.0028 = $0.4228.
     const cost = estimateCost({

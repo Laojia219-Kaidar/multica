@@ -106,7 +106,7 @@ var modelAliasRules = []struct {
 	{regexp.MustCompile(`claude-sonnet-4[-.]5|claude-4[-.]5-sonnet`), "anthropic:claude-sonnet-4.5"},
 	{regexp.MustCompile(`claude-haiku-4[-.]5`), "anthropic:claude-haiku-4.5"},
 	{regexp.MustCompile(`deepseek-v4-pro`), "deepseek:v4-pro"},
-	{regexp.MustCompile(`deepseek-v4-flash|^deepseek-chat$|^deepseek-reasoner$`), "deepseek:v4-flash"},
+	{regexp.MustCompile(`deepseek-flash|deepseek-v4-flash|deepseek-v4-flash-vision-exp|^deepseek-chat$|^deepseek-reasoner$`), "deepseek:v4-flash"},
 	{regexp.MustCompile(`minimax-m2[.]7.*highspeed|highspeed.*minimax-m2[.]7`), "minimax:m2.7-highspeed"},
 	{regexp.MustCompile(`minimax-m2[.]7`), "minimax:m2.7"},
 	{regexp.MustCompile(`gemini-3-flash`), "google:gemini-3-flash"},
