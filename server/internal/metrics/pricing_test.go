@@ -210,3 +210,28 @@ func TestGrokPricingMatchesRecordedTurn(t *testing.T) {
 		t.Fatalf("recomputed cost = %.10f, want %.10f (xAI costUsdTicks)", got, wantUSD)
 	}
 }
+
+func TestPriceForModelAliasDeepSeekFlash(t *testing.T) {
+	// Official API id deepseek-flash (= DeepSeek-V4.1-Flash) plus legacy aliases
+	// must all resolve to the Flash tier; deepseek-v4-flash remains compatible.
+	want, ok := PriceForModelAlias("deepseek-v4-flash")
+	if !ok {
+		t.Fatal("baseline deepseek-v4-flash did not resolve")
+	}
+	for _, model := range []string{
+		"deepseek-flash",
+		"deepseek/deepseek-flash",
+		"deepseek-v4-flash",
+		"deepseek-v4-flash-vision-exp",
+		"deepseek-chat",
+		"deepseek-reasoner",
+	} {
+		got, ok := PriceForModelAlias(model)
+		if !ok {
+			t.Fatalf("PriceForModelAlias(%q) did not resolve", model)
+		}
+		if got != want {
+			t.Fatalf("PriceForModelAlias(%q) = %+v, want %+v", model, got, want)
+		}
+	}
+}
